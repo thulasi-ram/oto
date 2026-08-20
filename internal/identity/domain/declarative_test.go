@@ -134,13 +134,21 @@ func TestAnUnknownKeyFailsTheBoot(t *testing.T) {
 func TestValuesArriveAsStringsOrAsTypes(t *testing.T) {
 	t.Parallel()
 
+	// ⛔ THE BOOLEAN HALF OF THIS TEST IS DELETED, NOT REWRITTEN (git-bug 7570090).
+	// It paired `OTO_TUNING_BROADCAST_ON_RESOLVED=true` against
+	// `tuning.broadcast_on_resolved: true` and was `asBool`'s only coverage. Both the
+	// key and `asBool` are gone and no boolean setting is left, so there is nothing
+	// to pin. ⚠️ THE INTEGER HALF IS THE WHOLE PROPERTY NOW: `default_verbosity` is a
+	// string from either provider, so it cannot tell coercion from a plain read. If a
+	// boolean setting comes back, the pair comes back with it — `asBool`'s
+	// `case string` arm is reachable only from the environment.
 	fromEnv := mustDeclarative(t,
 		entry("refire_grace_s", "OTO_TUNING_REFIRE_GRACE_S", "900"),
-		entry("broadcast_on_resolved", "OTO_TUNING_BROADCAST_ON_RESOLVED", "true"),
+		entry("flap_threshold", "OTO_TUNING_FLAP_THRESHOLD", "7"),
 	)
 	fromFile := mustDeclarative(t,
 		entry("refire_grace_s", "tuning.refire_grace_s", 900),
-		entry("broadcast_on_resolved", "tuning.broadcast_on_resolved", true),
+		entry("flap_threshold", "tuning.flap_threshold", 7),
 	)
 
 	env := domain.Org{}.WithDeclarative(fromEnv).Settings
@@ -148,8 +156,8 @@ func TestValuesArriveAsStringsOrAsTypes(t *testing.T) {
 	if env.RefireGrace != file.RefireGrace || env.RefireGrace != 900*time.Second {
 		t.Fatalf("env %v, file %v", env.RefireGrace, file.RefireGrace)
 	}
-	if !env.BroadcastOnResolved || !file.BroadcastOnResolved {
-		t.Fatalf("env %v, file %v", env.BroadcastOnResolved, file.BroadcastOnResolved)
+	if env.FlapThreshold != file.FlapThreshold || env.FlapThreshold != 7 {
+		t.Fatalf("env %d, file %d", env.FlapThreshold, file.FlapThreshold)
 	}
 }
 

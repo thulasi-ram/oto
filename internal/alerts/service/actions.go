@@ -188,10 +188,9 @@ func (s *Service) setAck(
 			notifyReason = reasonUnacked
 		}
 		if _, err := s.enqueueNotify(ctx, scope, []notifyRequest{{
-			groupID: next.GroupID(),
 			reason:  notifyReason,
 			alertID: ptr(alert.ID()),
-			caseID:  ptr(next.ID()),
+			caseID:  next.ID(),
 			actor:   actor.Label(),
 		}}, nil); err != nil {
 			return err
@@ -292,7 +291,6 @@ func (s *Service) Comment(
 		}
 		if hasOpen {
 			params.CaseID = ac.ID()
-			params.GroupID = ac.GroupID()
 		}
 
 		ev, err := domain.NewEvent(params)
@@ -313,10 +311,9 @@ func (s *Service) Comment(
 		}
 		if hasOpen {
 			if _, err := s.enqueueNotify(ctx, scope, []notifyRequest{{
-				groupID: ac.GroupID(),
 				reason:  reasonComment,
 				alertID: ptr(alert.ID()),
-				caseID:  ptr(ac.ID()),
+				caseID:  ac.ID(),
 				actor:   actor.Label(),
 			}}, nil); err != nil {
 				return err
@@ -777,10 +774,9 @@ func (s *Service) notifySnoozeChange(
 		return nil
 	}
 	_, err = s.enqueueNotify(ctx, scope, []notifyRequest{{
-		groupID: ac.GroupID(),
 		reason:  reason,
 		alertID: ptr(alertID),
-		caseID:  ptr(ac.ID()),
+		caseID:  ac.ID(),
 		actor:   actor,
 	}}, nil)
 	return err

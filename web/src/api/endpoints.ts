@@ -45,9 +45,6 @@ import type {
   Enrichment,
   FailedBatch,
   FailedBatchListQuery,
-  Group,
-  GroupDetail,
-  GroupListQuery,
   LabelNameRow,
   LabelValueRow,
   LoginRequest,
@@ -129,8 +126,8 @@ export function listAlerts(
  * filter `listAlerts` takes is applied here identically and *before* the
  * aggregate, so the buckets always summarise exactly the list beside them.
  *
- * A bucket is **not** an AlertGroup: it has no row, no generation and no chat
- * thread, and it lives for the duration of one query.
+ * A bucket is **not** a case: it has no row of its own, nothing to acknowledge
+ * and no timeline, and it lives for the duration of one query.
  */
 export function listAlertRollups(
   query: AlertRollupQuery,
@@ -296,9 +293,8 @@ export function listCases(
 }
 
 /**
- * One firing episode, expanded with the identity it belongs to, the AlertGroup
- * generation it was notified under, the rule as it was at fire time, its
- * enrichment results and its delivery roll-up.
+ * One firing episode, expanded with the identity it belongs to, the rule as it
+ * was at fire time, its enrichment results and its delivery roll-up.
  */
 export function getCase(id: Uuid, c: Ctx = {}): Promise<CaseDetail> {
   return getItem<CaseDetail>(`${V1}/cases/${id}`, ctx(c));
@@ -451,112 +447,6 @@ export function listActiveSnoozes(
   c: Ctx = {},
 ): Promise<ListEnvelope<ActiveSnooze>> {
   return getList<ActiveSnooze>(`${V1}/snoozes`, { ...ctx(c), query: query as QueryParams });
-}
-
-/* -------------------------------------------------------------------------- */
-/* Groups                                                                     */
-/* -------------------------------------------------------------------------- */
-
-export function listAlertGroups(
-  query: GroupListQuery,
-  c: Ctx = {},
-): Promise<ListEnvelope<Group>> {
-  return getList<Group>(`${V1}/alert-groups`, { ...ctx(c), query: query as QueryParams });
-}
-
-export function getAlertGroup(id: Uuid, c: Ctx = {}): Promise<GroupDetail> {
-  return getItem<GroupDetail>(`${V1}/alert-groups/${id}`, ctx(c));
-}
-
-export function listAlertGroupAlerts(
-  id: Uuid,
-  query: { limit?: number; cursor?: string } = {},
-  c: Ctx = {},
-): Promise<ListEnvelope<Alert>> {
-  return getList<Alert>(`${V1}/alert-groups/${id}/alerts`, {
-    ...ctx(c),
-    query: query as QueryParams,
-  });
-}
-
-export function getAlertGroupTimeline(
-  id: Uuid,
-  query: TimelineQuery,
-  c: Ctx = {},
-): Promise<ListEnvelope<AlertEvent>> {
-  return getList<AlertEvent>(`${V1}/alert-groups/${id}/timeline`, {
-    ...ctx(c),
-    query: query as QueryParams,
-  });
-}
-
-export function ackAlertGroup(id: Uuid, note: string | undefined, key: string): Promise<GroupDetail> {
-  const body = note !== undefined && note !== "" ? { note } : {};
-  return postItem<GroupDetail>(`${V1}/alert-groups/${id}/ack`, body, { idempotencyKey: key });
-}
-
-/**
- * Withdraw the receipt from every member's open case. Recorded with
- * `reason: manual`.
- *
- * ⛔ IT EXISTS BECAUSE `ackAlertGroup` DOES. Fanning an acknowledgement out
- * across a group is the widest gesture in the product, and for a while it was
- * also the only one-way one: it had no counterpart on the API at all, so an
- * operator who acknowledged a storm of forty could only take it back by opening
- * each member's case and withdrawing its receipt individually.
- *
- * A member that carries no receipt is skipped, not refused — the mirror of the
- * ack's tolerance for a member somebody already acked.
- */
-export function unackAlertGroup(
-  id: Uuid,
-  note: string | undefined,
-  key: string,
-): Promise<GroupDetail> {
-  const body = note !== undefined && note !== "" ? { note } : {};
-  return postItem<GroupDetail>(`${V1}/alert-groups/${id}/unack`, body, { idempotencyKey: key });
-}
-
-export function commentOnAlertGroup(id: Uuid, body: string, key: string): Promise<AlertEvent> {
-  return postItem<AlertEvent>(
-    `${V1}/alert-groups/${id}/comments`,
-    { body },
-    { idempotencyKey: key },
-  );
-}
-
-/**
- * Snooze every member alert. A fan-out of the per-alert primitive, not a new one.
- *
- * ⛔ NO UI CALLS THIS, AND THAT IS DELIBERATE. A snooze holds oto's
- * notifications for an ALERT, and an alert outlives every group it is ever
- * batched into — so a control on a group screen would read as "quieten this
- * batch" while in fact writing a hold on every identity in it, still in force
- * long after the batch closed. The endpoint is here because the contract has it;
- * the screens offer snooze on the alert and on the case, where the subject is
- * named.
- *
- * Alerts notified under the group after the request are not snoozed: a
- * group-level mute that covered them would silence alerts nobody has ever seen.
- */
-export function snoozeAlertGroup(
-  id: Uuid,
-  body: SnoozeRequest,
-  key: string,
-): Promise<GroupDetail> {
-  return postItem<GroupDetail>(`${V1}/alert-groups/${id}/snooze`, body, { idempotencyKey: key });
-}
-
-/** Wake every member alert. Members already awake are skipped, not refused. */
-export function unsnoozeAlertGroup(
-  id: Uuid,
-  note: string | undefined,
-  key: string,
-): Promise<GroupDetail> {
-  const body = note !== undefined && note !== "" ? { note } : {};
-  return postItem<GroupDetail>(`${V1}/alert-groups/${id}/unsnooze`, body, {
-    idempotencyKey: key,
-  });
 }
 
 /* -------------------------------------------------------------------------- */

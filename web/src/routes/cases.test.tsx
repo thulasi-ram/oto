@@ -116,20 +116,20 @@ describe("the filters the bar surfaces", () => {
   });
 
   it("⭐ shows a narrowing it has no control for, with its way off", async () => {
-    // A group hands its cases over by linking here with `group_id`. A filter
-    // that lived only in a query string would be a filter an operator cannot
-    // tell is on.
-    const net = mount("?group_id=0f1e2d3c-4b5a-4697-8899-aabbccddeeff");
+    // A delivery drill hands its cases over by linking here with
+    // `synthetic=true`. A filter that lived only in a query string would be a
+    // filter an operator cannot tell is on.
+    const net = mount("?synthetic=true");
     const q = await lastQuery(net);
-    expect(q.get("group_id")).toBe("0f1e2d3c-4b5a-4697-8899-aabbccddeeff");
+    expect(q.get("synthetic")).toBe("true");
 
     // The chip names the filter it carries and says how to take it off, so its
     // accessible name is both halves rather than a bare `×`.
-    const chip = screen.getByRole("button", { name: /Remove the group filter/ });
+    const chip = screen.getByRole("button", { name: /Remove the synthetic filter/ });
     expect(chip).toBeTruthy();
     fireEvent.click(chip);
     await until(() =>
-      expect(net.to(PATH)[net.to(PATH).length - 1]!.search.get("group_id")).toBeNull(),
+      expect(net.to(PATH)[net.to(PATH).length - 1]!.search.get("synthetic")).toBeNull(),
     );
   });
 });

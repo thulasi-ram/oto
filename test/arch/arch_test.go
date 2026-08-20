@@ -24,6 +24,10 @@ import (
 // and §4's diagram had drifted: it drew `alerts ──► grouping` while the code
 // imports the other way round.
 //
+// ⛔ BOTH MODULES IN THAT ANECDOTE ARE NOT BOTH STILL HERE: `grouping` was deleted
+// with `alert_groups` (git-bug `7570090`). The drift it records is the reason this
+// file exists and is kept for that reason; the examples below name live modules.
+//
 // ⛔ THIS IS THE ONLY GATE ON DIRECTION — which is not the same as being the only
 // gate an import meets. depguard is the gate on LAYERING: which package inside
 // another module you may name (only its `/service`), and that `platform` may name no
@@ -31,11 +35,11 @@ import (
 // on which, that nothing imports `internal/app`, and that the resulting graph has no
 // cycle in it. Three cases, and they are the whole relationship:
 //
-//   - depguard alone — the wrong package along a DECLARED edge. `grouping` imports
-//     `alerts/repository`: §4 draws grouping ──► alerts, so this file waves it
+//   - depguard alone — the wrong package along a DECLARED edge. `silences` importing
+//     `alerts/repository`: §4 draws silences ──► alerts, so this file waves it
 //     through and only `just lint` objects.
 //   - this file alone — the right package in an UNDECLARED direction. `alerts`
-//     imports `grouping/service`: every `<module>-must-not-reach-into-other-domains`
+//     importing `silences/service`: every `<module>-must-not-reach-into-other-domains`
 //     rule re-allows every other module's `/service`, so depguard waves it through
 //     and only this file objects. `internal/app` is the same shape and worse: no
 //     depguard rule denies it outside `platform`/`pkg`.
@@ -66,14 +70,15 @@ type edge struct {
 }
 
 var allowedEdges = []edge{
-	{
-		from: "grouping", to: "alerts",
-		why: "§C.4 group resolution reads the Alert it is grouping; `grouping/service` and " +
-			"`grouping/api` import `alerts/service`. The reverse edge does NOT exist: the one " +
-			"place that knows both is `internal/app/adapters.go`'s alertObserver, the ingest " +
-			"orchestrator, which lives in the composition root precisely so neither module " +
-			"has to import the other.",
-	},
+	// ⛔ `grouping ──► alerts` WAS THE FIRST EDGE HERE AND IT IS DELETED (git-bug
+	// `7570090`). `internal/grouping` is gone with `alert_groups`: there is no
+	// §C.4 group resolution to read the Alert it is grouping, so the edge has no
+	// `from` left. TestNoStaleDeclaredEdge is what forces this deletion rather than
+	// leaving it as a standing permission nobody can exercise.
+	//
+	// ⚠️ CONTEXT.md §4's first diagram IS this list, so the diagram has to lose the
+	// same edge. This gate reads the list, not the document, and cannot say whether
+	// that happened.
 	{
 		from: "rules", to: "alerts",
 		why: "a rule snapshot is captured at fire time against an Alert; `rules/api` reads " +
@@ -355,8 +360,9 @@ func TestCompositionRootGateFires(t *testing.T) {
 // TestModuleGraphIsAcyclic refuses an allow-list that has a cycle in it.
 //
 // ⭐ IT IS THE TEETH. Without it, the cheapest way past TestNoUndeclaredModuleEdge
-// is to add the offending line to allowedEdges — which is how `alerts ──► grouping`
-// would come back. A cycle between two modules means neither can be reasoned about,
+// is to add the offending line to allowedEdges — which is how a `notification ──►
+// alerts` against the standing `alerts`-side edge would come back. A cycle between
+// two modules means neither can be reasoned about,
 // tested or disabled alone, and running oto with notifications entirely switched
 // off — how the first correctness tests run — stops being possible.
 func TestModuleGraphIsAcyclic(t *testing.T) {

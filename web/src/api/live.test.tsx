@@ -116,9 +116,14 @@ describe("frames become invalidations", () => {
     // primary list and is keyed under its own prefix — a case opening, being
     // acknowledged or ending is exactly what moves a row in and out of it, and an
     // `["alerts"]` invalidation does not reach it.
-    { kind: "case.upserted", expects: [["cases"], ["alerts"], ["groups"]] },
-    { kind: "group.upserted", expects: [["groups"]] },
-    { kind: "event.appended", expects: [["cases"], ["alerts"], ["groups"], ["notifications"]] },
+    { kind: "case.upserted", expects: [["cases"], ["alerts"]] },
+    // ⛔ NOTHING, AND THE EMPTY EXPECTATION IS THE ASSERTION. The AlertGroup is
+    // gone (git-bug 7570090) and no query is keyed under `["groups"]` any more,
+    // so the one honest thing this frame can do is nothing. It still has a case
+    // of its own in the reducer, because the kind is still in the contract enum
+    // and the coverage test below is what would otherwise stop noticing it.
+    { kind: "group.upserted", expects: [] },
+    { kind: "event.appended", expects: [["cases"], ["alerts"], ["notifications"]] },
     // `["alerts"]` because a delivery is read as part of an alert
     // (`qk.alerts.notifications`); `["notifications"]` because a delivery moving
     // is what changes an intent's status. The `["deliveries"]` prefix this used
@@ -170,8 +175,8 @@ describe("frames become invalidations", () => {
   it("keeps working after an unreadable frame and an unknown kind in the same batch", async () => {
     mounted = await mountLive();
     await mounted.push("id: 5\nevent: alert.upserted\ndata: {broken\n\n");
-    await mounted.push(sse(frame(6, "alert.frobnicated"), frame(7, "group.upserted")));
-    expect(mounted.keys()).toEqual([["groups"]]);
+    await mounted.push(sse(frame(6, "alert.frobnicated"), frame(7, "case.upserted")));
+    expect(mounted.keys()).toEqual([["cases"], ["alerts"]]);
   });
 });
 

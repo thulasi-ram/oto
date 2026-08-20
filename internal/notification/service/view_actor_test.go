@@ -26,13 +26,12 @@ import (
 // against a table this module does not own, and a fake source cannot be wrong
 // about it in any of the ways that matter.
 
-// causeFixture is one group with one alert, one open episode, and whatever the
-// timeline says happened to it.
+// causeFixture is one alert, one open episode — which is the whole conversation
+// since git-bug `7570090` — and whatever the timeline says happened to it.
 type causeFixture struct {
 	h       *harness.H
 	org     harness.Org
 	cluster harness.Cluster
-	group   harness.Group
 	alert   harness.Alert
 	ac      harness.Case
 }
@@ -43,12 +42,10 @@ func newCauseFixture(t *testing.T) causeFixture {
 	h := harness.New(t)
 	org := h.Org()
 	cluster := h.Cluster(org)
-	source := h.Source(org, cluster)
-	group := h.Group(org, source, cluster)
 	alert := h.Alert(org, cluster)
-	ac := h.Case(alert, group)
+	ac := h.Case(alert)
 
-	return causeFixture{h: h, org: org, cluster: cluster, group: group, alert: alert, ac: ac}
+	return causeFixture{h: h, org: org, cluster: cluster, alert: alert, ac: ac}
 }
 
 // appendEvent writes one timeline row the way `alerts` writes it.
@@ -62,9 +59,15 @@ func (f causeFixture) appendEvent(eventType, actorKind, actorID, actorLabel, bod
 	f.appendEventFor(f.alert.ID, f.ac.ID, eventType, actorKind, actorID, actorLabel, body)
 }
 
-// appendEventFor writes the same row against ANY member of the group, which is
-// what makes a sibling's action expressible: every event carries the group id, so
-// a read scoped to the group sees every member's timeline at once.
+// appendEventFor writes the same row against ANY episode in the tenant, which is
+// what makes a sibling's action expressible.
+//
+// ⛔ IT NO LONGER WRITES `group_id`, AND THAT MIRRORS THE PRODUCTION WRITER
+// (git-bug `7570090`). `repository.subjectOfEvent` returns nil always now, so
+// nothing oto appends names a group; the column and `ev_subject_ck` survive as the
+// 00051/00054 READABLE-BUT-UNWRITABLE bargain over thirteen months of history.
+// `alert_id` plus `case_id` satisfies the CHECK on their own, which is exactly what
+// the production path relies on.
 func (f causeFixture) appendEventFor(
 	alertID, caseID uuid.UUID, eventType, actorKind, actorID, actorLabel, body string,
 ) {
@@ -75,23 +78,28 @@ func (f causeFixture) appendEventFor(
 		payload = `{"body": ` + quoteJSON(body) + `}`
 	}
 	f.h.Exec(`INSERT INTO alert_events
-	            (id, org_id, alert_id, case_id, group_id, type, occurred_at,
+	            (id, org_id, alert_id, case_id, type, occurred_at,
 	             recorded_at, actor_kind, actor_id, actor_label, summary, payload)
-	          VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, now(), now(), $6,
-	                  nullif($7,''), nullif($8,''), $9, $10::jsonb)`,
-		f.org.ID, alertID, caseID, f.group.ID, eventType,
+	          VALUES (gen_random_uuid(), $1, $2, $3, $4, now(), now(), $5,
+	                  nullif($6,''), nullif($7,''), $8, $9::jsonb)`,
+		f.org.ID, alertID, caseID, eventType,
 		actorKind, actorID, actorLabel, "a harness event: "+eventType, payload)
 }
 
-// sibling is a second member of the same group: another alert, another open
+// sibling is a second CONVERSATION in the same tenant: another alert, another open
 // episode, acted on by somebody else.
+//
+// ⛔ IT WAS "a second member of the same group" AND THERE IS NO GROUP (git-bug
+// `7570090`). What it is FOR is unchanged and is the point: it supplies a
+// competing, NEWER cause event that a lookup keyed on anything wider than
+// `case_id` would return instead of the right one.
 func (f causeFixture) sibling() (harness.Alert, harness.Case) {
 	f.h.T.Helper()
 
 	alert := f.h.AlertWith(f.org, f.cluster, map[string]string{
 		"alertname": "HighErrorRate", "severity": "critical", "service": "payments",
 	})
-	return alert, f.h.Case(alert, f.group)
+	return alert, f.h.Case(alert)
 }
 
 // quoteJSON is enough JSON quoting for a test literal.
@@ -114,23 +122,24 @@ func (f causeFixture) view(t *testing.T, reason domain.Reason) *service.Notifica
 
 	alertID, caseID := f.alert.ID, f.ac.ID
 	return f.build(t, domain.Notification{
-		GroupID: f.group.ID, AlertID: &alertID, CaseID: &caseID, Reason: reason,
+		// The Case is the conversation, and `ViewService.Build` keys the snapshot on
+		// `ConversationID` — so naming it is what makes this the real claim-time shape
+		// rather than a literal that happens to work.
+		ConversationKind: domain.ConversationCase,
+		ConversationID:   caseID,
+		AlertID:          &alertID,
+		CaseID:           &caseID,
+		Reason:           reason,
 	})
 }
 
-// viewByAlert is the same projection for a notification that names an ALERT and
-// nothing narrower — the shape the policy-preview endpoint mints, since it takes
-// exactly one of alert_id / case_id / group_id plus any reason. The read
-// model resolves the episode from the alert; the cause has to narrow the same
-// way or the card names one person for another person's action.
-func (f causeFixture) viewByAlert(t *testing.T, reason domain.Reason) *service.NotificationView {
-	t.Helper()
-
-	alertID := f.alert.ID
-	return f.build(t, domain.Notification{
-		GroupID: f.group.ID, AlertID: &alertID, Reason: reason,
-	})
-}
+// ⛔ `viewByAlert` WAS HERE AND IS DELETED (git-bug `7570090`). It projected a
+// notification that named an ALERT and no case — "the shape the policy-preview
+// endpoint mints, since it takes exactly one of alert_id / case_id / group_id" —
+// and that shape can no longer be built. `POST /policies/preview` takes `case_id`
+// ONLY, and `ViewService.Build` keys the snapshot on `ConversationID`, so a
+// notification with no conversation reads against the nil UUID and resolves to
+// nothing. The episode is no longer RESOLVED from the alert; it is named.
 
 func (f causeFixture) build(t *testing.T, n domain.Notification) *service.NotificationView {
 	t.Helper()
@@ -219,16 +228,22 @@ func TestAFactNobodyCausedIsNotAttributedToTheLastPersonWhoActed(t *testing.T) {
 	require.Empty(t, v.Comment)
 }
 
-// The lookup is scoped to the EPISODE the notification names, not to the group.
-// A group is many alerts, they are acknowledged one by one, and a group-scoped
-// read would put whoever acted most recently against everybody else's card.
+// The lookup is scoped to the EPISODE the notification names, and to nothing
+// wider.
+//
+// ⛔ IT USED TO SAY "not to the group", and the group is gone (git-bug `7570090`) —
+// but the rule it protected is not, because `causeByCaseSQL` keys on `case_id`
+// inside an org and a tenant holds many episodes being acknowledged one by one. Any
+// widening of that predicate — back to a group, out to the alert, out to the org —
+// puts whoever acted most recently against everybody else's card.
 func TestTheActorComesFromTheEpisodeTheCardIsAboutAndNotFromASibling(t *testing.T) {
 	t.Parallel()
 
 	f := newCauseFixture(t)
 	f.appendEvent("case.acknowledged", "user", uuid.NewString(), "ada@example.com", "")
 
-	// A second member of the same group, acknowledged afterwards by somebody else.
+	// A second conversation in the same tenant, acknowledged afterwards by somebody
+	// else — so a lookup that is not keyed on this Case returns Grace, not Ada.
 	sibling, siblingCase := f.sibling()
 	f.appendEventFor(sibling.ID, siblingCase.ID, "case.acknowledged",
 		"user", uuid.NewString(), "grace@example.com", "")
@@ -241,36 +256,12 @@ func TestTheActorComesFromTheEpisodeTheCardIsAboutAndNotFromASibling(t *testing.
 			"case this notification is about")
 }
 
-// ⛔ THE SAME SCOPING, FOR A NOTIFICATION THAT NAMES AN ALERT AND NO CASE.
-// `POST /policies/preview` accepts exactly one of alert_id / case_id /
-// group_id and any reason, so `alert_id` + `reason=acked` is a shape an operator
-// can ask for at any time. The episode is resolved from the alert; if the cause
-// falls back to the GROUP instead, the card pairs Ada's episode with the newest
-// acknowledgement in the whole group — grace's — and a preview of a routing
-// decision becomes a confident lie about who acted.
-func TestAPreviewByAlertReadsTheCauseFromThatAlertAndNotFromTheGroup(t *testing.T) {
-	t.Parallel()
-
-	f := newCauseFixture(t)
-	f.appendEvent("case.acknowledged", "user", uuid.NewString(), "ada@example.com", "")
-
-	// The sibling acts LAST, so a group-scoped read returns it every time.
-	sibling, siblingCase := f.sibling()
-	f.appendEventFor(sibling.ID, siblingCase.ID, "case.acknowledged",
-		"user", uuid.NewString(), "grace@example.com", "")
-	f.appendEventFor(sibling.ID, siblingCase.ID, "comment.added",
-		"user", uuid.NewString(), "grace@example.com", "on the payments alert, not this one")
-
-	v := f.viewByAlert(t, domain.ReasonAcked)
-
-	require.NotNil(t, v.Actor, "the previewed card names nobody at all")
-	require.Equal(t, "ada@example.com", v.Actor.Label,
-		"a preview by alert_id named the sibling's acker: the cause fell back to the "+
-			"group while the episode came from the alert")
-
-	// The same fallback drags a sibling's WORDS onto the card, which is the part
-	// that cannot be shrugged off as a stale name.
-	c := f.viewByAlert(t, domain.ReasonComment)
-	require.Empty(t, c.Comment,
-		"a preview by alert_id carried another alert's comment body")
-}
+// ⛔ `TestAPreviewByAlertReadsTheCauseFromThatAlertAndNotFromTheGroup` WAS HERE AND
+// IS DELETED (git-bug `7570090`). Its whole subject was a notification carrying an
+// `alert_id` and NO case — it asserted that the cause narrowed to that alert's
+// episode rather than falling back to the group — and BOTH halves of that premise
+// are gone: the preview endpoint no longer accepts `alert_id`, and there is no
+// group for a lookup to fall back to. Retargeting it would have meant inventing a
+// question it never asked. What survives of it is the test directly above, which
+// pins the same rule — the cause is scoped to the episode the card names, never to
+// a newer event on a different one — in the only shape that still exists.

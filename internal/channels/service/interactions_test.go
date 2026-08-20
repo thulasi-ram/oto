@@ -28,7 +28,7 @@ import (
 var (
 	orgAlpha = uuid.MustParse("019fe200-0000-7000-8000-00000000000a")
 	orgBeta  = uuid.MustParse("019fe200-0000-7000-8000-00000000000b")
-	groupOne = uuid.MustParse("019fe297-d84f-7599-b5b2-1f231749104a")
+	caseOne  = uuid.MustParse("019fe297-d84f-7599-b5b2-1f231749104a")
 	userRAM  = uuid.MustParse("019fe111-0000-7000-8000-000000000001")
 )
 
@@ -72,52 +72,55 @@ func (f *fakeActors) SlackActor(
 }
 
 type ackCall struct {
-	// verb is "ack" or "unack". It is recorded because the two fan-outs are
+	// verb is "ack" or "unack". It is recorded because the two verbs are
 	// deliberately identical in shape, so a press wired to the WRONG one would
 	// otherwise satisfy every other assertion in this file.
 	verb       string
 	scope      db.TenantScope
-	groupID    uuid.UUID
+	caseID     uuid.UUID
 	actorKind  string
 	actorID    string
 	actorLabel string
 }
 
-type fakeGroups struct {
-	// live is the set of groups visible in each tenant.
-	live   map[uuid.UUID]uuid.UUID // groupID -> orgID
-	result GroupAckResult
-	err    error
-	calls  []ackCall
+// fakeCases stands in for the Case-shaped port.
+//
+// ⛔ IT WAS `fakeGroups`, AND `result GroupAckResult` IS GONE WITH THE FAN-OUT
+// (git-bug 7570090). A verb over one Case either applies or is refused, so the only
+// thing left to program is `err` — and the refusals are the domain's own
+// `errs.KindPrecondition` codes rather than a per-member tally this fake would have
+// had to invent.
+type fakeCases struct {
+	// live is the set of Cases visible in each tenant.
+	live  map[uuid.UUID]uuid.UUID // caseID -> orgID
+	err   error
+	calls []ackCall
 }
 
-func (f *fakeGroups) GroupExists(_ context.Context, s db.TenantScope, groupID uuid.UUID) (bool, error) {
-	org, ok := f.live[groupID]
+func (f *fakeCases) CaseExists(_ context.Context, s db.TenantScope, caseID uuid.UUID) (bool, error) {
+	org, ok := f.live[caseID]
 	return ok && org == s.OrgID(), nil
 }
 
-func (f *fakeGroups) AcknowledgeGroup(
-	_ context.Context, s db.TenantScope, groupID uuid.UUID, kind, id, label string,
-) (GroupAckResult, error) {
-	return f.record("ack", s, groupID, kind, id, label)
+func (f *fakeCases) AcknowledgeCase(
+	_ context.Context, s db.TenantScope, caseID uuid.UUID, kind, id, label string,
+) error {
+	return f.record("ack", s, caseID, kind, id, label)
 }
 
-func (f *fakeGroups) UnacknowledgeGroup(
-	_ context.Context, s db.TenantScope, groupID uuid.UUID, kind, id, label string,
-) (GroupAckResult, error) {
-	return f.record("unack", s, groupID, kind, id, label)
+func (f *fakeCases) UnacknowledgeCase(
+	_ context.Context, s db.TenantScope, caseID uuid.UUID, kind, id, label string,
+) error {
+	return f.record("unack", s, caseID, kind, id, label)
 }
 
-func (f *fakeGroups) record(
-	verb string, s db.TenantScope, groupID uuid.UUID, kind, id, label string,
-) (GroupAckResult, error) {
+func (f *fakeCases) record(
+	verb string, s db.TenantScope, caseID uuid.UUID, kind, id, label string,
+) error {
 	f.calls = append(f.calls, ackCall{
-		verb: verb, scope: s, groupID: groupID, actorKind: kind, actorID: id, actorLabel: label,
+		verb: verb, scope: s, caseID: caseID, actorKind: kind, actorID: id, actorLabel: label,
 	})
-	if f.err != nil {
-		return GroupAckResult{}, f.err
-	}
-	return f.result, nil
+	return f.err
 }
 
 type fakeNotice struct {
@@ -168,7 +171,7 @@ func (f *fakeEnqueuer) EnqueueMany(_ context.Context, reqs []db.JobRequest) ([]d
 
 // newService wires the consumer over fakes. Every argument may be nil, which is
 // also the assertion that each collaborator degrades rather than panics.
-func newService(t *testing.T, conv SlackConversations, actors SlackActors, groups AlertGroups,
+func newService(t *testing.T, conv SlackConversations, actors SlackActors, cases Cases,
 	enq db.Enqueuer, notice SlackNotice,
 ) *InteractionService {
 	t.Helper()
@@ -178,7 +181,7 @@ func newService(t *testing.T, conv SlackConversations, actors SlackActors, group
 	s, err := NewInteractionService(InteractionOptions{
 		Conversations: conv,
 		Actors:        actors,
-		Groups:        groups,
+		Cases:         cases,
 		Enqueuer:      enq,
 		Notice:        notice,
 		// A real counter on no registry: the increments are observable without
@@ -209,7 +212,7 @@ func envelope(actionID, value string) json.RawMessage {
 func ackArgs() jobs.SlackInteractionArgs {
 	return jobs.SlackInteractionArgs{
 		ActionID:      ActionAcknowledge,
-		Value:         groupOne.String(),
+		Value:         caseOne.String(),
 		TeamID:        "T9TK3CUKW",
 		ChannelID:     "C0123456789",
 		SlackUserID:   "U0123456789",
@@ -224,6 +227,13 @@ func unackArgs() jobs.SlackInteractionArgs {
 	a := ackArgs()
 	a.ActionID = ActionUnacknowledge
 	return a
+}
+
+// refusal builds the shape `alerts/domain` answers a press it cannot apply with:
+// `errs.KindPrecondition` carrying one of three stable codes. It is spelt out here
+// rather than borrowed so this file states the contract it depends on.
+func refusal(code string) error {
+	return errs.New(errs.KindPrecondition, code, "the case does not admit the verb")
 }
 
 func alphaConversations() fakeConversations {
@@ -249,13 +259,13 @@ func TestHandleEnqueuesTheAcknowledgeAndNothingElse(t *testing.T) {
 	}{
 		{
 			name:      "an Acknowledge press becomes exactly one job",
-			payload:   envelope(ActionAcknowledge, groupOne.String()),
+			payload:   envelope(ActionAcknowledge, caseOne.String()),
 			wantJobs:  1,
 			wantKinds: []string{jobs.KindSlackInteraction},
 		},
 		{
 			name:      "an Un-acknowledge press is dispatched too",
-			payload:   envelope(ActionUnacknowledge, groupOne.String()),
+			payload:   envelope(ActionUnacknowledge, caseOne.String()),
 			wantJobs:  1,
 			wantKinds: []string{jobs.KindSlackInteraction},
 		},
@@ -302,7 +312,7 @@ func TestHandleEnqueuesTheAcknowledgeAndNothingElse(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			enq := &fakeEnqueuer{}
-			s := newService(t, alphaConversations(), nil, &fakeGroups{}, enq, nil)
+			s := newService(t, alphaConversations(), nil, &fakeCases{}, enq, nil)
 
 			if err := s.Handle(context.Background(), tc.payload); err != nil {
 				t.Fatalf("Handle returned %v; a payload it cannot act on must not become a retry", err)
@@ -380,9 +390,9 @@ func TestUnknownActionIsRecordedAndNotMerelyLogged(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			s := newService(t, alphaConversations(), nil, &fakeGroups{}, &fakeEnqueuer{}, nil)
+			s := newService(t, alphaConversations(), nil, &fakeCases{}, &fakeEnqueuer{}, nil)
 
-			if err := s.Handle(context.Background(), envelope(tc.actionID, groupOne.String())); err != nil {
+			if err := s.Handle(context.Background(), envelope(tc.actionID, caseOne.String())); err != nil {
 				t.Fatalf("Handle returned %v; an unroutable press must never become a retry", err)
 			}
 			if got := counterValue(t, s.metrics.UnknownAction); got != tc.want {
@@ -402,7 +412,7 @@ func TestUnknownActionIsRecordedAndNotMerelyLogged(t *testing.T) {
 // act on. It must also not become a job retry, because retrying it twelve times
 // cannot make the action id known.
 func TestUnknownActionOnTheWorkerIsRecordedToo(t *testing.T) {
-	s := newService(t, alphaConversations(), nil, &fakeGroups{}, &fakeEnqueuer{}, nil)
+	s := newService(t, alphaConversations(), nil, &fakeCases{}, &fakeEnqueuer{}, nil)
 
 	args := ackArgs()
 	args.ActionID = "oto.retired.verb"
@@ -420,9 +430,9 @@ func TestUnknownActionOnTheWorkerIsRecordedToo(t *testing.T) {
 // other copy of the press: the HTTP request is long gone by the time it runs.
 func TestHandleCopiesTheEnvelopeOntoTheJob(t *testing.T) {
 	enq := &fakeEnqueuer{}
-	s := newService(t, alphaConversations(), nil, &fakeGroups{}, enq, nil)
+	s := newService(t, alphaConversations(), nil, &fakeCases{}, enq, nil)
 
-	if err := s.Handle(context.Background(), envelope(ActionAcknowledge, groupOne.String())); err != nil {
+	if err := s.Handle(context.Background(), envelope(ActionAcknowledge, caseOne.String())); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
 	if len(enq.reqs) != 1 {
@@ -447,9 +457,9 @@ func TestHandleCopiesTheEnvelopeOntoTheJob(t *testing.T) {
 // must be visible in the logs rather than swallowed with everything else.
 func TestHandleReturnsTheEnqueueFailure(t *testing.T) {
 	enq := &fakeEnqueuer{err: errors.New("postgres is on fire")}
-	s := newService(t, alphaConversations(), nil, &fakeGroups{}, enq, nil)
+	s := newService(t, alphaConversations(), nil, &fakeCases{}, enq, nil)
 
-	if err := s.Handle(context.Background(), envelope(ActionAcknowledge, groupOne.String())); err == nil {
+	if err := s.Handle(context.Background(), envelope(ActionAcknowledge, caseOne.String())); err == nil {
 		t.Fatal("Handle swallowed an enqueue failure; a lost press would be invisible")
 	}
 }
@@ -503,26 +513,23 @@ func TestApplyAcknowledgesAsTheRightPerson(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			groups := &fakeGroups{
-				live:   map[uuid.UUID]uuid.UUID{groupOne: orgAlpha},
-				result: GroupAckResult{Members: 2, Applied: 2},
-			}
+			cases := &fakeCases{live: map[uuid.UUID]uuid.UUID{caseOne: orgAlpha}}
 			notice := &fakeNotice{}
-			s := newService(t, alphaConversations(), tc.actors, groups, nil, notice)
+			s := newService(t, alphaConversations(), tc.actors, cases, nil, notice)
 
 			if err := s.Apply(context.Background(), ackArgs()); err != nil {
 				t.Fatalf("Apply: %v", err)
 			}
-			if len(groups.calls) != 1 {
-				t.Fatalf("acknowledged %d times, want 1", len(groups.calls))
+			if len(cases.calls) != 1 {
+				t.Fatalf("acknowledged %d times, want 1", len(cases.calls))
 			}
-			got := groups.calls[0]
+			got := cases.calls[0]
 			if got.actorKind != tc.wantKind || got.actorID != tc.wantID || got.actorLabel != tc.wantLabel {
 				t.Fatalf("actor = (%q, %q, %q), want (%q, %q, %q)",
 					got.actorKind, got.actorID, got.actorLabel, tc.wantKind, tc.wantID, tc.wantLabel)
 			}
-			if got.groupID != groupOne {
-				t.Fatalf("acked group %s, want %s", got.groupID, groupOne)
+			if got.caseID != caseOne {
+				t.Fatalf("acked case %s, want %s", got.caseID, caseOne)
 			}
 			// A successful ack says nothing in Slack: the CARD is the feedback,
 			// and it is updated by the dispatch path.
@@ -541,16 +548,13 @@ func TestApplyAcknowledgesAsTheRightPerson(t *testing.T) {
 // would be a cross-tenant write with a friendly name.
 func TestApplyResolvesTheTenantFromTheConversationAndNowhereElse(t *testing.T) {
 	actors := &fakeActors{}
-	groups := &fakeGroups{
-		live:   map[uuid.UUID]uuid.UUID{groupOne: orgAlpha},
-		result: GroupAckResult{Members: 1, Applied: 1},
-	}
-	s := newService(t, alphaConversations(), actors, groups, nil, &fakeNotice{})
+	cases := &fakeCases{live: map[uuid.UUID]uuid.UUID{caseOne: orgAlpha}}
+	s := newService(t, alphaConversations(), actors, cases, nil, &fakeNotice{})
 
 	if err := s.Apply(context.Background(), ackArgs()); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	if got := groups.calls[0].scope.OrgID(); got != orgAlpha {
+	if got := cases.calls[0].scope.OrgID(); got != orgAlpha {
 		t.Fatalf("acked in org %s, want %s", got, orgAlpha)
 	}
 	// The identity lookup is made in the SAME tenant. A Slack member linked to a
@@ -560,32 +564,28 @@ func TestApplyResolvesTheTenantFromTheConversationAndNowhereElse(t *testing.T) {
 	}
 }
 
-// TestApplyRefusesAGroupFromAnotherOrg.
+// TestApplyRefusesACaseFromAnotherOrg.
 //
-// ⛔⛔ THE CROSS-TENANT CASE. The conversation belongs to org alpha; the button's
-// value names a group in org beta. Every call below is already scoped, so the
-// ack would find no members and do nothing — a SILENT nothing, which is the exact
-// failure being fixed. It must refuse loudly, tell the user, and never reach the
-// acknowledgement at all.
+// ⛔⛔ THE CROSS-TENANT PRESS. The conversation belongs to org alpha; the button's
+// value names a Case in org beta. Every call below is already scoped, so the ack
+// would write nothing — a SILENT nothing, which is the exact failure being fixed.
+// It must refuse loudly, tell the user, and never reach the acknowledgement at all.
 //
 // ⛔ BOTH VERBS ARE HELD TO IT. The withdrawal reads and writes the same rows
 // through the same scope, so a tenancy check present on one path and absent on the
 // other is a hole with a friendly name on half the buttons.
-func TestApplyRefusesAGroupFromAnotherOrg(t *testing.T) {
+func TestApplyRefusesACaseFromAnotherOrg(t *testing.T) {
 	for _, args := range []jobs.SlackInteractionArgs{ackArgs(), unackArgs()} {
 		t.Run(args.ActionID, func(t *testing.T) {
-			groups := &fakeGroups{
-				live:   map[uuid.UUID]uuid.UUID{groupOne: orgBeta},
-				result: GroupAckResult{Members: 9, Applied: 9},
-			}
+			cases := &fakeCases{live: map[uuid.UUID]uuid.UUID{caseOne: orgBeta}}
 			notice := &fakeNotice{}
-			s := newService(t, alphaConversations(), &fakeActors{}, groups, nil, notice)
+			s := newService(t, alphaConversations(), &fakeActors{}, cases, nil, notice)
 
 			if err := s.Apply(context.Background(), args); err != nil {
 				t.Fatalf("Apply: %v", err)
 			}
-			if len(groups.calls) != 0 {
-				t.Fatalf("a press in one workspace reached another org's alert group: %+v", groups.calls)
+			if len(cases.calls) != 0 {
+				t.Fatalf("a press in one workspace reached another org's Case: %+v", cases.calls)
 			}
 			if got := notice.only(); !strings.Contains(got, "different oto organisation") {
 				t.Fatalf("the user was told %q; a cross-tenant press must be answered honestly", got)
@@ -603,7 +603,7 @@ func TestApplyTellsTheUserWhenTheActionCannotApply(t *testing.T) {
 	tests := []struct {
 		name      string
 		conv      SlackConversations
-		groups    *fakeGroups
+		cases     *fakeCases
 		args      jobs.SlackInteractionArgs
 		wantSaid  string
 		wantCalls int
@@ -611,8 +611,8 @@ func TestApplyTellsTheUserWhenTheActionCannotApply(t *testing.T) {
 		{
 			name: "a conversation oto has no channel for",
 			conv: fakeConversations{byPair: map[string]SlackDestination{}},
-			groups: &fakeGroups{
-				live: map[uuid.UUID]uuid.UUID{groupOne: orgAlpha},
+			cases: &fakeCases{
+				live: map[uuid.UUID]uuid.UUID{caseOne: orgAlpha},
 			},
 			args:     ackArgs(),
 			wantSaid: "no channel configured",
@@ -620,71 +620,61 @@ func TestApplyTellsTheUserWhenTheActionCannotApply(t *testing.T) {
 		{
 			name:     "a button value that is not an identifier",
 			conv:     alphaConversations(),
-			groups:   &fakeGroups{live: map[uuid.UUID]uuid.UUID{groupOne: orgAlpha}},
+			cases:    &fakeCases{live: map[uuid.UUID]uuid.UUID{caseOne: orgAlpha}},
 			args:     func() jobs.SlackInteractionArgs { a := ackArgs(); a.Value = "not-a-uuid"; return a }(),
 			wantSaid: "could not read that button",
 		},
 		{
-			name:     "a group that no longer exists",
+			name:     "a Case that no longer exists",
 			conv:     alphaConversations(),
-			groups:   &fakeGroups{live: map[uuid.UUID]uuid.UUID{}},
+			cases:    &fakeCases{live: map[uuid.UUID]uuid.UUID{}},
 			args:     ackArgs(),
-			wantSaid: "no longer find that alert group",
+			wantSaid: "no longer find that alert",
 		},
 		{
 			// The double-click, and "somebody else got there first". Both are the
 			// same honest fact, and neither is an error.
 			name: "already acknowledged",
 			conv: alphaConversations(),
-			groups: &fakeGroups{
-				live: map[uuid.UUID]uuid.UUID{groupOne: orgAlpha},
-				result: GroupAckResult{
-					Members: 2, Applied: 0,
-					SkippedCodes: map[string]int{"already_acked": 2},
-				},
+			cases: &fakeCases{
+				live: map[uuid.UUID]uuid.UUID{caseOne: orgAlpha},
+				err:  refusal("already_acked"),
 			},
 			args:      ackArgs(),
 			wantSaid:  "Already acknowledged",
 			wantCalls: 1,
 		},
 		{
-			// The case resolved or expired while the human was deciding.
-			name: "every member has already ended",
+			// The Case resolved or expired while the human was deciding.
+			name: "the episode has already ended",
 			conv: alphaConversations(),
-			groups: &fakeGroups{
-				live: map[uuid.UUID]uuid.UUID{groupOne: orgAlpha},
-				result: GroupAckResult{
-					Members: 3, Applied: 0,
-					SkippedCodes: map[string]int{"no_open_case": 3},
-				},
+			cases: &fakeCases{
+				live: map[uuid.UUID]uuid.UUID{caseOne: orgAlpha},
+				err:  refusal("no_open_case"),
 			},
 			args:      ackArgs(),
 			wantSaid:  "resolved or expired",
 			wantCalls: 1,
 		},
 		{
-			name: "a group whose members have all left it",
+			// ⛔ TWO ROWS WERE HERE AND ARE DELETED (git-bug 7570090): "a group whose
+			// members have all left it" (`Members: 0` → "no live alerts left") and
+			// "part acked, part ended" (a mixed `SkippedCodes` map). Both describe a
+			// SET, and a press now touches one Case. Neither shape is reachable.
+			//
+			// ⛔ WHAT REPLACES THEM IS THE `default` ARM OF THE COPY, AND IT IS NOT
+			// DEAD WEIGHT. A precondition code this surface has never seen must still
+			// produce a SENTENCE: silence is the defect this whole file was written
+			// against, and a new code in `alerts/domain` must not be able to
+			// reintroduce it.
+			name: "a refusal code this surface has never seen",
 			conv: alphaConversations(),
-			groups: &fakeGroups{
-				live:   map[uuid.UUID]uuid.UUID{groupOne: orgAlpha},
-				result: GroupAckResult{Members: 0, Applied: 0},
+			cases: &fakeCases{
+				live: map[uuid.UUID]uuid.UUID{caseOne: orgAlpha},
+				err:  refusal("some_future_code"),
 			},
 			args:      ackArgs(),
-			wantSaid:  "no live alerts left",
-			wantCalls: 1,
-		},
-		{
-			name: "part acked, part ended",
-			conv: alphaConversations(),
-			groups: &fakeGroups{
-				live: map[uuid.UUID]uuid.UUID{groupOne: orgAlpha},
-				result: GroupAckResult{
-					Members: 4, Applied: 0,
-					SkippedCodes: map[string]int{"already_acked": 1, "no_open_case": 3},
-				},
-			},
-			args:      ackArgs(),
-			wantSaid:  "already acknowledged and the rest has resolved",
+			wantSaid:  "nothing to acknowledge",
 			wantCalls: 1,
 		},
 		{
@@ -693,69 +683,50 @@ func TestApplyTellsTheUserWhenTheActionCannotApply(t *testing.T) {
 			// "acknowledge it there".
 			name:     "an Un-acknowledge button value that is not an identifier",
 			conv:     alphaConversations(),
-			groups:   &fakeGroups{live: map[uuid.UUID]uuid.UUID{groupOne: orgAlpha}},
+			cases:    &fakeCases{live: map[uuid.UUID]uuid.UUID{caseOne: orgAlpha}},
 			args:     func() jobs.SlackInteractionArgs { a := unackArgs(); a.Value = "not-a-uuid"; return a }(),
 			wantSaid: "withdraw the acknowledgement there",
 		},
 		{
 			// ⛔ THE MIRROR OF "already acknowledged", AND THE ROW MOST AT RISK OF
-			// BORROWING THE WRONG SENTENCE. `not_acked` means the member is OPEN and
+			// BORROWING THE WRONG SENTENCE. `not_acked` means the Case is OPEN and
 			// simply carries no receipt — possibly because somebody withdrew it a
 			// second earlier. It has not resolved, and saying so would be oto naming
 			// the wrong nothing.
-			name: "nothing in the group was acknowledged",
+			name: "the alert was not acknowledged",
 			conv: alphaConversations(),
-			groups: &fakeGroups{
-				live: map[uuid.UUID]uuid.UUID{groupOne: orgAlpha},
-				result: GroupAckResult{
-					Members: 2, Applied: 0,
-					SkippedCodes: map[string]int{"not_acked": 2},
-				},
+			cases: &fakeCases{
+				live: map[uuid.UUID]uuid.UUID{caseOne: orgAlpha},
+				err:  refusal("not_acked"),
 			},
 			args:      unackArgs(),
 			wantSaid:  "no receipt here to take back",
 			wantCalls: 1,
 		},
 		{
-			name: "part of the group was not acknowledged and the rest ended",
-			conv: alphaConversations(),
-			groups: &fakeGroups{
-				live: map[uuid.UUID]uuid.UUID{groupOne: orgAlpha},
-				result: GroupAckResult{
-					Members: 4, Applied: 0,
-					SkippedCodes: map[string]int{"not_acked": 1, "no_open_case": 3},
-				},
-			},
-			args:      unackArgs(),
-			wantSaid:  "was not acknowledged and the rest has resolved",
-			wantCalls: 1,
-		},
-		{
 			// ⭐ THE `no_open_case` / 412 PATH, told in Slack's terms. It is the same
-			// refusal the group contract answers `412 no_open_case` to, and the same
+			// refusal the HTTP contract answers `412 no_open_case` to, and the same
 			// one the ack reports: there is no open episode left to write on.
-			name: "every member has already ended, so there is no receipt to withdraw",
+			name: "the episode has already ended, so there is no receipt to withdraw",
 			conv: alphaConversations(),
-			groups: &fakeGroups{
-				live: map[uuid.UUID]uuid.UUID{groupOne: orgAlpha},
-				result: GroupAckResult{
-					Members: 3, Applied: 0,
-					SkippedCodes: map[string]int{"no_open_case": 3},
-				},
+			cases: &fakeCases{
+				live: map[uuid.UUID]uuid.UUID{caseOne: orgAlpha},
+				err:  refusal("no_open_case"),
 			},
 			args:      unackArgs(),
-			wantSaid:  "nothing to withdraw — every alert in this group has already resolved",
+			wantSaid:  "nothing to withdraw — this alert has already resolved",
 			wantCalls: 1,
 		},
 		{
-			name: "a group the withdrawal found no live members in",
+			// The withdrawal's own `default` arm, for the reason given on the ack's.
+			name: "a withdrawal refusal code this surface has never seen",
 			conv: alphaConversations(),
-			groups: &fakeGroups{
-				live:   map[uuid.UUID]uuid.UUID{groupOne: orgAlpha},
-				result: GroupAckResult{Members: 0, Applied: 0},
+			cases: &fakeCases{
+				live: map[uuid.UUID]uuid.UUID{caseOne: orgAlpha},
+				err:  refusal("some_future_code"),
 			},
 			args:      unackArgs(),
-			wantSaid:  "nothing to withdraw — this alert group has no live alerts left",
+			wantSaid:  "nothing to withdraw",
 			wantCalls: 1,
 		},
 	}
@@ -763,7 +734,7 @@ func TestApplyTellsTheUserWhenTheActionCannotApply(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			notice := &fakeNotice{}
-			s := newService(t, tc.conv, &fakeActors{}, tc.groups, nil, notice)
+			s := newService(t, tc.conv, &fakeActors{}, tc.cases, nil, notice)
 
 			if err := s.Apply(context.Background(), tc.args); err != nil {
 				t.Fatalf("Apply returned %v; a press that cannot apply is an outcome, not a retry", err)
@@ -775,19 +746,19 @@ func TestApplyTellsTheUserWhenTheActionCannotApply(t *testing.T) {
 			if !strings.Contains(got, tc.wantSaid) {
 				t.Fatalf("the user was told %q, which does not contain %q", got, tc.wantSaid)
 			}
-			if len(tc.groups.calls) != tc.wantCalls {
-				t.Fatalf("reached the group fan-out %d times, want %d", len(tc.groups.calls), tc.wantCalls)
+			if len(tc.cases.calls) != tc.wantCalls {
+				t.Fatalf("reached the case verb %d times, want %d", len(tc.cases.calls), tc.wantCalls)
 			}
 			// ⛔ THE VERB IS DERIVED FROM THE BUTTON AND ASSERTED, never taken on
-			// trust. The two fan-outs have identical signatures, so a press wired to
-			// the wrong one would pass every other assertion in this row — while
-			// acknowledging alerts somebody had just asked oto to forget seeing.
+			// trust. The two verbs have identical signatures, so a press wired to the
+			// wrong one would pass every other assertion in this row — while
+			// acknowledging an alert somebody had just asked oto to forget seeing.
 			if tc.wantCalls > 0 {
 				wantVerb := "ack"
 				if tc.args.ActionID == ActionUnacknowledge {
 					wantVerb = "unack"
 				}
-				if got := tc.groups.calls[0].verb; got != wantVerb {
+				if got := tc.cases.calls[0].verb; got != wantVerb {
 					t.Fatalf("the press reached the %q fan-out, want %q", got, wantVerb)
 				}
 			}
@@ -795,67 +766,25 @@ func TestApplyTellsTheUserWhenTheActionCannotApply(t *testing.T) {
 	}
 }
 
-// TestAnIncompleteFanOutIsSaidToBeIncomplete, HOWEVER MANY IT APPLIED TO.
+// ⛔⛔ `TestAnIncompleteFanOutIsSaidToBeIncomplete` WAS HERE AND IS DELETED (git-bug
+// 7570090), AND IT IS THE MOST VALUABLE TEST THIS CHANGE RETIRES — so what it knew
+// is written down instead of thrown away.
 //
-// ⛔ THE CASE THE WARNING EXISTS FOR IS THE ONE IT USED TO MISS. The partial
-// notice was gated inside `Applied > 0`, and the shape a bounded fan-out actually
-// produces after one press is the opposite: a group above `domain.FanOutLimit`
-// whose oldest 500 members are ALREADY acknowledged concludes on 500 refusals,
-// applies nothing, and has thousands of unacknowledged alerts behind the ceiling.
-// That fell through to "Already acknowledged. An acknowledgement records that
-// somebody has seen this" — told to somebody in a storm, about 4 500 alerts
-// nobody has seen. Reach is answered first now, and `Applied` only chooses the
-// sentence.
-func TestAnIncompleteFanOutIsSaidToBeIncomplete(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		result   GroupAckResult
-		wantSaid []string
-	}{
-		{
-			name: "it applied to nothing because the members it reached were already acked",
-			result: GroupAckResult{
-				Members: 500, Applied: 0, Unreached: 4500,
-				SkippedCodes: map[string]int{"already_acked": 500},
-			},
-			wantSaid: []string{"4500 of its alerts were not reached", "still unacknowledged"},
-		},
-		{
-			name: "it applied to everything it reached and the ceiling cut the rest",
-			result: GroupAckResult{
-				Members: 500, Applied: 500, Unreached: 4500,
-			},
-			wantSaid: []string{"Acknowledged 500 alerts", "4500 of its alerts were not reached"},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			notice := &fakeNotice{}
-			groups := &fakeGroups{
-				live:   map[uuid.UUID]uuid.UUID{groupOne: orgAlpha},
-				result: tc.result,
-			}
-			s := newService(t, alphaConversations(), &fakeActors{}, groups, nil, notice)
-
-			if err := s.Apply(context.Background(), ackArgs()); err != nil {
-				t.Fatalf("Apply: %v", err)
-			}
-			got := notice.only()
-			if got == "" {
-				t.Fatalf("the user was told nothing (%d messages); a fan-out that covered "+
-					"a tenth of the group must say so", len(notice.sent))
-			}
-			for _, want := range tc.wantSaid {
-				if !strings.Contains(got, want) {
-					t.Fatalf("the user was told %q, which does not contain %q", got, want)
-				}
-			}
-			if strings.Contains(got, "Already acknowledged.") {
-				t.Fatalf("the user was told %q: 'already acknowledged' is a statement about "+
-					"the whole group, and this press did not see the whole group", got)
-			}
-		})
-	}
-}
+// It pinned a real defect. The partial notice was gated inside `Applied > 0`, and
+// the shape a bounded fan-out actually produces after one press is the opposite: a
+// group above `domain.FanOutLimit` whose oldest 500 members are ALREADY
+// acknowledged concludes on 500 refusals, applies nothing, and has thousands of
+// unacknowledged alerts behind the ceiling. That fell through to "Already
+// acknowledged. An acknowledgement records that somebody has seen this" — told to
+// somebody in a storm, about 4 500 alerts nobody had seen. The fix was to answer
+// REACH FIRST and let `Applied` only choose the sentence.
+//
+// ⭐ THE RULE IT ESTABLISHED SURVIVES AND IS NOW STRUCTURAL: a press may never be
+// answered with a sentence about a bigger set than it actually touched. A press
+// touches one Case, so there is no ceiling, no remainder and no arithmetic left to
+// get wrong. If this surface ever acts on more than one Case again it needs an
+// account before it needs copy — that is the whole lesson, and the `GroupAckResult`
+// tombstone in `interactions.go` says so at the other end.
 
 // ------------------------------------------- Apply (the withdrawal), in mirror
 
@@ -901,20 +830,17 @@ func TestApplyWithdrawsAnAcknowledgementAsTheRightPerson(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			groups := &fakeGroups{
-				live:   map[uuid.UUID]uuid.UUID{groupOne: orgAlpha},
-				result: GroupAckResult{Members: 3, Applied: 3},
-			}
+			cases := &fakeCases{live: map[uuid.UUID]uuid.UUID{caseOne: orgAlpha}}
 			notice := &fakeNotice{}
-			s := newService(t, alphaConversations(), tc.actors, groups, nil, notice)
+			s := newService(t, alphaConversations(), tc.actors, cases, nil, notice)
 
 			if err := s.Apply(context.Background(), unackArgs()); err != nil {
 				t.Fatalf("Apply: %v", err)
 			}
-			if len(groups.calls) != 1 {
-				t.Fatalf("withdrew %d times, want 1", len(groups.calls))
+			if len(cases.calls) != 1 {
+				t.Fatalf("withdrew %d times, want 1", len(cases.calls))
 			}
-			got := groups.calls[0]
+			got := cases.calls[0]
 			if got.verb != "unack" {
 				t.Fatalf("an Un-acknowledge press reached the %q fan-out; it must reach the withdrawal", got.verb)
 			}
@@ -922,14 +848,14 @@ func TestApplyWithdrawsAnAcknowledgementAsTheRightPerson(t *testing.T) {
 				t.Fatalf("actor = (%q, %q, %q), want (%q, %q, %q)",
 					got.actorKind, got.actorID, got.actorLabel, tc.wantKind, tc.wantID, tc.wantLabel)
 			}
-			if got.groupID != groupOne {
-				t.Fatalf("withdrew from group %s, want %s", got.groupID, groupOne)
+			if got.caseID != caseOne {
+				t.Fatalf("withdrew from case %s, want %s", got.caseID, caseOne)
 			}
 			// The tenancy comes from the conversation on this path too.
 			if org := got.scope.OrgID(); org != orgAlpha {
 				t.Fatalf("withdrew in org %s, want %s", org, orgAlpha)
 			}
-			// A withdrawal that covered the group says nothing in Slack, exactly as
+			// A withdrawal that applied says nothing in Slack, exactly as
 			// the ack does not: the CARD is the feedback and the dispatch path owns it.
 			if n := len(notice.sent); n != 0 {
 				t.Fatalf("a complete withdrawal sent %d ephemeral messages: %v", n, notice.sent)
@@ -938,95 +864,46 @@ func TestApplyWithdrawsAnAcknowledgementAsTheRightPerson(t *testing.T) {
 	}
 }
 
-// TestAWithdrawalThatCoveredTheGroupIsSilentEvenWhenMembersRefused.
+// TestAWithdrawalThatAppliedIsSilent.
 //
-// ⚠️ "SOME MEMBERS WERE NOT ACKNOWLEDGED" IS NOT A PARTIAL PRESS. The press asked
-// for a group where nothing carries a receipt, and that is exactly what it got:
-// two members had theirs taken back and two never had one. The ack answers the
-// same shape with the same silence, and inventing a notice here would nag somebody
-// about a gesture that landed completely.
-func TestAWithdrawalThatCoveredTheGroupIsSilentEvenWhenMembersRefused(t *testing.T) {
-	groups := &fakeGroups{
-		live: map[uuid.UUID]uuid.UUID{groupOne: orgAlpha},
-		result: GroupAckResult{
-			Members: 4, Applied: 2,
-			SkippedCodes: map[string]int{"not_acked": 2},
-		},
-	}
+// ⛔ THIS USED TO BE `TestAWithdrawalThatCoveredTheGroupIsSilentEvenWhenMembersRefused`
+// (git-bug 7570090), whose point was that "some members were not acknowledged" is
+// NOT a partial press: the press asked for a group where nothing carries a receipt,
+// and that is exactly what it got. There is one Case now, so the mixed outcome it
+// described cannot occur — but the property it was defending is the one that
+// matters and it is asserted here: a gesture that landed says NOTHING in Slack. The
+// card is the feedback, and inventing a notice would nag somebody about a press
+// that worked.
+func TestAWithdrawalThatAppliedIsSilent(t *testing.T) {
+	cases := &fakeCases{live: map[uuid.UUID]uuid.UUID{caseOne: orgAlpha}}
 	notice := &fakeNotice{}
-	s := newService(t, alphaConversations(), &fakeActors{}, groups, nil, notice)
+	s := newService(t, alphaConversations(), &fakeActors{}, cases, nil, notice)
 
 	if err := s.Apply(context.Background(), unackArgs()); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 	if n := len(notice.sent); n != 0 {
-		t.Fatalf("the user was told %v; every member of this group now carries no receipt, "+
+		t.Fatalf("the user was told %v; this alert now carries no receipt, "+
 			"which is what the press asked for", notice.sent)
 	}
 }
 
-// TestAnIncompleteWithdrawalSaysWhatIsStillAcknowledged.
+// ⛔⛔ `TestAnIncompleteWithdrawalSaysWhatIsStillAcknowledged` WAS HERE AND IS
+// DELETED (git-bug 7570090). It guarded the sharpest asymmetry on this surface, and
+// the asymmetry itself is NOT deleted — only the counting is.
 //
-// ⛔⛔ THE OUTSTANDING COUNT MEANS THE OPPOSITE THING ON THIS PATH, and borrowing
-// the ack's last sentence is the one mistake that would be worse than saying
-// nothing. A bounded ack leaves its unreached members UNACKNOWLEDGED; a bounded
-// withdrawal leaves them ACKNOWLEDGED — receipts standing on thousands of alerts
-// nobody has looked at since. "Still unacknowledged" told to that person is
-// precisely backwards, so it is asserted absent and not merely un-asserted.
-func TestAnIncompleteWithdrawalSaysWhatIsStillAcknowledged(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		result   GroupAckResult
-		wantSaid []string
-	}{
-		{
-			name: "it applied to nothing because the members it reached carried no receipt",
-			result: GroupAckResult{
-				Members: 500, Applied: 0, Unreached: 4500,
-				SkippedCodes: map[string]int{"not_acked": 500},
-			},
-			wantSaid: []string{"4500 of its alerts were not reached", "may still be acknowledged"},
-		},
-		{
-			name: "it withdrew from everything it reached and the ceiling cut the rest",
-			result: GroupAckResult{
-				Members: 500, Applied: 500, Unreached: 4500,
-			},
-			wantSaid: []string{"Withdrew the acknowledgement from 500 alerts", "4500 of its alerts were not reached"},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			notice := &fakeNotice{}
-			groups := &fakeGroups{
-				live:   map[uuid.UUID]uuid.UUID{groupOne: orgAlpha},
-				result: tc.result,
-			}
-			s := newService(t, alphaConversations(), &fakeActors{}, groups, nil, notice)
-
-			if err := s.Apply(context.Background(), unackArgs()); err != nil {
-				t.Fatalf("Apply: %v", err)
-			}
-			got := notice.only()
-			if got == "" {
-				t.Fatalf("the user was told nothing (%d messages); a withdrawal that covered "+
-					"a tenth of the group must say so", len(notice.sent))
-			}
-			for _, want := range tc.wantSaid {
-				if !strings.Contains(got, want) {
-					t.Fatalf("the user was told %q, which does not contain %q", got, want)
-				}
-			}
-			if strings.Contains(got, "still unacknowledged") {
-				t.Fatalf("the user was told %q: the alerts this press did NOT reach are the ones "+
-					"that are still ACKNOWLEDGED", got)
-			}
-			if strings.Contains(got, "no receipt here to take back") {
-				t.Fatalf("the user was told %q: that is a statement about the whole group, and "+
-					"this press did not see the whole group", got)
-			}
-		})
-	}
-}
+// The outstanding count meant the OPPOSITE THING on the two paths. A bounded ack
+// left its unreached members UNACKNOWLEDGED; a bounded withdrawal left them
+// ACKNOWLEDGED — receipts standing on thousands of alerts nobody had looked at
+// since. "Still unacknowledged" told to that person is precisely backwards, so the
+// test asserted the ack's sentence ABSENT from the withdrawal's copy rather than
+// merely un-asserted.
+//
+// ⭐ THE ASYMMETRY LIVES ON IN `ackRefusalText` vs `unackRefusalText`, which is
+// where it still applies: `already_acked` and `not_acked` are different afternoons,
+// and `TestApplyTellsTheUserWhenTheActionCannotApply` holds each to its own
+// sentence. There is no remainder to describe any more, so there is no count left
+// to get backwards.
 
 // TestNothingOtoSaysImpliesOwnership.
 //
@@ -1036,25 +913,19 @@ func TestAnIncompleteWithdrawalSaysWhatIsStillAcknowledged(t *testing.T) {
 // grown an ownership axis in its user-visible language, which is how every
 // on-call product started.
 func TestNothingOtoSaysImpliesOwnership(t *testing.T) {
-	said := []string{
-		nothingAppliedText(GroupAckResult{Members: 0}),
-		nothingAppliedText(GroupAckResult{Members: 2, SkippedCodes: map[string]int{"already_acked": 2}}),
-		nothingAppliedText(GroupAckResult{Members: 2, SkippedCodes: map[string]int{"no_open_case": 2}}),
-		nothingAppliedText(GroupAckResult{Members: 4, SkippedCodes: map[string]int{"already_acked": 1, "no_open_case": 3}}),
-		partialAckText(GroupAckResult{Members: 500, Applied: 500, Unreached: 4500}),
-		partialAckText(GroupAckResult{Members: 500, Applied: 0, Unreached: 4500,
-			SkippedCodes: map[string]int{"already_acked": 500}}),
+	// ⛔ THE SWEEP IS OVER THE REFUSAL CODES NOW, NOT OVER A FAN-OUT ACCOUNT
+	// (git-bug 7570090). It covers every code `alerts/domain` can answer with PLUS
+	// the unknown-code arm, so a sentence added to the `default` branch cannot slip
+	// past this check either.
+	codes := []string{"already_acked", "not_acked", "no_open_case", "some_future_code"}
+	said := []string{}
+	for _, c := range codes {
+		said = append(said, ackRefusalText(c))
 		// The withdrawal's copy is held to the same standard. It is arguably the
 		// likelier place to slip: the sentence a person wants after taking a
 		// receipt back is "it's yours again", and oto has no such axis to hand it
 		// back along.
-		nothingWithdrawnText(GroupAckResult{Members: 0}),
-		nothingWithdrawnText(GroupAckResult{Members: 2, SkippedCodes: map[string]int{"not_acked": 2}}),
-		nothingWithdrawnText(GroupAckResult{Members: 2, SkippedCodes: map[string]int{"no_open_case": 2}}),
-		nothingWithdrawnText(GroupAckResult{Members: 4, SkippedCodes: map[string]int{"not_acked": 1, "no_open_case": 3}}),
-		partialUnackText(GroupAckResult{Members: 500, Applied: 500, Unreached: 4500}),
-		partialUnackText(GroupAckResult{Members: 500, Applied: 0, Unreached: 4500,
-			SkippedCodes: map[string]int{"not_acked": 500}}),
+		said = append(said, unackRefusalText(c))
 	}
 
 	// Collect the ephemeral copy the two remaining paths emit, too.
@@ -1065,7 +936,7 @@ func TestNothingOtoSaysImpliesOwnership(t *testing.T) {
 	} {
 		notice := &fakeNotice{}
 		s := newService(t, alphaConversations(), &fakeActors{},
-			&fakeGroups{live: map[uuid.UUID]uuid.UUID{groupOne: orgAlpha}}, nil, notice)
+			&fakeCases{live: map[uuid.UUID]uuid.UUID{caseOne: orgAlpha}}, nil, notice)
 		if err := s.Apply(context.Background(), args); err != nil {
 			t.Fatalf("Apply: %v", err)
 		}
@@ -1095,23 +966,23 @@ func TestApplyRetriesOnlyWhatIsWorthRetrying(t *testing.T) {
 	boom := errors.New("connection refused")
 
 	t.Run("a resolver failure is retried", func(t *testing.T) {
-		s := newService(t, fakeConversations{err: boom}, &fakeActors{}, &fakeGroups{}, nil, &fakeNotice{})
+		s := newService(t, fakeConversations{err: boom}, &fakeActors{}, &fakeCases{}, nil, &fakeNotice{})
 		if err := s.Apply(context.Background(), ackArgs()); err == nil {
 			t.Fatal("a transient resolver failure must be retried, not swallowed")
 		}
 	})
 
 	t.Run("an acknowledgement failure is retried", func(t *testing.T) {
-		groups := &fakeGroups{live: map[uuid.UUID]uuid.UUID{groupOne: orgAlpha}, err: boom}
-		s := newService(t, alphaConversations(), &fakeActors{}, groups, nil, &fakeNotice{})
+		cases := &fakeCases{live: map[uuid.UUID]uuid.UUID{caseOne: orgAlpha}, err: boom}
+		s := newService(t, alphaConversations(), &fakeActors{}, cases, nil, &fakeNotice{})
 		if err := s.Apply(context.Background(), ackArgs()); err == nil {
 			t.Fatal("a transient acknowledgement failure must be retried, not swallowed")
 		}
 	})
 
 	t.Run("a withdrawal failure is retried", func(t *testing.T) {
-		groups := &fakeGroups{live: map[uuid.UUID]uuid.UUID{groupOne: orgAlpha}, err: boom}
-		s := newService(t, alphaConversations(), &fakeActors{}, groups, nil, &fakeNotice{})
+		cases := &fakeCases{live: map[uuid.UUID]uuid.UUID{caseOne: orgAlpha}, err: boom}
+		s := newService(t, alphaConversations(), &fakeActors{}, cases, nil, &fakeNotice{})
 		if err := s.Apply(context.Background(), unackArgs()); err == nil {
 			t.Fatal("a transient withdrawal failure must be retried, not swallowed")
 		}
@@ -1123,18 +994,15 @@ func TestApplyRetriesOnlyWhatIsWorthRetrying(t *testing.T) {
 // The reply channel is a nicety; the receipt is the product. A press with no
 // `response_url` must still land on the timeline.
 func TestApplyWithNoResponseURLStillAcknowledges(t *testing.T) {
-	groups := &fakeGroups{
-		live:   map[uuid.UUID]uuid.UUID{groupOne: orgAlpha},
-		result: GroupAckResult{Members: 1, Applied: 1},
-	}
+	cases := &fakeCases{live: map[uuid.UUID]uuid.UUID{caseOne: orgAlpha}}
 	args := ackArgs()
 	args.ResponseURL = ""
 
-	s := newService(t, alphaConversations(), &fakeActors{}, groups, nil, nil)
+	s := newService(t, alphaConversations(), &fakeActors{}, cases, nil, nil)
 	if err := s.Apply(context.Background(), args); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	if len(groups.calls) != 1 {
+	if len(cases.calls) != 1 {
 		t.Fatal("a press with no response_url was dropped")
 	}
 }

@@ -12,7 +12,6 @@ import (
 
 	alerts "github.com/thulasiram/oto/internal/alerts/domain"
 	lifecycle "github.com/thulasiram/oto/internal/alerts/service"
-	grouping "github.com/thulasiram/oto/internal/grouping/domain"
 	identity "github.com/thulasiram/oto/internal/identity/domain"
 	"github.com/thulasiram/oto/internal/platform/tuning"
 	sources "github.com/thulasiram/oto/internal/sources/domain"
@@ -32,8 +31,7 @@ import (
 //
 // ⚠️ These are test-only cross-package imports, the same idiom as
 // `refire_grace_replay_test.go`: `identity/domain` is a settings vocabulary and
-// must not depend on the lifecycle, the grouping engine or the source client at
-// build time.
+// must not depend on the lifecycle or the source client at build time.
 //
 // ⭐ WHAT CHANGED, AND WHY THE LAST SECTION OF THIS FILE IS NOW A TRIPWIRE RATHER
 // THAN A LOAD-BEARING WALL. The four packages that need a shipped default used to
@@ -379,10 +377,9 @@ func TestEveryShippedDefaultIsInsideItsOwnBound(t *testing.T) {
 
 // ------------------------------------------------------------- the one home
 
-// ⛔ FOUR PACKAGES NEED THESE NUMBERS AND EXACTLY ONE PLACE WRITES THEM.
-// `identity/domain` owns the tenant's tuning; the lifecycle machine, the grouping
-// engine and the alerts service each keep a fallback for the case where no
-// SettingsReader is wired. A fallback that disagrees is a silent second product:
+// ⛔ THREE PACKAGES NEED THESE NUMBERS AND EXACTLY ONE PLACE WRITES THEM.
+// `identity/domain` owns the tenant's tuning; the lifecycle machine and the alerts
+// service each keep a fallback for the case where no SettingsReader is wired. A fallback that disagrees is a silent second product:
 // an org whose settings failed to load would run the OLD arithmetic and nobody
 // would be told, which is exactly what ADR 0026 caused when it moved three
 // defaults and two copies were missed.
@@ -410,10 +407,18 @@ func TestEveryMirroredDefaultAgreesWithIdentity(t *testing.T) {
 		t.Errorf("alerts/domain.DefaultResolveGrace = %s, identity/domain says %s",
 			alerts.DefaultResolveGrace, identity.DefaultResolveGrace)
 	}
-	if grouping.DefaultGroupCloseDelay != identity.DefaultGroupCloseDelay {
-		t.Errorf("grouping/domain.DefaultGroupCloseDelay = %s, identity/domain says %s",
-			grouping.DefaultGroupCloseDelay, identity.DefaultGroupCloseDelay)
-	}
+	// ⛔ THE `group_close_delay` MIRROR WAS HERE AND ONE SIDE OF IT NO LONGER EXISTS.
+	// It compared `grouping/domain.DefaultGroupCloseDelay` against identity's, and
+	// `internal/grouping` is gone as a package — the engine folded into case
+	// formation. The agreement that still has two sides is identity's with
+	// `platform/tuning`, asserted at the foot of this test, and that is the one that
+	// matters: identity does not mirror the number, it names the one home.
+	//
+	// ⚠️ THIS FILE DID NOT COMPILE UNTIL THIS COMMENT REPLACED THAT CHECK. The import
+	// outlived the package it named, so `internal/identity/domain`'s external test
+	// package had been unbuildable — a mirror check that cannot run is worse than a
+	// deleted one, because the file still reads as if it were guarding something.
+	//
 	// ⛔ THE THREE STORM MIRRORS WERE HERE AND BOTH SIDES ARE NOW GONE. `grouping/domain`
 	// stopped declaring `DefaultStormThreshold`, `DefaultStormWindow` and
 	// `DefaultStormCooldown` when storm damping was removed; `identity/domain` and
@@ -455,8 +460,10 @@ func TestEveryMirroredDefaultAgreesWithIdentity(t *testing.T) {
 
 // sharedTuningDefaults are the constant names that MUST NOT be spelled as a value
 // anywhere but `platform/tuning`. They are the ones more than one package needs;
-// a default only its own package reads (`DefaultUnackedReminderAfter`, the
-// mention policy) is not here and is correctly a literal where it lives.
+// a default only its own package reads is not here and is correctly a literal
+// where it lives — `DefaultChannelVerbosity` is identity's, and nothing else needs
+// it. ⛔ THIS SENTENCE USED TO CITE `DefaultUnackedReminderAfter` AND THE MENTION
+// POLICY, both deleted with the reminder (git-bug bd0fb1d).
 var sharedTuningDefaults = map[string]bool{
 	"DefaultRefireGrace":     true,
 	"DefaultResolveGrace":    true,
@@ -470,7 +477,7 @@ var sharedTuningDefaults = map[string]bool{
 // ⛔⛔ THE GUARD THAT SURVIVES A FUTURE EDITOR, AND THE ONE THE OLD VERSION OF THIS
 // FILE COULD NOT BE.
 //
-// Value agreement is not the property that was missing. Four packages agreeing
+// Value agreement is not the property that was missing. Every package agreeing
 // TODAY was always true; what was missing was any reason they had to agree
 // TOMORROW, because each one spelled its own number and the only tie between them
 // was the test above. The property that actually holds them together is
@@ -492,7 +499,9 @@ func TestNoPackageSpellsATuningDefaultAsALiteral(t *testing.T) {
 		".",
 		"../../alerts/domain",
 		"../../alerts/service",
-		"../../grouping/domain",
+		// ⛔ `../../grouping/domain` WAS LISTED HERE. The package is gone, and
+		// `os.ReadDir` on it was a `t.Fatalf` — this scan could not have passed even
+		// if the file had compiled.
 	}
 
 	fset := token.NewFileSet()

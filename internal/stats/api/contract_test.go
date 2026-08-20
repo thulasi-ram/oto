@@ -52,7 +52,6 @@ func overviewFixture() service.OverviewResult {
 				Firing: 12, Suppressed: 3, Resolved: 118, Expired: 4,
 				Acked: 9, Unacked: 6, Flapping: 2,
 			},
-			Groups:     domain.GroupCounts{Open: 5, Closed: 61},
 			Deliveries: domain.DeliveryCounts{Sent: 402, Failed: 7, Dead: 1, Skipped: 12, Pending: 3, Ambiguous: 2},
 			Sources: domain.SourceCounts{
 				Healthy: 4, Degraded: 1, Unreachable: 0, Unknown: 1,

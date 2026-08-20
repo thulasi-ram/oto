@@ -279,7 +279,7 @@ func TestAnUpstreamRunbookAnnotationCannotInjectIntoTheTopLevelText(t *testing.T
 			t.Errorf("a hostile runbook_url reached the push notification verbatim: %q", text)
 		}
 		if strings.Contains(text, "<!channel>") || strings.Contains(text, "<!here>") {
-			t.Errorf("an upstream annotation produced a broadcast mention: %q", text)
+			t.Errorf("an upstream annotation produced a channel-wide mention: %q", text)
 		}
 	}
 }

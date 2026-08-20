@@ -7,7 +7,7 @@
  * being retired here. It was never wrong about *structure* — the sections were
  * legible and every control was visible at once — it was wrong about **what a
  * 256 px vertical column beside a table says**: that the filters are a place you
- * go, a peer of Alerts / Groups / Settings, rather than instruments belonging to
+ * go, a peer of Cases / Alerts / Settings, rather than instruments belonging to
  * the list. An operator arriving mid-incident read the rail top-to-bottom and
  * found navigation and filtering in one plane, sharing one scrollbar, with the
  * severity marks they actually came for pushed into the remaining width.
@@ -182,16 +182,16 @@ interface ClusterOption {
 const ALL_CLUSTERS: ClusterOption = { cluster_key: "", display_name: "All clusters" };
 
 /**
- * The word "Group" is deliberately absent. It used to collide with `/groups`
- * elsewhere in the app; that screen is `/cases` now and the collision is gone,
- * but the labels stay as they are for the other reason they were chosen: a tab
- * strip that already reads as "how is this list arranged" does not need the word
- * repeated in every label.
+ * The word "Group" is deliberately absent from the labels. It used to collide
+ * with a `/groups` screen elsewhere in the app — the AlertGroup, deleted whole
+ * by git-bug 7570090 — and the collision is gone with it, but the labels stay as
+ * they are for the other reason they were chosen: a tab strip that already reads
+ * as "how is this list arranged" does not need the word repeated in every label.
  *
  * ⛔ THIS CONTROL IS A ROLL-UP AXIS AND NOT A CASE. It buckets whatever the
- * current query returned (`GET /api/v1/alerts/rollups`) — no row, no generation,
- * no chat thread — so nothing here may borrow the word Case, which now names the
- * correlation on `/cases`.
+ * current query returned (`GET /api/v1/alerts/rollups`) — no row of its own, no
+ * timeline, nothing to acknowledge — so nothing here may borrow the word Case,
+ * which names the firing episode on `/cases`.
  */
 const GROUP_TAB_LABEL: Record<GroupBy, string> = {
   none: "All",

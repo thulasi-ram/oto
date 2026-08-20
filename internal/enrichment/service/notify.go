@@ -54,9 +54,17 @@ func (n *QueueNotifier) WithDebounce(d time.Duration) *QueueNotifier {
 //
 // The uniqueness window is a CONVENIENCE, not the correctness mechanism:
 // idempotency is owned by `notifications_idem_uniq` on
-// (org_id, idempotency_key), which is derived from the group's state_version
+// (org_id, idempotency_key), which is derived from the Case and the state_version
 // (SPEC §C.7). Two evaluations at the same state version collide on that index
 // and the second is swallowed, whether or not the queue collapsed them first.
+//
+// ⚠️ AND THAT LAST SENTENCE IS CURRENTLY TOO STRONG, WHICH IS WHY IT IS FLAGGED
+// HERE RATHER THAN LEFT TO READ AS TRUE. The version the group used to supply
+// went with the group (git-bug `7570090`) and nothing replaces it yet, so every
+// `enriched` evaluation for a Case arrives at version 0 and collides with the
+// FIRST one forever — not merely with its own duplicates. See the ⛔⛔ on
+// `Loaded.StateVersion`; the debounce below is doing more work than it should
+// have to until that is answered.
 func (n *QueueNotifier) NotifyEnriched(ctx context.Context, _ db.TenantScope, notice EnrichedNotice) error {
 	if n.enqueuer == nil {
 		return errs.New(errs.KindInternal, "enrichment_no_enqueuer",
@@ -64,18 +72,22 @@ func (n *QueueNotifier) NotifyEnriched(ctx context.Context, _ db.TenantScope, no
 	}
 
 	args := jobs.NotifyEvaluateArgs{
-		GroupID:      notice.GroupID,
+		CaseID:       notice.CaseID,
 		Reason:       ReasonEnriched,
 		StateVersion: notice.StateVersion,
 		Actor:        "enricher",
 	}
+	// ⛔ THE `if notice.CaseID != uuid.Nil` BLOCK THAT TOOK ITS ADDRESS IS DELETED
+	// (git-bug `7570090`). `CaseID` was an OPTIONAL `*uuid.UUID` narrowing of the
+	// group; it is the required subject now, so a nil case is not "unnarrowed", it
+	// is unsendable — and the pipeline refuses to build a notice without one rather
+	// than letting an evaluation run against the zero UUID.
 	if notice.AlertID != uuid.Nil {
+		// AlertID stays optional and stays a pointer, because it is the FOCUS and
+		// not the subject: `enriched` is a fact about the whole Case and names an
+		// alert only when the enrichment happened to be about one.
 		alertID := notice.AlertID
 		args.AlertID = &alertID
-	}
-	if notice.CaseID != uuid.Nil {
-		caseID := notice.CaseID
-		args.CaseID = &caseID
 	}
 
 	_, err := n.enqueuer.Enqueue(ctx, args, db.WithUniquePeriod(n.debounce))
@@ -100,24 +112,22 @@ func (n *QueueNotifier) NotifyPreNotificationReady(
 		return errs.New(errs.KindInternal, "enrichment_no_enqueuer",
 			"the pre-notification notifier was built without a queue")
 	}
-	if notice.GroupID == uuid.Nil {
-		// No group means no card to post; `alerts` did not enqueue an evaluation
-		// either, so there is nothing to release.
+	if notice.CaseID == uuid.Nil {
+		// ⛔ THIS READ `notice.GroupID == uuid.Nil` (git-bug `7570090`), and the
+		// reason behind it survives the rename untouched: no conversation means no
+		// card to post, and `alerts` did not enqueue an evaluation either, so there
+		// is nothing to release. Only the id that names the conversation changed.
 		return nil
 	}
 
 	args := jobs.NotifyEvaluateArgs{
-		GroupID:      notice.GroupID,
+		CaseID:       notice.CaseID,
 		Reason:       ReasonFired,
 		StateVersion: notice.StateVersion,
 	}
 	if notice.AlertID != uuid.Nil {
 		alertID := notice.AlertID
 		args.AlertID = &alertID
-	}
-	if notice.CaseID != uuid.Nil {
-		caseID := notice.CaseID
-		args.CaseID = &caseID
 	}
 
 	_, err := n.enqueuer.Enqueue(ctx, args)

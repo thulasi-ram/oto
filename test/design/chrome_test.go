@@ -46,8 +46,12 @@ var chromeExceptions = map[string]string{
 	"features/alerts/AlertTable.tsx": "row status: the firing row's own tint, at 40% so it reads " +
 		"as a row and not as a badge.",
 	"features/alerts/GroupedAlerts.tsx": "row status: the same tint on a group's member rows.",
-	"routes/groups.tsx": "row status: the live-group tint and the status dots, plus the legend " +
-		"that decodes those dots — a legend that did not use the hue it explains would explain nothing.",
+	// ⛔ `routes/groups.tsx` WAS AN EXCEPTION HERE AND IS DELETED (git-bug
+	// `7570090`). The route went with `alert_groups`, so the file spends no hue —
+	// and this map is verified in BOTH directions, which is why a deleted route
+	// cannot leave a standing permission behind: the loop below fails an entry the
+	// scan never reached, on the argument that a gate green over nothing is worse
+	// than no gate.
 	"features/alerts/detail/eventKinds.ts": "timeline markers: the third surface §M.7 names. " +
 		"One lifecycle colour per event kind, on the marker only.",
 }

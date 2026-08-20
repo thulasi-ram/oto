@@ -6,10 +6,9 @@
  * and its own reason for ending. "Has this happened before?" is a question with
  * an answer, and it is on this panel.
  *
- * ⛔ A ROW HERE IS A CASE AND EVERY LABEL SAYS SO. It is not a group: the
- * batching Alertmanager notified this alert under lives at `/groups`, spans
- * several alerts, and is not what an acknowledgement is written on. Each row
- * links to its own case screen, which is where the receipt is written.
+ * ⛔ A ROW HERE IS A CASE AND EVERY LABEL SAYS SO. One episode of one alert —
+ * never a batch, never a correlation and never an incident. Each row links to
+ * its own case screen, which is where the receipt is written.
  */
 import { For, Match, Show, Switch, type Component } from "solid-js";
 import { A } from "@solidjs/router";

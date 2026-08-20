@@ -34,11 +34,7 @@ func toOrgSettingsDTO(s domain.Settings) OrgSettingsDTO {
 		// §D.1 stores a month count and oto reads a month as 30 days, uniformly.
 		EventRetentionMonth: int(s.EventRetention / (30 * 24 * time.Hour)),
 
-		DefaultVerbosity:    s.DefaultVerbosity,
-		BroadcastOnResolved: s.BroadcastOnResolved,
-
-		// Never null on the wire: an empty audience is `[]`, not `null`, so a
-		// client can render "nobody" without a special case.
+		DefaultVerbosity: s.DefaultVerbosity,
 	}
 }
 

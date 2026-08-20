@@ -49,11 +49,22 @@ const (
 
 // Relation names why two alerts are considered related. The set is CLOSED and
 // each member is a plain, checkable statement about labels — never a heuristic.
+//
+// ⛔ `RelationGroup = "same_group"` WAS THE FIRST AND STRONGEST MEMBER AND IS
+// DELETED (git-bug `7570090`). It meant "both were in the same AlertGroup
+// generation: routed together by Alertmanager, the strongest signal available and
+// the only one oto did not invent" — and every word of that stayed true right up
+// to the point where there is no generation to be in. `alert_cases.group_id` is
+// the column the relation was computed from and 00069 drops it, so this is not a
+// tidy-up: the SQL would have raised a 42703 on every run of this enricher.
+//
+// ⚠️ THE ENRICHER IS GENUINELY WEAKER NOW AND PRETENDING OTHERWISE WOULD BE THE
+// REAL DEFECT. What is left, `same_alertname` and `same_namespace`, are both oto's
+// own label inferences; the one relation that carried an EXTERNAL routing decision
+// is gone, and nothing in v1 replaces it. Restoring a signal of that strength is
+// the deferred `correlation` module's job, not this enricher's — see the ⛔ above
+// `Enricher` on why this file refuses to guess at shared causes.
 const (
-	// RelationGroup means both were in the same AlertGroup generation: they
-	// were routed together by Alertmanager, which is the strongest signal
-	// available and the only one oto did not invent.
-	RelationGroup = "same_group"
 	// RelationAlertName means the same rule fired for different label sets —
 	// the same problem in several places.
 	RelationAlertName = "same_alertname"
@@ -90,13 +101,21 @@ type Payload struct {
 
 // Query is what the store is asked for.
 type Query struct {
-	// CaseID and AlertID identify the subject, which is excluded from its
-	// own results.
-	CaseID  uuid.UUID
+	// AlertID identifies the subject, which is excluded from its own results.
 	AlertID uuid.UUID
-	// The same_group relation is resolved FROM CaseID by the store: the
-	// group a fire belongs to is a fact the store can join to, and passing it in
-	// would mean every caller had to know it first.
+	// ⛔ `CaseID uuid.UUID` WAS HERE AND IS DELETED (git-bug `7570090`). Its doc
+	// read: "the same_group relation is resolved FROM CaseID by the store: the group
+	// a fire belongs to is a fact the store can join to, and passing it in would
+	// mean every caller had to know it first." That was its ONLY job — the
+	// self-exclusion is and always was by AlertID — so when the relation went with
+	// the group the field had no remaining reader.
+	//
+	// ⚠️ IT IS DELETED RATHER THAN LEFT AS AN IGNORED FIELD BECAUSE THE STORE CANNOT
+	// SIMPLY STOP BINDING IT. It was `$2` in `relatedAlertsSQL`, and a bound
+	// parameter that no expression mentions makes Postgres refuse the whole
+	// statement with 42P18. Keeping the field would have meant keeping a lie in the
+	// argument list; see the ⚠️ above that query.
+	//
 	// AlertName and Namespace scope the label relations; empty skips them.
 	AlertName string
 	Namespace string
@@ -192,10 +211,7 @@ func (e *Enricher) Enrich(ctx context.Context, s *domain.Subject) (domain.Result
 	if anchor.IsZero() {
 		anchor = e.clk.Now()
 	}
-	caseID, _ := uuid.Parse(s.Case.ID)
-
 	found, counts, err := e.store.RelatedAlerts(ctx, scope, Query{
-		CaseID:    caseID,
 		AlertID:   alertID,
 		AlertName: s.Alert.AlertName,
 		Namespace: s.Alert.Namespace,
@@ -258,10 +274,14 @@ func (e *Enricher) Enrich(ctx context.Context, s *domain.Subject) (domain.Result
 	}, nil
 }
 
+// relationRank orders the relations strongest-first for the rendered sample.
+//
+// ⛔ RANK 0 WAS `RelationGroup` (git-bug `7570090`). The remaining ranks are NOT
+// renumbered down to 0 and 1 on purpose: the numbers are only ever compared to
+// each other, never stored or rendered, and leaving the gap keeps the ordering
+// claim honest — alertname was always the SECOND-strongest signal and still is.
 func relationRank(r string) int {
 	switch r {
-	case RelationGroup:
-		return 0
 	case RelationAlertName:
 		return 1
 	case RelationNamespace:

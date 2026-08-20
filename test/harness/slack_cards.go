@@ -78,7 +78,11 @@ type SlackCard struct {
 }
 
 // SlackCards is the whole corpus, in the order a human should review it: the
-// card is posted, replied to, amended, broadcast, and finally closed.
+// card is posted, replied to, amended, and finally closed.
+//
+// ⛔ "BROADCAST" WAS A STEP IN THAT SEQUENCE AND IS DELETED (git-bug 7570090). oto
+// no longer surfaces anything in a channel; every message it sends is a post to a
+// conversation or a reply inside that message's thread.
 //
 // ⛔ THERE IS NO "SNOOZED" CARD HERE, AND THE REASON HAS CHANGED TWICE.
 //
@@ -109,7 +113,15 @@ type SlackCard struct {
 // So the snooze can never earn a slot on colour grounds: it has no colour of its
 // own to capture, by decision rather than by omission, and
 // `TestEachCardStateCarriesItsOwnColourForAHumanToVerify` permits two captures per
-// colour with the firing colour's pair already spent (the root and the reminder).
+// colour.
+//
+// ⚠️ AND THE COLOUR BUDGET IS NOW AT ITS FLOOR, WHICH IS A CONSTRAINT ON THE NEXT
+// PERSON RATHER THAN A PROBLEM WITH THIS ONE. That test also requires the corpus to
+// exercise at least four distinct colours, and after `broadcast_refired` left
+// (git-bug 7570090) it exercises exactly four: `#a30200`, `#daa038` ×2, `#2eb886`,
+// `#dddddd`. Deleting ANY further card turns a green test red. Read that as the
+// signal it is — the corpus has no slack left, so a card removed from here needs a
+// card added, or the assertion needs a recorded decision.
 //
 // The defect the old comment described is FIXED — `replyBody` has `snoozed` and
 // `unsnoozed` arms, the root card carries §B.8.6's `*Notifications*` field, and
@@ -143,23 +155,6 @@ func SlackCards() []SlackCard {
 			Options: cardOptions(chdomain.ModeUpdateRoot),
 		},
 		{
-			Name: "broadcast_refired",
-			What: "A reply posted with reply_broadcast=true. Its top-level text must be " +
-				"self-sufficient (ADR 0020 rule 4), because the in-channel reference " +
-				"carries no buttons. ⭐ It replaces `broadcast_unacked_reminder`, which " +
-				"went with the reminder (git-bug bd0fb1d) and was the corpus's only " +
-				"broadcast: `reply_broadcast` is the one Slack parameter ADR 0020 " +
-				"Amendment 4 had to CORRECT from a live workspace, so leaving the mode " +
-				"uncaptured would have been the wrong kind of tidy. ⭐ Its body " +
-				"carries the one affordance a stripped in-channel reference can still " +
-				"show — a mrkdwn link back to oto, not a button (git-bug 68653ca). " +
-				"That is why this capture has a `<` in it at all, and it is what lets " +
-				"the escaping guarantee be asserted per card instead of over the corpus.",
-			Mode:    chdomain.ModeBroadcastReply,
-			View:    refiredView(),
-			Options: cardOptions(chdomain.ModeBroadcastReply),
-		},
-		{
 			Name: "root_resolved",
 			What: "The terminal card, produced by chat.update. It is the ONLY record left " +
 				"in the channel, because the update that made it was silent.",
@@ -186,11 +181,30 @@ func SlackCards() []SlackCard {
 // went with it. ⛔ AND `broadcast_unacked_reminder` WENT TOO (git-bug bd0fb1d): the
 // owner withdrew the reminder and, oto being unreleased with the database due for a
 // reset, ruled the value DELETED rather than retired — so no row can spell it and
-// there is nothing to render. `refired` still broadcasts (`domain/broadcast.go`), so
-// `broadcast_refired` REPLACES IT as the corpus's broadcast capture, and the swap
-// was not optional: `reply_broadcast` is the one Slack parameter whose behaviour ADR
-// 0020 Amendment 4 had to correct from a live workspace, so deleting the reminder
-// must not leave the mode uncaptured.
+// there is nothing to render. Its replacement `broadcast_refired` argued that the
+// mode must stay captured because `reply_broadcast` is the one Slack parameter ADR
+// 0020 Amendment 4 had to correct from a live workspace.
+//
+// ⛔⛔ AND NOW `broadcast_refired` IS DELETED TOO, WHICH SETTLES THAT ARGUMENT BY
+// REMOVING ITS SUBJECT (git-bug 7570090). Slack thread-broadcast is removed from oto
+// entirely: `BroadcastPolicy.Warrants` returned true only for `refired` — which ADR
+// 0040 left with no producer — and for `all_resolved`, which was opt-in and
+// default-off, so the mechanism had never fired in a default deployment. There is no
+// mode to leave uncaptured. `refiredView` went with the card.
+//
+// ⭐ THE CORPUS DOES NOT LOSE THE GUARANTEE THE CARD WAS CARRYING, and it is worth
+// saying which one, because the harness's own comments credited this card with it:
+// `TestEveryBuilderCaptureIsSomethingBlockKitBuilderWillAccept` asserts a mrkdwn
+// control character PER CARD, and every surviving capture satisfies that on its own
+// merits — `thread_reply_acked` has a `<@U…>` mention, and all four root cards get
+// a `<!date^…>` token from `root.go` by construction. See that test.
+//
+// ⭐ AND THE HARNESS KEEPS MODELLING `reply_broadcast` ANYWAY. `fake_slack.go` and
+// `slack_conformance.go` still parse the form field and still simulate
+// `no_dual_broadcast_content_update` and `cant_broadcast_message`, because their job
+// is to be a faithful SLACK rather than a mirror of oto. That is what converts this
+// deletion into a standing regression guard: the fake can see a broadcast, and no
+// test may ever observe one again.
 
 func cardOptions(mode chdomain.Mode) chdomain.RenderOptions {
 	return chdomain.RenderOptions{
@@ -292,13 +306,16 @@ func baseView() *chdomain.NotificationView {
 		// a detail page addressed by an id that names a different table". The id here
 		// IS a group id — the golden's own metadata carries it as `group_id`.
 		//
-		// It mattered little while the URL reached a capture only through a
-		// truncation suffix. `68653ca` writes it verbatim into the broadcast body, so
-		// it is now in the file a human pastes into Block Kit Builder, and a corpus
-		// whose whole claim is "the exact bytes oto would send" cannot carry a URL
-		// production refuses to produce. The sibling corpus in
-		// `internal/channels/render/slack/testdata/` always used `/groups/`; the two
-		// disagreed and this one was the wrong half.
+		// ⛔ THE URGENCY CAME FROM A LINK THAT IS NOW DELETED, AND THE FIX IS STILL
+		// RIGHT. It said: "it mattered little while the URL reached a capture only
+		// through a truncation suffix; `68653ca` writes it verbatim into the broadcast
+		// body, so it is now in the file a human pastes into Block Kit Builder". That
+		// body link went with broadcast (git-bug 7570090). The URL is STILL in every
+		// root capture — `root.go` renders the title as
+		// `<…/groups/<id>|OtoSmokeTest>` — so a corpus whose whole claim is "the exact
+		// bytes oto would send" still cannot carry a URL production refuses to
+		// produce. The sibling corpus in `internal/channels/render/slack/testdata/`
+		// always used `/groups/`; the two disagreed and this one was the wrong half.
 		Links: chdomain.Links{
 			Group:        "https://oto.example.com/groups/019fe297-d84f-7599-b5b2-1f231749104a",
 			Timeline:     "https://oto.example.com/groups/019fe297-d84f-7599-b5b2-1f231749104a/timeline",
@@ -339,17 +356,16 @@ func ackedView() *chdomain.NotificationView {
 	return v
 }
 
-// refiredView is the one routine broadcast left (`domain/broadcast.go`): a signal
-// that resolved and came back. It reaches the channel rather than only the thread
-// because a re-fire is the case a quiet thread hides worst.
-func refiredView() *chdomain.NotificationView {
-	v := baseView()
-	v.Reason = "refired"
-	v.Group.LastActivityAt = cardUpstreamStart.Add(20 * time.Minute)
-	v.Notifications = 2
-	v.RenderedAt = cardUpstreamStart.Add(20 * time.Minute)
-	return v
-}
+// ⛔ `refiredView` WAS HERE AND IS DELETED WITH THE CARD IT FED (git-bug 7570090).
+// It described "the one routine broadcast left … a signal that resolved and came
+// back", reaching the channel rather than only the thread "because a re-fire is the
+// case a quiet thread hides worst". Both halves are retired: broadcast is removed
+// from oto, and `refired` has had no producer since ADR 0040 retired T8. The
+// renderer's `refired` arm and its sentence are still under assertion in
+// `internal/channels/render/slack/golden_test.go`
+// (`TestAReplyTopLevelTextCarriesSeverityAndDuration`), which is the right place for
+// a Reason with no producer: a unit test rather than a fixture a human is asked to
+// paste into Block Kit Builder.
 
 // resolvedCardView is the receipt: the last version of the root message, and
 // the only trace of the incident a channel reader will ever scroll past.

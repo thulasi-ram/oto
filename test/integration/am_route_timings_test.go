@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 68 {
-		t.Fatalf("latest migration is %d, want 68 — this test pins the number so that a "+
+	if latest != 69 {
+		t.Fatalf("latest migration is %d, want 69 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -466,16 +466,21 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 			clockDefaults("channel_threads", "created_at", "updated_at") +
 			clockDefaults("silences", "mirrored_at")
 	}
-	// ⛔ The six tables 00034 deliberately did NOT touch. Their live writers OMIT
+	// ⛔ The five tables 00034 deliberately did NOT touch. Their live writers OMIT
 	// these columns, so a DEFAULT here is load-bearing rather than a trap, and an
 	// over-enthusiastic follow-up that "finished the job" would break the ingest
 	// path and the ui_events partition router. Asserted so that the exception is
 	// pinned rather than remembered.
+	//
+	// ⚠️ IT WAS SIX AND `alert_groups` WAS THE SIXTH, carrying two of the nine. 00069
+	// dropped that table, so counting it here would be counting a table that is not
+	// there — `clockDefaults` answers 0 for an absent one, which is exactly the
+	// vacuous reading this file refuses everywhere else. The exception 00034 recorded
+	// is unchanged for the five that remain; only the arithmetic moved.
 	keptDefaults := func() int {
 		t.Helper()
 		return clockDefaults("alerts", "created_at", "updated_at") +
 			clockDefaults("alert_cases", "created_at", "updated_at") +
-			clockDefaults("alert_groups", "created_at", "updated_at") +
 			clockDefaults("alert_event_keys", "created_at") +
 			clockDefaults("ui_events", "at") +
 			clockDefaults("alert_snoozes", "created_at")
@@ -492,8 +497,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 		t.Fatalf("%d column(s) still carry a DEFAULT now() that the repository already "+
 			"supplies explicitly; 00034 exists to take the database's clock off all of them", n)
 	}
-	if n := keptDefaults(); n != 9 {
-		t.Fatalf("the six tables 00034 deliberately left alone have %d defaults, want 9 — "+
+	if n := keptDefaults(); n != 7 {
+		t.Fatalf("the five tables 00034 deliberately left alone have %d defaults, want 7 — "+
 			"their live writers OMIT these columns, so dropping one is not tidying, it is a "+
 			"23502 on the ingest path or a ui_events row with no partition to go in", n)
 	}
@@ -999,26 +1004,22 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 			"full on the filter bar of the incident view", n)
 	}
 
-	// 00051 at the top of the stack, in both directions: the join table is GONE and
-	// its successor index is present. The partial predicate is asserted with the
-	// columns, because an index of this name without `WHERE ended_at IS NULL` spans
-	// every episode the generation ever held — the shape the two bounded reads do
-	// not want, and the shape gm_current_idx effectively had, since nothing ever
-	// wrote the `left_at` it was partial on.
+	// 00051 at the top of the stack: the join table is GONE.
+	//
+	// ⛔ ITS SUCCESSOR INDEX IS NO LONGER ASSERTED HERE, AND THAT IS NOT THE GATE
+	// GOING SOFT (git-bug `7570090`). `case_group_live_idx` was 00051's replacement
+	// for `alert_group_members` — the bounded read of one generation's live members
+	// — and 00069 drops it BY NAME along with `alert_cases.group_id`, because a
+	// conversation holds exactly one Case and "the live members of a generation" is
+	// no longer a question anything asks. Its absence at the top of the stack is
+	// asserted, positively, by 00069's own step further down in this same test —
+	// `countIndexes("notif_group_idx", "case_group_idx", "case_group_live_idx")`,
+	// which fails if ANY of the three survived. Leaving the old `def == ""` check
+	// here would have made 00069's own Up fail this test.
 	if memberTableExists() {
 		t.Fatal("alert_group_members still exists at the top of the stack; 00051 drops it, " +
 			"and while it is there two tables answer `what is in this generation` — one of " +
 			"them a table whose `left_at` no production code has ever written")
-	}
-	if def := indexDef("case_group_live_idx"); def == "" {
-		t.Fatal("case_group_live_idx is absent at the top of the stack; 00051 exists to create " +
-			"it, and without it the only read of a generation's live members sorts the whole " +
-			"membership to return twenty rows — on the detail page and on every ack, snooze " +
-			"and unsnooze reply that re-renders it")
-	} else if !strings.Contains(def, "ended_at IS NULL") {
-		t.Fatalf("case_group_live_idx is not partial at the top of the stack: %s — the predicate "+
-			"is half the decision, and an index over ended episodes too is a different index "+
-			"under the same name", def)
 	}
 
 	// ⭐ 00043 is comments and nothing else, which is exactly why it is asserted:
@@ -1149,7 +1150,345 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 		}
 	}
 
+	// Migrations land concurrently, and a migration this test has never heard of
+	// must not be rolled back unasserted underneath an assertion meant for another
+	// one. So the rollback is stepped by NAME: `down` refuses to move unless the
+	// top applied version is the one the next assertion is about.
+	appliedTop := func() int64 {
+		t.Helper()
+		st, err := migrate.Statuses(env.ctx, dsn)
+		if err != nil {
+			t.Fatalf("statuses: %v", err)
+		}
+		var top int64
+		for _, s := range st {
+			if s.Applied && s.Version > top {
+				top = s.Version
+			}
+		}
+		return top
+	}
+	// down rolls back exactly one migration and names the version it BELIEVED it
+	// was undoing, so an assertion that has drifted out of order fails as a
+	// drifted assertion rather than as a baffling introspection result three
+	// steps later.
+	down := func(want int64) {
+		t.Helper()
+		if top := appliedTop(); top != want {
+			t.Fatalf("about to roll back %s, but the top applied migration is %s",
+				migrate.FormatVersion(want), migrate.FormatVersion(top))
+		}
+		if err := migrate.Down(env.ctx, dsn); err != nil {
+			t.Fatalf("goose down %s: %v", migrate.FormatVersion(want), err)
+		}
+	}
+	// A column's declared nullability, as `information_schema` spells it: "YES" or
+	// "NO", and "" when the column is absent. 00058 is the only migration in this
+	// file whose subject is a NOT NULL rather than a constraint or a column, and
+	// nullability is invisible to every other reading here — `countColumns` counts
+	// the column either way, and no `pg_constraint` row carries it.
+	columnNullability := func(table, column string) string {
+		t.Helper()
+		var nullable string
+		if err := env.pool.QueryRow(env.ctx,
+			// Both sides cast to text for the reason `clockDefaults` casts them: the
+			// information_schema identifier columns are a domain over `name`.
+			`SELECT coalesce(max(is_nullable), '') FROM information_schema.columns
+			  WHERE table_name::text = $1 AND column_name::text = $2`, table, column).
+			Scan(&nullable); err != nil {
+			t.Fatalf("introspect %s.%s nullability: %v", table, column, err)
+		}
+		return nullable
+	}
+
+	// ⭐⭐⭐ 00069 DELETES AN ENTITY, AND IT IS THE FIRST STEP OF THE ROLLBACK RATHER
+	// THAN THE FOURTH FOR A STRUCTURAL REASON: EVERYTHING BELOW IT NEEDS
+	// `alert_groups` TO EXIST. 00066's Down runs `COMMENT ON COLUMN
+	// alert_groups.last_activity_at`, 00059's re-adds `storm_mode` and `storm_since`
+	// to the table, 00051's rebuilds `alert_group_members` with a foreign key into
+	// it, and 00050's Down rewrites five of its comments. Each of those is a 42P01
+	// against a schema where the table never came back, so `down(69)` is what makes
+	// the remaining forty steps addressable at all — and the seed block immediately
+	// below it inserts two generations and two `alert_cases.group_id` values, which is
+	// why it now lives UNDER this step instead of at the very top of the stack.
+	//
+	// ⚠️ WHICH MEANS THE ASSERTIONS AFTER `down(69)` READ THE 00068 WORLD, and every
+	// "top of the stack" reading further down this file reads it too. That is the same
+	// hazard the 00052 vocabulary boundary carries, one migration higher up: a name
+	// this migration deleted still resolves below `down(69)`, so an assertion placed
+	// on the wrong side of it passes VACUOUSLY.
+	//
+	// The Up half is asserted by ABSENCE, which is the only reading that catches what
+	// this migration is for. A `DROP TABLE` that ran and a `DROP TABLE` that was
+	// forgotten are indistinguishable at the exit code.
+	if n := countTables("alert_groups"); n != 0 {
+		t.Fatalf("alert_groups still exists at the top of the stack (%d) — 00069 drops the "+
+			"entity, and a surviving table is twenty-six columns of grouping decision that "+
+			"no operator can configure and nothing writes", n)
+	}
+	if n := countColumns("alert_cases", "group_id") + countColumns("notifications", "group_id"); n != 0 {
+		t.Fatalf("%d of the two group_id columns survived 00069 — `alert_cases.group_id` was "+
+			"THE MEMBERSHIP and `notifications.group_id` was THE DELIVERY TARGET, and both "+
+			"name a table that is gone", n)
+	}
+	// The two foreign keys are dropped BY NAME rather than left to DROP COLUMN's
+	// cascade, which is 00065's rule and 00068's: a migration that depends on drop
+	// order is not depending on being right.
+	if n := countConstraints("case_group_fk", "notifications_group_id_fkey"); n != 0 {
+		t.Fatalf("%d of the two foreign keys into alert_groups survived 00069 — each names a "+
+			"dropped column, so leaving either would make the schema depend on the cascade", n)
+	}
+	// ⛔ `grp_*` and `alert_groups_synthetic_idx` are deliberately NOT read here: they
+	// are indexes ON the dropped table and go with `DROP TABLE`, so asserting them
+	// would be asserting Postgres rather than this migration. These three are indexes
+	// on OTHER tables that happened to key on group_id, and each had to be named.
+	if n := countIndexes("notif_group_idx", "case_group_idx", "case_group_live_idx"); n != 0 {
+		t.Fatalf("%d of the three group_id indexes on surviving tables outlived 00069 — an "+
+			"index whose second key column is gone is not a smaller index, it is one the "+
+			"cascade dropped for reasons this migration never stated", n)
+	}
+	// ⭐ AND THE REPLACEMENT, which is the half a pure deletion would have missed.
+	// `notif_group_idx` served the policy throttle's windowed count; the throttle now
+	// keys on `conversation_id`, so dropping the index without this puts a query that
+	// runs on EVERY delivery decision onto a sequential scan. A missing index does not
+	// fail, it just gets slower, which is why it is pinned here.
+	if n := countIndexes("notif_conversation_idx"); n != 1 {
+		t.Fatalf("notif_conversation_idx does not exist at the top of the stack (%d) — 00069 "+
+			"drops notif_group_idx, and the policy throttle's windowed count moved to "+
+			"conversation_id with nothing indexing it unless this migration adds it", n)
+	}
+	// ⭐⭐ THE CONVERSATION KIND IS A REPLACEMENT, NOT A RENAME, and the pair of
+	// readings is the assertion: `alert_group` gone AND `case` present. A Down that
+	// swapped one for the other would be a rename, and the cardinality is the reason
+	// it is not — a generation held MANY cases and a conversation holds exactly ONE.
+	if def := constraintDef("notifications_convkind_ck", "notifications"); strings.Contains(def, "'alert_group'") {
+		t.Fatalf("notifications_convkind_ck still admits 'alert_group' at the top of the "+
+			"stack: %s — 00064 stored today's identity so that this swap would be a value "+
+			"change, and 00069 is the migration that makes it", def)
+	} else if !strings.Contains(def, "'case'") {
+		t.Fatalf("notifications_convkind_ck does not admit 'case' at the top of the stack: "+
+			"%s — the ruling is ONE CASE PER CONVERSATION, and a set of just `digest` leaves "+
+			"every signal delivery with no conversation kind it is allowed to name", def)
+	}
+	// Both subject sets narrow together. They are separate constraints on separate
+	// tables and 00056 widened them in lockstep, so a reading that moved one and not
+	// the other is a half-applied narrowing that no single constraint can report.
+	for _, s := range []struct{ name, table string }{
+		{"notifications_subjkind_ck", "notifications"},
+		{"threads_subjkind_ck", "channel_threads"},
+	} {
+		if def := constraintDef(s.name, s.table); strings.Contains(def, "'alert_group'") {
+			t.Fatalf("%s still admits 'alert_group' at the top of the stack: %s — the entity "+
+				"is deleted, and a subject kind naming a dropped table is a value the next "+
+				"reader has to rule out", s.name, def)
+		} else if !strings.Contains(def, "'case'") || !strings.Contains(def, "'digest'") {
+			t.Fatalf("%s no longer admits both 'case' and 'digest': %s — 00069 removes ONE "+
+				"value, so a short reading means it rewrote the list rather than editing it",
+				s.name, def)
+		}
+	}
+	// `notifications_subject_ck` NAMES group_id in its third arm, so it had to be
+	// rewritten before the column went rather than left to the cascade. Three arms now.
+	if def := constraintDef("notifications_subject_ck", "notifications"); strings.Contains(def, "group_id") {
+		t.Fatalf("notifications_subject_ck still names group_id at the top of the stack: %s — "+
+			"the arm ties subject_id to a column that no longer exists, and leaving it to "+
+			"DROP COLUMN's cascade would have taken the whole constraint with it", def)
+	}
+	// ⭐⭐ TWO REASONS GO AND ONE THAT LOOKS LIKE THEM STAYS, which is why `refired` is
+	// read here as well. `new_alerts` and `some_resolved` each assert a PLURALITY
+	// inside one conversation and have nothing left to be about; `refired` asserts
+	// nothing of the kind and stays DECLARED even though ADR 0040 left it with no
+	// producer. A sweep that removed all three would look identical at the exit code.
+	if def := constraintDef("notifications_reason_ck", "notifications"); strings.Contains(def, "'new_alerts'") ||
+		strings.Contains(def, "'some_resolved'") {
+		t.Fatalf("notifications_reason_ck still admits a plurality reason at the top of the "+
+			"stack: %s — both `new_alerts` and `some_resolved` describe part of a container "+
+			"that held many Cases, and a conversation holds exactly one", def)
+	} else if !strings.Contains(def, "'refired'") || !strings.Contains(def, "'all_resolved'") {
+		t.Fatalf("notifications_reason_ck dropped more than the two plurality reasons: %s — "+
+			"`refired` stays declared (that is a separate decision, not this one) and "+
+			"`all_resolved` stays because a Case resolving is a fact about the Case", def)
+	}
+	// The ceiling follows the enum, as it has in both directions since 00046.
+	if def := policyReasonsCheck(); !strings.Contains(def, "15") {
+		t.Fatalf("policies_reasons_ck does not bound reasons at 15 at the top of the stack: "+
+			"%s — the enum has fifteen values now, and sixteen is a cardinality no row can "+
+			"reach. ⛔ The ceiling moving is only half of it: the constraint does NOT test "+
+			"membership, so 00069 also has to strip the two values out of the arrays by hand",
+			def)
+	}
+	if def := constraintDef("deliveries_mode_ck", "notification_deliveries"); strings.Contains(def, "broadcast_reply") {
+		t.Fatalf("deliveries_mode_ck still admits 'broadcast_reply' at the top of the stack: "+
+			"%s — Slack thread-broadcast is removed outright by ruling, and a mode the schema "+
+			"admits that no dispatcher can choose is the dead-config defect four tickets "+
+			"closed", def)
+	} else if !strings.Contains(def, "thread_reply") {
+		t.Fatalf("deliveries_mode_ck no longer admits 'thread_reply': %s — 00069 removes ONE "+
+			"mode, and `all_resolved` survives as an ordinary reply in the Case's "+
+			"conversation, which is the mode that carries it", def)
+	}
+	// A column comment lives IN THE DATABASE, so only a COMMENT ON statement changes
+	// what an operator's `\d+` prints. This one told them the subject was an
+	// `alert_groups` generation, and the table is gone.
+	if c := columnComment("channel_threads", "subject_id"); !strings.Contains(c, "alert_cases.id") {
+		t.Fatalf("channel_threads.subject_id still describes its subject as %q at the top of "+
+			"the stack — it named the alert_groups GENERATION, and a live comment describing "+
+			"a dropped table is the defect 00066 made this same argument about one table over",
+			c)
+	}
+
+	down(69)
+
+	// ⛔ THE STRUCTURE COMES BACK AND THE ROWS DO NOT. Every generation, every
+	// membership and every delivery target is gone, and no statement in the Down
+	// records what they held. What the Down owes is a WALKABLE schema — see the
+	// ⭐⭐⭐ block above for the four migrations below this one that would 42P01
+	// without it — and the readings here are that debt, not a restored database.
+	if n := countTables("alert_groups"); n != 1 {
+		t.Fatal("alert_groups did not come back on 00069's Down — 00066's Down comments on " +
+			"its last_activity_at, 00059's re-adds two columns to it and 00051's builds a " +
+			"foreign key into it, so a missing table here is not this assertion failing, it " +
+			"is the next forty steps failing for a reason attributed to the wrong migration")
+	}
+	// ⭐ ALL TWENTY-SIX COLUMNS, COUNTED. A `CREATE TABLE` in a Down is the exact
+	// shape of edit whose characteristic defect is a forgotten line, and a forgotten
+	// column is SILENT: the table exists, the FKs attach, and the shortfall surfaces
+	// as a 42703 from 00059's Down or from a repository read forty steps later. It is
+	// twenty-six and not 00008's twenty-seven because 00059 took `storm_mode` and
+	// `storm_since` and 00039 added `synthetic`.
+	if n := countColumns("alert_groups",
+		"id", "org_id", "source_id", "cluster_id", "group_key", "generation", "source_group_key",
+		"receiver", "group_labels", "title", "state", "severity", "state_version",
+		"firing_count", "suppressed_count", "resolved_count", "expired_count", "total_count",
+		"acked_count", "last_notification_reason", "first_seen_at", "last_activity_at",
+		"closed_at", "created_at", "updated_at", "synthetic"); n != 26 {
+		t.Fatalf("alert_groups came back with %d of its twenty-six columns after 00069's "+
+			"Down — the release this rolls back to INSERTs every one of them, so a short "+
+			"table is a 42703 on the ingest path rather than a schema anybody can run", n)
+	}
+	// The unique key and the twelve CHECKs. `groups_storm_ck` is NOT among them: 00059
+	// dropped it with the two columns it paired, and its own Down is what puts it back.
+	if n := countConstraints("groups_key_gen_uniq", "groups_state_ck", "groups_key_ck",
+		"groups_gen_ck", "groups_title_ck", "groups_labels_ck", "groups_sver_ck",
+		"groups_counts_ck", "groups_acked_ck", "groups_closed_ck", "groups_corder_ck",
+		"groups_act_ck", "groups_time_ck"); n != 13 {
+		t.Fatalf("alert_groups came back with %d of its thirteen constraints after 00069's "+
+			"Down — a table restored without them is a table that accepts a group_key of the "+
+			"wrong shape, a count below zero and a closed group with no closed_at", n)
+	}
+	if n := countIndexes("grp_list_idx", "grp_open_idx", "grp_close_idx", "grp_first_seen_idx",
+		"alert_groups_synthetic_idx"); n != 5 {
+		t.Fatalf("alert_groups came back with %d of its five indexes after 00069's Down — "+
+			"grp_open_idx is the ingest hot path's generation lookup, so a rollback without "+
+			"it is a sequential scan per observation rather than a broken one", n)
+	}
+	// ⛔⛔ AND `groups_axes_ck` MUST NOT EXIST HERE EITHER. 00050 argued it out: a
+	// CHECK requiring `alertname` in `group_labels` cannot be added over pre-00050
+	// rows without making them permanently un-UPDATE-able, so the axis is an invariant
+	// of the writer and is not enforced in SQL. It has never existed, in either
+	// direction, and a Down that "helpfully" added it while re-creating the table
+	// would break the legacy generation the 00050 step below writes to.
+	if def := constraintDef("groups_axes_ck", "alert_groups"); def != "" {
+		t.Fatalf("groups_axes_ck exists after 00069's Down: %s — 00050 deliberately adds no "+
+			"axes CHECK, and re-creating the table is exactly the moment somebody adds one "+
+			"that was never there", def)
+	}
+	// ⭐⭐ THE COMMENTS ARE 00068's TEXT, NOT 00008's, AND THAT IS THE SUBTLE HALF OF
+	// THIS DOWN. A `CREATE TABLE` written from 00008 restores the table AND the 2026
+	// prose that four later migrations corrected: 00050 rewrote the table comment and
+	// four column comments, and 00066 rewrote `last_activity_at`. Both are read here
+	// because both are asserted again further down this file — 00066's step reads
+	// `last_activity_at` for the ABSENCE of "freezes its thread" and 00050's reads the
+	// table comment for "MACHINE-DERIVED" — and both of those would then be asserting
+	// against prose 00069's Down invented rather than against a rollback.
+	if c := columnComment("alert_groups", "last_activity_at"); !strings.Contains(c, "IT DOES NOT FREEZE THE THREAD") {
+		t.Fatalf("alert_groups.last_activity_at came back as %q after 00069's Down — the "+
+			"text 00068 shipped is 00066's correction, not 00008's original promise that "+
+			"going idle freezes the thread. Restoring the original would re-tell an operator "+
+			"a lie e5c060b was filed to remove, and would make 00066's own step below pass "+
+			"for the wrong reason", c)
+	}
+	if c := tableComment("alert_groups"); !strings.Contains(c, "MACHINE-DERIVED") {
+		t.Fatalf("alert_groups describes itself as %q after 00069's Down — 00050 replaced "+
+			"00008's \"Alertmanager notification group\" with the ADR 0038 sentence, and "+
+			"00050's own step below asserts exactly this string as its pre-Down state", c)
+	}
+	// The two columns, their foreign keys and their indexes.
+	if n := countColumns("alert_cases", "group_id") + countColumns("notifications", "group_id"); n != 2 {
+		t.Fatalf("%d of the two group_id columns came back on 00069's Down, want 2 — "+
+			"00051's Down rebuilds alert_group_members from `alert_cases.group_id` and "+
+			"00058's reads notifications.group_id, so a missing one fails several steps later",
+			n)
+	}
+	// ⚠️ NULLABLE, AND THIS IS THE READING THAT CATCHES THE OBVIOUS MISTAKE. 00011
+	// declared `notifications.group_id` NOT NULL and 00058:276 DROPPED that so a
+	// digest could omit a thread. A Down that restored it from 00011 would roll back
+	// to a schema no release ever shipped and would refuse every digest row.
+	if nullable := columnNullability("notifications", "group_id"); nullable != "YES" {
+		t.Fatalf("notifications.group_id came back is_nullable=%q after 00069's Down, want "+
+			"YES — it was NOT NULL from 00011 until 00058 dropped that for the digest, and "+
+			"the release this rolls back to writes a digest row with no thread to land in",
+			nullable)
+	}
+	if n := countConstraints("case_group_fk", "notifications_group_id_fkey"); n != 2 {
+		t.Fatalf("%d of the two foreign keys into alert_groups came back on 00069's Down, "+
+			"want 2 — the columns without them are two UUIDs that reference nothing", n)
+	}
+	if n := countIndexes("case_group_idx", "case_group_live_idx", "notif_group_idx"); n != 3 {
+		t.Fatalf("%d of the three group_id indexes came back on 00069's Down, want 3 — "+
+			"00051's Down asserts case_group_live_idx's partial predicate and 00052's counts "+
+			"all three under their pre-rename spellings", n)
+	}
+	if n := countIndexes("notif_conversation_idx"); n != 0 {
+		t.Fatalf("notif_conversation_idx survived 00069's Down (%d) — the Up created it as "+
+			"notif_group_idx's replacement, so leaving both behind is a duplicate index on "+
+			"the write-heaviest table in the schema", n)
+	}
+	// ⚠️ AND THE VOCABULARIES GO BACK, INCLUDING THE ONE THAT CAN FAIL. Re-widening is
+	// the half that always succeeds — nothing on disk can violate a check admitting
+	// strictly more — but `notifications_convkind_ck` is not a widening in this
+	// direction: it TRADES `case` for `alert_group`, so a row written under 00069
+	// would refuse it. That is stated in the migration header rather than papered
+	// over, and it is why this test can assert it at all: no row is written here.
+	if def := constraintDef("notifications_convkind_ck", "notifications"); !strings.Contains(def, "'alert_group'") {
+		t.Fatalf("notifications_convkind_ck did not go back to 'alert_group' after 00069's "+
+			"Down: %s — 00064's own Down restores conversation_id's comment promising an "+
+			"alert_groups.id, and the release this rolls back to writes exactly that", def)
+	}
+	if def := constraintDef("notifications_reason_ck", "notifications"); !strings.Contains(def, "'new_alerts'") ||
+		!strings.Contains(def, "'some_resolved'") {
+		t.Fatalf("notifications_reason_ck did not re-admit both plurality reasons after "+
+			"00069's Down: %s — the release this rolls back to mints both of them off a "+
+			"generation's counts", def)
+	}
+	if def := policyReasonsCheck(); !strings.Contains(def, "17") {
+		t.Fatalf("policies_reasons_ck did not go back to 17 after 00069's Down: %s — the "+
+			"ceiling IS the enum size and 00067 left it at seventeen. ⛔ Only the ceiling "+
+			"comes back: the policies whose reasons were stripped are NOT re-subscribed, "+
+			"because the array no longer records that the values were ever there", def)
+	}
+	if def := constraintDef("deliveries_mode_ck", "notification_deliveries"); !strings.Contains(def, "broadcast_reply") {
+		t.Fatalf("deliveries_mode_ck did not re-admit 'broadcast_reply' after 00069's Down: "+
+			"%s — the release this rolls back to still calls MsgOptionBroadcast, so without "+
+			"it the rollback lands on a schema that release cannot write a receipt to", def)
+	}
+	// The comment on a restored column does not come back with the column: it was
+	// dropped with it, and only a COMMENT ON puts it back.
+	if c := columnComment("notifications", "group_id"); !strings.Contains(c, "THE DELIVERY TARGET") {
+		t.Fatalf("notifications.group_id came back uncommented after 00069's Down (%q) — a "+
+			"comment is dropped with its column and restored only by a COMMENT ON, and this "+
+			"is the sentence that tells an operator group_id is not the subject", c)
+	}
+
 	// ⭐⭐ THE ROWS THE FOUR DATA-BEARING DOWN-STEPS BELOW ARE ABOUT.
+	//
+	// ⚠️ SEEDED UNDER `down(69)`, NOT AT THE TOP OF THE STACK, and that is forced
+	// rather than stylistic: two of the rows below are `alert_groups` generations and
+	// two more are `alert_cases` rows carrying a `group_id`, and 00069 deleted the
+	// table and the column. Above `down(69)` these INSERTs are a 42P01 and a 42703.
+	// The property the original placement was after is unchanged — the rows still
+	// travel through every Down that reads them, because all four of those steps are
+	// below this line.
 	//
 	// ⛔ A COUNT COMPARED AGAINST A COUNT IS NOT AN ASSERTION WHEN BOTH ARE ZERO, and
 	// all four of them were. 00052's row rewrites, 00051's membership rebuild,
@@ -1291,39 +1630,6 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 		t.Fatalf("seed a case-spelled SSE event: %v", err)
 	}
 
-	// Migrations land concurrently, and a migration this test has never heard of
-	// must not be rolled back unasserted underneath an assertion meant for another
-	// one. So the rollback is stepped by NAME: `down` refuses to move unless the
-	// top applied version is the one the next assertion is about.
-	appliedTop := func() int64 {
-		t.Helper()
-		st, err := migrate.Statuses(env.ctx, dsn)
-		if err != nil {
-			t.Fatalf("statuses: %v", err)
-		}
-		var top int64
-		for _, s := range st {
-			if s.Applied && s.Version > top {
-				top = s.Version
-			}
-		}
-		return top
-	}
-	// down rolls back exactly one migration and names the version it BELIEVED it
-	// was undoing, so an assertion that has drifted out of order fails as a
-	// drifted assertion rather than as a baffling introspection result three
-	// steps later.
-	down := func(want int64) {
-		t.Helper()
-		if top := appliedTop(); top != want {
-			t.Fatalf("about to roll back %s, but the top applied migration is %s",
-				migrate.FormatVersion(want), migrate.FormatVersion(top))
-		}
-		if err := migrate.Down(env.ctx, dsn); err != nil {
-			t.Fatalf("goose down %s: %v", migrate.FormatVersion(want), err)
-		}
-	}
-
 	// ⭐⭐ 00052 down: the whole `case` vocabulary becomes the `occurrence` one
 	// again. This is the FIRST step of the rollback, and every step below it
 	// depends on it having worked — a name that did not come back is not a failed
@@ -1387,25 +1693,6 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 			"— the assertion after 00052's Down is that this figure reaches zero, and a figure "+
 			"that was never four reaches zero without the Down doing anything at all", n)
 	}
-	// A column's declared nullability, as `information_schema` spells it: "YES" or
-	// "NO", and "" when the column is absent. 00058 is the only migration in this
-	// file whose subject is a NOT NULL rather than a constraint or a column, and
-	// nullability is invisible to every other reading here — `countColumns` counts
-	// the column either way, and no `pg_constraint` row carries it.
-	columnNullability := func(table, column string) string {
-		t.Helper()
-		var nullable string
-		if err := env.pool.QueryRow(env.ctx,
-			// Both sides cast to text for the reason `clockDefaults` casts them: the
-			// information_schema identifier columns are a domain over `name`.
-			`SELECT coalesce(max(is_nullable), '') FROM information_schema.columns
-			  WHERE table_name::text = $1 AND column_name::text = $2`, table, column).
-			Scan(&nullable); err != nil {
-			t.Fatalf("introspect %s.%s nullability: %v", table, column, err)
-		}
-		return nullable
-	}
-
 	// ⭐⭐ 00060 IS THREE ENUM NARROWINGS AND NOTHING ELSE: `notifications.reason`
 	// lost `storm`, `alert_events.type` gained a refusal of the four damper
 	// spellings that left with it, and `policies_reasons_ck`'s ceiling followed the
@@ -3364,32 +3651,31 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	}
 	// ⭐ THE WAY BACK UP RUNS THE WHOLE STACK, not a stop at 00044. `migrate.Up`
 	// above goes to the top, so 00044's Up re-creates `gm_current_idx` and then
-	// 00051 drops it again and 00052 renames its successor. Asserting the index
-	// is BACK would assert the state of a database eight migrations stale. What
-	// must be true at the top is the successor: `case_group_live_idx`, partial on
-	// the predicate something actually writes.
+	// 00051 drops it again, 00052 renames its successor and 00069 drops that.
+	// Asserting any of them is BACK would assert the state of a database many
+	// migrations stale.
 	if def := currentMemberIndexDef(); def != "" {
 		t.Fatalf("gm_current_idx is present at the top of the stack: %s — 00051 drops it and "+
 			"00052 renames its successor; an index for `alert_group_members` outliving the "+
 			"table is a rollback that only half happened", def)
 	}
-	// Its successor is asserted a few lines below, where the suite already checks
-	// the top-of-stack shape from the other direction.
-	// ⭐ AND THE TOP OF THE STACK, AGAIN, FROM THE OTHER DIRECTION. The rest of the
-	// suite runs against this schema, and the member plan test asserts a plan that
-	// only exists while case_group_live_idx does.
+	// ⭐ AND THE TOP OF THE STACK, AGAIN, FROM THE OTHER DIRECTION.
 	if memberTableExists() {
 		t.Fatal("alert_group_members is back after the way up — 00051's Up drops it, and a " +
 			"round trip that leaves it behind leaves two answers to `what is in this " +
 			"generation`, one of them stale from the moment the rollback ended")
 	}
-	if def := indexDef("case_group_live_idx"); def == "" {
-		t.Fatal("case_group_live_idx did not come back on the way up — the rest of the suite " +
-			"runs against this schema, and the member plan test asserts a plan that only " +
-			"exists while it does")
-	} else if !strings.Contains(def, "ended_at IS NULL") {
-		t.Fatalf("case_group_live_idx came back without its partial predicate: %s — the round "+
-			"trip has to restore the index, not merely the name", def)
+	// ⛔ `case_group_live_idx` WAS REQUIRED TO COME BACK HERE AND THAT IS NOW
+	// INVERTED (git-bug `7570090`). It was 00051's successor to `gm_current_idx` and
+	// the plan behind "the live members of one generation"; 00069 drops it BY NAME
+	// with `alert_cases.group_id`, because a conversation holds exactly one Case and
+	// nothing asks that question any more. The way back up therefore ends with the
+	// index ABSENT, and the old `def == ""` fatal would fire on a perfectly complete
+	// round trip. The member-plan test it defended went with the plan.
+	if def := indexDef("case_group_live_idx"); def != "" {
+		t.Fatalf("case_group_live_idx is present at the top of the stack after the round "+
+			"trip: %s — 00051 creates it and 00069 drops it, so a round trip that leaves it "+
+			"behind has restored an index on a column that no longer exists", def)
 	}
 	if n := rollupRangeIndexes("case_started_idx"); n != 2 {
 		t.Fatalf("%d of 00042's two range indexes came back on the way up, want 2 — the rest of "+

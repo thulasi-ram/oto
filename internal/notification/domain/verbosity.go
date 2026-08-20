@@ -46,15 +46,30 @@ func (v Verbosity) Normalise() Verbosity {
 // `all` is absent on purpose and is handled by AllowsReply: enumerating it would
 // invite the two lists to drift, and "all means all" is the one rule that must
 // never need maintenance.
+//
+// ⛔ `new_alerts` WAS IN ALL THREE SETS AND THE REASON IS DELETED (reason.go,
+// migration 00069, git-bug `7570090`). It asserted a plurality over a generation and
+// a conversation holds one Case, so there is nothing for it to count.
+//
+// ⭐⭐ IT WAS ALSO THE "FIRING" IN `firing_only` AND `firing_and_resolved`, AND A
+// READER WILL LOOK FOR IT. `fired` HAS NO REPLY at all (`hasReply` in mode.go): a
+// first fire IS the root card, and the root card is never gated by verbosity (§H.6),
+// so the firing half of both level names was always carried by the root and
+// `new_alerts` was the only reply either level admitted that spoke about a firing.
+// Removing it therefore removes no firing notification from any channel — it removes
+// the "a second instance joined" reply, which is a statement about a set of alerts
+// that oto no longer forms. What is left in the two quiet levels is nearly all
+// `ungatedReplies` restated, which is not a bug: this map is §H.6's table LITERALLY,
+// and the override below is the deliberate second statement.
 var replySets = map[Verbosity]map[Reason]bool{
 	VerbosityStatusChanges: {
 		ReasonAcked: true, ReasonUnacked: true, ReasonSuppressed: true,
 		ReasonUnsuppressed: true, ReasonExpired: true, ReasonRefired: true,
-		ReasonNewAlerts: true, ReasonAllResolved: true, ReasonRuleChanged: true,
+		ReasonAllResolved: true, ReasonRuleChanged: true,
 		ReasonComment: true, ReasonSnoozed: true, ReasonUnsnoozed: true,
 	},
 	VerbosityFiringAndResolved: {
-		ReasonNewAlerts: true, ReasonAllResolved: true, ReasonExpired: true,
+		ReasonAllResolved: true, ReasonExpired: true,
 		ReasonRuleChanged: true, ReasonSnoozed: true, ReasonUnsnoozed: true,
 	},
 	VerbosityFiringOnly: {
@@ -63,7 +78,7 @@ var replySets = map[Verbosity]map[Reason]bool{
 		// channel which asked for less has not asked to be lied to about oto
 		// withholding things — and oto withholds nothing now, so there is no such
 		// fact and no Reason naming one.
-		ReasonNewAlerts: true, ReasonRuleChanged: true, ReasonSnoozed: true,
+		ReasonRuleChanged: true, ReasonSnoozed: true,
 		ReasonUnsnoozed: true,
 	},
 }

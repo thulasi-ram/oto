@@ -46,13 +46,16 @@ var notifNow = time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
 // The ids this file addresses. They are CONSTANTS: a tenant probe whose ids
 // change per run cannot be reproduced from a failure message.
 var (
-	notifMine     = uuid.MustParse("019fe297-d84f-7599-b5b2-1f2317490101")
-	policyMine    = uuid.MustParse("019fe297-d84f-7599-b5b2-1f2317490201")
-	deliveryMine  = uuid.MustParse("019fe297-d84f-7599-b5b2-1f2317490301")
-	notifChannel  = uuid.MustParse("019fe297-d84f-7599-b5b2-1f2317490401")
-	notifGroup    = uuid.MustParse("019fe297-d84f-7599-b5b2-1f2317490501")
-	notifAlert    = uuid.MustParse("019fe297-d84f-7599-b5b2-1f2317490601")
-	notifOccurred = uuid.MustParse("019fe297-d84f-7599-b5b2-1f2317490701")
+	notifMine    = uuid.MustParse("019fe297-d84f-7599-b5b2-1f2317490101")
+	policyMine   = uuid.MustParse("019fe297-d84f-7599-b5b2-1f2317490201")
+	deliveryMine = uuid.MustParse("019fe297-d84f-7599-b5b2-1f2317490301")
+	notifChannel = uuid.MustParse("019fe297-d84f-7599-b5b2-1f2317490401")
+	notifAlert   = uuid.MustParse("019fe297-d84f-7599-b5b2-1f2317490601")
+	// notifCase is THE CONVERSATION. Since git-bug `7570090` a conversation holds
+	// exactly one Case, so the subject id, the conversation id and `case_id` are all
+	// this one value — asserting them as three separate ids would pin a distinction
+	// the schema no longer has.
+	notifCase = uuid.MustParse("019fe297-d84f-7599-b5b2-1f2317490701")
 )
 
 // renderedHash is a real SHA-256 spelling, because the contract pins
@@ -62,15 +65,17 @@ const renderedHash = "3b1f8c2e9a7d4f6b0c5e8a1d2f4b6c8e0a3d5f7b9c1e3a5d7f9b1c3e5a
 
 func notificationFixture(id, org uuid.UUID) domain.Notification {
 	alert := notifAlert
-	ac := notifOccurred
+	ac := notifCase
 	return domain.Notification{
-		ID:               id,
-		OrgID:            org,
-		SubjectKind:      domain.SubjectAlertGroup,
-		SubjectID:        notifGroup,
-		GroupID:          notifGroup,
-		ConversationKind: domain.ConversationAlertGroup,
-		ConversationID:   notifGroup,
+		ID:          id,
+		OrgID:       org,
+		SubjectKind: domain.SubjectCase,
+		SubjectID:   notifCase,
+		// The delivery target is the PAIR, and for a `fired` it names the same Case the
+		// subject does — `notifications_subject_ck` requires subject_id = case_id, and
+		// `notifications_convkind_ck` admits only `case` and `digest`.
+		ConversationKind: domain.ConversationCase,
+		ConversationID:   notifCase,
 		AlertID:          &alert,
 		CaseID:           &ac,
 		Reason:           domain.ReasonFired,
@@ -340,27 +345,11 @@ func (f *notifViews) Build(
 	return f.view, nil
 }
 
-// notifSubjects resolves an alert or case onto its group generation, and
-// refuses an id belonging to somebody else.
-type notifSubjects struct{ groupFor map[uuid.UUID]uuid.UUID }
-
-func (f *notifSubjects) GroupIDForAlert(
-	_ context.Context, _ db.TenantScope, alertID uuid.UUID,
-) (uuid.UUID, error) {
-	if g, ok := f.groupFor[alertID]; ok {
-		return g, nil
-	}
-	return uuid.Nil, errs.NotFound("alert_not_found", "no such alert")
-}
-
-func (f *notifSubjects) GroupIDForCase(
-	_ context.Context, _ db.TenantScope, caseID uuid.UUID,
-) (uuid.UUID, error) {
-	if g, ok := f.groupFor[caseID]; ok {
-		return g, nil
-	}
-	return uuid.Nil, errs.NotFound("case_not_found", "no such case")
-}
+// ⛔ `notifSubjects` WAS HERE AND IS DELETED (git-bug `7570090`). It faked
+// `SubjectResolver.GroupIDForAlert` / `GroupIDForCase` — "which `alert_groups`
+// generation would this preview land in" — and both methods are gone with the
+// entity. The preview now takes `case_id`, which IS the conversation, so there is
+// nothing left to resolve and no seam left to fake.
 
 // notifQueue is the Requeuer. The row moving back to `pending` is the durable
 // fact and the job insert is what makes it prompt, so the count matters.
@@ -391,7 +380,6 @@ type notifWorld struct {
 	deliveries *deliveryStore
 	preview    *notifPreviewer
 	views      *notifViews
-	subjects   *notifSubjects
 	queue      *notifQueue
 	client     *apitest.Client
 }
@@ -455,12 +443,11 @@ func newNotifWorld(t *testing.T) *notifWorld {
 		views: &notifViews{view: &service.NotificationView{
 			Reason: string(domain.ReasonFired),
 			Group: service.GroupView{
-				ID: notifGroup.String(), Title: "HighErrorRate",
+				ID: notifCase.String(), Title: "HighErrorRate",
 				GroupLabels: map[string]string{"severity": "critical"},
 			},
 		}},
-		subjects: &notifSubjects{groupFor: map[uuid.UUID]uuid.UUID{notifAlert: notifGroup}},
-		queue:    &notifQueue{},
+		queue: &notifQueue{},
 	}
 
 	rt := NewRouter(Options{
@@ -471,7 +458,6 @@ func newNotifWorld(t *testing.T) *notifWorld {
 		Deliveries:    w.deliveries,
 		Preview:       w.preview,
 		Views:         w.views,
-		Subjects:      w.subjects,
 		Enqueuer:      w.queue,
 		Clock:         clock.NewFake(notifNow),
 		BaseURL:       "https://oto.example.com",
@@ -547,7 +533,7 @@ func TestThePreviewSaysWhoWouldBeToldAndWritesNothing(t *testing.T) {
 	t.Parallel()
 
 	w := newNotifWorld(t)
-	body := map[string]any{"group_id": notifGroup.String(), "reason": "fired"}
+	body := map[string]any{"case_id": notifCase.String(), "reason": "fired"}
 	raw, err := json.Marshal(body)
 	if err != nil {
 		t.Fatalf("marshal fixture: %v", err)
@@ -894,23 +880,49 @@ func TestAnotherTenantsNotificationIdIsAlwaysA404(t *testing.T) {
 	}, routes)
 }
 
-// TestPreviewingAgainstAnotherTenantsAlertIsA404.
+// ⭐ THE PREVIEW REFUSES A SUBJECT IT COULD NOT READ, and this test replaced one that
+// asserted the opposite.
 //
-// The subject arrives in the BODY rather than the path, which is exactly why it
-// needs its own probe: a resolver that skipped the tenant clause would let an
-// operator discover which alert ids exist in somebody else's org, one 200 at a
-// time.
-func TestPreviewingAgainstAnotherTenantsAlertIsA404(t *testing.T) {
+// It supersedes `TestPreviewingAgainstAnotherTenantsAlertIsA404`, which probed
+// `alert_id` — a field the preview no longer accepts (git-bug `7570090`) — and then
+// `TestAPreviewAgainstAnUnreadableSubjectAnswers200`, which pinned the DEFECT that
+// briefly shipped in between.
+//
+// ⛔ THE DEFECT IS WORTH REMEMBERING BECAUSE OF HOW IT ARRIVED. `resolveSubject` used
+// to call `SubjectResolver.GroupIDForCase`, a TENANT-SCOPED read whose `case_not_found`
+// went straight to the caller. The port was deleted on the argument that the caller
+// "now supplies the answer directly" — true of RESOLUTION, false of the tenancy check
+// riding along inside it. The preview then answered 200 for another org's Case, with
+// the matcher running against no labels, and `openapi.yaml` still declaring a 404 that
+// nothing could produce. A port's stated purpose is not necessarily its whole purpose.
+//
+// This subject arrives in the BODY rather than the path, so it is the one subject
+// `apitest.AssertCrossTenant404` cannot reach — which is why it needs its own test.
+func TestAPreviewAgainstAnUnreadableSubjectIsA404(t *testing.T) {
 	t.Parallel()
 
 	w := newNotifWorld(t)
-	resp := w.client.POST(t, "/notification-policies/preview", map[string]any{
-		"alert_id": apitest.StrangerID.String(),
+	// The honest shape of "this Case is not yours": the scoped read refuses it. Which
+	// id the fake happens to know is not the point — the handler's duty is to surface
+	// a subject it could not read, whatever refused it.
+	w.views.err = errs.NotFound("case_not_found", "no such case")
+
+	w.client.POST(t, "/notification-policies/preview", map[string]any{
+		"case_id": apitest.StrangerID.String(),
 	}).MustStatus(t, http.StatusNotFound)
 
-	schema.AssertProblem(t, "previewNotificationPolicy", http.StatusNotFound, resp.Body())
+	// ⚠️ NO `schema.Assert` HERE, deliberately: the contract declares this response as
+	// `application/problem+json` and the schema asserter only covers declared JSON
+	// bodies. The problem shape is pinned centrally for every endpoint; what is
+	// specific to this one is the status and the matcher having been skipped.
+
+	// ⛔ AND THE MATCHER MUST NOT HAVE RUN. This is the assertion that makes the fix
+	// real rather than a status-code change: a routing verdict computed against a
+	// subject that was never read is a confidently wrong answer, and answering 404
+	// while still having evaluated policies would leave that half of the defect in
+	// place.
 	if len(w.preview.seen) != 0 {
-		t.Fatal("the matcher ran against an unresolved subject")
+		t.Fatalf("the matcher ran %d times against an unreadable subject", len(w.preview.seen))
 	}
 }
 
@@ -991,9 +1003,13 @@ func TestAPolicyNamingAnUnknownReasonNamesTheOffendingIndex(t *testing.T) {
 
 // TestAPreviewWithNoSubjectNamesTheFieldToSupply.
 //
-// Exactly one of alert_id / case_id / group_id. Previewing against the wrong
-// subject would produce a confidently wrong answer, which is the one thing this
-// endpoint must never do.
+// ⛔ IT USED TO SAY "exactly one of alert_id / case_id / group_id", AND THE ARITY
+// IS GONE WITH THE OTHER TWO FIELDS (git-bug `7570090`): `case_id` is the only
+// subject a preview takes, because a Case IS the conversation. The property under
+// test is unchanged and is the reason the arity could go — previewing against the
+// wrong subject would produce a confidently wrong answer, which is the one thing
+// this endpoint must never do — so the refusal must still NAME the field to supply
+// rather than being a bare 422.
 func TestAPreviewWithNoSubjectNamesTheFieldToSupply(t *testing.T) {
 	t.Parallel()
 
@@ -1002,7 +1018,7 @@ func TestAPreviewWithNoSubjectNamesTheFieldToSupply(t *testing.T) {
 		MustStatus(t, http.StatusUnprocessableEntity)
 
 	schema.AssertProblem(t, "previewNotificationPolicy", http.StatusUnprocessableEntity, resp.Body())
-	resp.MustViolate(t, "group_id")
+	resp.MustViolate(t, "case_id")
 
 	if len(w.preview.seen) != 0 {
 		t.Fatal("the matcher ran with no subject")
@@ -1019,7 +1035,7 @@ func TestAPreviewOfADraftThatBreaksTheDomainIsRefusedBeforeItRuns(t *testing.T) 
 
 	w := newNotifWorld(t)
 	resp := w.client.POST(t, "/notification-policies/preview", map[string]any{
-		"group_id": notifGroup.String(),
+		"case_id": notifCase.String(),
 		"policy": map[string]any{
 			"name":        "bad matcher → #sre",
 			"reasons":     []string{"fired"},

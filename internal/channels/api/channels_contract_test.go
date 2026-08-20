@@ -243,7 +243,7 @@ func slackDescriptor() domain.Descriptor {
 			`"properties":{"conversation_id":{"type":"string","pattern":"^[CGD][A-Z0-9]{8,}$"}}}`),
 		CredentialKinds: []string{"slack_bot_token"},
 		Capabilities: domain.CapThreading | domain.CapAmend | domain.CapRichLayout |
-			domain.CapInteractive | domain.CapBroadcast,
+			domain.CapInteractive,
 		Renderers:      []domain.RendererID{domain.RendererSlackDefault},
 		RateLimitClass: "slack",
 	}
@@ -840,8 +840,20 @@ func TestEveryCapabilityBitHasAWireNameTheContractAdmits(t *testing.T) {
 	t.Parallel()
 
 	w := newChanWorld(t)
+	// ⛔ `domain.CapBroadcast` WAS A TERM HERE AND IS DELETED (git-bug 7570090). The
+	// bit is gone from the bitset and its wire name is gone from `capabilityNames`,
+	// so it can neither be set nor served.
+	//
+	// ⚠️ THE RETIRED BIT POSITION IS DELIBERATELY NOT SET, AND "EVERY BIT" NOW MEANS
+	// "every NAMED bit". `channels.capabilities` is a persisted BIGINT and the iota
+	// positions are a stored wire contract, so `channels/domain` holds bit 4 open
+	// with a `_` placeholder rather than letting `CapDedupeKey` slide from 32 to 16.
+	// A held-open bit has no wire name on purpose — giving one to a retired
+	// capability would put something on the contract no provider can advertise — and
+	// the assertion below compares against `len(capabilityNames)`, which is the list
+	// that actually has to stay complete.
 	all := domain.CapThreading | domain.CapAmend | domain.CapRichLayout |
-		domain.CapInteractive | domain.CapBroadcast | domain.CapDedupeKey
+		domain.CapInteractive | domain.CapDedupeKey
 
 	d := slackDescriptor()
 	d.Capabilities = all

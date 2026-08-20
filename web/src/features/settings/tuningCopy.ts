@@ -263,10 +263,19 @@ export type KnobKind =
   | "count"
   | "days"
   | "months"
-  | "verbosity"
-  | "boolean";
+  | "verbosity";
 
-/* ⛔ `mentionMode`, `mentionList` and `severity` WERE KINDS HERE AND ARE DELETED
+/* ⛔ `boolean` WAS A KIND HERE AND IS DELETED (git-bug 7570090). It existed for
+   exactly one knob, `broadcast_on_resolved`, and Slack thread-broadcast is gone —
+   there is no broadcast for an org to opt into, so the knob went and the kind went
+   with it. `verbosity` is now the only non-numeric kind, which is why
+   `isNumeric()` and `KnobKind` between them still cover every knob.
+
+   ⚠️ IF A BOOLEAN KNOB RETURNS, THE CHECKBOX BRANCH IN `TuningSection.tsx` HAS TO
+   COME BACK WITH IT — it was deleted, not disabled, and its label was written for
+   the broadcast rather than for booleans in general.
+
+   ⛔ `mentionMode`, `mentionList` and `severity` WERE KINDS HERE AND ARE DELETED
    (git-bug bd0fb1d). They existed only for the unacked reminder's mention
    audience, which the owner ruled goes with the reminder. No knob has those
    kinds any more, so their option tables and their controls in TuningSection.tsx
@@ -598,24 +607,21 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
       "Nothing in alertmanager.yml bears on this. Set it to the quietest setting most of your channels want, rather than repeating yourself on each one.",
   },
 
-  broadcast_on_resolved: {
-    key: "broadcast_on_resolved",
-    kind: "boolean",
-    label: "Broadcast when everything resolves",
-    what: "Whether the all-resolved transition surfaces in the channel rather than being posted quietly in the thread. It is the only broadcast an org can configure, and today it is the only broadcast oto sends at all: a re-fire now opens a new case with its own message rather than replying into a thread people stopped following. The bar for surfacing anything in the channel is that the quiet form of the fact would be genuinely invisible, because a broadcast cannot be un-sent.",
-    risks: [
-      {
-        label: "If it is on",
-        text: "It doubles channel traffic for the least urgent fact oto has, on a busy channel. A broadcast cannot be un-sent — Slack documents nothing that removes a channel reference once made — and the bar is whether someone who was asleep would be angry to have missed it, not whether it is interesting. Nobody was ever woken because a resolve arrived quietly.",
-      },
-      {
-        label: "If it is off",
-        text: "On a quiet channel, closure is genuinely welcome and this withholds it. oto's primary verb is an in-place edit of the card, and an edit is completely silent: with this off, the only in-channel evidence that an outage ended is a message that changed and told nobody.",
-      },
-    ],
-    amRule:
-      "Nothing in alertmanager.yml bears on this. It interacts with verbosity instead: broadcast is decided per transition and then modulated by the destination channel's verbosity, so a channel that has opted out of thread replies does not receive louder ones.",
-  },
+  /* ⛔ `broadcast_on_resolved` WAS THE KNOB HERE AND IT IS DELETED (git-bug
+     7570090), not reworded. It was the only `kind: "boolean"` knob, and earlier
+     tonight its copy said it was the ONLY broadcast oto could still send — a
+     re-fire had stopped replying into a stale thread, which left the all-resolved
+     echo alone. The owner then removed Slack thread-broadcast ENTIRELY: no
+     `reply_broadcast` is sent for any transition, so there is no longer a
+     broadcast for this switch to permit. A knob whose only two positions produce
+     the same delivery is worse than a missing one, because the operator who turns
+     it on believes they changed something.
+
+     The bar it encoded is worth keeping even though the control is gone: the test
+     for surfacing anything in the channel was that the QUIET form of the fact
+     would be genuinely invisible, because a broadcast cannot be un-sent — Slack
+     documents nothing that removes a channel reference once made. ADR 0020 holds
+     that reasoning; it is not restated as UI copy for a control nobody can see. */
 
   /* ---- retention --------------------------------------------------------- */
 
@@ -677,11 +683,10 @@ export const KNOB_GROUPS: readonly KnobGroup[] = [
     id: "channel",
     title: "What reaches the channel",
     blurb:
-      "oto's primary verb is an in-place edit of a card, and an edit is completely silent — no notification, no unread, nothing rises in the channel. These settings decide what is allowed to be louder than that.",
-    keys: [
-      "default_verbosity",
-      "broadcast_on_resolved",
-    ],
+      "oto's primary verb is an in-place edit of a card, and an edit is completely silent — no notification, no unread, nothing rises in the channel. Verbosity decides how much is allowed to be louder than that. Nothing here can make oto broadcast: thread-broadcast is removed, so every transition oto reports lands in the thread and nowhere else.",
+    // ⛔ `broadcast_on_resolved` WAS THE SECOND KEY AND IS DELETED (git-bug
+    // 7570090). Verbosity is the whole group now.
+    keys: ["default_verbosity"],
   },
   {
     id: "retention",

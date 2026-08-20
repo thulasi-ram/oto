@@ -14,6 +14,15 @@ import (
 // The bits are oto's internal negotiation currency; the strings are the wire. The
 // mapping lives in exactly one place so a new capability cannot appear on the
 // wire without appearing here.
+//
+// ⛔ `{domain.CapBroadcast, "broadcast"}` WAS HERE AND IS DELETED (git-bug
+// 7570090). The bit is gone from the bitset, so nothing can set it and no
+// descriptor can serve the name. The RETIRED BIT POSITION is still held open in
+// `channels/domain/ports.go` — the bitmask is persisted — but a retired bit has no
+// wire name, and giving it one would put a capability on the contract that no
+// provider can advertise. `broadcast` may linger in the contract's capability enum
+// until the OpenAPI catches up; an enum admits more than any descriptor serves,
+// which is why that direction is safe and this one is not.
 var capabilityNames = []struct {
 	bit  domain.Capability
 	name string
@@ -22,7 +31,6 @@ var capabilityNames = []struct {
 	{domain.CapAmend, "amend"},
 	{domain.CapRichLayout, "rich_layout"},
 	{domain.CapInteractive, "interactive"},
-	{domain.CapBroadcast, "broadcast"},
 	{domain.CapDedupeKey, "dedupe_key"},
 }
 

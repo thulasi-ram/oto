@@ -34,10 +34,18 @@ func TestMain(m *testing.M) { harness.Main(m) }
 // somebody else's tenant — which showed up as `notifications_org_id_fkey:
 // references a row that is gone`.
 type fixture struct {
-	pool     *pgxpool.Pool
-	scope    db.TenantScope
-	orgID    uuid.UUID
-	groupID  uuid.UUID
+	pool  *pgxpool.Pool
+	scope db.TenantScope
+	orgID uuid.UUID
+	// caseID is THE CONVERSATION.
+	//
+	// ⛔ IT WAS `groupID`, AN `alert_groups` GENERATION (git-bug `7570090`, migration
+	// `00069`). Every test in this package addressed the group because the group owned
+	// the thread; a conversation holds exactly one Case, so the Case owns it now and
+	// this is the id every `Intent`, every `channel_threads` row and every
+	// `notifications.conversation_id` below names.
+	caseID   uuid.UUID
+	alertID  uuid.UUID
 	policyID uuid.UUID
 	channel  domain.Channel
 }
@@ -48,8 +56,8 @@ func newFixture(t *testing.T, caps domain.Capability) fixture {
 	h := harness.New(t)
 	org := h.Org()
 	cluster := h.Cluster(org)
-	source := h.Source(org, cluster)
-	group := h.Group(org, source, cluster)
+	alert := h.Alert(org, cluster)
+	ac := h.Case(alert)
 
 	var (
 		channelID = id.New()
@@ -76,16 +84,29 @@ func newFixture(t *testing.T, caps domain.Capability) fixture {
 		channelID, org.ID, "chan-"+suffix, int64(caps), h.Now())
 	// Same story on `notification_policies`, which 00034 took the database's
 	// `DEFAULT now()` away from for the same reason.
+	//
+	// ⛔ THE SECOND REASON WAS `new_alerts`, WHICH IS DELETED (git-bug `7570090`): it
+	// asserted a plurality, and a conversation holds one Case.
+	//
+	// ⭐ `all_resolved` IS ITS SUCCESSOR HERE, AND `domain/mode.go:hasReply` NAMES IT
+	// AS SUCH RATHER THAN THIS BEING A GUESS: the tests that need a second reason need
+	// one PROPERTY from it — a fact that amends the root card AND ALSO earns a thread
+	// reply — and `all_resolved` is the Reason that inherited exactly that shape from
+	// the two deleted ones. It has to be a Reason the DEFAULT verbosity admits a reply
+	// for; `enriched` is in neither `replySets[status_changes]` nor `ungatedReplies`,
+	// so it amends the root and drops the reply, and the two-row assertions would see
+	// one row.
 	h.Exec(`INSERT INTO notification_policies (id, org_id, name, priority, reasons, channel_ids,
 	           created_at, updated_at)
-	        VALUES ($1,$2,$3,1,ARRAY['fired','new_alerts'],ARRAY[$4::uuid],$5,$5)`,
+	        VALUES ($1,$2,$3,1,ARRAY['fired','all_resolved'],ARRAY[$4::uuid],$5,$5)`,
 		policyID, org.ID, "pol-"+suffix, channelID, h.Now())
 
 	return fixture{
 		pool:     h.Pool,
 		scope:    org.Scope,
 		orgID:    org.ID,
-		groupID:  group.ID,
+		caseID:   ac.ID,
+		alertID:  alert.ID,
 		policyID: policyID,
 		channel: domain.Channel{
 			ID:             channelID,
@@ -145,7 +166,7 @@ func (s snapshots) Snapshot(
 	return domain.Snapshot{
 		Org: domain.OrgFacts{ID: s.fx.orgID, Slug: "org", Name: "Org"},
 		Group: domain.GroupFacts{
-			ID: q.GroupID, GroupKey: "gk", Generation: 1, Title: "A group",
+			ID: q.CaseID, GroupKey: "", Generation: 1, Title: "A case",
 			GroupLabels: map[string]string{"severity": "critical"},
 			State:       "open", Severity: "critical", StateVersion: 1,
 			FiringCount: 1, TotalCount: 1,

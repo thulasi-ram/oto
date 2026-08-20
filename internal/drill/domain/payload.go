@@ -28,23 +28,27 @@ const DrillLabel = "oto_drill"
 
 // Receiver is the Alertmanager receiver name a drill claims.
 //
-// ⛔ IT NO LONGER SEPARATES A DRILL'S THREAD FROM ANYTHING. Until ADR 0038 the
-// §C.4 key hashed `receiver` and Alertmanager's groupLabels, so this constant
-// plus the per-drill nonce in `groupLabels` gave every drill its own generation.
-// The key is now `(org, cluster, alertname, namespace-or-∅)`, and neither the
-// receiver nor the nonce is an axis.
+// ⛔ IT SEPARATES NOTHING, AND NOTHING NEEDS IT TO. Until ADR 0038 the §C.4 key
+// hashed `receiver` and Alertmanager's groupLabels, so this constant plus the
+// per-drill nonce in `groupLabels` gave every drill its own generation. ADR 0038
+// narrowed the key to `(org, cluster, alertname, namespace-or-∅)` — neither the
+// receiver nor the nonce an axis — and git-bug `7570090` deleted the key, the
+// generation and `alert_groups` outright. The value survives because a real
+// Alertmanager payload carries a receiver name and this one is a faithful forgery.
 //
 // What still holds, and is the property that mattered: a drill CANNOT post into
 // the thread of a real incident, because `AlertName` is oto's own and no real
 // rule is called `OtoDeliveryDrill`.
 //
-// ⚠️ WHAT NO LONGER HOLDS: two drills fired inside `group_close_delay` now share
-// ONE generation and one thread. Each still has its own Alert and its own case —
-// `DrillLabel` carries a nonce and labels are alert identity — but disposing the
-// first drill deletes the shared synthetic generation out from under the second,
-// which degrades its result screen. Isolating drills again means giving each one
-// its own value on an AXIS; it is not fixed here because inventing one would be a
-// grouping rule for exactly one caller, which is the thing ADR 0038 forbids.
+// ⭐ AND THE HOLE ADR 0038 OPENED IS NOW CLOSED, WHICH IS WORTH RECORDING BECAUSE THE
+// FIX CAME FROM ELSEWHERE. Between ADR 0038 and `7570090` two drills fired inside
+// `group_close_delay` shared ONE generation and one thread, so disposing the first
+// deleted the second's evidence out from under it, and `dispose.go` carried a
+// `NOT EXISTS` guard for exactly that. A conversation now holds exactly one Case and
+// a Case belongs to exactly one Alert, so the nonce that always separated the drills'
+// ALERTS separates their conversations too — by identity rather than by a grouping
+// axis invented for one caller, which is the thing ADR 0038 forbade and the reason
+// this was never fixed here.
 const Receiver = "oto-delivery-drill"
 
 // FiringFor is how long a drill's alert claims to have been firing when it
@@ -128,16 +132,22 @@ func BuildPayload(in PayloadInput) ([]byte, error) {
 
 	// ⛔ oto DOES NOT READ THESE. The envelope carries `groupLabels` because a
 	// drill's payload must be byte-shaped like Alertmanager's, and this is what a
-	// real webhook would put here — but since ADR 0038 oto derives the group's
-	// labels from the alert's own set and ignores the envelope's. They are kept so
-	// the drill remains a faithful forgery of an Alertmanager delivery, and they
-	// are recorded verbatim in `ingest_batches.payload` like any other body.
+	// real webhook would put here — but oto has ignored the envelope's since ADR
+	// 0038. They are kept so the drill remains a faithful forgery of an Alertmanager
+	// delivery, and they are recorded verbatim in `ingest_batches.payload` like any
+	// other body.
+	//
+	// ⚠️ `groupLabels` IS ALERTMANAGER'S WORD AND NOT OTO'S ANY MORE (git-bug
+	// `7570090`). oto has no AlertGroup, so there is nothing here for a group of oto's
+	// to be labelled by; what this map is, and all it ever was on the wire, is the
+	// upstream's own statement of which labels it collapsed on.
 	//
 	// The trade-off they used to encode is now settled elsewhere and in oto's
 	// favour: a policy matching `namespace` matches a drill exactly when it would
-	// match a real alert, because both groups' labels are `SplitLabels` of the
-	// alert — no longer "whatever the operator put in `group_by`". The result
-	// screen still names the policy that matched.
+	// match a real alert, because a policy is matched against the ALERT's own label
+	// set — no longer against `SplitLabels` of a generation, and never "whatever the
+	// operator put in `group_by`". The result screen still names the policy that
+	// matched.
 	groupLabels := map[string]string{
 		"alertname": AlertName,
 		"severity":  severity,
@@ -149,7 +159,7 @@ func BuildPayload(in PayloadInput) ([]byte, error) {
 	annotations := map[string]string{
 		"summary": "Delivery drill from oto. Nothing is wrong.",
 		"description": "This alert was manufactured by oto and pushed through the same ingest " +
-			"endpoint, the same state machine, the same grouping, the same notification policy and " +
+			"endpoint, the same state machine, the same Case, the same notification policy and " +
 			"the same delivery path a real alert takes. Seeing this card means every one of those " +
 			"stages works. It is excluded from all alert statistics and is deleted automatically.",
 	}

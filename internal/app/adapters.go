@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -20,9 +18,6 @@ import (
 	enrichdomain "github.com/thulasiram/oto/internal/enrichment/domain"
 	enrichrepo "github.com/thulasiram/oto/internal/enrichment/repository"
 	enrichservice "github.com/thulasiram/oto/internal/enrichment/service"
-	groupingapi "github.com/thulasiram/oto/internal/grouping/api"
-	groupingdomain "github.com/thulasiram/oto/internal/grouping/domain"
-	groupingservice "github.com/thulasiram/oto/internal/grouping/service"
 	identityservice "github.com/thulasiram/oto/internal/identity/service"
 	ingestiondomain "github.com/thulasiram/oto/internal/ingestion/domain"
 	ingestionservice "github.com/thulasiram/oto/internal/ingestion/service"
@@ -315,7 +310,8 @@ func (r notificationReader) ListForAlert(
 	for _, n := range rows {
 		out = append(out, alertsservice.NotificationSummary{
 			ID:               n.ID,
-			GroupID:          n.GroupID,
+			SubjectKind:      string(n.SubjectKind),
+			SubjectID:        n.SubjectID,
 			AlertID:          n.AlertID,
 			CaseID:           n.CaseID,
 			Reason:           n.Reason,
@@ -372,75 +368,6 @@ func (r notificationReader) rollup(
 	return alertsservice.DeliveryRollup(got), nil
 }
 
-// groupDeliveryRollups is `grouping/api.DeliveryRollupReader`.
-//
-// A group generation is the subject oto actually notifies about — the intents are
-// keyed on it — so this is the least derived of the three roll-ups and the one an
-// operator reads first when a channel has gone quiet.
-type groupDeliveryRollups struct {
-	svc *notifservice.HistoryService
-}
-
-func (g groupDeliveryRollups) DeliveryRollupForGroup(
-	ctx context.Context, s db.TenantScope, groupID uuid.UUID,
-) (groupingapi.DeliveryRollup, error) {
-	if g.svc == nil {
-		return groupingapi.DeliveryRollup{}, nil
-	}
-	got, err := g.svc.DeliveryRollup(ctx, s, notifrepo.RollupGroup, groupID)
-	if err != nil {
-		return groupingapi.DeliveryRollup{}, err
-	}
-	// Field-identical by construction: the conversion is the same compile-checked
-	// copy `notificationReader.rollup` makes for the alerts-side type.
-	return groupingapi.DeliveryRollup(got), nil
-}
-
-// subjectResolver is `notification/api.SubjectResolver`: it maps an alert or an
-// case onto the group generation whose card would carry the fact.
-//
-// Routing is about the GROUP — routing two members of one group to two channels
-// would split one conversation across two rooms — so a preview asked about an
-// alert has to resolve that alert's group first.
-type subjectResolver struct {
-	alerts   *alertsservice.Service
-	grouping *groupingservice.Service
-}
-
-func (r subjectResolver) GroupIDForAlert(
-	ctx context.Context, s db.TenantScope, alertID uuid.UUID,
-) (uuid.UUID, error) {
-	if r.grouping == nil {
-		return uuid.Nil, errs.Unavailable("grouping_unavailable",
-			"group resolution is not wired in this deployment", 0)
-	}
-	members, err := r.grouping.GroupsForAlert(ctx, s, alertID, 1)
-	if err != nil {
-		return uuid.Nil, err
-	}
-	if len(members) == 0 {
-		return uuid.Nil, errs.NotFound("group_not_found", "this alert is not in any group")
-	}
-	return members[0].GroupID(), nil
-}
-
-func (r subjectResolver) GroupIDForCase(
-	ctx context.Context, s db.TenantScope, caseID uuid.UUID,
-) (uuid.UUID, error) {
-	if r.alerts == nil {
-		return uuid.Nil, errs.Unavailable("alerts_unavailable",
-			"case resolution is not wired in this deployment", 0)
-	}
-	ac, err := r.alerts.GetCase(ctx, s, caseID)
-	if err != nil {
-		return uuid.Nil, err
-	}
-	if ac.GroupID() == uuid.Nil {
-		return uuid.Nil, errs.NotFound("group_not_found", "this case is not in any group")
-	}
-	return ac.GroupID(), nil
-}
-
 // ---------------------------------------------------------------- enrichment
 
 // subjectLoader is `enrichment/service.SubjectLoader`.
@@ -450,10 +377,9 @@ func (r subjectResolver) GroupIDForCase(
 // through a SERVICE — never another module's repository — which is why this
 // lives here and not in `enrichment/repository`.
 type subjectLoader struct {
-	alerts   *alertsservice.Service
-	grouping *groupingservice.Service
-	sources  *sourcesservice.Service
-	occSrc   *caseSourceReader
+	alerts  *alertsservice.Service
+	sources *sourcesservice.Service
+	occSrc  *caseSourceReader
 }
 
 func (l subjectLoader) LoadSubject(
@@ -479,7 +405,7 @@ func (l subjectLoader) LoadSubject(
 
 	out := enrichservice.Loaded{
 		AlertID: alert.ID(),
-		GroupID: ac.GroupID(),
+		CaseID:  ac.ID(),
 		Subject: enrichdomain.Subject{
 			OrgID:       s.OrgID().String(),
 			SubjectKind: "case",
@@ -507,14 +433,12 @@ func (l subjectLoader) LoadSubject(
 		},
 	}
 
-	// The group's state_version pins a late enrichment to the group state it was
-	// minted against (§C.7), which is what stops an amended card resending an old
-	// one. No group means nothing to amend, and that is not an error.
-	if out.GroupID != uuid.Nil && l.grouping != nil {
-		if v, verr := l.grouping.StateVersion(ctx, s, out.GroupID); verr == nil {
-			out.StateVersion = v
-		}
-	}
+	// ⛔ THE GROUP `state_version` PIN WAS HERE AND IS DELETED (git-bug `7570090`).
+	// It pinned a late enrichment to the group state it was minted against (§C.7),
+	// so an amended card could not resend an older one. ⚠️ THIS IS A REAL GUARANTEE
+	// LOST, NOT A DEAD BRANCH: the Case needs its own version for the same job, and
+	// until it has one an enrichment that lands after a Case has moved on can amend
+	// against a stale view. Recorded on the ticket rather than papered over.
 
 	// The source is only needed by enrichers that call upstream. Failing to
 	// resolve it must not fail the run: a missing SourceRef degrades promrule to
@@ -709,31 +633,6 @@ func (o orgSettings) Lifecycle(ctx context.Context, s db.TenantScope) (alertsser
 	}, nil
 }
 
-// GroupLifecycle serves `grouping/service.SettingsReader`.
-//
-// ⛔ IT WAS `Storm` AND RETURNED FOUR NUMBERS: `storm_threshold`, `storm_window_s`,
-// `storm_cooldown_s` and `group_close_delay_s`. Storm damping is removed
-// (`grouping/domain/lifecycle.go`), so the close delay is the whole policy — and the
-// three `storm_*` keys are gone from the settings API and from
-// `identity/domain.settingBounds`, which is where a settings key is declared:
-// `orgs.settings` is one JSONB document and no migration drops a key from it.
-//
-// The method is not called `Lifecycle` because `alerts/service.Lifecycle` above already
-// is, and one receiver cannot answer two ports with one name and two return types.
-func (o orgSettings) GroupLifecycle(
-	ctx context.Context, s db.TenantScope,
-) (groupingdomain.LifecyclePolicy, error) {
-	if o.svc == nil {
-		return groupingdomain.DefaultLifecyclePolicy(), nil
-	}
-	org, err := o.svc.GetOrg(ctx, s)
-	if err != nil {
-		return groupingdomain.DefaultLifecyclePolicy(), nil
-	}
-	cfg := org.Settings.Normalise()
-	return groupingdomain.LifecyclePolicy{CloseDelay: cfg.GroupCloseDelay}.Normalise(), nil
-}
-
 // NotificationDefaults serves `notification/service.SettingsReader` from
 // `orgs.settings`: which transitions surface in the channel (ADR 0020), and the
 // fallback verbosity for a Channel that names none.
@@ -757,10 +656,11 @@ func (o orgSettings) GroupLifecycle(
 func (o orgSettings) NotificationDefaults(
 	ctx context.Context, s db.TenantScope,
 ) (notifservice.OrgDefaults, error) {
-	def := notifservice.OrgDefaults{
-		Broadcast: notifdomain.DefaultBroadcastPolicy(),
-		Verbosity: notifdomain.VerbosityStatusChanges,
-	}
+	// ⛔ `Broadcast: notifdomain.DefaultBroadcastPolicy()` WAS HERE AND IS DELETED
+	// (git-bug `7570090`): thread-broadcast is removed from oto, so there is no org
+	// policy over which transitions surface in the channel. Verbosity is the whole of
+	// this adapter now.
+	def := notifservice.OrgDefaults{Verbosity: notifdomain.VerbosityStatusChanges}
 	if o.svc == nil {
 		return def, nil
 	}
@@ -770,32 +670,11 @@ func (o orgSettings) NotificationDefaults(
 	}
 	cfg := org.Settings.Normalise()
 	return notifservice.OrgDefaults{
-		Broadcast: notifdomain.BroadcastPolicy{Resolved: cfg.BroadcastOnResolved},
 		Verbosity: notifdomain.Verbosity(cfg.DefaultVerbosity),
 	}, nil
 }
 
 // ---------------------------------------------------------------- late binding
-
-// groupVersions is `alerts/service.GroupVersionReader`, late-bound.
-//
-// `alerts` is constructed before `grouping` (grouping needs the alert timeline
-// and the member actions), but `alerts` needs a group's `state_version` to mint
-// a notify job's idempotency key (§C.7). The service-level cycle is broken here
-// rather than by widening either module.
-//
-// Version 0 is the documented degraded answer: the notify worker resolves the
-// real version at evaluation time.
-type groupVersions struct {
-	svc *groupingservice.Service
-}
-
-func (g *groupVersions) StateVersion(ctx context.Context, s db.TenantScope, groupID uuid.UUID) (int, error) {
-	if g == nil || g.svc == nil {
-		return 0, nil
-	}
-	return g.svc.StateVersion(ctx, s, groupID)
-}
 
 // `notification` is late-bound for the same reason — it is constructed after
 // `alerts` — but it needs no holder type of its own. The container hands `alerts`
@@ -804,14 +683,16 @@ func (g *groupVersions) StateVersion(ctx context.Context, s db.TenantScope, grou
 // degraded answer during that window, and they are the same branches a deployment
 // with notifications wired out entirely relies on.
 //
-// The asymmetry with `groupVersions` above is deliberate but thin: that type
-// guards `g == nil` as well, because `grouping`'s `StateVersion` has no
-// nil-receiver guard of its own. `notificationReader`'s methods take VALUE
-// receivers, so a nil `*notificationReader` would panic before any `svc == nil`
-// branch could run. Nothing can produce one today — `container.go` allocates the
-// holder unconditionally — but a future `dropNotifications` degradation that left
-// the port nil would be a startup panic, not a degraded read. Allocate the holder
-// or add the guard; do not leave the port nil.
+// ⚠️ THE HAZARD THIS PARAGRAPH NAMES OUTLIVED THE TYPE IT COMPARED AGAINST, so it
+// is re-pointed rather than deleted. It used to contrast `notificationReader` with
+// `groupVersions`, the late-bound `grouping` holder, which guarded `g == nil` as
+// well as `svc == nil`; that type went with the module (git-bug `7570090`).
+// `notificationReader`'s methods take VALUE receivers, so a nil
+// `*notificationReader` would panic before any `svc == nil` branch could run.
+// Nothing can produce one today — `container.go` allocates the holder
+// unconditionally — but a future `dropNotifications` degradation that left the port
+// nil would be a startup panic, not a degraded read. Allocate the holder or add the
+// guard; do not leave the port nil.
 
 // ---------------------------------------------------------------- job scopes
 
@@ -986,200 +867,72 @@ func (l orgLister) LiveScope(ctx context.Context, orgID uuid.UUID) (db.TenantSco
 // membership, the events and the `notify.evaluate` job commit together or not at
 // all. An alert whose group rolled back would own a Slack thread nobody could
 // find.
+// ⛔ `log *slog.Logger` WAS A FIELD HERE AND IS DELETED (git-bug `7570090`). It was
+// written by `container.go` and read by exactly one statement — the warning
+// `resolveGroup` emitted when a partition's generation could not be resolved and
+// the batch was recorded ungrouped anyway. That branch is gone with the group, and
+// this adapter has had nothing to say since: it forwards one batch and returns a
+// count, and every error it can produce is RETURNED rather than logged, which is
+// the shape the caller needs to roll the transaction back.
 type alertObserver struct {
-	svc      *alertsservice.Service
-	grouping *groupingservice.Service
-	log      *slog.Logger
+	svc *alertsservice.Service
 }
 
 func (o alertObserver) ObserveBatch(
 	ctx context.Context, s db.TenantScope, obs []alertsdomain.Observation,
 ) (int, error) {
-	applied := 0
-	// One webhook carries exactly one notification group, so this is one partition
-	// and one ObserveBatch in the overwhelming case. It is a partition rather than
-	// an assumption because the reconciler feeds the same port with observations
-	// from many groups at once.
-	for _, part := range partitionByGroup(obs) {
-		groupID, err := o.resolveGroup(ctx, s, part[0])
-		if err != nil {
-			return applied, err
-		}
-		res, err := o.svc.ObserveBatch(ctx, s, part, alertsservice.ObserveOptions{
-			GroupID:     groupID,
-			GroupReason: groupReasonFor(part[0].NotificationReason),
-		})
-		if err != nil {
-			return applied, err
-		}
-		applied += len(res.Outcomes)
-		if err := o.settleGroup(ctx, s, groupID, part[0], res.Outcomes); err != nil {
-			return applied, err
-		}
+	// ⛔ THE PARTITION, THE RESOLVE AND THE SETTLE ARE ALL DELETED (git-bug
+	// `7570090`). This used to split the batch by the §C.4 axes, resolve or open an
+	// `alert_groups` generation for each partition, hand its id down as
+	// `ObserveOptions.GroupID`, and then recompute the group's counts and severity
+	// afterwards. There is no group: a Case IS the conversation, so one batch is one
+	// call and nothing downstream needs a container id.
+	//
+	// ⭐ The partition was never an assumption about webhook shape — its own comment
+	// said one webhook carries one notification group "in the overwhelming case" and
+	// that the RECONCILER feeds this port with observations from many groups at
+	// once. That is precisely why it can go: with no group to key, a heterogeneous
+	// batch needs no splitting.
+	res, err := o.svc.ObserveBatch(ctx, s, obs, alertsservice.ObserveOptions{
+		BatchReason: batchReasonFor(obs),
+	})
+	if err != nil {
+		return 0, err
 	}
-	return applied, nil
+	return len(res.Outcomes), nil
 }
 
-// groupReasonFor applies the §H.6 wire table to the batch as a whole, for the
-// one row no per-alert transition can reach.
+// batchReasonFor maps Alertmanager's `notification_reason` onto the one §H.6 Reason
+// no per-alert transition can produce.
 //
-// `repeat interval elapsed` means Alertmanager is telling oto the same thing
-// again: nothing transitioned, so `alerts` produces no Reason and — until this
-// existed — no notification at all, which left the card's "Firing for" frozen at
-// whatever it said hours ago. §H.6 answers it with a root UPDATE and NEVER a
-// repost, and that single rule is the largest noise reduction oto has over stock
-// Alertmanager and Grafana Alerting, both of which repost.
+// ⛔⛔ IT WAS `groupReasonFor` AND I ALMOST LOST IT ENTIRELY. Stripping the group
+// wiring deleted it along with `partitionByGroup` and `resolveGroup`, and nothing
+// failed to compile: `ObserveOptions.GroupReason` simply stopped being set, so the
+// `repeat` notification silently stopped being produced. `alerts/service` calls that
+// path "the largest noise reduction available to oto" — a repeat is a root UPDATE and
+// never a repost — and it is the ONE Reason nothing transitioning can produce,
+// precisely because nothing transitioned.
 //
-// Every other wire value either has a transition behind it (so `alerts` already
-// said it, and this must not say it twice) or is `none`/absent (so there is
-// nothing to say). This is the composition root, which is the only layer allowed
-// to know both Alertmanager's vocabulary and oto's.
-func groupReasonFor(wire string) string {
-	reason, verdict := notifdomain.ReasonFromWire(wire)
+// ⭐ THE MAPPING IS UNCHANGED; ONLY THE FAN-OUT MOVED. It still asks `notification`
+// for the answer rather than learning the wire table twice (§H.6, and `alerts` is
+// told the answer, never asks the question). What changed is downstream: one batch
+// used to yield one notification for one generation, and now yields one per OPEN
+// CASE, because each Case is its own conversation to refresh.
+//
+// ⚠️ It reads the FIRST observation's reason and applies it to the batch, which is
+// what the partitioned version did too — one webhook carries one Alertmanager
+// notification, so the value is uniform across it. A reconciler batch has none and
+// gets the empty string, which is the honest answer: nothing on that path is
+// Alertmanager telling us the same thing again.
+func batchReasonFor(obs []alertsdomain.Observation) string {
+	if len(obs) == 0 {
+		return ""
+	}
+	reason, verdict := notifdomain.ReasonFromWire(obs[0].NotificationReason)
 	if verdict == notifdomain.WireMapped && reason == notifdomain.ReasonRepeat {
 		return string(notifdomain.ReasonRepeat)
 	}
 	return ""
-}
-
-// resolveGroup opens or rejoins the §C.4 generation these observations belong to.
-//
-// ⛔ A VALIDATION failure DEGRADES rather than fails. Group labels that will never
-// pass their bounds would otherwise cost the whole batch on every one of its
-// retries, and losing the alert is far worse than recording it groupless: the
-// signal is kept in full, and only the notification intent is missed. Anything
-// else — an unreachable database, a conflict that could not be re-read — is
-// propagated, because a retry can fix it.
-func (o alertObserver) resolveGroup(
-	ctx context.Context, s db.TenantScope, sample alertsdomain.Observation,
-) (*uuid.UUID, error) {
-	if o.grouping == nil {
-		return nil, nil //nolint:nilnil // no grouping wired: record the signal, skip the intent.
-	}
-	g, err := o.grouping.Resolve(ctx, s, groupingservice.ResolveRequest{
-		SourceID:  sample.SourceID,
-		ClusterID: sample.ClusterID,
-		// ⭐ THE TWO KEY INPUTS, and they are the alert's OWN facts. Everything else
-		// on this request is provenance recorded on the generation (ADR 0038).
-		ClusterKey: sample.ClusterKey,
-		Labels:     sample.Labels,
-		Receiver:   sample.Receiver,
-		// ⛔ SourceGroupKey is stored verbatim and NEVER parsed (§C.4).
-		SourceGroupKey:     sample.SourceGroupKey,
-		NotificationReason: sample.NotificationReason,
-		At:                 sample.ObservedAt,
-		// Carried from `ingest_batches.mode` via the Observation. A drill's group
-		// is marked so the dashboard counts can exclude it; nothing else about the
-		// generation differs, which is the whole point of a drill.
-		Synthetic: sample.Synthetic,
-	})
-	if err != nil {
-		if errs.IsKind(err, errs.KindValidation) {
-			o.log.WarnContext(ctx, "ingest: the group key could not be computed; recording the alert without a group",
-				"source_id", sample.SourceID, "receiver", sample.Receiver, "error", err)
-			return nil, nil //nolint:nilnil // degraded on purpose: see the doc comment.
-		}
-		return nil, err
-	}
-	id := g.ID()
-	return &id, nil
-}
-
-// settleGroup re-derives the generation this batch landed on, ONCE.
-//
-// ⛔ IT NO LONGER RECORDS MEMBERSHIP, BECAUSE NOTHING DOES. `ObserveBatch` was
-// already handed `GroupID` above and writes it onto every episode it opens, so by
-// the time this runs the membership is on disk — `alert_cases.group_id` is
-// the record, and migration 00051 removed the join table that used to duplicate
-// it. What is left is the derivation: the generation's counts, its state, its
-// severity are all projections of its members, and `grouping.Recompute` is where
-// they are refreshed. (It re-evaluated §B.6 storm mode here too, until storm damping
-// was removed — see `grouping/domain/lifecycle.go`.)
-//
-// ⭐ ONE CALL FOR THE WHOLE PARTITION. `partitionByGroup` has already established
-// that every outcome here belongs to ONE generation, so recomputing per outcome
-// would be 500 full aggregates and 500 compare-and-set writes to one
-// `alert_groups` row for one 500-alert Alertmanager batch, all but the last of
-// them discarded.
-//
-// ⭐ A BATCH THAT MOVED NOTHING IS NOT RECOMPUTED. A repeat observation of an
-// episode that is already open changes no count, so the aggregate would return
-// what the row already says. That guard is the difference between one query per
-// scrape and none, on the most frequent shape of request oto receives.
-func (o alertObserver) settleGroup(
-	ctx context.Context, s db.TenantScope, groupID *uuid.UUID,
-	sample alertsdomain.Observation, outcomes []alertsservice.ObserveOutcome,
-) error {
-	if o.grouping == nil || groupID == nil {
-		return nil
-	}
-	moved := false
-	for _, out := range outcomes {
-		if out.CaseID == uuid.Nil {
-			continue
-		}
-		if out.CaseOpened || out.Transition != "" {
-			moved = true
-			break
-		}
-	}
-	if !moved {
-		return nil
-	}
-	_, err := o.grouping.Recompute(ctx, s, *groupID, sample.ObservedAt)
-	return err
-}
-
-// partitionByGroup splits a batch into runs that share one §C.4 group identity,
-// preserving first-seen order so two runs of the same batch resolve in the same
-// order.
-//
-// ⭐ ONE WEBHOOK IS NO LONGER ONE PARTITION, AND THAT IS THE POINT. While the key
-// hashed Alertmanager's own grouping, every alert in one envelope shared it by
-// construction and this loop found exactly one run. Since ADR 0038 the key is
-// derived per alert from `(cluster, alertname, namespace-or-∅)`, so a single
-// `group_by: [cluster]` envelope carrying six alertnames now resolves six
-// generations and six threads — which is the routing precision the derivation
-// was for, and the reason this function was written to handle many runs in the
-// first place (the reconciler already fed it many).
-func partitionByGroup(obs []alertsdomain.Observation) [][]alertsdomain.Observation {
-	if len(obs) <= 1 {
-		if len(obs) == 0 {
-			return nil
-		}
-		return [][]alertsdomain.Observation{obs}
-	}
-
-	index := map[string]int{}
-	var parts [][]alertsdomain.Observation
-
-	for _, o := range obs {
-		k := groupingKey(o)
-		at, ok := index[k]
-		if !ok {
-			index[k] = len(parts)
-			parts = append(parts, []alertsdomain.Observation{o})
-			continue
-		}
-		parts[at] = append(parts[at], o)
-	}
-	return parts
-}
-
-// groupingKey renders the §C.4 axes of one Observation as a comparable string.
-//
-// It writes the axes rather than the hash for one reason: `org_id` is not on the
-// Observation and is constant across a batch anyway, so hashing here would mean
-// either threading the scope in or hashing under a fake org. The axes ARE the
-// identity up to that constant, and canon()'s length prefixes make the rendering
-// injective — which matters, because two alerts that partition together are then
-// resolved from `part[0]` alone.
-func groupingKey(o alertsdomain.Observation) string {
-	var b strings.Builder
-	b.WriteString(o.ClusterKey.String())
-	b.WriteByte(0)
-	b.Write(alertsdomain.SplitLabels(o.Labels).Canonical(nil))
-	return b.String()
 }
 
 // ------------------------------------------------- slack interactions (§H.8)
@@ -1268,83 +1021,6 @@ func (a slackActors) SlackActor(
 	// timeline — the UI ack path labels by principal email — and two spellings of
 	// the same person would read as two people.
 	return channelsservice.SlackActor{UserID: user.ID, Label: user.Email.String()}, nil
-}
-
-// slackGroupActions adapts `grouping/service` onto the narrow verb port.
-//
-// ⛔ ONE VERB AND ITS UNDO. The port could name `Snooze` and `Comment` too — the
-// service has them — and it deliberately does not: what a chat button may do is a
-// product decision, and the narrowest possible port is where that decision is
-// legible.
-type slackGroupActions struct {
-	grouping *groupingservice.Service
-}
-
-func (g slackGroupActions) GroupExists(
-	ctx context.Context, s db.TenantScope, groupID uuid.UUID,
-) (bool, error) {
-	if g.grouping == nil {
-		return false, errs.Unavailable("grouping_unavailable",
-			"the grouping service is not wired in this deployment", 0)
-	}
-	// StateVersion is the cheapest scoped read that proves existence: one indexed
-	// column, one row, and it answers NotFound for a group in another tenant —
-	// which is the answer that matters.
-	if _, err := g.grouping.StateVersion(ctx, s, groupID); err != nil {
-		if errs.IsKind(err, errs.KindNotFound) {
-			return false, nil
-		}
-		return false, err
-	}
-	return true, nil
-}
-
-func (g slackGroupActions) AcknowledgeGroup(
-	ctx context.Context, s db.TenantScope, groupID uuid.UUID,
-	actorKind, actorID, actorLabel string,
-) (channelsservice.GroupAckResult, error) {
-	if g.grouping == nil {
-		return channelsservice.GroupAckResult{}, errs.Unavailable("grouping_unavailable",
-			"the grouping service is not wired in this deployment", 0)
-	}
-	// No note. A Slack button carries no text field, and inventing one — "acked
-	// from Slack" — would put oto's words on a human's timeline entry.
-	res, err := g.grouping.Acknowledge(ctx, s, groupID, actorKind, actorID, actorLabel, "")
-	if err != nil {
-		return channelsservice.GroupAckResult{}, err
-	}
-	return channelsservice.GroupAckResult{
-		Members:      res.Members,
-		Applied:      res.Applied,
-		SkippedCodes: res.SkippedCodes,
-		Unreached:    res.Unreached,
-	}, nil
-}
-
-// UnacknowledgeGroup is AcknowledgeGroup read backwards, over the same fan-out and
-// with the same account. Neither takes an `Idempotency-Key`: both are
-// compare-and-set on the episode, so a job retry meets `already_acked` /
-// `not_acked` and converges.
-func (g slackGroupActions) UnacknowledgeGroup(
-	ctx context.Context, s db.TenantScope, groupID uuid.UUID,
-	actorKind, actorID, actorLabel string,
-) (channelsservice.GroupAckResult, error) {
-	if g.grouping == nil {
-		return channelsservice.GroupAckResult{}, errs.Unavailable("grouping_unavailable",
-			"the grouping service is not wired in this deployment", 0)
-	}
-	// No note, for the reason given on the ack: a Slack button carries no text
-	// field, and inventing one would put oto's words on a human's timeline entry.
-	res, err := g.grouping.Unacknowledge(ctx, s, groupID, actorKind, actorID, actorLabel, "")
-	if err != nil {
-		return channelsservice.GroupAckResult{}, err
-	}
-	return channelsservice.GroupAckResult{
-		Members:      res.Members,
-		Applied:      res.Applied,
-		SkippedCodes: res.SkippedCodes,
-		Unreached:    res.Unreached,
-	}, nil
 }
 
 // -------------------------------------------------------------------- drills
@@ -1505,4 +1181,66 @@ func (f ingestFeeds) ListFailedBatches(
 		})
 	}
 	return out, next, nil
+}
+
+// slackCaseActions is `channels/service.Cases` — the two verbs an Acknowledge
+// button needs, adapted onto `alerts/service`.
+//
+// ⛔ IT WAS `slackGroupActions` AND THE FAN-OUT WENT WITH THE GROUP (git-bug
+// `7570090`). `AcknowledgeGroup` acked "every OPEN member episode of one
+// generation" and returned a `GroupAckResult` that had to be able to say "covered
+// 500 of 5 000". A conversation holds exactly one Case, so the fan-out is a fan-out
+// over one thing and the accounting has nothing to account for.
+//
+// ⭐ THE SEAM IS UNCHANGED AND THAT IS THE POINT. `channels` is the LAST module in
+// the dependency direction (SPEC §I.1) and an inbound button press is the one thing
+// that runs the other way, so the ports are declared in primitives and adapted HERE
+// — the one place allowed to know both sides. Only the shape of the subject moved.
+type slackCaseActions struct {
+	alerts *alertsservice.Service
+}
+
+// CaseExists is the tenancy check made explicit: a case id from another org answers
+// false rather than silently acknowledging nothing.
+func (a slackCaseActions) CaseExists(
+	ctx context.Context, s db.TenantScope, caseID uuid.UUID,
+) (bool, error) {
+	if a.alerts == nil {
+		return false, errs.Unavailable("alerts_unavailable", "alerts are not wired", 0)
+	}
+	if _, err := a.alerts.GetCase(ctx, s, caseID); err != nil {
+		if errs.IsKind(err, errs.KindNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// AcknowledgeCase records a receipt against one episode.
+//
+// ⛔ THE NOTE IS EMPTY AND THAT IS DELIBERATE. A Slack button carries no text, and
+// inventing one ("acknowledged from Slack") would put oto's words in a human's
+// mouth on a field an operator reads as theirs. `ack_note` stays empty; WHO acked
+// and FROM WHERE is already on the timeline event.
+func (a slackCaseActions) AcknowledgeCase(
+	ctx context.Context, s db.TenantScope, caseID uuid.UUID,
+	actorKind, actorID, actorLabel string,
+) error {
+	if a.alerts == nil {
+		return errs.Unavailable("alerts_unavailable", "alerts are not wired", 0)
+	}
+	return a.alerts.AcknowledgeAs(ctx, s, caseID, actorKind, actorID, actorLabel, "")
+}
+
+// UnacknowledgeCase withdraws it. Same shape, and the reason is `manual` — a
+// deliberate withdrawal, never the automatic unack a new episode performs.
+func (a slackCaseActions) UnacknowledgeCase(
+	ctx context.Context, s db.TenantScope, caseID uuid.UUID,
+	actorKind, actorID, actorLabel string,
+) error {
+	if a.alerts == nil {
+		return errs.Unavailable("alerts_unavailable", "alerts are not wired", 0)
+	}
+	return a.alerts.UnacknowledgeAs(ctx, s, caseID, actorKind, actorID, actorLabel, "")
 }

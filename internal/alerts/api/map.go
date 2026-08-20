@@ -67,7 +67,6 @@ func caseDTO(o domain.Case, now time.Time) CaseDTO {
 	dto := CaseDTO{
 		ID:             o.ID(),
 		AlertID:        o.AlertID(),
-		GroupID:        idPtr(o.GroupID()),
 		Seq:            int32(o.Seq()),
 		State:          o.State().String(),
 		AckState:       o.AckState().String(),
@@ -199,9 +198,8 @@ func notificationDTO(n service.NotificationSummary) NotificationDTO {
 
 	dto := NotificationDTO{
 		ID:              n.ID,
-		SubjectKind:     "alert_group",
-		SubjectID:       n.GroupID,
-		GroupID:         idPtr(n.GroupID),
+		SubjectKind:     n.SubjectKind,
+		SubjectID:       n.SubjectID,
 		AlertID:         n.AlertID,
 		CaseID:          n.CaseID,
 		PolicyID:        n.PolicyID,

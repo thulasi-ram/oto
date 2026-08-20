@@ -120,15 +120,20 @@ type AlertCounts struct {
 	Flapping   int
 }
 
-// GroupCounts is the group half of the dashboard roll-up.
+// ⛔⛔ `GroupCounts` WAS THE GROUP HALF OF THE DASHBOARD ROLL-UP AND IS DELETED
+// (git-bug `7570090`, migration `00069`). `alert_groups` is dropped and a Case IS
+// the conversation, so there is no container left to be open or closed and the two
+// counts had nothing to count. `Storm` had already gone the same way one release
+// earlier (`alert_groups.storm_mode`, migration 00059).
 //
-// ⛔ `Storm` WAS A THIRD COUNT AND IS GONE WITH `alert_groups.storm_mode`
-// (migration 00059). A dashboard tile reading "0 groups in storm mode" on every
-// install forever is not a metric, it is furniture.
-type GroupCounts struct {
-	Open   int
-	Closed int
-}
+// ⛔ AND IT IS NOT RENAMED TO A CASE HALF. The contract removed
+// `StatsOverviewDTO.groups` and commissioned nothing in its place, so inventing
+// `CaseCounts` here would be deciding a product question inside a type. The
+// argument the `Storm` note made is the one that still binds whenever the next
+// tile is proposed: a count that reads the same on every install forever is not a
+// metric, it is furniture — and a case open/closed tile beside the alert half
+// would restate `Firing` / `Resolved` / `Expired` in different words, which is the
+// other way a tile earns nothing.
 
 // DeliveryCounts is the delivery-health half.
 //
@@ -166,7 +171,6 @@ type ChannelCounts struct {
 // per-person data of any kind.
 type Overview struct {
 	Alerts     AlertCounts
-	Groups     GroupCounts
 	Deliveries DeliveryCounts
 	Sources    SourceCounts
 	Channels   ChannelCounts

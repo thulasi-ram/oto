@@ -203,11 +203,11 @@ describe("the guided knobs as a set", () => {
     );
     // Each of these is unguided for a stated reason, and none of the reasons is
     // "nobody got round to it": retention and verbosity have no Alertmanager term
-    // at all, and a broadcast is a yes/no. Inventing a threshold for any of them is
-    // the one thing this screen must not do. (The three Slack mention rows were
-    // here too, and went with the reminder — git-bug bd0fb1d.)
+    // at all. Inventing a threshold for either is the one thing this screen must
+    // not do. (The three Slack mention rows were here too, and went with the
+    // reminder — git-bug bd0fb1d. `broadcast_on_resolved` was here as well, and
+    // went with Slack thread-broadcast — git-bug 7570090.)
     expect([...unguided].sort()).toEqual([
-      "broadcast_on_resolved",
       "default_verbosity",
       "event_retention_months",
       "raw_retention_days",
@@ -257,7 +257,10 @@ describe("the guided knobs as a set", () => {
       flap_threshold: [],
       flap_window_s: [],
       flap_digest_interval_s: [],
-      unacked_reminder_after_s: ["repeatInterval"],
+      // ⛔ `unacked_reminder_after_s: ["repeatInterval"]` WAS HERE. The knob went
+      // with the reminder (git-bug bd0fb1d) and the entry outlived it — the loop
+      // walks `GUIDED`, so a stale key here asserts nothing and simply reads as a
+      // knob that still exists.
     };
 
     for (const key of GUIDED) {

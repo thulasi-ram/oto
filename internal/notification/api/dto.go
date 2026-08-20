@@ -107,16 +107,19 @@ type NotificationDTO struct {
 	ID          uuid.UUID `json:"id"`
 	SubjectKind string    `json:"subject_kind"`
 	SubjectID   uuid.UUID `json:"subject_id"`
-	// GroupID is THE DELIVERY TARGET, and it is NULL for exactly one subject kind.
+	// ⛔ `GroupID *uuid.UUID` WAS HERE AND IS DELETED (git-bug `7570090`, migration
+	// `00069`), AND ITS ARGUMENT OUTLIVES IT because it is about the WIRE, not about
+	// groups. It became a pointer at `00058` for this reason, quoted so the next
+	// optional id gets it right:
 	//
-	// ⚠️ IT BECAME A POINTER WITH MIGRATION 00058, AND THE ALTERNATIVE WAS A LIE ON
-	// THE WIRE. `notifications.group_id` is NULL for a digest — a fact about a window
-	// over a namespace, which spans many generations and has no single thread — so a
-	// value type here would serialise the ZERO UUID and every client would read a
-	// group id that resolves to nothing. oto's silence must never be
-	// indistinguishable from "no alert", and an id that names nothing is the same
-	// class of lie.
-	GroupID *uuid.UUID `json:"group_id"`
+	//   a value type would serialise the ZERO UUID and every client would read an id
+	//   that resolves to nothing. oto's silence must never be indistinguishable from
+	//   "no alert", and an id that names nothing is the same class of lie.
+	//
+	// `AlertID` and `CaseID` below are pointers under exactly that rule. The delivery
+	// target is now the `(conversation_kind, conversation_id)` pair, and it is a value
+	// type legitimately: every row names a conversation, so there is no absence to
+	// express.
 	AlertID *uuid.UUID `json:"alert_id"`
 	CaseID  *uuid.UUID `json:"case_id"`
 
@@ -349,9 +352,13 @@ func (r UpdatePolicyRequest) IsEmpty() bool {
 // form answer "who would this reach?" before anything is saved — and is the
 // difference between a preview and a post-mortem.
 type PolicyPreviewRequest struct {
-	AlertID *uuid.UUID `json:"alert_id,omitempty"`
-	CaseID  *uuid.UUID `json:"case_id,omitempty"`
-	GroupID *uuid.UUID `json:"group_id,omitempty"`
+	// ⛔ `alert_id` AND `group_id` WERE HERE AND ARE DELETED (git-bug `7570090`,
+	// owner ruling: case_id only). `group_id` named a row that no longer exists.
+	// `alert_id` looked harmless and was not: an Alert has MANY Cases, so the
+	// endpoint had to pick one, and it picked by resolving the alert's group — which
+	// is the confidently-wrong answer this endpoint's own comment refused. A Case is
+	// the conversation, so naming the Case is the only unambiguous question.
+	CaseID *uuid.UUID `json:"case_id,omitempty"`
 	// Reason defaults to `fired`.
 	Reason string               `json:"reason,omitempty"`
 	Policy *CreatePolicyRequest `json:"policy,omitempty"`

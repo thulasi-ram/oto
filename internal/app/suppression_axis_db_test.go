@@ -9,7 +9,6 @@ import (
 	alertsdomain "github.com/thulasiram/oto/internal/alerts/domain"
 	alertsrepo "github.com/thulasiram/oto/internal/alerts/repository"
 	alertsservice "github.com/thulasiram/oto/internal/alerts/service"
-	groupingrepo "github.com/thulasiram/oto/internal/grouping/repository"
 	statsrepo "github.com/thulasiram/oto/internal/stats/repository"
 	"github.com/thulasiram/oto/test/harness"
 )
@@ -26,12 +25,19 @@ import (
 // not an edge case: the dashboard under-reported during exactly the window
 // somebody had silenced something.
 //
-// ⭐ IT LIVES IN `app` BECAUSE THE DEFECT DID. Three modules had each worked
+// ⭐ IT LIVES IN `app` BECAUSE THE DEFECT DID. Several modules had each worked
 // around the same overloaded column differently — `alerts` counted the roll-up,
 // `grouping` counted the group card, `stats` counted the overview — so a test
-// inside any one of them would have proved a third of the claim. This drives ONE
-// write path and then asks all three readers, which is the only shape that can
-// fail if one of them is fixed and the others are not.
+// inside any one of them would have proved a fraction of the claim. This drives
+// ONE write path and then asks every surviving reader, which is the only shape
+// that can fail if one of them is fixed and the others are not.
+//
+// ⛔ THE GROUP CARD IS NO LONGER ONE OF THEM. git-bug `7570090` deleted
+// `alert_groups` and `internal/grouping/repository` with it, so the second reader
+// this file used to interrogate — `MemberRepository.Rollup`'s "12 alerts, 3
+// firing" — has no subject left to be wrong about. The two readers below are the
+// whole surviving set, and they are still two DIFFERENT modules reached from one
+// write, which is what the shape was for.
 //
 // ⚠️ THE WRITE IS THE REAL RECONCILER PATH, not a seeded row. `suppressed` is
 // reconciler-only by construction (Alertmanager's MuteStage drops muted alerts
@@ -48,8 +54,6 @@ func TestAFiringAlertThatIsSilencedIsStillCountedAsFiring(t *testing.T) {
 	h := harness.New(t)
 	org := h.Org()
 	cluster := h.Cluster(org)
-	source := h.Source(org, cluster)
-	group := h.Group(org, source, cluster)
 	ctx := t.Context()
 
 	labels := harness.Labels(t, harness.DefaultLabels())
@@ -69,7 +73,6 @@ func TestAFiringAlertThatIsSilencedIsStillCountedAsFiring(t *testing.T) {
 	require.NoError(t, err)
 
 	now := h.Clock.Now()
-	groupID := group.ID
 	observe := func(src alertsdomain.ObservationSource, status, reason string, by alertsdomain.SuppressedBy) {
 		t.Helper()
 		obs := alertsdomain.Observation{
@@ -88,7 +91,7 @@ func TestAFiringAlertThatIsSilencedIsStillCountedAsFiring(t *testing.T) {
 			ObservedAt:        h.Clock.Now(),
 		}
 		_, err := svc.ObserveBatch(ctx, org.Scope, []alertsdomain.Observation{obs},
-			alertsservice.ObserveOptions{GroupID: &groupID})
+			alertsservice.ObserveOptions{})
 		require.NoError(t, err)
 	}
 
@@ -140,22 +143,7 @@ func TestAFiringAlertThatIsSilencedIsStillCountedAsFiring(t *testing.T) {
 			"RollupState asks `Firing > Suppressed` rather than `Suppressed > 0` — the old "+
 			"spelling would have made this bucket read firing and lost the badge.")
 
-	// ---- Done-when 4, reader 2: the group card (grouping/member.go) ---------
-
-	members := groupingrepo.NewMemberRepository(h.Pool, h.Clock)
-	counts, _, err := members.Rollup(ctx, org.Scope, group.ID)
-	require.NoError(t, err)
-
-	require.Equal(t, 1, counts.Firing,
-		"the group card's \"12 alerts, 3 firing\" counted `a.state = 'firing'` and "+
-			"therefore skipped every silenced member.")
-	require.Equal(t, 1, counts.Suppressed)
-	require.Equal(t, 1, counts.Live(),
-		"Live() must not double-count. `Firing` now includes the silenced members, so "+
-			"the old `Firing + Suppressed` would hold a generation open on members that "+
-			"do not exist.")
-
-	// ---- Done-when 4, reader 3: the overview (stats/stats.go) ---------------
+	// ---- Done-when 4, reader 2: the overview (stats/stats.go) ---------------
 
 	stats := statsrepo.NewStatsRepository(h.Pool)
 	overview, err := stats.Overview(ctx, org.Scope,

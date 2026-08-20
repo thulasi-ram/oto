@@ -143,26 +143,21 @@ func (w *world) seed(h *harness.H, orgID uuid.UUID) {
 	org := harness.Org{ID: orgID, Slug: "acme", Name: "Acme", Scope: harness.Scope(w.t, orgID)}
 	cluster := h.Cluster(org)
 	source := h.SourceAt(org, cluster, w.alertmanager.URL())
-	group := h.Group(org, source, cluster)
 	alert := h.Alert(org, cluster)
-	alertCase := h.Case(alert, group)
+	alertCase := h.Case(alert)
 
 	w.ids["cluster"] = cluster.ID.String()
 	w.ids["source"] = source.ID.String()
-	w.ids["group"] = group.ID.String()
 	w.ids["alert"] = alert.ID.String()
 	w.ids["case"] = alertCase.ID.String()
 
-	// The case is already a member: `h.Case` writes `group_id`, and
-	// since migration 00051 that IS the membership — there is no join table left to
-	// insert into. G2 is not about grouping; it needs a group with an OPEN member
-	// so that the three group verbs answer 200 rather than the perfectly correct
-	// 412 an empty group earns, and the SHAPE of that 200 is the whole point.
-	if alertCase.GroupID != group.ID {
-		w.t.Fatalf("the fixture episode is not a member of the fixture group (%s vs %s); the group "+
-			"verbs below would answer 412 and the probe table would be asserting about the wrong "+
-			"response", alertCase.GroupID, group.ID)
-	}
+	// ⛔ `w.ids["group"]` WAS SEEDED HERE AND IS DELETED (git-bug `7570090`). It
+	// held one `alert_groups` generation plus a membership assertion, and both the
+	// table and the ten `/api/v1/alert-groups` probes that consumed the id are
+	// gone. THE CASE IS THE CONVERSATION now: `{{case}}` is the id the ack,
+	// comment, snooze and policy-preview probes address, and `h.Case` opens it
+	// OPEN, which is what makes those verbs answer 200 rather than the 412 a
+	// resolved episode earns.
 
 	// An id that is syntactically perfect and belongs to nobody. Every probe that
 	// asks for a resource this org does not own uses it, and the answer must be

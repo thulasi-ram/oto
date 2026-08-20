@@ -25,7 +25,6 @@ func drillDTO(d domain.Drill, res domain.Result) DrillDTO {
 		Destinations:   destinationDTOs(res.Destinations),
 		AlertID:        idPtr(d.AlertID),
 		CaseID:         idPtr(d.CaseID),
-		GroupID:        idPtr(d.GroupID),
 		NotificationID: idPtr(d.NotificationID),
 		BatchID:        idPtr(d.BatchID),
 		StartedByLabel: d.StartedByLabel,
@@ -69,9 +68,10 @@ func destinationDTOs(in []domain.Destination) []DrillDestinationDTO {
 			Mode:              d.Mode,
 			ThreadID:          strPtr(d.ThreadID),
 			ProviderMessageID: strPtr(d.ProviderMessageID),
-			Broadcast:         d.Broadcast,
-			Error:             strPtr(d.Error),
-			ErrorClass:        strPtr(d.ErrorClass),
+			// ⛔ A `Broadcast: d.Broadcast` WAS HERE. Neither side of it exists any
+			// more — see the marker on `DrillDestinationDTO` in `dto.go`.
+			Error:      strPtr(d.Error),
+			ErrorClass: strPtr(d.ErrorClass),
 		})
 	}
 	return out

@@ -100,13 +100,13 @@ export const ActorKindSchema = v.picklist(["system", "ingest", "reconciler", "re
 
 export const AlertEventTypeSchema = v.picklist(["alert.created", "alert.mutated", "case.opened", "case.reopened", "case.suppressed", "case.unsuppressed", "case.resolved", "case.expired", "case.acknowledged", "case.unacknowledged", "alert.snoozed", "alert.unsnoozed", "group.opened", "group.closed", "group.member_joined", "group.member_left", "rule.snapshot_captured", "rule.definition_changed", "rule.lookup_failed", "enrichment.completed", "enrichment.failed", "notification.created", "notification.suppressed", "delivery.sent", "delivery.updated", "delivery.failed", "delivery.skipped", "delivery.dead", "comment.added", "source.unreachable", "source.recovered", "source.clock_skew"]);
 
-export const NotificationReasonSchema = v.picklist(["fired", "new_alerts", "some_resolved", "all_resolved", "repeat", "suppressed", "unsuppressed", "expired", "refired", "acked", "unacked", "snoozed", "unsnoozed", "enriched", "rule_changed", "comment", "digest"]);
+export const NotificationReasonSchema = v.picklist(["fired", "all_resolved", "repeat", "suppressed", "unsuppressed", "expired", "refired", "acked", "unacked", "snoozed", "unsnoozed", "enriched", "rule_changed", "comment", "digest"]);
 
 export const NotificationStatusSchema = v.picklist(["pending", "dispatched", "partial", "delivered", "failed", "suppressed"]);
 
 export const NotificationSuppressedReasonSchema = v.nullable(v.picklist(["channel_disabled", "no_policy", "snoozed", "throttled", "verbosity", "duplicate_render"]));
 
-export const DeliveryModeSchema = v.picklist(["post_root", "update_root", "thread_reply", "broadcast_reply"]);
+export const DeliveryModeSchema = v.picklist(["post_root", "update_root", "thread_reply"]);
 
 export const DeliveryStatusSchema = v.picklist(["pending", "sending", "sent", "failed", "dead", "skipped"]);
 
@@ -774,105 +774,6 @@ export const AlertRollupDTOSchema = v.looseObject({
   "last_seen_at": TimestampSchema,
 });
 
-export const GroupDTOSchema = v.looseObject({
-  "id": UuidSchema,
-  "group_key": GroupKeySchema,
-  "generation": v.pipe(
-    v.number(),
-    v.integer(),
-    v.minValue(1),
-  ),
-  "source_id": UuidSchema,
-  "cluster_key": ClusterKeySchema,
-  "source_group_key": v.exactOptional(v.nullable(v.pipe(
-    v.string(),
-    v.maxLength(4096),
-  ))),
-  "receiver": v.pipe(
-    v.string(),
-    v.maxLength(4096),
-  ),
-  "group_labels": LabelMapSchema,
-  "title": v.pipe(
-    v.string(),
-    v.minLength(1),
-    v.maxLength(500),
-  ),
-  "state": GroupStateSchema,
-  "severity": v.exactOptional(v.nullable(v.pipe(
-    v.string(),
-    v.maxLength(4096),
-  ))),
-  "state_version": v.pipe(
-    v.number(),
-    v.integer(),
-    v.minValue(1),
-  ),
-  "firing_count": v.pipe(
-    v.number(),
-    v.integer(),
-    v.minValue(0),
-  ),
-  "suppressed_count": v.pipe(
-    v.number(),
-    v.integer(),
-    v.minValue(0),
-  ),
-  "resolved_count": v.pipe(
-    v.number(),
-    v.integer(),
-    v.minValue(0),
-  ),
-  "expired_count": v.pipe(
-    v.number(),
-    v.integer(),
-    v.minValue(0),
-  ),
-  "total_count": v.pipe(
-    v.number(),
-    v.integer(),
-    v.minValue(0),
-  ),
-  "acked_count": v.pipe(
-    v.number(),
-    v.integer(),
-    v.minValue(0),
-  ),
-  "snoozed_count": v.pipe(
-    v.number(),
-    v.integer(),
-    v.minValue(0),
-  ),
-  "snoozed_until": v.exactOptional(v.nullable(TimestampSchema)),
-  "last_notification_reason": v.exactOptional(v.nullable(v.pipe(
-    v.string(),
-    v.maxLength(64),
-  ))),
-  "first_seen_at": TimestampSchema,
-  "last_activity_at": TimestampSchema,
-  "closed_at": v.exactOptional(v.nullable(TimestampSchema)),
-});
-
-export const GroupDetailDTOSchema = v.intersect([
-  GroupDTOSchema,
-  v.looseObject({
-    "source": v.exactOptional(v.nullable(SourceRefDTOSchema)),
-    "severity_counts": v.pipe(
-      v.record(v.string(), v.pipe(
-        v.number(),
-        v.integer(),
-        v.minValue(0),
-      )),
-      v.check((value) => Object.keys(value).length <= 32, "at most 32 properties allowed"),
-    ),
-    "top_alerts": v.pipe(
-      v.array(AlertRefDTOSchema),
-      v.maxLength(20),
-    ),
-    "delivery_summary": DeliverySummaryDTOSchema,
-  }),
-]);
-
 export const RuleExprNumberChangeDTOSchema = v.looseObject({
   "index": v.pipe(
     v.number(),
@@ -1452,7 +1353,7 @@ export const PolicyDTOSchema = v.looseObject({
   "reasons": v.pipe(
     v.array(NotificationReasonSchema),
     v.minLength(1),
-    v.maxLength(17),
+    v.maxLength(15),
     v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
   ),
   "channel_ids": v.pipe(
@@ -1480,9 +1381,8 @@ export const PolicyDTOSchema = v.looseObject({
 
 export const NotificationDTOSchema = v.looseObject({
   "id": UuidSchema,
-  "subject_kind": v.picklist(["alert", "case", "alert_group", "digest"]),
+  "subject_kind": v.picklist(["alert", "case", "digest"]),
   "subject_id": UuidSchema,
-  "group_id": v.nullable(UuidSchema),
   "alert_id": v.exactOptional(v.nullable(UuidSchema)),
   "case_id": v.exactOptional(v.nullable(UuidSchema)),
   "reason": NotificationReasonSchema,
@@ -1750,18 +1650,6 @@ export const StatsOverviewDTOSchema = v.looseObject({
       v.minValue(0),
     ),
   }),
-  "groups": v.looseObject({
-    "open": v.pipe(
-      v.number(),
-      v.integer(),
-      v.minValue(0),
-    ),
-    "closed": v.pipe(
-      v.number(),
-      v.integer(),
-      v.minValue(0),
-    ),
-  }),
   "deliveries": v.looseObject({
     "sent": v.pipe(
       v.number(),
@@ -1962,7 +1850,6 @@ export const OrgSettingsDTOSchema = v.looseObject({
     v.maxValue(120),
   ),
   "default_verbosity": VerbositySchema,
-  "broadcast_on_resolved": v.boolean(),
 });
 
 export const OrgDTOSchema = v.looseObject({
@@ -2269,7 +2156,7 @@ export const VersionDTOSchema = v.looseObject({
 
 export const DrillStatusSchema = v.picklist(["running", "passed", "failed", "timed_out"]);
 
-export const DrillStageNameSchema = v.picklist(["accept", "process", "identity", "case", "group", "rule_snapshot", "policy", "thread", "ordering", "delivery"]);
+export const DrillStageNameSchema = v.picklist(["accept", "process", "identity", "case", "rule_snapshot", "policy", "thread", "ordering", "delivery"]);
 
 export const DrillStageStatusSchema = v.picklist(["pending", "passed", "failed", "skipped"]);
 
@@ -2302,7 +2189,6 @@ export const DrillDestinationDTOSchema = v.looseObject({
     v.string(),
     v.maxLength(64),
   ))),
-  "broadcast": v.boolean(),
   "error": v.exactOptional(v.nullable(v.pipe(
     v.string(),
     v.maxLength(2000),
@@ -2329,7 +2215,6 @@ export const DeliveryDrillDTOSchema = v.looseObject({
   ),
   "alert_id": v.exactOptional(v.nullable(UuidSchema)),
   "case_id": v.exactOptional(v.nullable(UuidSchema)),
-  "group_id": v.exactOptional(v.nullable(UuidSchema)),
   "notification_id": v.exactOptional(v.nullable(UuidSchema)),
   "batch_id": v.exactOptional(v.nullable(UuidSchema)),
   "started_by_label": v.pipe(
@@ -2591,7 +2476,7 @@ export const CreatePolicyRequestSchema = v.strictObject({
   "reasons": v.pipe(
     v.array(NotificationReasonSchema),
     v.minLength(1),
-    v.maxLength(17),
+    v.maxLength(15),
     v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
   ),
   "channel_ids": v.pipe(
@@ -2636,7 +2521,7 @@ export const UpdatePolicyRequestSchema = v.pipe(
     "reasons": v.exactOptional(v.pipe(
       v.array(NotificationReasonSchema),
       v.minLength(1),
-      v.maxLength(17),
+      v.maxLength(15),
       v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
     )),
     "channel_ids": v.exactOptional(v.pipe(
@@ -2663,9 +2548,7 @@ export const UpdatePolicyRequestSchema = v.pipe(
 );
 
 export const PolicyPreviewRequestSchema = v.strictObject({
-  "alert_id": v.exactOptional(UuidSchema),
   "case_id": v.exactOptional(UuidSchema),
-  "group_id": v.exactOptional(UuidSchema),
   "reason": v.exactOptional(NotificationReasonSchema),
   "policy": v.exactOptional(CreatePolicyRequestSchema),
 });
@@ -2797,17 +2680,6 @@ export const RuleSnapshotBatchResponseSchema = v.looseObject({
 export const RuleSnapshotListResponseSchema = v.looseObject({
   "data": v.array(RuleSnapshotDTOSchema),
   "page": PageInfoSchema,
-  "meta": MetaSchema,
-});
-
-export const GroupListResponseSchema = v.looseObject({
-  "data": v.array(GroupDTOSchema),
-  "page": PageInfoSchema,
-  "meta": MetaSchema,
-});
-
-export const GroupDetailResponseSchema = v.looseObject({
-  "data": GroupDetailDTOSchema,
   "meta": MetaSchema,
 });
 
@@ -3030,7 +2902,6 @@ export const OrgSettingsPatchDTOSchema = v.looseObject({
     v.integer(),
   )),
   "default_verbosity": v.exactOptional(VerbositySchema),
-  "broadcast_on_resolved": v.exactOptional(v.boolean()),
 });
 
 export const OrgSettingsViewDTOSchema = v.looseObject({
@@ -3099,7 +2970,6 @@ export const UpdateOrgSettingsRequestSchema = v.strictObject({
     v.maxValue(120),
   )),
   "default_verbosity": v.exactOptional(VerbositySchema),
-  "broadcast_on_resolved": v.exactOptional(v.boolean()),
   "reset": v.exactOptional(v.pipe(
     v.array(v.pipe(
       v.string(),

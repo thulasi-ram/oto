@@ -53,8 +53,6 @@ func TestTheStateFacetStillReachesThePartialAckIndex(t *testing.T) {
 	h := harness.New(t)
 	org := h.Org()
 	cluster := h.Cluster(org)
-	source := h.Source(org, cluster)
-	group := h.GroupWith(org, source, cluster, map[string]string{"alertname": "CaseListPlan"})
 
 	// 160 alerts × 25 episodes = 4 000 cases, of which 160 are open — the shape a
 	// real tenant has, where the live set is a small minority of the history and a
@@ -80,29 +78,28 @@ func TestTheStateFacetStillReachesThePartialAckIndex(t *testing.T) {
 	// than matching everything it can see.
 	h.Exec(`
 		INSERT INTO alert_cases
-		  (id, org_id, alert_id, group_id, seq, state, resolve_reason, ack_state,
+		  (id, org_id, alert_id, seq, state, resolve_reason, ack_state,
 		   acked_at, acked_by_label,
 		   started_at, ended_at, last_observed_at, source_starts_at)
 		SELECT gen_random_uuid(),
 		       $1,
 		       ($2::uuid[])[a + 1],
-		       $3,
 		       s,
-		       CASE WHEN s = $4 THEN 'open' ELSE 'closed' END,
-		       CASE WHEN s = $4 THEN NULL ELSE 'upstream' END,
-		       CASE WHEN s = $4 AND a % 3 = 0 THEN 'acked' ELSE 'unacked' END,
-		       CASE WHEN s = $4 AND a % 3 = 0
-		            THEN $5::timestamptz + ((a * $4 + s) * interval '1 second') END,
-		       CASE WHEN s = $4 AND a % 3 = 0 THEN 'Ada Lovelace' END,
-		       $5::timestamptz + ((a * $4 + s) * interval '1 second'),
-		       CASE WHEN s = $4 THEN NULL
-		            ELSE $5::timestamptz + ((a * $4 + s) * interval '1 second')
+		       CASE WHEN s = $3 THEN 'open' ELSE 'closed' END,
+		       CASE WHEN s = $3 THEN NULL ELSE 'upstream' END,
+		       CASE WHEN s = $3 AND a % 3 = 0 THEN 'acked' ELSE 'unacked' END,
+		       CASE WHEN s = $3 AND a % 3 = 0
+		            THEN $4::timestamptz + ((a * $3 + s) * interval '1 second') END,
+		       CASE WHEN s = $3 AND a % 3 = 0 THEN 'Ada Lovelace' END,
+		       $4::timestamptz + ((a * $3 + s) * interval '1 second'),
+		       CASE WHEN s = $3 THEN NULL
+		            ELSE $4::timestamptz + ((a * $3 + s) * interval '1 second')
 		                 + interval '30 seconds' END,
-		       $5::timestamptz + ((a * $4 + s) * interval '1 second') + interval '30 seconds',
-		       $5::timestamptz + ((a * $4 + s) * interval '1 second')
-		  FROM generate_series(0, $6 - 1) AS a,
-		       generate_series(1, $4) AS s`,
-		org.ID, alertIDs, group.ID, episodesPerAlert, harness.Epoch, len(alertIDs))
+		       $4::timestamptz + ((a * $3 + s) * interval '1 second') + interval '30 seconds',
+		       $4::timestamptz + ((a * $3 + s) * interval '1 second')
+		  FROM generate_series(0, $5 - 1) AS a,
+		       generate_series(1, $3) AS s`,
+		org.ID, alertIDs, episodesPerAlert, harness.Epoch, len(alertIDs))
 
 	// ⛔ WITHOUT THIS THE TEST IS A COIN TOSS. A freshly written table has
 	// `reltuples = -1` and no histogram, so the planner assumes a handful of pages
@@ -163,8 +160,6 @@ func TestTheClosedPageFallsToTheFullIndexOnPurpose(t *testing.T) {
 	h := harness.New(t)
 	org := h.Org()
 	cluster := h.Cluster(org)
-	source := h.Source(org, cluster)
-	group := h.GroupWith(org, source, cluster, map[string]string{"alertname": "ClosedPagePlan"})
 
 	const alertsInOrg = 160
 	const episodesPerAlert = 25
@@ -179,20 +174,20 @@ func TestTheClosedPageFallsToTheFullIndexOnPurpose(t *testing.T) {
 	}
 	h.Exec(`
 		INSERT INTO alert_cases
-		  (id, org_id, alert_id, group_id, seq, state, resolve_reason,
+		  (id, org_id, alert_id, seq, state, resolve_reason,
 		   started_at, ended_at, last_observed_at, source_starts_at)
-		SELECT gen_random_uuid(), $1, ($2::uuid[])[a + 1], $3, s,
-		       CASE WHEN s = $4 THEN 'open' ELSE 'closed' END,
-		       CASE WHEN s = $4 THEN NULL ELSE 'upstream' END,
-		       $5::timestamptz + ((a * $4 + s) * interval '1 second'),
-		       CASE WHEN s = $4 THEN NULL
-		            ELSE $5::timestamptz + ((a * $4 + s) * interval '1 second')
+		SELECT gen_random_uuid(), $1, ($2::uuid[])[a + 1], s,
+		       CASE WHEN s = $3 THEN 'open' ELSE 'closed' END,
+		       CASE WHEN s = $3 THEN NULL ELSE 'upstream' END,
+		       $4::timestamptz + ((a * $3 + s) * interval '1 second'),
+		       CASE WHEN s = $3 THEN NULL
+		            ELSE $4::timestamptz + ((a * $3 + s) * interval '1 second')
 		                 + interval '30 seconds' END,
-		       $5::timestamptz + ((a * $4 + s) * interval '1 second') + interval '30 seconds',
-		       $5::timestamptz + ((a * $4 + s) * interval '1 second')
-		  FROM generate_series(0, $6 - 1) AS a,
-		       generate_series(1, $4) AS s`,
-		org.ID, alertIDs, group.ID, episodesPerAlert, harness.Epoch, len(alertIDs))
+		       $4::timestamptz + ((a * $3 + s) * interval '1 second') + interval '30 seconds',
+		       $4::timestamptz + ((a * $3 + s) * interval '1 second')
+		  FROM generate_series(0, $5 - 1) AS a,
+		       generate_series(1, $3) AS s`,
+		org.ID, alertIDs, episodesPerAlert, harness.Epoch, len(alertIDs))
 	h.Exec(`ANALYZE alert_cases`)
 	h.Exec(`ANALYZE alerts`)
 
@@ -221,9 +216,15 @@ func TestTheClosedPageFallsToTheFullIndexOnPurpose(t *testing.T) {
 func explainCaseList(t *testing.T, h *harness.H, org uuid.UUID, sql string) labelPlan {
 	t.Helper()
 
+	//
+	// ⛔ ELEVEN ARGUMENTS, NOT TWELVE. The group facet was `$3` and it is deleted
+	// with `alert_cases.group_id` (git-bug `7570090`), so every later placeholder
+	// shifted down by one. Postgres derives a statement's arity from the highest
+	// `$n` its TEXT mentions, so a stale twelfth argument here is a bind error and
+	// not a silent mis-plan — which is the one thing that makes this arity safe to
+	// keep in step by hand.
 	var (
 		acks      = []string{"unacked"}
-		groupIDs  []uuid.UUID
 		since     *time.Time
 		sev       []string
 		ns        []string
@@ -235,7 +236,7 @@ func explainCaseList(t *testing.T, h *harness.H, org uuid.UUID, sql string) labe
 	)
 	var raw []byte
 	if err := h.Pool.QueryRow(h.Ctx, "EXPLAIN (FORMAT JSON) "+sql,
-		org, acks, groupIDs, since, synthetic, sev, ns, clusters, names,
+		org, acks, since, synthetic, sev, ns, clusters, names,
 		cursorAt, cursorID, caseListPlanLimit).Scan(&raw); err != nil {
 		t.Fatalf("explain the case list: %v", err)
 	}

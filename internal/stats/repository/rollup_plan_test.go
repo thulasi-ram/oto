@@ -29,7 +29,7 @@ func TestMain(m *testing.M) { harness.Main(m) }
 // `alert_cases` on `(org_id, started_at BETWEEN …)` and its `notif` CTE
 // filters `notifications` on `(org_id, created_at BETWEEN …)`. Until 00042 there
 // was no index on either table that could lead with that pair — every candidate
-// demanded a second equality (alert_id, group_id, ack_state, subject_id,
+// demanded a second equality (alert_id, ack_state, subject_id,
 // case_id) the rollup does not supply — so both CTEs were full scans, run
 // `2 × orgs` times every fifteen minutes over two tables ADR 0024 never reaps.
 //
@@ -59,30 +59,20 @@ func TestTheRollupReachesBothTablesByIndex(t *testing.T) {
 	// than proving it served.
 	org := h.Org()
 	cluster := h.Cluster(org)
-	source := h.Source(org, cluster)
 
-	// Eight alerts and eight groups. The rollup GROUPs BY `(cluster_key,
-	// alertname)`, and the `notif` CTE reaches `alerts` through
-	// `alert_cases.group_id`, so both need a fan-out that is real but small: the
-	// volume under test is on the two tables being scanned, not on their join
-	// partners.
+	// Eight alerts. The rollup GROUPs BY `(cluster_key, alertname)`, and the
+	// `notif` CTE reaches `alerts` through the Case a notification is about, so
+	// both need a fan-out that is real but small: the volume under test is on the
+	// two tables being scanned, not on their join partners.
 	const fanout = 8
 	alertIDs := make([]uuid.UUID, 0, fanout)
-	groupIDs := make([]uuid.UUID, 0, fanout)
 	for i := range fanout {
 		a := h.AlertWith(org, cluster, map[string]string{
 			"alertname": fmt.Sprintf("RollupPlanAlert%02d", i),
 			"severity":  "critical",
 			"service":   "checkout",
 		})
-		// `shard` is not an axis (ADR 0038), so it cannot separate generations any
-		// more; the alertname is what makes these N distinct groups instead of one.
-		g := h.GroupWith(org, source, cluster, map[string]string{
-			"alertname": fmt.Sprintf("RollupShard%02d", i),
-			"severity":  "critical",
-		})
 		alertIDs = append(alertIDs, a.ID)
-		groupIDs = append(groupIDs, g.ID)
 	}
 
 	// Two months of history at one episode every four minutes. Every episode is
@@ -100,51 +90,55 @@ func TestTheRollupReachesBothTablesByIndex(t *testing.T) {
 	base := harness.Epoch
 	h.Exec(`
 		INSERT INTO alert_cases
-		  (id, org_id, alert_id, group_id, seq, state, resolve_reason,
+		  (id, org_id, alert_id, seq, state, resolve_reason,
 		   started_at, ended_at, last_observed_at, source_starts_at)
 		SELECT gen_random_uuid(),
 		       $1,
-		       ($2::uuid[])[(i % $4) + 1],
-		       ($3::uuid[])[(i % $4) + 1],
+		       ($2::uuid[])[(i % $3) + 1],
 		       i,
 		       'closed',
 		       'upstream',
-		       $5::timestamptz + (i * interval '4 minutes'),
-		       $5::timestamptz + (i * interval '4 minutes') + interval '9 minutes',
-		       $5::timestamptz + (i * interval '4 minutes') + interval '9 minutes',
-		       $5::timestamptz + (i * interval '4 minutes')
-		  FROM generate_series(1, $6) AS i`,
-		org.ID, alertIDs, groupIDs, fanout, base, rows)
-
-	// ⭐ NO MEMBERSHIP SEED. Since 00051 the episodes above ARE the membership —
-	// each carries the `group_id` the `notif` CTE joins on — so the row that used
-	// to be inserted here would have been a copy of one already written. It also
-	// means the CTE's join now fans out over every episode of a generation rather
-	// than one per generation, which is why it counts DISTINCT notification and
-	// delivery ids.
-
-	// The same two months of notifications. `idempotency_key` is 64 hex
-	// characters by `notifications_idem_ck` and unique per org by
-	// `notifications_idem_uniq`; two md5s of the series index satisfy both
-	// without the test having to care.
-	h.Exec(`
-		INSERT INTO notifications
-		  (id, org_id, subject_kind, subject_id, group_id, conversation_kind, conversation_id, reason, state_version,
-		   idempotency_key, created_at, updated_at)
-		SELECT gen_random_uuid(),
-		       $1,
-		       'alert_group',
-		       ($2::uuid[])[(i % $3) + 1],
-		       ($2::uuid[])[(i % $3) + 1],
-		       'alert_group',
-		       ($2::uuid[])[(i % $3) + 1],
-		       'fired',
-		       1,
-		       md5(i::text) || md5((i + 1)::text),
 		       $4::timestamptz + (i * interval '4 minutes'),
+		       $4::timestamptz + (i * interval '4 minutes') + interval '9 minutes',
+		       $4::timestamptz + (i * interval '4 minutes') + interval '9 minutes',
 		       $4::timestamptz + (i * interval '4 minutes')
 		  FROM generate_series(1, $5) AS i`,
-		org.ID, groupIDs, fanout, base, rows)
+		org.ID, alertIDs, fanout, base, rows)
+
+	// ⭐ ONE NOTIFICATION PER CASE, AND THE CASE IS WHAT IT NAMES (git-bug
+	// `7570090`). The seed used to point every notification at an
+	// `alert_groups.id` through `group_id`, and the `notif` CTE fanned that back
+	// out over the generation's members. A conversation holds exactly one Case, so
+	// the fact is about that Case, lands in that Case, and reaches `alerts`
+	// through it — which is why the notifications are SELECTed from the episodes
+	// rather than minted beside them.
+	//
+	// `idempotency_key` is 64 hex characters by `notifications_idem_ck` and unique
+	// per org by `notifications_idem_uniq`; two md5s of the case id satisfy both
+	// without the test having to care. `created_at` is the episode's own start, so
+	// the two months of notifications span exactly the two months of episodes and
+	// are written in the same physical order — correlation is an input to the
+	// planner's choice, and this is the order ingest produces.
+	h.Exec(`
+		INSERT INTO notifications
+		  (id, org_id, subject_kind, subject_id, case_id, conversation_kind, conversation_id,
+		   reason, state_version, idempotency_key, created_at, updated_at)
+		SELECT gen_random_uuid(),
+		       $1,
+		       'case',
+		       o.id,
+		       o.id,
+		       'case',
+		       o.id,
+		       'fired',
+		       1,
+		       md5(o.id::text) || md5(o.id::text || 'x'),
+		       o.started_at,
+		       o.started_at
+		  FROM alert_cases o
+		 WHERE o.org_id = $1
+		 ORDER BY o.started_at`,
+		org.ID)
 
 	// ⛔ WITHOUT THIS THE TEST IS A COIN TOSS. A freshly written table has
 	// `reltuples = -1` and no histogram, so the planner assumes a handful of
@@ -285,11 +279,10 @@ func parsePlan(t *testing.T, raw []byte) plan {
 // separately.
 // scanOfCTE is scanOf narrowed to one CTE's subtree.
 //
-// ⭐ `alert_cases` IS READ TWICE SINCE 00051. The `ac` CTE reads the episodes that
-// started on the day; the membership fan-out reads the same table again, because
-// `alert_group_members` is gone and `alert_cases.group_id` IS the membership. A
-// plain relation-name walk therefore finds two nodes and cannot say which one the
-// assertion is about. EXPLAIN labels a CTE's own subtree with `Subplan Name`, so
+// ⭐ `alert_cases` IS READ TWICE. The `ac` CTE reads the episodes that started on
+// the day; the `notif` CTE reads the same table again to reach `alerts` through
+// the Case each notification is about. A plain relation-name walk therefore finds
+// two nodes and cannot say which one the assertion is about. EXPLAIN labels a CTE's own subtree with `Subplan Name`, so
 // naming the CTE is how the right scan is picked.
 func scanOfCTE(t *testing.T, p plan, cte, table string) node {
 	t.Helper()

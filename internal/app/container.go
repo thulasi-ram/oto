@@ -30,9 +30,6 @@ import (
 	"github.com/thulasiram/oto/internal/enrichment/enrichers/runbook"
 	enrichrepo "github.com/thulasiram/oto/internal/enrichment/repository"
 	enrichservice "github.com/thulasiram/oto/internal/enrichment/service"
-	groupingapi "github.com/thulasiram/oto/internal/grouping/api"
-	groupingrepo "github.com/thulasiram/oto/internal/grouping/repository"
-	groupingservice "github.com/thulasiram/oto/internal/grouping/service"
 	identityapi "github.com/thulasiram/oto/internal/identity/api"
 	identitydomain "github.com/thulasiram/oto/internal/identity/domain"
 	identityrepo "github.com/thulasiram/oto/internal/identity/repository"
@@ -158,7 +155,6 @@ type Container struct {
 	Reconciler *sourcesservice.Reconciler
 	Rules      *rulesservice.Service
 	Alerts     *alertsservice.Service
-	Grouping   *groupingservice.Service
 	Enrichment *enrichservice.Service
 	Silences   *silencesservice.Service
 	Stats      *statsservice.Service
@@ -216,7 +212,6 @@ type Container struct {
 type routerSet struct {
 	identity  *identityapi.Router
 	alerts    *alertsapi.Router
-	grouping  *groupingapi.Router
 	rules     *rulesapi.Router
 	sources   *sourcesapi.Router
 	channels  *channelsapi.Router
@@ -550,7 +545,6 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	snoozeRepo := alertsrepo.NewSnoozeRepository(general, clk)
 	enrichmentRepo := enrichrepo.NewEnrichmentRepository(general).WithLogger(logger)
 
-	groupVersionsPort := &groupVersions{}
 	notificationsPort := &notificationReader{}
 
 	c.Alerts, err = alertsservice.New(alertsservice.Deps{
@@ -570,7 +564,6 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		Stream:           stream,
 		Health:           sourceHealth{svc: c.Sources},
 		Settings:         settings,
-		GroupVersions:    groupVersionsPort,
 		Enrichments:      enrichmentReader{repo: enrichmentRepo},
 		Notifications:    notificationsPort,
 		// `commentOnAlert` and `snoozeAlert` take their claim inside the same
@@ -589,23 +582,12 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	// through this one line (§D.4.1, T11 and T12).
 	timeline.svc = c.Alerts
 
-	// ---- grouping: durable generations, membership, group lifecycle ------
-	c.Grouping, err = groupingservice.New(groupingservice.Deps{
-		Groups:   groupingrepo.NewGroupRepository(general, clk),
-		Members:  groupingrepo.NewMemberRepository(general, clk),
-		Tx:       groupingrepo.NewTxRunner(general),
-		Events:   c.Alerts,
-		Timeline: c.Alerts,
-		Actions:  c.Alerts,
-		Stream:   stream,
-		Settings: settings,
-		Clock:    clk,
-		Logger:   logger,
-	})
-	if err != nil {
-		return nil, err
-	}
-	groupVersionsPort.svc = c.Grouping
+	// ⛔ THE `grouping` MODULE WAS CONSTRUCTED HERE AND IS DELETED IN FULL (git-bug
+	// `7570090`): "durable generations, membership, group lifecycle", its two
+	// repositories, its own tx runner, and the `groupVersionsPort` late-binding that
+	// existed only to break the `alerts` ⇄ `grouping` package cycle. A Case is the
+	// conversation, so there is no generation to open, no membership to record and
+	// no cycle left to break.
 
 	// ---- enrichment: the budgeted, provenanced pipeline ------------------
 	alertReadModel := enrichrepo.NewAlertReadModel(general)
@@ -623,10 +605,9 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		Repo:     enrichmentRepo,
 		Cache:    enrichrepo.NewCacheRepository(general),
 		Subjects: subjectLoader{
-			alerts:   c.Alerts,
-			grouping: c.Grouping,
-			sources:  c.Sources,
-			occSrc:   &caseSourceReader{resolver: caseRepo},
+			alerts:  c.Alerts,
+			sources: c.Sources,
+			occSrc:  &caseSourceReader{resolver: caseRepo},
 		},
 		Notifier: enrichservice.NewQueueNotifier(c.enqueuer),
 		Events:   timeline,
@@ -674,7 +655,7 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	// The orchestrator is hoisted into a variable because it has TWO producers:
 	// the webhook path below and the reconciler after it. That is the point of
 	// C18 — one write path into `alerts`, two things that feed it.
-	observer := alertObserver{svc: c.Alerts, grouping: c.Grouping, log: logger}
+	observer := alertObserver{svc: c.Alerts}
 	c.Ingestion, err = ingestion.New(ingestion.Deps{
 		Pools:    o.Pools,
 		Enqueuer: c.enqueuer,
@@ -729,7 +710,7 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	c.SlackInteractions, err = channelsservice.NewInteractionService(channelsservice.InteractionOptions{
 		Conversations: slackConversations{channels: channelRepo},
 		Actors:        slackActors{identity: c.Identity},
-		Groups:        slackGroupActions{grouping: c.Grouping},
+		Cases:         slackCaseActions{alerts: c.Alerts},
 		Enqueuer:      c.enqueuer,
 		// The ephemeral reply goes to Slack's own `response_url`, which needs no
 		// token and no scope — which is why oto can tell a user "that already
@@ -994,12 +975,10 @@ func (c *Container) buildRouters(
 			Clock:  clk,
 		}),
 		alerts: alertsapi.NewRouter(c.Alerts, clk),
-		// The third argument is `delivery_summary` on the group card: was anybody
-		// told about this generation, and did it land. It is late enough in the
-		// build that `c.NotifyHistory` is real; when the notification module is
-		// absent the adapter answers all-zero rather than nil.
-		grouping: groupingapi.NewRouter(c.Grouping, c.Alerts,
-			groupDeliveryRollups{svc: c.NotifyHistory}, clk),
+		// ⛔ THE `grouping` ROUTER WAS HERE AND IS DELETED (git-bug `7570090`), and
+		// with it the nine `/api/v1/alert-groups*` paths and the
+		// `groupDeliveryRollups` adapter that answered `delivery_summary` on the
+		// group card — "was anybody told about this generation, and did it land".
 		rules: rulesapi.NewRouter(c.Rules, c.Alerts, clk),
 		sources: sourcesapi.NewRouter(sourcesapi.Options{
 			Sources: c.Sources,
@@ -1065,7 +1044,6 @@ func (c *Container) buildRouters(
 			Preview:       c.Policies,
 			Views:         c.Views,
 			Renderers:     c.ChannelRegistry,
-			Subjects:      subjectResolver{alerts: c.Alerts, grouping: c.Grouping},
 			Enqueuer:      c.enqueuer,
 			Clock:         clk,
 			BaseURL:       c.Config.HTTP.BaseURL,

@@ -80,16 +80,21 @@ async function openListbox(trigger: HTMLElement): Promise<void> {
 }
 
 /**
- * Picks the one alert the dry-run picker was seeded with.
+ * Picks the one episode the dry-run picker was seeded with.
  *
  * `PolicyPreviewPanel` lives inside the Modal's presence-gated content, so
  * `recentAlertsQuery()` only starts fetching once the dialog actually opens —
  * and the trigger stays honestly disabled (with a "Loading…" placeholder)
  * until that query resolves. A test driving the real trigger has to wait for
  * it exactly as an operator would, rather than reaching past it.
+ *
+ * ⛔ THE LABEL IS "Against this episode" AND THE ROW IS ONLY OFFERED BECAUSE IT
+ * HAS AN OPEN CASE. The preview endpoint takes a `case_id` and nothing else
+ * (git-bug 7570090), so the picker drops any recent alert whose `current_case`
+ * is absent — `alert()` carries one, which is what keeps this seed pickable.
  */
 async function pickTheRecentAlert(editor: ReturnType<typeof within>): Promise<void> {
-  const trigger = editor.getByLabelText("Against this alert");
+  const trigger = editor.getByLabelText("Against this episode");
   await until(() => expect(trigger).not.toBeDisabled());
   await openListbox(trigger);
   fireEvent.click(screen.getAllByRole("option")[0]!);

@@ -237,7 +237,6 @@ export default function CaseDetailRoute() {
                 <AckDialog
                   open={ackOpen()}
                   onClose={() => setAckOpen(false)}
-                  subject="case"
                   withdrawing={acked()}
                   onSubmit={(note: string | undefined, key: string) =>
                     acked() ? unackCase(params.id, note, key) : ackCase(params.id, note, key)
@@ -321,36 +320,6 @@ export default function CaseDetailRoute() {
                     </Show>
                   </Panel>
 
-                  {/* The notification group, if this firing was notified under
-                      one.
-
-                      ⛔ THE PANEL SAYS WHAT AN AlertGroup IS, BECAUSE NOTHING
-                      ELSE ON THIS SCREEN DOES. It is Alertmanager's batching —
-                      the object that owns one chat thread — and it is neither a
-                      correlation nor a bigger case. Without the sentence, a link
-                      called "group" beside a case reads as the case's parent. */}
-                  <Show when={c().group}>
-                    {(g) => (
-                      <Panel>
-                        <PanelHeader>
-                          <PanelTitle>Notified in</PanelTitle>
-                          <span class="text-meta text-ink-subtle">Alertmanager's batching</span>
-                        </PanelHeader>
-                        <div class="p-3">
-                          <p class="text-body leading-snug text-ink-muted">
-                            Alertmanager batched this firing with others into one notification, which
-                            owns one chat thread. It grouped them; oto mirrors the decision.
-                          </p>
-                          <A
-                            href={`/groups/${g().id}`}
-                            class="mt-2 inline-block text-body text-ink underline underline-offset-2 hover:text-ink-muted"
-                          >
-                            {g().title} · generation {g().generation} ↗
-                          </A>
-                        </div>
-                      </Panel>
-                    )}
-                  </Show>
 
                   {/* The rule as it was AT THIS FIRING'S START — not as it is
                       now. That is the whole value of a snapshot: an episode from

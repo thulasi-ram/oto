@@ -365,6 +365,38 @@ func (r *ConfigRepository) SoftDeletePolicy(
 
 // ------------------------------------------------------------- notifications
 
+// ⛔ `group_id = $5` IS NOW `conversation_id = $5`, AND THIS IS A RE-POINT AND NOT A
+// DELETION (git-bug `7570090`, migration `00069`).
+//
+// ⭐ THE QUESTION IT ASKS IS A DELIVERY-TARGET QUESTION, which is why it survives at
+// all. `?group_id=…` on the audit meant "show me every intent that landed on THIS
+// thread" — not "every intent ABOUT this thing" — and the delivery target did not
+// disappear with `alert_groups`, it changed spelling to the pair
+// `(conversation_kind, conversation_id)` (migration 00064). The kind is not tested
+// here because the id alone is discriminating: `conversation_id` holds an
+// `alert_cases.id` for a case conversation and a `notification_policies.id` for a
+// digest, and a caller passing one cannot accidentally match the other. It rides
+// `notif_conversation_idx (org_id, conversation_id, created_at DESC)`, which 00069
+// created for exactly this shape of read.
+//
+// ⚠️ AND IT IS RE-POINTED RATHER THAN DELETED FOR A REASON THAT IS ABOUT SAFETY, NOT
+// TASTE. `00069`'s header says the three `group_id` readers were "answered rather
+// than re-pointed", but the API layer still PARSES `group_id`
+// (`notification/api/audit.go:93`) and still hashes it into the keyset filter hash
+// (`:400`). Deleting the predicate while the parameter is still bound would make
+// `?group_id=X` return the WHOLE unfiltered page instead of an error or an empty
+// one — a SILENT WIDENING of an audit list, which is a worse failure than a 42703
+// because nothing anywhere says it happened. The precedent is
+// `drill/repository/artifacts.go`: its `readGroup` was deleted outright, but
+// `readNotification` — the read that asked where the card went — was re-pointed at
+// `(conversation_kind, conversation_id)` exactly like this one.
+//
+// ⛔ THE PARAMETER IS STILL SPELLED `group_id` ONE LAYER UP AND THAT IS A REAL,
+// KNOWN GAP. `domain.NotificationFilter.GroupID` and the `group_id` query parameter
+// both need renaming to `conversation_id`, and the openapi parameter with them.
+// Neither is in this package, so neither is done here — but an operator passing a
+// pre-migration group id now gets an empty page, which is the honest answer (no
+// conversation has that id any more) rather than a wrong one.
 const listNotificationsSQL = `
 SELECT` + notificationColumns + `
   FROM notifications
@@ -372,7 +404,7 @@ SELECT` + notificationColumns + `
    AND ($2::text[] IS NULL OR status = ANY($2))
    AND ($3::text[] IS NULL OR reason = ANY($3))
    AND ($4::text[] IS NULL OR suppressed_reason = ANY($4))
-   AND ($5::uuid IS NULL OR group_id = $5)
+   AND ($5::uuid IS NULL OR conversation_id = $5)
    AND ($6::uuid IS NULL OR alert_id = $6)
    AND ($7::uuid IS NULL OR policy_id = $7)
    AND ($8::timestamptz IS NULL OR created_at >= $8)
@@ -423,10 +455,19 @@ func (r *ConfigRepository) ListNotifications(
 	out := make([]domain.Notification, 0, limit+1)
 	for rows.Next() {
 		var row notificationRow
-		// ⚠️ THIS IS THE ONE READ THAT MEETS A NULL `group_id` FIRST. The audit list
-		// has no mandatory group filter, so a digest row (migration 00058) arrives
-		// here on any unfiltered page — which is why `notificationRow.groupID` is a
-		// pointer and why the argument list is shared rather than retyped per query.
+		// ⛔ THIS WAS "THE ONE READ THAT MEETS A NULL `group_id` FIRST", AND THERE IS
+		// NO SUCH NULL LEFT (git-bug `7570090`, migration `00069`). The note explained
+		// why `notificationRow.groupID` had to be a `*uuid.UUID`: the audit list has no
+		// mandatory filter, so a digest row (migration 00058) — the one row shape with
+		// no group — arrived here on any unfiltered page, and scanning a NULL into a
+		// bare `uuid.UUID` is a driver error rather than a zero value.
+		//
+		// ⭐ THE LESSON OUTLIVED THE COLUMN and is recorded on `notificationRow` itself.
+		// `(conversation_kind, conversation_id)` is NOT NULL for every row including a
+		// digest, so both halves are value types and this read has no asymmetry left to
+		// be the first to meet. The argument list is still shared rather than retyped
+		// per query, and that reason is unchanged: four statements read the same
+		// columns and four hand-written Scan lists drift.
 		if err := rows.Scan(row.scanInto()...); err != nil {
 			return nil, db.Cursor{}, mapErr(err, "notification_not_found", "scan a notification")
 		}

@@ -509,20 +509,30 @@ func (r *Reconciler) observations(
 			}
 		}
 
-		// ⭐ THE RECONCILER CAN NOW BUILD A GROUP, AND THIS IS WHERE IT BECAME ABLE
-		// TO. `GET /api/v2/alerts` returns no grouping at all, so while the §C.4 key
-		// hashed `(source, receiver, groupLabels)` this path had to make a SECOND
-		// call to `/api/v2/alerts/groups` purely to learn them — and a reconciled
-		// alert that belonged to no group upstream still landed groupless. Since ADR
-		// 0038 the key is `(org, cluster, alertname, namespace-or-∅)`, every axis of
-		// which is in `clusterKey` and `labels` right here, so both ingest paths now
-		// give the same answer to "which thread does this belong to" with no extra
-		// round trip. `Receiver` is "" because a reconcile pass has no receiver.
+		// ⛔ THE PARAGRAPH THAT STOOD HERE CELEBRATED THIS PATH BEING ABLE TO BUILD A
+		// GROUP, AND THERE IS NO GROUP (git-bug `7570090`). It recorded that
+		// `GET /api/v2/alerts` returns no grouping at all, so while the §C.4 key hashed
+		// `(source, receiver, groupLabels)` the reconciler had to make a SECOND call to
+		// `/api/v2/alerts/groups` purely to learn them, and a reconciled alert that
+		// belonged to no group upstream still landed groupless.
+		//
+		// ⭐ ITS REAL SUBJECT SURVIVES THE GROUP AND IS WHY IT IS RE-POINTED RATHER
+		// THAN DELETED: THE TWO INGEST PATHS AGREE. Since ADR 0038 every axis oto keys
+		// on is `(org, cluster, alertname, namespace-or-∅)` — all of it in `clusterKey`
+		// and `labels` right here — so the reconciler and the webhook derive the same
+		// alert identity from the same inputs, with no second round trip, and neither
+		// depends on what Alertmanager happened to group by. That is now the whole
+		// claim; the thread it used to be about is one per Case.
+		//
+		// ⛔ `SourceID: src.ID` WAS ALSO HERE AND IS DELETED WITH THE FIELD. A reconcile
+		// pass is not a batch, so unlike the webhook path it had no `ingest_batches`
+		// row carrying the source — but nothing downstream of the Observation reads a
+		// source any more either, so this was the last writer of a value with no
+		// reader.
 		out = append(out, alerts.Observation{
 			// ⭐ THE LOAD-BEARING FIELD. `reconciler` is what admits T3 (§B.3.1);
 			// no other value in this enum may enter `suppressed`.
 			Source:    alerts.ObservedByReconciler,
-			SourceID:  src.ID,
 			ClusterID: src.ClusterID,
 			// BatchID is deliberately zero. A reconcile pass is not a batch: there
 			// is no raw payload to keep, nothing to replay, and no `ingest_batches`

@@ -342,13 +342,22 @@ func TestTheTopLevelTextTruncatesOnAClauseBoundaryAndNeverStacksAFullStop(t *tes
 
 // ---------------------------------------------------------------------- C9
 
-// ⛔ C9. ADR 0020 rule 4: a broadcast's top-level text must be SELF-SUFFICIENT,
+// ⛔ C9. ADR 0020 rule 4: a reply's top-level text must be SELF-SUFFICIENT,
 // because it is the push notification on a locked phone and what a screen reader
-// announces. The observed broadcast was
+// announces. The observed defect was
 // ":repeat: Re-fired: alertname=OtoSmokeTest, cluster=smoke-test" — a name and
-// nothing about it. A reader in the channel could not tell whether to open the
-// thread, which is the only action a broadcast asks for.
-func TestABroadcastTopLevelTextCarriesSeverityAndDuration(t *testing.T) {
+// nothing about it. A reader could not tell whether to open the thread.
+//
+// ⛔⛔ THIS WAS `TestABroadcastTopLevelTextCarriesSeverityAndDuration` AND IT IS
+// RE-POINTED, NOT DELETED (git-bug 7570090). Broadcast is removed from oto and the
+// mode it rendered with no longer exists — but RULE 4 OUTLIVED ITS MECHANISM, and
+// `replyText` says so in as many words: the clause "is added to every reply, not
+// only the broadcasting ones … a rule that only holds for the replies that happen
+// to broadcast is a rule that breaks the first time the broadcast set changes". The
+// set has now changed to the empty set. Deleting this test would have been the one
+// way to prove that sentence was decoration, so it renders with `ModeThreadReply`
+// instead, which is the only reply mode oto has left.
+func TestAReplyTopLevelTextCarriesSeverityAndDuration(t *testing.T) {
 	t.Parallel()
 
 	v := smokeView()
@@ -356,29 +365,30 @@ func TestABroadcastTopLevelTextCarriesSeverityAndDuration(t *testing.T) {
 	v.Case.Duration = 3*time.Minute + 12*time.Second
 	v.Case.Seq = 4
 
-	msg := renderView(t, v, domain.ModeBroadcastReply)
+	msg := renderView(t, v, domain.ModeThreadReply)
 	text := topLevelText(t, msg.Payload)
 
 	if !strings.Contains(text, "Re-fired") {
-		t.Fatalf("the broadcast lost its lead: %q", text)
+		t.Fatalf("the reply lost its lead: %q", text)
 	}
 	if !strings.Contains(text, "Severity critical") {
-		t.Fatalf("ADR 0020 rule 4: the broadcast carries no severity: %q", text)
+		t.Fatalf("ADR 0020 rule 4: the reply carries no severity: %q", text)
 	}
 	if !strings.Contains(text, "3m 12s") {
-		t.Fatalf("ADR 0020 rule 4: the broadcast carries no duration: %q", text)
+		t.Fatalf("ADR 0020 rule 4: the reply carries no duration: %q", text)
 	}
 	if strings.Contains(text, "alertname=") {
-		t.Fatalf("the broadcast still names the group by a label dump: %q", text)
+		t.Fatalf("the reply still names the alert by a label dump: %q", text)
 	}
 
-	// ⛔ AND IT MUST NOT DEPEND ON THE ATTACHMENT. ADR 0020 Amendment 4: the colour
-	// bar does render in today's client, but that is undocumented behaviour Slack's
-	// own reference contradicts, and button interactivity in the in-channel copy is
-	// unverified. The sentence has to stand alone whatever the client does with the
-	// rest.
+	// ⛔ AND IT MUST NOT DEPEND ON THE ATTACHMENT, WHICH IS NOW A CLAIM ABOUT THE
+	// PUSH NOTIFICATION RATHER THAN ABOUT AN IN-CHANNEL COPY. ADR 0020 Amendment 4
+	// observed that the colour bar renders and the buttons do not; that observation
+	// concerned the broadcast's stripped reference and is retired with it. What is
+	// left is the ground rule 4 always actually stood on: a locked phone shows this
+	// string and nothing else, so the sentence has to stand alone.
 	if strings.Contains(text, "<http") {
-		t.Fatalf("the broadcast sentence leans on a link to be intelligible: %q", text)
+		t.Fatalf("the reply sentence leans on a link to be intelligible: %q", text)
 	}
 }
 
@@ -390,16 +400,16 @@ func TestGoldenRootCard(t *testing.T) {
 	golden(t, "root_firing.golden.json", msg.Payload)
 }
 
-func TestGoldenBroadcastRefired(t *testing.T) {
-	t.Parallel()
-	v := smokeView()
-	v.Reason = "refired"
-	v.Case.Duration = 3*time.Minute + 12*time.Second
-	v.Case.Seq = 4
-	v.Previous = &domain.PreviousState{State: "resolved"}
-	msg := renderView(t, v, domain.ModeBroadcastReply)
-	golden(t, "broadcast_refired.golden.json", msg.Payload)
-}
+// ⛔ `TestGoldenBroadcastRefired` WAS HERE AND IS DELETED WITH ITS GOLDEN (git-bug
+// 7570090). It rendered a `refired` view with `ModeBroadcastReply` and froze the
+// bytes as `testdata/broadcast_refired.golden.json`; both the mode and the file are
+// gone. The `refired` Reason itself survives in the vocabulary with no producer
+// (ADR 0040 retired T8), and once broadcast went its reply is byte-identical to any
+// other thread reply — `reply_all_resolved.golden.json` and the two snooze goldens
+// already freeze that shape. A golden for a Reason nothing emits, rendering
+// identically to three goldens that stay, is a file nobody would ever look at.
+// `TestAReplyTopLevelTextCarriesSeverityAndDuration` above keeps the `refired`
+// sentence itself under assertion.
 
 // resolvedView is the card AFTER the incident: the only record left in the
 // channel, because `chat.update` overwrote the firing one silently.
@@ -580,10 +590,21 @@ func TestTheStrikethroughRendersThePreviousState(t *testing.T) {
 //
 // Both existing `ModeUpdateRoot` captures are TERMINAL or near it: the acked card
 // and the resolved receipt. The ordinary case — the card is amended while the
-// signal is still firing, because a member joined the group — had no fixture, and
-// it is the one that happens most. It is also the one where the strikethrough has
-// nothing to strike (`Firing` → `Firing`) and the footer is the only thing that
-// says the card moved at all.
+// signal is still firing — had no fixture, and it is the one that happens most. It
+// is also the one where the strikethrough has nothing to strike (`Firing` →
+// `Firing`) and the footer is the only thing that says the card moved at all.
+//
+// ⛔ IT USED TO BE AMENDED "BECAUSE A MEMBER JOINED THE GROUP", ON REASON
+// `new_alerts`, AND THAT REASON IS DELETED (git-bug 7570090): a conversation holds
+// one Case, so nothing can join. The fixture is re-pointed at `repeat` — "still
+// firing", §H.6's update-only re-notification — which is the Reason that actually
+// produces this card now and keeps the test's real subject, the mid-life amend,
+// under assertion rather than deleting it with the vocabulary.
+//
+// ⚠️ THE FIXTURE STILL CARRIES THREE MEMBERS. `Group.FiringCount`/`TotalCount` and
+// the appended `Alerts` entry are being reshaped by the one-Case-per-conversation
+// work on `domain.Snapshot`; they are left alone here on purpose, because a render
+// fixture must not guess at a shape another change is still deciding.
 func TestGoldenUpdateRootWhileStillFiring(t *testing.T) {
 	t.Parallel()
 	msg := renderView(t, updatedWhileFiringView(), domain.ModeUpdateRoot)
@@ -593,7 +614,7 @@ func TestGoldenUpdateRootWhileStillFiring(t *testing.T) {
 func updatedWhileFiringView() *domain.NotificationView {
 	v := smokeView()
 	grew := upstreamStart.Add(9 * time.Minute)
-	v.Reason = "new_alerts"
+	v.Reason = "repeat"
 	v.Group.FiringCount = 3
 	v.Group.TotalCount = 3
 	v.Group.LastActivityAt = grew

@@ -81,8 +81,7 @@ type OrgSettingsPatchDTO struct {
 	RawRetentionDays    *int `json:"raw_retention_days,omitempty"`
 	EventRetentionMonth *int `json:"event_retention_months,omitempty"`
 
-	DefaultVerbosity    *string `json:"default_verbosity,omitempty"`
-	BroadcastOnResolved *bool   `json:"broadcast_on_resolved,omitempty"`
+	DefaultVerbosity *string `json:"default_verbosity,omitempty"`
 }
 
 // toOrgSettingsPatchDTO renders what an org wrote, field for field. It defaults
@@ -99,7 +98,6 @@ func toOrgSettingsPatchDTO(p domain.SettingsPatch) OrgSettingsPatchDTO {
 		RawRetentionDays:    p.RawRetentionDays,
 		EventRetentionMonth: p.EventRetentionMonth,
 		DefaultVerbosity:    p.DefaultVerbosity,
-		BroadcastOnResolved: p.BroadcastOnResolved,
 	}
 }
 
@@ -138,11 +136,13 @@ type UpdateOrgSettingsRequest struct {
 
 	// DefaultVerbosity is the fallback for a Channel that names no verbosity.
 	DefaultVerbosity *string `json:"default_verbosity,omitempty"`
-	// BroadcastOnResolved is ADR 0020's one configurable broadcast. Default off:
-	// a broadcast cannot be un-sent, and on a busy channel this doubles traffic
-	// for the least urgent fact oto has.
-	BroadcastOnResolved *bool `json:"broadcast_on_resolved,omitempty"`
 
+	// ⛔ `broadcast_on_resolved` WAS HERE AND IS DELETED (git-bug 7570090). It was
+	// the write half of ADR 0020's one configurable broadcast. ⚠️ THE REQUEST
+	// SCHEMA IS `additionalProperties: false`, so a PATCH still naming the key is
+	// now a 400 rather than a silent no-op — which is the behaviour to want: an
+	// operator who thinks they turned a broadcast off must not be told it worked.
+	//
 	// ⛔ THE FOUR REMINDER KEYS WERE HERE AND ARE DELETED (git-bug bd0fb1d).
 	// `2078a07` is worth reading alongside this: the mention half was NEVER ONCE
 	// OBSERVED working against a real workspace — it shipped on Slack's
@@ -169,7 +169,6 @@ func (r UpdateOrgSettingsRequest) toDomain() (domain.SettingsPatch, []domain.Set
 		RawRetentionDays:    r.RawRetentionDays,
 		EventRetentionMonth: r.EventRetentionMonth,
 		DefaultVerbosity:    r.DefaultVerbosity,
-		BroadcastOnResolved: r.BroadcastOnResolved,
 	}
 
 	known := make(map[string]domain.SettingKey, len(domain.AllSettingKeys()))

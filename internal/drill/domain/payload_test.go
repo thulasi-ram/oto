@@ -107,10 +107,19 @@ func TestPayloadNonceIsUniquePerDrill(t *testing.T) {
 
 	envA, _ := decode.Decode(a)
 	envB, _ := decode.Decode(b)
-	// The GROUP labels must differ too, or both drills resolve to one §C.4
-	// group_key, one generation and therefore one Slack thread.
+	// ⚠️ THE ENVELOPE'S `groupLabels` MUST CARRY THE NONCE TOO, AND THE REASON HAS
+	// CHANGED (git-bug `7570090`). It used to be load-bearing: both drills would
+	// otherwise resolve to one §C.4 `group_key`, one generation and one Slack thread.
+	// There is no group_key and no generation now — a conversation is the Case, and a
+	// Case is per-alert, so the isolation comes from `labels` above rather than from
+	// here. What is still asserted, and is why this is retargeted rather than deleted:
+	// the envelope is a FAITHFUL FORGERY recorded verbatim in `ingest_batches.payload`,
+	// so every copy of the nonce in it has to be this drill's — a body whose
+	// `groupLabels` named another drill would make the raw batch on disk lie about
+	// which drill wrote it.
 	if envA.GroupLabels[domain.DrillLabel] == envB.GroupLabels[domain.DrillLabel] {
-		t.Fatal("group labels do not carry the nonce; two drills would share one generation and one thread")
+		t.Fatal("group labels do not carry the nonce; the raw batch on disk would not " +
+			"identify the drill that wrote it")
 	}
 }
 

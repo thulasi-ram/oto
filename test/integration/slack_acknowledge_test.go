@@ -43,16 +43,23 @@ import (
 const ackSigningSecret = "8f742231b10e8888abcd99yyyzzz85a5" //nolint:gosec // a fixture, not a credential
 
 // slackWorld is the seeded world: two tenants, each with a Slack channel in the
-// same workspace, and one firing alert group apiece.
+// same workspace, and one firing alert with one open Case apiece.
+//
+// ⛔ `alphaGroup` AND `betaGroup` WERE FIELDS HERE AND ARE DELETED (git-bug
+// `7570090`). A CARD'S BUTTON CARRIES A CASE ID: `alert_groups` is dropped, the
+// conversation IS the Case, and `interactions.go` parses `args.Value` as a
+// `alert_cases.id` and hands it to `CaseExists`/`AcknowledgeCase`. A press
+// carrying a generation id would now fail to resolve, which is a DIFFERENT
+// failure from the no-op this file exists to prevent — and would pass the
+// cross-tenant test below for the wrong reason.
 type slackWorld struct {
 	alphaOrg     uuid.UUID
-	alphaGroup   uuid.UUID
 	alphaAlert   uuid.UUID
 	alphaCase    uuid.UUID
 	alphaChannel string // Slack conversation id
 
 	betaOrg     uuid.UUID
-	betaGroup   uuid.UUID
+	betaCase    uuid.UUID
 	betaChannel string
 
 	// linkedUser is an oto user in alpha whose Slack member id is linked.
@@ -83,7 +90,7 @@ func TestSlackAcknowledgeButtonActuallyAcknowledges(t *testing.T) {
 		user:        "U0123456789",
 		userName:    "ram",
 		actionID:    "oto.ack",
-		value:       w.alphaGroup.String(),
+		value:       w.alphaCase.String(),
 		signedAt:    time.Now(),
 		secret:      ackSigningSecret,
 		responseURL: "https://hooks.slack.com/actions/" + slackTeam + "/1/2",
@@ -110,7 +117,7 @@ func TestSlackAcknowledgeButtonActuallyAcknowledges(t *testing.T) {
 	// acknowledgement and not about queue timing.
 	env.applySlackJob(t, jobs.SlackInteractionArgs{
 		ActionID:      "oto.ack",
-		Value:         w.alphaGroup.String(),
+		Value:         w.alphaCase.String(),
 		TeamID:        slackTeam,
 		ChannelID:     w.alphaChannel,
 		SlackUserID:   "U0123456789",
@@ -174,7 +181,7 @@ func TestSlackAcknowledgeButtonActuallyAcknowledges(t *testing.T) {
 // ⛔⛔ The interaction arrives with a Slack team id and a channel, never an org.
 // The tenant is resolved from the CHANNEL — a destination oto's own operator
 // configured — and everything downstream runs under that scope. Here a press in
-// ALPHA's channel names BETA's group id inside an otherwise perfectly authentic,
+// ALPHA's channel names BETA's case id inside an otherwise perfectly authentic,
 // correctly signed envelope. It must change nothing.
 func TestSlackAcknowledgeCannotCrossTenants(t *testing.T) {
 	env := newEnvWith(t, func(c *config.Config) {
@@ -186,7 +193,7 @@ func TestSlackAcknowledgeCannotCrossTenants(t *testing.T) {
 
 	env.applySlackJob(t, jobs.SlackInteractionArgs{
 		ActionID:    "oto.ack",
-		Value:       w.betaGroup.String(), // ⛔ another tenant's group
+		Value:       w.betaCase.String(), // ⛔ another tenant's Case
 		TeamID:      slackTeam,
 		ChannelID:   w.alphaChannel, // ⛔ resolved to alpha
 		SlackUserID: "U0123456789",
@@ -197,7 +204,7 @@ func TestSlackAcknowledgeCannotCrossTenants(t *testing.T) {
 			"An interaction from one workspace must never reach another tenant's alerts", n)
 	}
 	if n := env.ackedCases(t, w.alphaOrg); n != 0 {
-		t.Fatalf("%d of org alpha's cases were acknowledged by a press naming beta's group", n)
+		t.Fatalf("%d of org alpha's cases were acknowledged by a press naming beta's case", n)
 	}
 }
 
@@ -218,7 +225,7 @@ func TestSlackAcknowledgeAttributesAnUnlinkedMemberHonestly(t *testing.T) {
 
 	env.applySlackJob(t, jobs.SlackInteractionArgs{
 		ActionID:      "oto.ack",
-		Value:         w.alphaGroup.String(),
+		Value:         w.alphaCase.String(),
 		TeamID:        slackTeam,
 		ChannelID:     w.alphaChannel,
 		SlackUserID:   "U0000NOBODY", // never linked, never seen before
@@ -270,7 +277,7 @@ func TestSlackAcknowledgeIsIdempotent(t *testing.T) {
 
 	press := jobs.SlackInteractionArgs{
 		ActionID:      "oto.ack",
-		Value:         w.alphaGroup.String(),
+		Value:         w.alphaCase.String(),
 		TeamID:        slackTeam,
 		ChannelID:     w.alphaChannel,
 		SlackUserID:   "U0123456789",
@@ -316,7 +323,7 @@ func TestSlackInteractionSignatureIsEnforcedByTheRealEndpoint(t *testing.T) {
 
 	base := slackPress{
 		team: slackTeam, channel: w.alphaChannel, user: "U0123456789", userName: "ram",
-		actionID: "oto.ack", value: w.alphaGroup.String(),
+		actionID: "oto.ack", value: w.alphaCase.String(),
 		signedAt: time.Now(), secret: ackSigningSecret,
 	}
 
@@ -621,12 +628,13 @@ func seedSlackWorld(t *testing.T, e *env) slackWorld {
 	      VALUES ($1,$2,$3,'U0123456789','ram',$4,$5,$5)`,
 		id.New(), w.alphaOrg, slackTeam, w.linkedUser, now)
 
-	// `alerts_key_ck` and `groups_key_ck` are `^(ak|gk)_[0-9a-v]{26}$` — a
-	// Crockford-base32 digest, 26 characters, no letters past `v`. The seed
-	// satisfies the real constraint rather than relaxing it.
-	seedOrg := func(orgID uuid.UUID, slug, keySuffix, conversation string) (groupID, alertID, caseID uuid.UUID) {
+	// `alerts_key_ck` is `^ak_[0-9a-v]{26}$` — a Crockford-base32 digest, 26
+	// characters, no letters past `v`. The seed satisfies the real constraint
+	// rather than relaxing it. (`groups_key_ck` was the other half of this
+	// sentence and went with `alert_groups`, git-bug `7570090`.)
+	seedOrg := func(orgID uuid.UUID, slug, keySuffix, conversation string) (alertID, caseID uuid.UUID) {
 		clusterID, sourceID, credID := id.New(), id.New(), id.New()
-		groupID, alertID, caseID = id.New(), id.New(), id.New()
+		alertID, caseID = id.New(), id.New()
 
 		// `created_at`/`updated_at` are NAMED on both: 00034 removed their DEFAULT
 		// now() so that nothing on these tables can take the database's clock while
@@ -645,18 +653,14 @@ func seedSlackWorld(t *testing.T, e *env) slackWorld {
 		         'critical','prod','{"alertname":"HighErrorRate"}'::jsonb,'firing',$5,$5,$5,1)`,
 			alertID, orgID, clusterID, "ak_"+keySuffix, now)
 
-		exec(`INSERT INTO alert_groups (id, org_id, source_id, cluster_id, group_key, title, state,
-		         state_version, total_count, firing_count, first_seen_at, last_activity_at)
-		      VALUES ($1,$2,$3,$4,$5,'HighErrorRate · prod','open',1,1,1,$6,$6)`,
-			groupID, orgID, sourceID, clusterID, "gk_"+keySuffix, now)
-
-		exec(`INSERT INTO alert_cases (id, org_id, alert_id, group_id, seq, state,
+		// ⛔ AN `alert_groups` GENERATION WAS SEEDED HERE AND IS DELETED (git-bug
+		// `7570090`). The open Case below is what the card is about and what its
+		// button carries; there is no generation to open and no membership to record.
+		exec(`INSERT INTO alert_cases (id, org_id, alert_id, seq, state,
 		         started_at, last_observed_at, source_starts_at)
-		      VALUES ($1,$2,$3,$4,1,'open',$5,$5,$5)`, caseID, orgID, alertID, groupID, now)
+		      VALUES ($1,$2,$3,1,'open',$4,$4,$4)`, caseID, orgID, alertID, now)
 
 		exec(`UPDATE alerts SET current_case_id = $2 WHERE id = $1`, alertID, caseID)
-		// The episode's own `group_id` above IS the membership since 00051; there is
-		// no join table row to add.
 
 		// The Slack destination. `channels_cred_ck` requires a credential on a
 		// slack channel, and the sealed blob has a 29-byte floor; the seed
@@ -677,10 +681,10 @@ func seedSlackWorld(t *testing.T, e *env) slackWorld {
 				slackTeam, conversation, slug),
 			credID, now)
 
-		return groupID, alertID, caseID
+		return alertID, caseID
 	}
 
-	w.alphaGroup, w.alphaAlert, w.alphaCase = seedOrg(w.alphaOrg, "alpha", "0a0123456789abcdefghijklmn", w.alphaChannel)
-	w.betaGroup, _, _ = seedOrg(w.betaOrg, "beta", "0b0123456789abcdefghijklmn", w.betaChannel)
+	w.alphaAlert, w.alphaCase = seedOrg(w.alphaOrg, "alpha", "0a0123456789abcdefghijklmn", w.alphaChannel)
+	_, w.betaCase = seedOrg(w.betaOrg, "beta", "0b0123456789abcdefghijklmn", w.betaChannel)
 	return w
 }

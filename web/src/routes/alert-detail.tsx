@@ -11,7 +11,7 @@
  * reflows around a failure.
  */
 import { For, Match, Show, Switch, createMemo, createSignal } from "solid-js";
-import { A, useParams } from "@solidjs/router";
+import { useParams } from "@solidjs/router";
 import { useQuery } from "@tanstack/solid-query";
 
 import {
@@ -278,17 +278,6 @@ export default function AlertDetailRoute() {
                     >
                       Open the query in Prometheus ↗
                     </a>
-                  )}
-                </Show>
-                <Show when={data().group}>
-                  {(group) => (
-                    <A
-                      href={`/groups/${group().id}`}
-                      class="text-meta text-ink-muted underline decoration-line-strong underline-offset-2 hover:text-ink"
-                      title="The notification group this alert's current firing was batched into. Alertmanager decided the batching; oto mirrors it."
-                    >
-                      Notified in: {group().title} ↗
-                    </A>
                   )}
                 </Show>
                 <Show when={data().source}>

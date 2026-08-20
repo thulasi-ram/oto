@@ -16,8 +16,6 @@ import (
 // branch and still says something true.
 const (
 	reasonFired        = "fired"
-	reasonNewAlerts    = "new_alerts"
-	reasonSomeResolved = "some_resolved"
 	reasonAllResolved  = "all_resolved"
 	reasonRepeat       = "repeat"
 	reasonSuppressed   = "suppressed"
@@ -36,6 +34,20 @@ const (
 	// gap — it was the one card oto is never allowed to get wrong.
 	reasonSnoozed   = "snoozed"
 	reasonUnsnoozed = "unsnoozed"
+	// ⛔ `reasonNewAlerts` AND `reasonSomeResolved` WERE HERE AND ARE DELETED
+	// (git-bug 7570090). Both asserted a PLURALITY — "more of them started", "some
+	// of them stopped" — and a conversation now holds exactly ONE Case, which is one
+	// Alert's firing episode. There is no second member for either to be about.
+	//
+	// ⚠️ NOTHING WOULD HAVE FAILED TO COMPILE. These constants are duplicated here
+	// on purpose (see the block comment above) precisely so that this file does not
+	// depend on the notification module's enum — so when `ReasonNewAlerts` and
+	// `ReasonSomeResolved` left `internal/notification/domain`, the arms keyed on
+	// these strings would simply have become code no stored row can reach. Migration
+	// 00069 narrows `notifications_reason_ck` so no row can spell either. Unreachable
+	// render arms are the defect class this project has closed five tickets about;
+	// they are deleted here in the same change rather than left for a sixth.
+	//
 	// ⛔ `reasonStorm` WAS HERE AND IS DELETED (ADR 0042). Storm damping is removed,
 	// `storm` has left the Reason vocabulary, and migration 00060 narrows
 	// `notifications_reason_ck` so no row can spell it — so the reply heading it
@@ -57,7 +69,7 @@ const (
 // changing: who acted, what they said, and that the rule underneath moved.
 func (r *Renderer) renderReply(v *domain.NotificationView, o domain.RenderOptions) (Payload, string, string) {
 	nonce := renderNonce(v, o)
-	body, extra, colour := r.replyBody(v, o)
+	body, extra, colour := r.replyBody(v)
 
 	blocks := []Block{sectionBlock(blockID("reply", nonce), truncateSection(body, v.Links.Group))}
 	if extra != "" {
@@ -73,16 +85,20 @@ func (r *Renderer) renderReply(v *domain.NotificationView, o domain.RenderOption
 	// `text := sentence` — an alias whose only purpose was to hold the augmented
 	// string — went with it.
 	//
-	// ⭐ THE STRUCTURAL INSIGHT SURVIVED ITS SUBJECT AND IS WHY THE LINK IS NOT HERE.
-	// `68653ca` needed a way back to oto for a channel reader, which is the same
-	// shape of problem, and the answer came out DIFFERENT: the link goes in the BODY
-	// (see `replyBody`'s tail). A mention only means anything in a push notification,
-	// so it had to be in the `text`; a link has to be somewhere a reader can click,
-	// and the `text` is bound by ADR 0020 rule 4 to be a self-sufficient SENTENCE —
-	// which is also what `TestABroadcastTopLevelTextCarriesSeverityAndDuration`
-	// asserts, by refusing `<http` in this exact string. Same position, opposite
-	// answer, and the reasoning is recorded because the next affordance will have to
-	// choose again.
+	// ⭐ THE STRUCTURAL INSIGHT OUTLIVED BOTH ITS SUBJECTS AND IS WHY NOTHING IS
+	// APPENDED HERE. Two affordances have now been argued into position and then
+	// deleted — the mention (git-bug `bd0fb1d`) and the "open in oto" link (git-bug
+	// `7570090`, with broadcast) — and they came out in OPPOSITE places for a reason
+	// that has nothing to do with either of them. A mention only means anything in a
+	// push notification, so it had to be in the `text`; a link has to be somewhere a
+	// reader can click, and the `text` is bound by ADR 0020 rule 4 to be a
+	// self-sufficient SENTENCE — which is what
+	// `TestAReplyTopLevelTextCarriesSeverityAndDuration` asserts, by refusing
+	// `<http` in this exact string. The rule survives the broadcast it was written
+	// for: this string is still a locked phone's notification and still what a
+	// screen reader announces. The reasoning is kept because the next affordance
+	// will have to choose again, and both precedents are now history rather than
+	// code.
 	sentence := replyText(v)
 
 	return Payload{
@@ -100,7 +116,14 @@ func (r *Renderer) renderReply(v *domain.NotificationView, o domain.RenderOption
 
 // replyBody returns the reply's mrkdwn, an optional context line, and the colour
 // bar. Every branch is one of the §H.5 reply types.
-func (r *Renderer) replyBody(v *domain.NotificationView, o domain.RenderOptions) (body, extra, colour string) {
+// ⛔ IT NO LONGER TAKES `domain.RenderOptions`, AND THAT IS THE VISIBLE EDGE OF THE
+// BROADCAST DELETION (git-bug 7570090). Two things consumed the options here and
+// both are gone: `o.Mode` keyed the "open in oto" link (see the tombstone at the
+// tail of this function), and `o.MaxInstances` bounded the `new_alerts` arm's member
+// list. A reply's body is now a pure function of the view — no delivery mode, no
+// per-channel limit, changes it — which is worth stating rather than hiding behind
+// an ignored parameter.
+func (r *Renderer) replyBody(v *domain.NotificationView) (body, extra, colour string) {
 	state := cardState(v)
 
 	switch v.Reason {
@@ -132,16 +155,11 @@ func (r *Renderer) replyBody(v *domain.NotificationView, o domain.RenderOptions)
 			body += " — new case opened"
 		}
 
-	case reasonNewAlerts:
-		colour = CardFiring.Colour()
-		added := newlyFiring(v)
-		body = ":heavy_plus_sign: *" + plural(len(added), "more instance now firing", "more instances now firing") + "*"
-		if names := nameList(added, o); names != "" {
-			body += " — " + names
-		}
-		if v.Group.TotalCount > 0 {
-			body += " (" + strconv.Itoa(v.Group.TotalCount) + " total)"
-		}
+	// ⛔ THE `new_alerts` ARM WAS HERE AND IS DELETED (git-bug 7570090). It drew
+	// ":heavy_plus_sign: *N more instances now firing*" with the newcomers named and
+	// a running total. One Case is one Alert's episode, so there is never a second
+	// instance to arrive and never a total above one; the Reason is gone from the
+	// vocabulary and 00069 stops any row spelling it.
 
 	case reasonRefired:
 		colour = CardFiring.Colour()
@@ -161,17 +179,19 @@ func (r *Renderer) replyBody(v *domain.NotificationView, o domain.RenderOptions)
 		if d := resolvedAfter(v); d != "" {
 			body += " after " + d
 		}
-		if v.Group.TotalCount > 0 {
-			body += " — " + strconv.Itoa(v.Group.ResolvedCount) + " of " +
-				strconv.Itoa(v.Group.TotalCount) + " instances"
-		}
+		// ⛔ THE "N of M instances" CLAUSE WAS HERE AND IS DELETED (git-bug 7570090),
+		// AND IT IS THE REASON THAT SURVIVES ITS COUNT RATHER THAN ITS COUNT
+		// SURVIVING. `all_resolved` STAYS — it is how oto says a thing stopped, and
+		// the vocabulary has no plain `resolved` — but one Case holds one Alert, so
+		// the clause could only ever have read "1 of 1 instances". A tautology on
+		// every single resolve card is worse than silence: it invites a reader to
+		// look for the number that is missing.
 
-	case reasonSomeResolved:
-		// §H.6 makes some_resolved update-only. If a channel asks for it anyway,
-		// say something true rather than something empty.
-		colour = CardFiring.Colour()
-		body = ":arrow_down: *" + strconv.Itoa(v.Group.ResolvedCount) + " of " +
-			strconv.Itoa(v.Group.TotalCount) + " instances resolved* — the rest are still firing"
+	// ⛔ THE `some_resolved` ARM WAS HERE AND IS DELETED (git-bug 7570090). It said
+	// "N of M instances resolved — the rest are still firing", which is a sentence
+	// about a set. §H.6 already made the Reason update-only and this arm existed only
+	// so a channel that asked for it anyway got something true; there is now nothing
+	// true left to say, because a Case whose one Alert resolved is `all_resolved`.
 
 	case reasonExpired:
 		colour = CardExpired.Colour()
@@ -288,67 +308,34 @@ func (r *Renderer) replyBody(v *domain.NotificationView, o domain.RenderOptions)
 		body = ":information_source: *" + escape(v.Group.Title) + "* — " + statusValue(v, state)
 	}
 
-	// ⛔⛔ THE WAY BACK TO OTO, AND IT IS KEYED ON THE MODE RATHER THAN ON THE
-	// REASON (git-bug 68653ca).
+	// ⛔⛔ THE WAY BACK TO OTO WAS HERE AND IS DELETED (git-bug 7570090), AND IT
+	// WENT BECAUSE THE THING IT WAS KEYED ON WENT.
 	//
-	// A broadcasting reply is the one message oto addresses to people who are NOT
-	// following the thread — that is what broadcasting means — and it was the only
-	// message with no affordance at all. A reader saw `:repeat: *Re-fired* — case #1`
-	// in the channel body and had nowhere to click.
+	// `68653ca` added `if o.Mode == ModeBroadcastReply && v.Links.Group != ""` and
+	// appended " — <link|open in oto>" to the body, with fifty-seven lines arguing
+	// the placement. The premise was that a broadcasting reply is the one message
+	// oto addresses to people who are NOT following the thread, and that Slack's
+	// in-channel copy shows no buttons (ADR 0020 rule 5b, ⭐ confirmed by
+	// observation) — so a mrkdwn link was not the safest affordance but the ONLY
+	// one. Broadcast is deleted, every reply oto now sends is read inside the thread
+	// where the root card's buttons are one scroll away, and the guard is
+	// unreachable: no `o.Mode` value can satisfy it.
 	//
-	// WHY A LINK IN THE BODY AND NOT IN THE TOP-LEVEL `text`, which is the ticket's
-	// first open question. Three reasons, and the third is the one that settles it:
+	// ⭐ THE PART THAT IS NOT ABOUT BROADCAST AND MUST NOT BE LOST WITH IT. The
+	// argument settled WHERE an affordance goes, and that answer still holds for the
+	// next one: a link belongs in the BODY, not in the top-level `text`, because the
+	// `text` is a self-sufficient SENTENCE and the push notification on a locked
+	// phone (ADR 0020 rule 4, which survives its mechanism — see `replyText`), and
+	// because the Block Kit Builder capture is the attachment's block list LIFTED
+	// OUT of the payload, so a `text`-only affordance appears in no fixture a human
+	// reviews. A mention went the other way for the mirror-image reason. Both
+	// answers are recorded on `renderReply` and on `replyText`.
 	//
-	//  1. ⭐ A BUTTON IS IMPOSSIBLE HERE, CONFIRMED BY OBSERVATION — so a link is not
-	//     the safest affordance, it is the ONLY one. ADR 0020 rule 5b is marked
-	//     "⭐ CONFIRMED, not merely cautious": a human watched the in-channel copy
-	//     show NO buttons beside a root card in the same channel showing all of
-	//     them. A mrkdwn link is not a button and not an interactive element — it is
-	//     text that happens to be addressable — which is what leaves it available.
-	//
-	//     ⚠️ AND THE PREMISE THAT IT REACHES THE READER IS INFERRED, NOT OBSERVED.
-	//     Amendment 4's three data points are: the attachment comes back from
-	//     `conversations.history`, the COLOUR BAR renders, the BUTTONS do not. None
-	//     of them watched a section block's TEXT render in the channel copy, and
-	//     Amendment 4 warns in as many words that "`blocks` being present in the
-	//     stored attachment is storage, not rendering". The inference is strong — a
-	//     copy that rendered no blocks at all would have been reported as blank
-	//     rather than as button-less — but it is an inference, git-bug `2078a07`
-	//     carries it as an observation owed, and if it fails the link moves to the
-	//     top-level `text` and `TestABroadcastTopLevelTextCarriesSeverityAndDuration`
-	//     is the one test that has to be amended to allow it.
-	//
-	//     ⛔ THIS PARAGRAPH ONCE SAID THE OPPOSITE — that Amendment 4 "left BUTTONS
-	//     unverified" — which inverted the ADR's own confirmed/unknown labels (what
-	//     it leaves unknown is CLIENT PARITY). The ADR's summary callout at rule 5
-	//     said "still unverified" too, and that callout has been corrected; this is
-	//     what reading a summary instead of the section costs.
-	//  2. Rule 4 binds the top-level `text` to be a self-sufficient SENTENCE, and it
-	//     is also the push notification on a locked phone. A URL is not a sentence
-	//     and a locked phone cannot follow one.
-	//  3. ⭐ The Block Kit Builder capture is `{"blocks": […]}` — the attachment's
-	//     block list, LIFTED OUT of the payload (`test/harness/slack_cards.go:426`).
-	//     The top-level `text` is not in it. So a link in the `text` would leave the
-	//     broadcast capture with no mrkdwn control character, and
-	//     `TestEveryBuilderCaptureIsSomethingBlockKitBuilderWillAccept` could not
-	//     return to its per-card form — which the same ticket asks for and which is
-	//     the stronger check. Placement in the body is what makes the two halves of
-	//     the ticket satisfiable together.
-	//
-	// KEYED ON `ModeBroadcastReply`, NOT ON `refired`, for the same reason
-	// `replyText` adds its facts clause to every reply and not only to the
-	// broadcasting ones: a rule that holds only for the reasons that happen to
-	// broadcast today breaks the first time the broadcast set changes. That is also
-	// the answer to the ticket's second open question — `all_resolved` (the other
-	// member of `BroadcastPolicy.Warrants`, reachable whenever `broadcast_on_resolved`
-	// is on) HAD the identical gap, and one line closes both.
-	//
-	// The two arms that already carry a link — `degraded` and `continued` — are
-	// never broadcast, so this cannot double one up: `Warrants` returns true for
-	// `refired` and `all_resolved` alone.
-	if o.Mode == domain.ModeBroadcastReply && v.Links.Group != "" {
-		body += " — " + link(v.Links.Group, "open in oto")
-	}
+	// ⚠️ ONE OBSERVATION IS PERMANENTLY UNOWED NOW. Amendment 4 never watched a
+	// section block's TEXT render in an in-channel copy — it saw the colour bar and
+	// the absent buttons — and git-bug `2078a07` carried that as an observation
+	// owed. Nothing renders an in-channel copy any more, so the question is retired
+	// rather than answered.
 
 	return body, extra, colour
 }
@@ -685,57 +672,37 @@ func resolvedAfter(v *domain.NotificationView) string {
 	return humanDuration(v.Group.LastActivityAt.Sub(start))
 }
 
-// newlyFiring is the members that arrived with this notification.
-func newlyFiring(v *domain.NotificationView) []domain.AlertView {
-	out := make([]domain.AlertView, 0, len(v.Alerts))
-	if v.Focus != nil {
-		out = append(out, *v.Focus)
-		return out
-	}
-	for _, a := range v.Alerts {
-		if a.State == "firing" && a.TotalCases <= 1 {
-			out = append(out, a)
-		}
-	}
-	if len(out) == 0 && len(v.Alerts) > 0 {
-		out = append(out, v.Alerts[0])
-	}
-	return out
-}
-
-func nameList(alerts []domain.AlertView, o domain.RenderOptions) string {
-	limit := o.MaxInstances
-	if limit <= 0 {
-		limit = defaultMaxInstances
-	}
-	names := make([]string, 0, limit)
-	for i, a := range alerts {
-		if i >= limit {
-			names = append(names, "_and "+strconv.Itoa(len(alerts)-limit)+" more_")
-			break
-		}
-		names = append(names, code(instanceName(a)))
-	}
-	return strings.Join(names, ", ")
-}
+// ⛔ `newlyFiring` AND `nameList` WERE HERE AND ARE DELETED (git-bug 7570090).
+// `newlyFiring` picked out "the members that arrived with this notification" and
+// `nameList` rendered them as a comma-separated, `MaxInstances`-bounded list of
+// code spans. The `new_alerts` arm was their only caller, and a Case has one
+// Alert: there is no arrival to detect and no list to bound. Left in place they
+// would be unreachable helpers whose signatures still advertise a member list —
+// the same misleading survival the deleted arms would have been.
 
 // replyText is the reply's own complete sentence. A thread reply's push
 // notification is read exactly as often as the root's, and by the same people.
 //
-// ⛔⛔ ADR 0020 RENDERING RULE 4 MAKES THIS CORRECTNESS, NOT STYLE, AND
-// AMENDMENT 4 MAKES IT CORRECTNESS FOR A BETTER REASON THAN IT FIRST HAD.
+// ⛔⛔ ADR 0020 RENDERING RULE 4 MAKES THIS CORRECTNESS, NOT STYLE — AND IT IS
+// THE ONE PART OF ADR 0020 THAT OUTLIVED THE ADR'S OWN MECHANISM.
 //
-// The rule was derived from Slack documenting the in-channel `thread_broadcast`
-// reference as unable to carry attachments or buttons — which would have made
-// this string very nearly everything a channel reader sees. A live workspace
-// contradicts that: the attachment is returned intact by `conversations.history`
-// and the colour bar was observed rendering. Colour is therefore a PROGRESSIVE
-// ENHANCEMENT (5a) and buttons are UNVERIFIED (5b), and oto depends on neither.
+// ⛔ THE DERIVATION IS NOW HISTORY, AND KEEPING IT MATTERS BECAUSE THE RULE DID
+// NOT DEPEND ON IT. Rule 4 was derived from Slack documenting the in-channel
+// `thread_broadcast` reference as unable to carry attachments or buttons, which
+// would have made this string very nearly everything a channel reader sees. A live
+// workspace then contradicted half of that (Amendment 4: the attachment comes back
+// intact and the colour bar renders), so colour became a PROGRESSIVE ENHANCEMENT
+// and buttons were confirmed absent. Broadcast is now deleted outright (git-bug
+// 7570090) and there is no in-channel reference of any kind.
 //
-// The rule stands because of what has never been in question: THIS STRING IS THE
-// PUSH NOTIFICATION ON A LOCKED PHONE AND THE TEXT A SCREEN READER ANNOUNCES.
-// Neither has ever rendered a colour bar. A broadcast whose text reads "Re-fired"
-// is a broadcast that communicates nothing to the person it woke up.
+// ⭐ THE RULE STANDS ON THE GROUND IT HAS ALWAYS ACTUALLY STOOD ON: THIS STRING IS
+// THE PUSH NOTIFICATION ON A LOCKED PHONE AND THE TEXT A SCREEN READER ANNOUNCES.
+// Neither has ever rendered a colour bar, an attachment or a button, and neither
+// cares whether the message was broadcast. A reply whose text reads "Re-fired"
+// communicates nothing to the person it woke up, in a thread exactly as in a
+// channel. Deleting the mechanism narrowed the rule's audience; it did not weaken
+// the rule, and `TestAReplyTopLevelTextCarriesSeverityAndDuration` still asserts
+// it.
 func replyText(v *domain.NotificationView) string {
 	title := v.Group.Title
 	if title == "" {
@@ -748,33 +715,35 @@ func replyText(v *domain.NotificationView) string {
 	out += "."
 
 	// ⛔⛔ THE FACTS CLAUSE IS WHAT MAKES ADR 0020's RULE 4 TRUE RATHER THAN
-	// ASPIRATIONAL. The first live run broadcast
+	// ASPIRATIONAL, AND ITS ORIGINATING DEFECT IS STILL THE BEST ARGUMENT FOR IT.
+	// The first live run sent
 	//
 	//	":repeat: Re-fired: alertname=OtoSmokeTest, cluster=smoke-test"
 	//
-	// into a channel — no severity, no duration, no state. Rule 4 says a
-	// broadcast's top-level text must be SELF-SUFFICIENT because the in-channel
-	// copy carries no colour bar and no buttons, and that string fails its own
-	// rule: it names a thing and says nothing about it. A reader in the channel
-	// cannot tell whether to open the thread, which is the only action a broadcast
-	// asks for.
+	// — no severity, no duration, no state. It named a thing and said nothing about
+	// it, so a reader could not tell whether to open the thread.
 	//
-	// The same clause is added to every reply, not only the broadcasting ones. A
-	// thread reply's push notification is read by the same people through the same
-	// surface, and a rule that only holds for the replies that happen to broadcast
-	// is a rule that breaks the first time the broadcast set changes.
+	// ⭐ AND THIS IS THE CLAUSE THAT ALREADY DID NOT CARE ABOUT BROADCAST, which is
+	// why the mode's deletion (git-bug 7570090) costs it nothing. It was added to
+	// EVERY reply on the stated ground that "a rule that only holds for the replies
+	// that happen to broadcast is a rule that breaks the first time the broadcast
+	// set changes". The broadcast set has now changed to the empty set, and the
+	// clause is exactly as necessary as it was: a thread reply's push notification
+	// is the same notification, read by the same people, on the same locked phone.
+	// The line that was written to survive a change in the set survived the set.
 	if facts := replyFacts(v); facts != "" {
 		out += " " + endSentence(facts)
 	}
 
-	// ⛔⛔ NOTHING IS APPENDED HERE ANY MORE, AND THE ARGUMENT THAT USED TO LIVE IN
-	// THIS SPOT WAS BUILT ON A PREMISE THAT IS ALSO GONE.
+	// ⛔⛔ NOTHING IS APPENDED HERE ANY MORE, AND EVERY PREMISE THE OLD ARGUMENT
+	// RESTED ON HAS NOW BEEN DELETED IN TURN. Kept because the shape of the argument
+	// is what the next affordance will need, not the conclusion.
 	//
 	// It said the mention lives here and nowhere else, because everything the
 	// renderer builds sits inside ONE attachment (§H.1 S3, the only way to get a
 	// colour bar) and Slack STRIPS attachments from the in-channel
 	// `thread_broadcast` reference — so a mention inside a block would be invisible
-	// in the channel. Two things happened to that:
+	// in the channel. Three things happened to that:
 	//
 	//   1. The mention was deleted (git-bug `bd0fb1d`): the owner withdrew the
 	//      unacked reminder and ruled the mention goes with it.
@@ -782,14 +751,14 @@ func replyText(v *domain.NotificationView) string {
 	//      Amendment 4: a live workspace returns the `thread_broadcast` message WITH
 	//      its `attachments` array intact and the colour bar renders. What Slack's
 	//      documentation is right about is BUTTONS — confirmed absent by observation
-	//      (rule 5b), not merely suspected. So a block is not invisible in the
-	//      channel; an interactive element is.
-	//
-	// ⚠️ WHICH IS WHY `68653ca` PUT THE LINK IN THE BODY AND NOT HERE — see
-	// `replyBody`'s tail for the full argument, including the one premise still
-	// owed an observation (whether a section block's TEXT renders in the in-channel
-	// copy; Amendment 4 saw the colour bar, not the words, and git-bug `2078a07`
-	// carries the question).
+	//      (rule 5b), not merely suspected. So a block was not invisible in the
+	//      channel; an interactive element was.
+	//   3. ⛔ AND THEN THE IN-CHANNEL COPY ITSELF WENT (git-bug 7570090). Broadcast
+	//      is deleted, so there is no second rendering of a reply anywhere and no
+	//      position that is visible in one place and stripped in another. The
+	//      `text`/body distinction now turns on ONE thing only, which is the thing
+	//      that was always load-bearing: the `text` is the push notification and the
+	//      screen-reader string, the body is what a reader looks at and clicks.
 	return truncateClause(oneLine(out), otoTopLevelText)
 }
 
@@ -797,8 +766,12 @@ func replyText(v *domain.NotificationView) string {
 // carries, in words rather than in colour.
 //
 // §H.2 encodes severity as colour AND emoji precisely because colour alone fails
-// accessibility; a broadcast's in-channel reference has NEITHER, so words are all
-// that is left. The duration answers the question the reader actually has, which
+// accessibility, and a push notification or a screen reader has NEITHER, so words
+// are all that is left. ⛔ THIS USED TO CITE THE BROADCAST'S IN-CHANNEL REFERENCE
+// as the surface with no colour and no emoji; broadcast is deleted (git-bug
+// 7570090) and the argument did not need it — a locked phone was always the
+// stronger example, because it is the one every reply reaches.
+// The duration answers the question the reader actually has, which
 // is not "what happened" — the lead already said that — but "how bad is this and
 // how long has it been going on".
 func replyFacts(v *domain.NotificationView) string {
@@ -818,8 +791,11 @@ func replyFacts(v *domain.NotificationView) string {
 			facts = append(facts, "resolved after "+d)
 		}
 	case reasonRefired:
-		// "It came back, and it came back fast" is the whole reason a re-fire
-		// broadcasts at all (ADR 0020, Amendment 1). Saying how fast is the point.
+		// "It came back, and it came back fast" is the whole reason a re-fire is worth
+		// a reply of its own (ADR 0020, Amendment 1 — which argued it as the reason a
+		// re-fire BROADCAST; broadcast is deleted, git-bug 7570090, and the
+		// observation about what a reader needs to be told outlived it). Saying how
+		// fast is the point.
 		if v.Case != nil && v.Case.Duration > 0 {
 			facts = append(facts, "firing again after "+humanDuration(v.Case.Duration))
 		} else {
@@ -858,14 +834,13 @@ func replyLead(reason string) string {
 		return ":eyes: Acknowledged:"
 	case reasonUnacked:
 		return ":arrow_uturn_left: Un-acknowledged:"
-	case reasonNewAlerts:
-		return ":heavy_plus_sign: More instances now firing:"
 	case reasonRefired:
 		return ":repeat: Re-fired:"
 	case reasonAllResolved:
 		return ":white_check_mark: All resolved:"
-	case reasonSomeResolved:
-		return ":arrow_down: Partly resolved:"
+	// ⛔ `new_alerts` AND `some_resolved` HAD LEADS HERE AND THEY ARE DELETED
+	// (git-bug 7570090) — ":heavy_plus_sign: More instances now firing:" and
+	// ":arrow_down: Partly resolved:". Both name a plurality one Case cannot have.
 	case reasonExpired:
 		return ":grey_question: Expired — not resolved:"
 	case reasonSuppressed:

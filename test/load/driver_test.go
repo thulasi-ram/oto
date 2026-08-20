@@ -268,7 +268,12 @@ type report struct {
 	AlertsOffered int `json:"alerts_offered"`
 	// AlertsAccepted is how many were in a batch oto answered 202 to.
 	AlertsAccepted int `json:"alerts_accepted"`
-	Groups         int `json:"groups"`
+	// Conversations is how many distinct CONVERSATIONS the batch should have
+	// produced. ⛔ IT WAS `Groups` (git-bug `7570090`): a conversation was one
+	// `alert_groups` generation and a whole batch shared one, and a conversation is
+	// now one Case — one per Alert. The number therefore tracks the alert count
+	// instead of the batch count, which is not a rename but a different claim.
+	Conversations int `json:"conversations"`
 
 	// ---- the accept path ------------------------------------------------
 	StatusCodes map[string]int `json:"status_codes"`
@@ -298,18 +303,25 @@ type report struct {
 	BatchStatus       map[string]int `json:"ingest_batch_status"`
 	AlertRows         int            `json:"alert_rows"`
 	CaseRows          int            `json:"case_rows"`
-	GroupMemberRows   int            `json:"group_member_rows"`
-	GroupRows         int            `json:"group_rows"`
+	OpenCaseRows      int            `json:"open_case_rows"`
 	RejectionsByReasn map[string]int `json:"ingest_rejections_by_reason"`
 
-	// ---- the O(groups) property ----------------------------------------
-	// RollupPublishes is `ui_events{kind=group.upserted}` per group: one per
-	// generation opened and one per MATERIAL rollup. Under the defect this issue
-	// is adjacent to it was one PER ALERT.
-	RollupPublishes    map[string]int `json:"rollup_publishes_per_group"`
-	MaxStateVersion    int            `json:"max_group_state_version"`
-	AlertsPerLargeGrp  int            `json:"alerts_in_largest_group"`
-	RollupsPerAlertPct float64        `json:"rollups_per_alert_pct"`
+	// ⛔⛔ THE O(groups) BLOCK WAS HERE AND IS DELETED IN FULL (git-bug `7570090`):
+	// `RollupPublishes`, `MaxStateVersion`, `AlertsPerLargeGrp` and
+	// `RollupsPerAlertPct`. It measured ONE THING — that a 500-alert batch performed
+	// a number of rollups proportional to the GROUPS it touched rather than to the
+	// alerts — and the fan-in that made that a property is gone. A conversation
+	// holds exactly one Case and a Case belongs to one Alert, so 500 alerts are 500
+	// conversations by construction and "rollups per alert" is 1 by definition, not
+	// by merit. Retargeting the ratio at Cases would have produced a bound that
+	// cannot fail, which is the shape of a green gate over nothing.
+	//
+	// ⚠️ THIS LEAVES THE PACKAGE WITHOUT A FAN-OUT BOUND, AND THAT IS A REAL GAP,
+	// not a tidy-up. Whether a per-Case fan-out needs its own ceiling — 500 threads
+	// and 500 root cards from one batch is a different cost from 500 rollups on one
+	// row, and it is not obviously a smaller one — is a question git-bug `7570090`
+	// did not answer. It needs a ruling and a budget before this package can assert
+	// on it, and inventing one here would be deciding it by accident.
 
 	// ---- notification and delivery --------------------------------------
 	NotificationsByReason map[string]int `json:"notifications_by_reason"`
@@ -377,31 +389,14 @@ func (e *env) measure(name string, d *driver, push, drainFor time.Duration) *rep
 	r.BatchStatus = e.countBy(`SELECT status, count(*) FROM ingest_batches WHERE org_id = $1 GROUP BY 1`)
 	r.AlertRows = e.queryInt(`SELECT count(*) FROM alerts WHERE org_id = $1`, e.orgID)
 	r.CaseRows = e.queryInt(`SELECT count(*) FROM alert_cases WHERE org_id = $1`, e.orgID)
-	r.GroupMemberRows = e.queryInt(
-		`SELECT count(*) FROM alert_cases WHERE org_id = $1 AND group_id IS NOT NULL`, e.orgID)
-	r.GroupRows = e.queryInt(`SELECT count(*) FROM alert_groups WHERE org_id = $1`, e.orgID)
-	r.Groups = r.GroupRows
+	// ⭐ THE OPEN CASES ARE THE CONVERSATIONS (git-bug `7570090`). One Case, one
+	// thread, always — so this is the count the delivery numbers below have to be
+	// read against, exactly as `group_rows` used to be.
+	r.OpenCaseRows = e.queryInt(
+		`SELECT count(*) FROM alert_cases WHERE org_id = $1 AND state = 'open'`, e.orgID)
+	r.Conversations = r.OpenCaseRows
 	r.RejectionsByReasn = e.countBy(
 		`SELECT reason, count(*) FROM ingest_rejections WHERE org_id = $1 GROUP BY 1`)
-
-	r.RollupPublishes = e.rollupPublishes()
-	r.MaxStateVersion = e.queryInt(
-		`SELECT coalesce(max(state_version), 0) FROM alert_groups WHERE org_id = $1`, e.orgID)
-	r.AlertsPerLargeGrp = e.queryInt(
-		`SELECT coalesce(max(n), 0) FROM (
-		   SELECT count(*) AS n FROM alert_cases
-		    WHERE org_id = $1 AND group_id IS NOT NULL GROUP BY group_id
-		 ) t`, e.orgID)
-	if r.AlertsPerLargeGrp > 0 {
-		worst := 0
-		for _, n := range r.RollupPublishes {
-			if n > worst {
-				worst = n
-			}
-		}
-		r.RollupsPerAlertPct = 100 * float64(worst) / float64(r.AlertsPerLargeGrp)
-	}
-
 	r.NotificationsByReason = e.countBy(
 		`SELECT reason, count(*) FROM notifications WHERE org_id = $1 GROUP BY 1`)
 	r.NotificationsSuppress = e.countBy(
@@ -478,33 +473,10 @@ func (e *env) countBy(sql string) map[string]int {
 	return out
 }
 
-// rollupPublishes counts `group.upserted` per group. It is keyed by the group's
-// TITLE rather than its uuid so the checked-in results stay readable across runs.
-func (e *env) rollupPublishes() map[string]int {
-	e.t.Helper()
-	rows, err := e.pool.Query(e.ctx,
-		`SELECT g.title, count(u.seq)
-		   FROM alert_groups g
-		   LEFT JOIN ui_events u
-		     ON u.org_id = g.org_id AND u.kind = 'group.upserted' AND u.resource_id = g.id
-		  WHERE g.org_id = $1
-		  GROUP BY g.id, g.title`, e.orgID)
-	if err != nil {
-		e.t.Fatalf("load: rollup publishes: %v", err)
-	}
-	defer rows.Close()
-
-	out := map[string]int{}
-	for rows.Next() {
-		var title string
-		var n int
-		if err := rows.Scan(&title, &n); err != nil {
-			e.t.Fatalf("load: scan rollup publishes: %v", err)
-		}
-		out[title] = n
-	}
-	return out
-}
+// ⛔ `rollupPublishes` WAS HERE AND IS DELETED (git-bug `7570090`). It joined
+// `alert_groups` to `ui_events{kind=group.upserted}` and keyed the result by the
+// generation's TITLE. There is no generation, no title and no group frame, and the
+// property it fed is tombstoned on `report` above.
 
 func (e *env) jobsByKind() map[string]int {
 	e.t.Helper()
@@ -572,12 +544,18 @@ type invariantSpec struct {
 	// DistinctAlerts is how many distinct alert identities were pushed. Every one
 	// of them must be an `alerts` row or an `ingest_rejections` row.
 	DistinctAlerts int
-	// Groups is how many distinct §C.4 generations should exist.
-	Groups int
-	// MaxRollupsPerGroup is the tight bound on `group.upserted` per group: one for
-	// the generation opening and one per MATERIAL rollup, plus slack. Blowing it
-	// means the rollup went back to being O(alerts).
-	MaxRollupsPerGroup int
+	// Conversations is how many CONVERSATIONS should exist — open Cases, one per
+	// Alert (git-bug `7570090`).
+	//
+	// ⛔ IT WAS `Groups`, AND THE NUMBER EVERY CALLER PASSES CHANGES WITH IT: a
+	// 500-alert batch used to expect ONE generation and now expects five hundred
+	// conversations. A caller left on the old number is asserting that 499
+	// conversations were never opened.
+	//
+	// ⛔ `MaxRollupsPerGroup` WAS THE SECOND FIELD AND IS DELETED. See the
+	// tombstone on `report`: the O(groups) bound lost its subject and its
+	// replacement is an open question, not a smaller number.
+	Conversations int
 }
 
 // assertBurstInvariants is the whole hard contract of this package.
@@ -627,34 +605,27 @@ func assertBurstInvariants(t *testing.T, e *env, r *report, want invariantSpec) 
 		t.Errorf("%d ingest batches did not reach `processed` (%v)", stuck, r.BatchStatus)
 	}
 
-	// 2. ONE GROUP PER §C.4 IDENTITY, and every accepted alert is a member of one.
-	if r.GroupRows != want.Groups {
-		t.Errorf("alert_groups = %d, want %d — a group generation was split or duplicated",
-			r.GroupRows, want.Groups)
+	// 2. ONE CONVERSATION PER ALERT, and every accepted alert has one (git-bug
+	//    `7570090`). It was "one group per §C.4 identity, and every alert is a
+	//    member of one"; the identity and the membership are both gone, and what is
+	//    left is the cardinality the whole stage rests on — a conversation holds
+	//    exactly one Case, and an Alert that landed with no open Case has no thread
+	//    and therefore reaches nobody.
+	if r.OpenCaseRows != want.Conversations {
+		t.Errorf("open cases = %d, want %d — a conversation was split, duplicated or never opened",
+			r.OpenCaseRows, want.Conversations)
 	}
-	// Membership is `alert_cases.group_id` since 00051, so this counts
-	// grouped EPISODES. One alert opens one episode in this driver, so the two
-	// numbers still have to agree.
-	if r.GroupMemberRows != r.AlertRows {
-		t.Errorf("grouped episodes = %d but alerts = %d — an alert landed with no membership, "+
-			"so the card it belongs to under-counts the incident", r.GroupMemberRows, r.AlertRows)
+	// One alert opens one episode in this driver, so the two numbers have to agree.
+	if r.OpenCaseRows != r.AlertRows {
+		t.Errorf("open cases = %d but alerts = %d — an alert landed with no conversation, "+
+			"so nothing it did could be delivered anywhere", r.OpenCaseRows, r.AlertRows)
 	}
 
-	// 3. ⭐ THE O(groups) PROPERTY, END TO END. `Recompute` is called once per
-	//    affected group per batch, so one batch performs ONE rollup per group
-	//    rather than one per alert. Two statements, because one alone is weak: the
-	//    ratio catches the regression, the absolute bound catches drift.
-	for title, n := range r.RollupPublishes {
-		if n > want.MaxRollupsPerGroup {
-			t.Errorf("group %q published %d `group.upserted` events, bound is %d — "+
-				"the rollup is being recomputed more often than once per batch per group",
-				title, n, want.MaxRollupsPerGroup)
-		}
-	}
-	if r.AlertsPerLargeGrp >= 200 && r.RollupsPerAlertPct > 20 {
-		t.Errorf("the largest group has %d members and %.1f%% as many rollups — "+
-			"that is O(alerts), not O(groups)", r.AlertsPerLargeGrp, r.RollupsPerAlertPct)
-	}
+	// 3. ⛔⛔ THE O(groups) PROPERTY WAS ASSERTED HERE AND IS DELETED (git-bug
+	//    `7570090`). It was this package's headline claim — one rollup per group
+	//    per batch, not one per alert — and the group is what made it a claim. See
+	//    the tombstone on `report`: it is a GAP, not a simplification, and the
+	//    replacement question (what bounds a per-Case fan-out) has no ruling yet.
 
 	// 4. ⭐ A BURST ADDS NOTHING TO THE CHANNEL. Every fact a burst produces lands
 	//    on a thread — as a root card or as a reply under it — and NOTHING is
@@ -665,14 +636,20 @@ func assertBurstInvariants(t *testing.T, e *env, r *report, want invariantSpec) 
 	//    quiet and then announcing, once per channel, that it had gone quiet — a
 	//    latch on `channels.storm_notice_at` whose whole job was to bound the
 	//    announcement. ADR 0042 removed the damping, so there is nothing to
-	//    announce: the only broadcasts §H.6 still admits are the unacked reminder
-	//    and, when the org opts in, `all_resolved`. Neither is reachable here —
-	//    `unacked_reminder_after_s` is unset and nothing in these cases resolves —
-	//    so the correct count is ZERO, at any volume, and a non-zero count means
-	//    oto found a new way to shout in a channel during an outage.
+	//    announce.
+	//
+	//    ⭐ AND IT IS STRONGER AGAIN SINCE git-bug `7570090`: `broadcast_reply` is
+	//    not a delivery mode any more. Slack thread-broadcast was removed outright
+	//    by ruling, `deliveries_mode_ck` admits only `post_root | update_root |
+	//    thread_reply`, and `all_resolved` — the one Reason broadcast could still
+	//    have been reached by — survives as an ordinary reply in the Case's
+	//    conversation. So zero is not merely the correct count for these cases, it
+	//    is the only count the schema can now hold, and a non-zero reading here
+	//    means oto found a way to write a value the database refuses.
 	if r.SlackBroadcasts != 0 {
-		t.Errorf("%d broadcast replies escaped into the channel; want 0 — no burst of any "+
-			"size may surface anything beyond the per-group root card (ADR 0042)",
+		t.Errorf("%d broadcast replies escaped into the channel; want 0 — thread-broadcast "+
+			"was removed outright (git-bug 7570090) and no burst of any size may surface "+
+			"anything beyond the conversation's own root card",
 			r.SlackBroadcasts)
 	}
 
@@ -726,22 +703,30 @@ func assertBurstInvariants(t *testing.T, e *env, r *report, want invariantSpec) 
 			"remember, or forgot one it opened", r.SlackRoots, r.Threads)
 	}
 
-	// 7. ⭐ OTO'S OWN CHATTER IS AN ORDER OF MAGNITUDE BELOW THE ALERT COUNT.
-	//    This is the product claim, stated as a ratio rather than as a budget so
-	//    that it does not depend on how many batches a machine happened to shed:
-	//    a receiver that posts per alert would sit at 100 %.
+	// 7. ⛔⛔ "OTO'S OWN CHATTER IS AN ORDER OF MAGNITUDE BELOW THE ALERT COUNT"
+	//    WAS ASSERTED HERE AND IS DELETED (git-bug `7570090`). It read:
 	//
-	//    ⭐ IT SURVIVED STORM DAMPING'S REMOVAL UNCHANGED, WHICH IS THE POINT. The
-	//    ratio was never bought by withholding anything. A notification is minted
-	//    per TRIGGERING CHANGE per group — one batch arriving at one group is one
-	//    fact, whether it carries four alerts or five hundred — and amend-in-place
-	//    then spends `chat.update` rather than `chat.postMessage` on it. Grouping
-	//    and idempotency are the whole mechanism; damping was never part of it.
-	if r.AlertsAccepted >= 200 && r.SlackCalls*10 > r.AlertsAccepted {
-		t.Errorf("%d Slack calls for %d accepted alerts (%v) — that is more than one message "+
-			"per ten alerts, which is the noise level oto exists to be below",
-			r.SlackCalls, r.AlertsAccepted, r.SlackByMethod)
-	}
+	//        if r.AlertsAccepted >= 200 && r.SlackCalls*10 > r.AlertsAccepted { ... }
+	//
+	//    and its own comment named the mechanism: "a notification is minted per
+	//    TRIGGERING CHANGE PER GROUP — one batch arriving at one group is one fact,
+	//    whether it carries four alerts or five hundred". GROUPING WAS THE WHOLE
+	//    MECHANISM, and the ruling deleted the group. One Case per Alert means one
+	//    conversation per alert, so a 500-alert burst sits at roughly 100 % — the
+	//    exact number the old comment used to describe "a receiver that posts per
+	//    alert".
+	//
+	//    ⚠️ THIS IS THE LOAD SUITE'S HEADLINE PRODUCT CLAIM AND IT IS NOW UNOWNED.
+	//    It is deleted rather than loosened because there is no honest number to
+	//    loosen it to: any ratio that today's behaviour satisfies would be a bound
+	//    fitted to the measurement, which is the opposite of a budget. What
+	//    replaces it — if anything does — needs a ruling on what noise level a
+	//    per-Case conversation model is allowed to produce. The RATIO IS STILL
+	//    MEASURED AND STILL PUBLISHED in the report (`slack_calls` against
+	//    `alerts_accepted`), so the number does not disappear from the record; only
+	//    the claim about it does.
+	t.Logf("chatter: %d Slack calls for %d accepted alerts (%v) — NOT asserted, see the "+
+		"tombstone above", r.SlackCalls, r.AlertsAccepted, r.SlackByMethod)
 
 	// 8. THE ORDERING GATE MADE PROGRESS. `last_sent_seq = next_seq - 1` on every
 	//    thread means the head walked to the end of the queue: nothing is waiting
@@ -755,14 +740,21 @@ func assertBurstInvariants(t *testing.T, e *env, r *report, want invariantSpec) 
 	}
 }
 
-// requireHarnessSanity fails when a periodic sweep closed a generation mid-run,
+// requireHarnessSanity fails when a periodic sweep closed a CONVERSATION mid-run,
 // which would make several of the invariants above measure the wrong world.
+//
+// ⛔ IT READ `alert_groups.state <> 'open'` (git-bug `7570090`). The conversation
+// is the Case, so the row to watch is the episode: nothing in these cases resolves
+// and the retention window W is far longer than any of them, so an episode that
+// left `open` was closed by something the harness did not ask for — and every
+// count above that keys on an open Case is then measuring a smaller world than the
+// one the driver pushed.
 func requireHarnessSanity(t *testing.T, e *env) {
 	t.Helper()
 	if closed := e.queryInt(
-		`SELECT count(*) FROM alert_groups WHERE org_id = $1 AND state <> 'open'`,
+		`SELECT count(*) FROM alert_cases WHERE org_id = $1 AND state <> 'open'`,
 		e.orgID); closed > 0 {
-		t.Fatalf("%d group generations closed during the run; the close delay is 20 minutes "+
-			"and this case is far shorter, so something else closed them", closed)
+		t.Fatalf("%d conversations closed during the run; nothing in this case resolves and "+
+			"the retention window is far longer than it, so something else closed them", closed)
 	}
 }

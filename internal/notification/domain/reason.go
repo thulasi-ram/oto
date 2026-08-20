@@ -35,10 +35,27 @@ type Reason string
 const (
 	// ReasonFired is Alertmanager's `first notification`.
 	ReasonFired Reason = "fired"
-	// ReasonNewAlerts is `new alerts added`.
-	ReasonNewAlerts Reason = "new_alerts"
-	// ReasonSomeResolved is `some alerts resolved`.
-	ReasonSomeResolved Reason = "some_resolved"
+
+	// ⛔ `ReasonNewAlerts` ("new_alerts") AND `ReasonSomeResolved` ("some_resolved")
+	// WERE HERE AND ARE DELETED OUTRIGHT (git-bug `7570090`). Each asserted a
+	// PLURALITY — "more of them started", "some of them stopped" — and a conversation
+	// now holds exactly ONE Case, which is ONE Alert's firing episode. A fact about a
+	// subset has no subset to be about, so neither has anything left to report.
+	//
+	// ⛔ DELETED RATHER THAN RETIRED, and that is the distinction the `severity_raised`
+	// note below draws. `ReasonRefired` further down is what retirement is FOR: nothing
+	// produces it, but rows on disk carry it and a renderer still has to draw one.
+	// Nothing carries these two that survives — oto is unreleased, migration 00069
+	// narrows `notifications_reason_ck` to match, and the maintainer has authorised the
+	// reset that answers it. A vocabulary entry whose only possible reader cannot exist
+	// is not caution; it is a CHECK-constraint value with no writer, which is a trap
+	// the next person has to rule out.
+	//
+	// ⚠️ THE UPSTREAM VALUES THEY MAPPED DID NOT SIMPLY MOVE TO ANOTHER WORD. What
+	// `new alerts added` and `some alerts resolved` now resolve to is `ReasonFromWire`'s
+	// business, and the answer there is neither of the obvious ones — read its ⛔ block
+	// before assuming a rename.
+
 	// ReasonAllResolved is `all alerts resolved`.
 	ReasonAllResolved Reason = "all_resolved"
 	// ReasonRepeat is `repeat interval elapsed`. IT UPDATES AND NEVER REPOSTS.
@@ -79,10 +96,15 @@ const (
 	// no history to keep decodable, so a value kept for a reader that cannot exist
 	// is not caution: it is a vocabulary entry the next person has to rule out.
 	// That is `EventType`'s own test, verbatim, applied in the other direction.
-	// ReasonDigest is the eighteenth Reason and the only one whose subject is not
+	// ReasonDigest is the fifteenth Reason and the only one whose subject is not
 	// an object: it is a WINDOW OVER A NAMESPACE (migration 00058).
 	//
-	// ⭐ IT IS THE ONE REASON NO TRANSITION PRODUCES. The other seventeen are facts
+	// (It was the eighteenth when 00058 added it. The ordinal has moved twice since —
+	// `unacked_reminder` left with git-bug bd0fb1d, `new_alerts` and `some_resolved`
+	// with 7570090 — and it is spelled out rather than dropped because the counts in
+	// this file are load-bearing: `MaxPolicyReasons` is `len(AllReasons())` BY RULE.)
+	//
+	// ⭐ IT IS THE ONE REASON NO TRANSITION PRODUCES. The other fourteen are facts
 	// about a change to one thing, and something observed each of them happening. A
 	// digest is minted by a TICK: at the top of a policy's window the evaluator
 	// counts the Cases that opened inside it, and if the count clears the policy's
@@ -114,7 +136,11 @@ const (
 
 // allReasons is the closed set, in the order migration 00018 declares it.
 var allReasons = []Reason{
-	ReasonFired, ReasonNewAlerts, ReasonSomeResolved, ReasonAllResolved,
+	// `new_alerts` and `some_resolved` held positions two and three here and are
+	// DELETED (git-bug `7570090`). The remaining values keep 00018's relative order:
+	// the contract the dto_schema test enforces is the ORDER, and closing a gap left
+	// by a deletion is not a re-ordering.
+	ReasonFired, ReasonAllResolved,
 	ReasonRepeat, ReasonSuppressed, ReasonUnsuppressed, ReasonExpired,
 	ReasonRefired, ReasonAcked, ReasonUnacked, ReasonSnoozed, ReasonUnsnoozed,
 	ReasonEnriched, ReasonRuleChanged, ReasonComment,
@@ -130,8 +156,11 @@ var allReasons = []Reason{
 // AllReasons returns the closed Reason set. The slice is freshly built so a
 // caller cannot mutate the vocabulary.
 //
-// ⚠️ IT HAS SEVENTEEN MEMBERS SINCE git-bug bd0fb1d removed `unacked_reminder`.
-// `MaxPolicyReasons` is `len(AllReasons())` by rule and follows it.
+// ⚠️ IT HAS FIFTEEN MEMBERS: seventeen after git-bug bd0fb1d removed
+// `unacked_reminder`, less the two plurality Reasons 7570090 deleted.
+// `MaxPolicyReasons` is `len(AllReasons())` BY RULE and follows it — it is declared
+// in policy.go as a literal, so a deletion here that is not mirrored there leaves
+// `policies_reasons_ck` admitting a list longer than the vocabulary it draws from.
 func AllReasons() []Reason {
 	out := make([]Reason, len(allReasons))
 	copy(out, allReasons)
@@ -147,7 +176,8 @@ func AllReasons() []Reason {
 
 // The two subjects that were not expressible before migration 00056. They are
 // declared HERE, next to the allocation that gives them meaning, rather than
-// beside SubjectAlertGroup in idempotency.go: a SubjectKind is only ever chosen by
+// beside `SubjectKind` itself in idempotency.go — where `alert_group` used to be
+// declared and where its ⛔ deletion note now stands: a SubjectKind is only ever chosen by
 // a Reason, and a kind nothing allocates is the same dead enum value the
 // `severity_raised` note above refuses.
 const (
@@ -163,8 +193,9 @@ const (
 	// (`policy_id`, `digest_window_start`), which migration 00058 added.
 	//
 	// ⭐ IT IS THE FIRST SUBJECT THAT IS NOT A ROW IN THE SIGNAL GRAPH, and that is
-	// the whole point of the ticket that added it. The other three are an identity,
-	// a firing and a generation; this one is a SET SELECTED BY PROPERTIES OVER TIME,
+	// the whole point of the ticket that added it. The other two are an identity and a
+	// firing — there was a third, the generation, until git-bug `7570090` deleted
+	// `alert_group`; this one is a SET SELECTED BY PROPERTIES OVER TIME,
 	// and it is what makes "what happened in this namespace in the last ten minutes"
 	// expressible at all. `subject_id` carries the POLICY half, because one UUID
 	// column cannot hold a pair and hashing the pair into a synthetic id would make
@@ -183,26 +214,30 @@ const (
 // (notifications_subjkind_ck, widened by migration 00056).
 //
 // ⭐ IT IS ALSO THE MEMBERSHIP TEST FOR THE ENUM, AND THAT IS DELIBERATE. `Valid`
-// consults this map, so a nineteenth Reason cannot be added without deciding what
+// consults this map, so a sixteenth Reason cannot be added without deciding what
 // it is about: a Reason declared with no subject fails validation at the door
 // instead of quietly inheriting the group, which is exactly how every fact came to
 // claim the group of forty in the first place. `allReasons` above is the ORDER
 // (migration 00018 declares it, 00058 appends to it); this map is the SET.
 //
-// The four altitudes, and why each Reason sits where it does:
+// The three altitudes, and why each Reason sits where it does:
 //
-//   - alert_group — a fact about the GENERATION. `fired` is here and not on the
-//     Case even though a Case opens: the idempotency key is
-//     (org, subject, reason, state_version), so a group-subject `fired` is ONE
-//     root card per generation-version, while a case-subject one would mint a
-//     `fired` per member and post a root card per alert — the failure
-//     ReconcileWithWire already documents. `new_alerts`, `some_resolved` and
-//     `all_resolved` are membership arithmetic over the generation. `repeat` is
-//     Alertmanager's group-level `repeat interval elapsed`. `unacked_reminder` is a
-//     fact about the generation and is LATCHED as one: the reminder fires at most
-//     once per generation because `unackedGroupsSQL` looks for a prior
-//     notification at (subject_kind='alert_group', subject_id=group), so moving
-//     its subject would silently unlatch it.
+//   - ⛔ alert_group — THE ALTITUDE ITSELF IS DELETED (git-bug `7570090`), and it is
+//     the one the plurality Reasons lived at. It held a fact about the GENERATION,
+//     and the argument for it was an idempotency argument: the key is
+//     (org, subject, reason, state_version), so a group-subject `fired` was ONE root
+//     card per generation-version while a case-subject one minted a `fired` per
+//     member and posted a root card per alert.
+//
+//     ⭐ THAT CONSEQUENCE IS NOW THE REQUIREMENT, WHICH IS WHY THE ARGUMENT DID NOT
+//     SURVIVE ITS OWN PREMISE. A conversation holds exactly one Case, so one root
+//     card per firing alert is the shape the owner ruled for, and the collapse the
+//     group subject bought is the thing being removed. `fired`, `all_resolved` and
+//     `repeat` moved to `case` intact — each is true of one episode. `new_alerts` and
+//     `some_resolved` could not move: they were MEMBERSHIP ARITHMETIC over the
+//     generation, and arithmetic over a set of one has no answer to give, so they
+//     left the vocabulary (see the ⛔ block in the const list above). `unacked_reminder`
+//     was latched at this altitude and left earlier, with git-bug bd0fb1d.
 //
 //   - case — a fact that is only true of THIS FIRING. `acked` and `unacked` are
 //     here because ack is a Case verb: 00049 moved `ack_state` off the Alert
@@ -246,11 +281,16 @@ const (
 // before it reaches this map. An alert-subject `rule_changed` would be one intent
 // for a drift that recurs at every fire.
 var reasonSubjects = map[Reason]SubjectKind{
-	ReasonFired:        SubjectAlertGroup,
-	ReasonNewAlerts:    SubjectAlertGroup,
-	ReasonSomeResolved: SubjectAlertGroup,
-	ReasonAllResolved:  SubjectAlertGroup,
-	ReasonRepeat:       SubjectAlertGroup,
+	// ⛔ THESE FIVE ALLOCATED `SubjectAlertGroup` AND THREE NOW ALLOCATE `SubjectCase`
+	// (git-bug `7570090`). `fired`, `all_resolved` and `repeat` are each true of ONE
+	// episode, so a Case carries them exactly. `new_alerts` and `some_resolved` are
+	// DELETED outright: both assert a plurality — "more of them started", "some of
+	// them stopped" — and a conversation holds one Case, so neither has anything to
+	// be about. They are not retired to a dormant value; a Reason nothing can
+	// allocate is the dead-enum shape the `severity_raised` note above refuses.
+	ReasonFired:       SubjectCase,
+	ReasonAllResolved: SubjectCase,
+	ReasonRepeat:      SubjectCase,
 
 	ReasonAcked:       SubjectCase,
 	ReasonUnacked:     SubjectCase,
@@ -272,10 +312,15 @@ var reasonSubjects = map[Reason]SubjectKind{
 // `subject_kind` declares, and therefore which of `alert_id`, `case_id` and
 // `group_id` its `subject_id` must equal (notifications_subject_ck).
 //
-// ⛔ IT IS NOT WHERE THE FACT IS DELIVERED. `group_id` is the delivery target for
-// the seventeen signal Reasons and is mandatory for all seventeen
-// (notifications_target_ck); the thread is keyed by the AlertGroup generation
-// whatever this returns, so forty alerts still produce one thread.
+// ⛔ IT USED NOT TO BE WHERE THE FACT WAS DELIVERED, AND THE TWO HAVE CONVERGED
+// (git-bug `7570090`). This paragraph read "`group_id` is the delivery target for the
+// seventeen signal Reasons and is mandatory for all seventeen
+// (notifications_target_ck); the thread is keyed by the AlertGroup generation whatever
+// this returns, so forty alerts still produce one thread." There is no generation to
+// key a thread by: a conversation holds ONE Case, so what a fact is ABOUT and where it
+// is DELIVERED are now the same answer. `SubjectKind`'s own note in idempotency.go is
+// the full statement of the convergence; the fourteen signal Reasons here are the
+// count that used to be seventeen.
 //
 // ⚠️ `digest` IS THE ONE EXCEPTION AND IT IS THE REASON THE COLUMN IS NULLABLE. A
 // digest spans many generations, so it has no group to be delivered to and opens
@@ -339,9 +384,16 @@ const (
 	// WireSuppress means Alertmanager said `none`: record a suppressed
 	// Notification and stop. It is still RECORDED — never a silent drop.
 	WireSuppress
-	// WireDiffFallback means the payload predates AM 0.32.0 (or said `unknown`),
-	// so the Reason must be derived by diffing the incoming fingerprint set
-	// against the generation's current members (alert_cases.group_id).
+	// WireDiffFallback means the wire cannot name this notification's Reason, so
+	// oto's OWN observation has to. The payload predates AM 0.32.0 (or said
+	// `unknown`) — or, since git-bug `7570090`, it named a plurality oto no longer
+	// has a Reason for.
+	//
+	// ⚠️ IT USED TO SAY "derived by diffing the incoming fingerprint set against the
+	// generation's current members (alert_cases.group_id)", and there is no
+	// generation to diff against. With one Alert per Case the diff degenerates into
+	// the per-alert transition `alerts/service` already observed, which is precisely
+	// what `derived` carries into ReconcileWithWire below.
 	WireDiffFallback
 )
 
@@ -361,15 +413,49 @@ const (
 //
 // The empty string is NOT an error: Alertmanager below 0.32.0 does not send the
 // field at all, and treating "absent" as "broken" would drop every notification
-// from an older cluster. It falls back to the fingerprint-set diff.
+// from an older cluster. It falls back to oto's own observation.
+//
+// ⚠️ IT HAS NO CALLER SINCE git-bug `7570090`. `ReconcileWithWire` was the only one
+// and it no longer consults the table, because a group-level authority has no
+// group-level decision left to make (read its ⛔ block). This stays declared because
+// §H.6 states the mapping as BINDING and it is the honest record of what oto does
+// with each upstream spelling — including `none`, the one wire value that still
+// carries a per-Case fact (`WireSuppress`: record a suppressed Notification and
+// stop) and the one no code has ever acted on.
 func ReasonFromWire(wire string) (Reason, WireVerdict) {
 	switch wire {
 	case wireFirstNotification:
 		return ReasonFired, WireMapped
-	case wireNewAlertsAdded:
-		return ReasonNewAlerts, WireMapped
-	case wireSomeResolved:
-		return ReasonSomeResolved, WireMapped
+	case wireNewAlertsAdded, wireSomeResolved:
+		// ⛔ THESE TWO MAPPED TO `new_alerts` AND `some_resolved`, AND BOTH REASONS ARE
+		// DELETED (git-bug `7570090`). The values are NOT re-pointed at a surviving
+		// Reason and they are NOT refused. Both of those would be wrong, for opposite
+		// reasons, and the ruling is the whole content of this arm.
+		//
+		// ⭐ THE TEST IS WHETHER THE WIRE VALUE'S QUANTIFIER DISTRIBUTES OVER THE BATCH.
+		// Alertmanager speaks about a whole GROUP; oto mints one notification per Case,
+		// and a Case is one Alert's firing episode. The three values still mapped above
+		// are UNIVERSAL over the batch, so each remains true of the one alert in focus:
+		// if this is the group's `first notification` then every member in it is newly
+		// firing, if `all alerts resolved` then this one resolved, if `repeat interval
+		// elapsed` then this one is being re-delivered. These two are EXISTENTIAL —
+		// "new alerts added" says SOME member is new, "some alerts resolved" says SOME
+		// member stopped, and neither says WHICH. Handing either to the Case in focus
+		// would let one member's transition relabel a different member's card, which is
+		// a louder failure than saying nothing.
+		//
+		// ⛔ AND REFUSING THEM WOULD BE WORSE THAN IMPRECISE. `WireUnmapped` means "not
+		// a value oto recognises". oto recognises both perfectly well — they are what a
+		// healthy AM >= 0.32.0 sends on most deliveries into a grouped receiver — and a
+		// caller that reads "unrecognised" as "broken payload" would drop them, which is
+		// exactly the failure this function's own doc refuses for a cluster below 0.32.0.
+		// So the verdict is the fallback: the wire cannot name this Case's Reason, and
+		// oto's observed transition is the only thing that can.
+		//
+		// The two constants stay declared. Deleting them would fold two values oto
+		// understands into `default`, where they would be indistinguishable from a
+		// spelling Alertmanager has never sent.
+		return "", WireDiffFallback
 	case wireAllResolved:
 		return ReasonAllResolved, WireMapped
 	case wireRepeatInterval:
@@ -385,57 +471,47 @@ func ReasonFromWire(wire string) (Reason, WireVerdict) {
 	}
 }
 
-// ReconcileWithWire applies the §H.6 table to a Reason that was derived from
-// oto's OWN per-alert transitions, using Alertmanager's `notification_reason`
-// as the group-level authority it is.
+// ReconcileWithWire USED TO APPLY the §H.6 table to a Reason derived from oto's OWN
+// per-alert transitions, using Alertmanager's `notification_reason` as the
+// group-level authority it is. ⛔ IT NOW RETURNS `derived` UNCHANGED, ALWAYS, AND
+// BOTH OF ITS OTHER PARAMETERS ARE BLANK (git-bug `7570090`).
 //
-// ⭐ THIS IS §H.6's ONLY CALLER OF ReasonFromWire, AND IT IS WHERE THE TWO
-// VOCABULARIES MEET. They answer different questions and both are needed:
+// ⭐ IT DID NOT LOSE AN ARM, IT LOST ITS OBJECT. The two vocabularies it joined both
+// still exist and still answer different questions:
 //
-//   - oto's transitions know WHAT CHANGED about one alert. They are the only
-//     source for `acked`, `refired`, `expired`, `suppressed` — facts Alertmanager
-//     cannot see or does not have a word for.
-//   - Alertmanager's `notification_reason` knows WHY THIS BATCH WAS DELIVERED
-//     about a whole group. It is the only source that can tell a first fire from
-//     a member joining a group that was already notified, because the per-alert
-//     view of both is identical: a case opened.
+//   - oto's transitions know WHAT CHANGED about one alert. They are the only source
+//     for `acked`, `refired`, `expired`, `suppressed` — facts Alertmanager cannot
+//     see or does not have a word for.
+//   - Alertmanager's `notification_reason` knows WHY THIS BATCH WAS DELIVERED about
+//     a whole GROUP.
 //
-// Before this existed, `new_alerts`, `all_resolved` and `repeat` were CHECK
-// constraint values nothing could ever write — the first live run posted a fully
-// resolved card whose footer read "some alerts resolved", which is false.
+// The second was load-bearing only where a fact about the group could out-rank a
+// fact about one alert, and there were exactly two such places:
 //
-// The reconciliation is deliberately NARROW. The wire value may only widen a
-// reason to the group-scoped sibling that describes the same delivery; it may
-// never contradict an observed transition, because oto saw that and Alertmanager
-// did not. An unknown or absent wire value changes nothing: an Alertmanager
-// below 0.32.0 sends no field at all and must not lose its notifications for it.
-func ReconcileWithWire(derived Reason, wire string, allResolved bool) Reason {
-	mapped, verdict := ReasonFromWire(wire)
-
-	switch derived {
-	case ReasonSomeResolved:
-		// oto watched ONE alert resolve. Whether that was the LAST one is a fact
-		// about the group's membership, which oto projects itself — so the counts
-		// decide and the wire value is corroboration, not authority. §H.6 makes the
-		// difference load-bearing: `some_resolved` is update-only, `all_resolved`
-		// earns a thread reply and may be broadcast.
-		if allResolved || (verdict == WireMapped && mapped == ReasonAllResolved) {
-			return ReasonAllResolved
-		}
-		return derived
-
-	case ReasonFired:
-		// A case opened. Whether it opened a group or JOINED one that had
-		// already been notified is a distinction only Alertmanager can draw:
-		// oto sees an identical transition either way, and guessing from the member
-		// count would turn three alerts firing in one first batch into three
-		// "more instances now firing" replies and no root card at all.
-		if verdict == WireMapped && mapped == ReasonNewAlerts {
-			return ReasonNewAlerts
-		}
-		return derived
-
-	default:
-		return derived
-	}
-}
+//   - `some_resolved` → `all_resolved` widened one alert's resolve into the group's
+//     LAST resolve. With one Alert per Case, one alert's resolve IS the whole of it:
+//     `alerts/service` derives `all_resolved` at the transition and there is no
+//     narrower sibling left to widen from.
+//   - `fired` → `new_alerts` drew the one distinction oto genuinely could not see —
+//     a first fire versus a member joining a group already notified — because the
+//     per-alert view of both is identical: a case opened. What it DECIDED was
+//     whether a root card was posted or a reply appended into the generation's
+//     thread. A conversation holds one Case now, so the joining alert opens its own
+//     conversation and posts its own root card either way. The question still has
+//     two answers upstream; it no longer has two consequences here.
+//
+// Before this function existed, `new_alerts`, `all_resolved` and `repeat` were CHECK
+// values nothing could write, and the first live run posted a fully resolved card
+// whose footer read "some alerts resolved". ⚠️ THAT FAILURE IS BACK WITHIN REACH FOR
+// `repeat`: the wire table is the only thing that ever named it, and with this
+// function ignoring the table nothing mints a `repeat` at all. It is left declared
+// because §H.6 still describes the delivery; a writer for it is a separate ruling.
+//
+// ⛔ THE NAME NOW OVERSTATES WHAT THIS DOES, AND IT SHOULD BE DELETED WITH ITS ONE
+// CALLER — `notification/service.notify`, which applies it at the one moment the
+// wire value is in scope. It is kept declared here rather than removed under that
+// caller's feet. ⛔ A future group-level authority is NOT a reason to keep the seam:
+// the object that owns a fact about many alerts at once is an INCIDENT
+// (`correlation`, DEFERRED-POST-V1), and a fact about an incident belongs ON the
+// incident, not widening one member's Reason.
+func ReconcileWithWire(derived Reason, _ string, _ bool) Reason { return derived }

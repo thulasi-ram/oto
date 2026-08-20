@@ -48,15 +48,24 @@
 // that have nothing to do with the code. The hard assertions are the invariants
 // in `assertBurstInvariants`: nothing silently lost, nothing broadcast out of a
 // thread at any volume, no duplicated or lost Slack call, an ordering gate that
-// made it to the end of every thread, and rollups that are O(groups) rather than
-// O(alerts).
+// made it to the end of every thread, and one open conversation per accepted
+// alert.
 //
 // ⛔ THE PACKAGE WAS `TestStorm*` AND ASSERTED STORM COLLAPSE UNTIL ADR 0042.
 // Storm damping is removed: oto withholds nothing because a group is busy, so
-// "500 alerts cost few Slack calls" is now bought entirely by grouping and
-// amend-in-place — one notification per triggering change per group, spent as
-// `chat.update` on a card that already exists. The cases were repointed at that
-// claim rather than deleted, because it is the one the product actually rests on.
+// "500 alerts cost few Slack calls" was argued to be bought entirely by grouping
+// and amend-in-place — one notification per triggering change per group.
+//
+// ⛔⛔ AND THEN GROUPING WENT TOO (git-bug `7570090`). `alert_groups` is dropped
+// and A CONVERSATION IS A CASE, so five hundred alerts open five hundred
+// conversations rather than one. TWO OF THIS PACKAGE'S HARD ASSERTIONS HAVE
+// THEREFORE BEEN DELETED RATHER THAN RETARGETED — the O(groups) rollup bound and
+// the "Slack calls stay an order of magnitude below the alert count" ratio —
+// because both measured the fan-in that the ruling removed, and a bound fitted to
+// what the code now does is not a budget. Each deletion carries a tombstone at its
+// old site naming the number it used to demand. WHAT NOISE LEVEL A PER-CASE MODEL
+// MAY PRODUCE IS AN OPEN QUESTION; until it is ruled on, this package proves
+// durability and ordering and does not speak to volume.
 //
 // The measured numbers land in `test/load/RESULTS.md`, with the machine they were
 // taken on stated, so a regression shows up as a diff rather than as a feeling.

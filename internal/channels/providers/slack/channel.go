@@ -70,7 +70,7 @@ func (c *Channel) Deliver(ctx context.Context, req domain.DeliverRequest) (domai
 	case domain.ModePostRoot:
 		// Nothing else to add: a root message is a plain post.
 
-	case domain.ModeThreadReply, domain.ModeBroadcastReply:
+	case domain.ModeThreadReply:
 		if req.ReplyTo == nil || req.ReplyTo.MessageID == "" {
 			return domain.DeliverResult{}, &domain.Error{
 				Class: domain.ClassPermanent, Provider: providerName,
@@ -84,20 +84,26 @@ func (c *Channel) Deliver(ctx context.Context, req domain.DeliverRequest) (domai
 		// ALWAYS the root ts, never a reply's ts: Slack's own guidance, and
 		// threading off a reply silently flattens the thread.
 		opts = append(opts, slack.MsgOptionTS(threadRoot(req.ReplyTo)))
-		if req.Mode == domain.ModeBroadcastReply {
-			// ⛔ THIS USED TO SAY "only for the unacked reminder, which is gated on
-			// policy AND fires at most once per generation (§G.9)". The reminder and
-			// its once-per-generation latch are deleted (git-bug `bd0fb1d`).
-			//
-			// Broadcast is still used sparingly, and the narrowness now lives in
-			// `BroadcastPolicy.Warrants` instead of in a latch: `all_resolved` when
-			// the org opts in, and `refired`, which nothing currently produces. The
-			// decision is made ONCE, in `notification/domain/mode.go`, and this
-			// branch only obeys it — `MsgOptionBroadcast()` is keyed on the mode and
-			// re-deriving the policy here would be a second opinion on an
-			// irreversible act.
-			opts = append(opts, slack.MsgOptionBroadcast())
-		}
+
+		// ⛔⛔ `slack.MsgOptionBroadcast()` WAS HERE AND IS DELETED (git-bug
+		// 7570090). This was the SINGLE CALL SITE of Slack's `reply_broadcast`
+		// parameter in the whole product, gated on `domain.ModeBroadcastReply`.
+		//
+		// WHY IT WENT RATHER THAN BEING TURNED OFF. The gate above it was
+		// `BroadcastPolicy.Warrants`, which returned true for exactly two reasons:
+		// `refired`, which ADR 0040 retired T8 and left with no producer at all, and
+		// `all_resolved`, which was opt-in and default-off. So this line had never
+		// run in a default deployment and could not be reached without an operator
+		// asking for a thing the owner has now ruled oto does not do. A mechanism
+		// with no producer is not a feature that is off; it is dead code with a
+		// settings page.
+		//
+		// ⭐ THE REASONING THAT OUTLIVED IT, because the next irreversible act will
+		// need it: broadcasting was IRREVERSIBLE — Slack documents nothing that
+		// un-broadcasts — and that is why the decision was made ONCE, upstream in
+		// `notification/domain/mode.go`, and obeyed blindly here. A provider that
+		// re-derives a policy is a second opinion on an act nobody can take back.
+		// Any future flag of that shape belongs on the mode, not in this switch.
 
 	case domain.ModeUpdateRoot:
 		if req.Target == nil || req.Target.MessageID == "" {
@@ -132,7 +138,7 @@ func (c *Channel) Deliver(ctx context.Context, req domain.DeliverRequest) (domai
 		ThreadID:       ts,
 		ProviderKey:    respChannel + ":" + ts,
 	}
-	if req.Mode == domain.ModeThreadReply || req.Mode == domain.ModeBroadcastReply {
+	if req.Mode == domain.ModeThreadReply {
 		ref.ThreadID = threadRoot(req.ReplyTo)
 	}
 

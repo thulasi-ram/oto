@@ -96,7 +96,10 @@ var notARequestResolver = map[string]string{
 		"the row is what supplies both the org and the `received_at` every subsequent read is scoped by. " +
 		"It is not a request resolver: there is no inbound credential to turn into a tenancy, and the " +
 		"caller already holds the database",
-	"notification/repository.orgOfGroupSQL":    "job-payload scope for the notification workers: the org comes from the group row",
+	"notification/repository.orgOfCaseSQL": "job-payload scope for the notification workers: the org comes " +
+		"from the CASE row the job names. It was `orgOfGroupSQL` over `alert_groups` until git-bug " +
+		"`7570090` made the Case the conversation; the category is unchanged, because what makes it " +
+		"exempt is that the id comes from oto's own job args and never from a request",
 	"notification/repository.orgOfDeliverySQL": "job-payload scope for the delivery workers: the org comes from the delivery row",
 	"sources/repository.resolveSourceOrgSQL":   "job-payload scope for the source workers: the org comes from the source row",
 

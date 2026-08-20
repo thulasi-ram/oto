@@ -197,25 +197,17 @@ describe("holding the alert's notifications", () => {
 /* -------------------------------------------------------------------------- */
 
 describe("the word on screen", () => {
-  it("⛔ never calls this firing a group, and never calls its group a case", async () => {
-    mount({
-      alert: alertRef(),
-      group: {
-        id: "0f1e2d3c-4b5a-4697-8899-aabbccddeeff",
-        group_key: "alertname=HighErrorRate",
-        generation: 1,
-        title: "HighErrorRate in payments",
-        state: "open",
-      },
-    });
+  it("⛔ never calls this firing an incident, a correlation or a group", async () => {
+    mount({ alert: alertRef() });
     await ready("Acknowledge");
 
     const text = document.body.textContent ?? "";
     // A Case is one firing of one alert — the thing that is acknowledged.
     expect(text).toContain("One firing of one alert");
-    // An AlertGroup is Alertmanager's batching, and the panel says so rather
-    // than letting a link called "group" read as this case's parent.
-    expect(text).toContain("Alertmanager batched this firing");
+    // ⛔ AND THE ALERT GROUP IS GONE (git-bug 7570090). The screen used to carry
+    // a "Notified in" panel naming Alertmanager's batching; the object it named
+    // no longer exists, so neither the panel nor the word may come back.
+    expect(text).not.toMatch(/\bgroup\b/i);
     expect(text).not.toMatch(/currently-joined/i);
     expect(text).not.toMatch(/\bincident\b/i);
     expect(text).not.toMatch(/\bcorrelat/i);

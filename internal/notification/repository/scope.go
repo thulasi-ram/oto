@@ -30,13 +30,22 @@ func NewScopeResolver(q db.Querier) *ScopeResolver { return &ScopeResolver{q: q}
 
 func (r *ScopeResolver) db(ctx context.Context) db.Querier { return db.FromContext(ctx, r.q) }
 
-const orgOfGroupSQL = `SELECT org_id FROM alert_groups WHERE id = $1`
+// ⛔ IT WAS `SELECT org_id FROM alert_groups WHERE id = $1` (git-bug `7570090`,
+// migration `00069`). A conversation is a Case, so the id a notify job carries is a
+// Case id and `alert_cases` is the table that owns it.
+const orgOfCaseSQL = `SELECT org_id FROM alert_cases WHERE id = $1`
 
-// ForGroup resolves the tenant that owns an alert group.
-func (r *ScopeResolver) ForGroup(ctx context.Context, groupID uuid.UUID) (db.TenantScope, error) {
+// ForCase resolves the tenant that owns a Case.
+//
+// ⭐ THIS IS THE ONE READ THAT RUNS BEFORE A TENANT SCOPE EXISTS, which is why it is
+// a bare `WHERE id = $1` with no `org_id` predicate — there is no org to predicate on
+// yet. Its answer is what every subsequent query is scoped BY, so it is also the one
+// place a wrong row would silently cross a tenant boundary; the id comes from oto's
+// own job args and never from a request.
+func (r *ScopeResolver) ForCase(ctx context.Context, caseID uuid.UUID) (db.TenantScope, error) {
 	var orgID uuid.UUID
-	if err := r.db(ctx).QueryRow(ctx, orgOfGroupSQL, groupID).Scan(&orgID); err != nil {
-		return db.TenantScope{}, mapErr(err, "group_not_found", "alert group")
+	if err := r.db(ctx).QueryRow(ctx, orgOfCaseSQL, caseID).Scan(&orgID); err != nil {
+		return db.TenantScope{}, mapErr(err, "case_not_found", "alert case")
 	}
 	return db.NewTenantScope(orgID)
 }

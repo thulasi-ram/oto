@@ -10,29 +10,32 @@ import (
 	"github.com/thulasiram/oto/internal/platform/config"
 )
 
-// ⭐⭐ THE TESTS THAT WOULD HAVE CAUGHT THE ORIGINAL DEFECT.
+// ⭐⭐ WHAT THESE TESTS STILL PROVE, AND WHAT THEY NO LONGER CAN.
 //
-// `grouping/service` used to recompute the rollup ONCE PER JOINED MEMBER. A
-// 500-alert Alertmanager batch therefore performed 500 full
-// aggregates over one group plus 500 compare-and-set writes to the SAME
-// `alert_groups` row, which the CAS then serialised — O(n) contention on one row,
-// arriving at exactly the moment a customer's cluster is on fire and Alertmanager's
-// ~5-minute retry budget is the only thing between a slow ingest and an alert that
-// is lost silently (ADR 0007).
+// ⛔⛔ THE DEFECT THIS FILE WAS BUILT AROUND IS UNREACHABLE (git-bug `7570090`).
+// `grouping/service` used to recompute the rollup ONCE PER JOINED MEMBER, so a
+// 500-alert batch performed 500 full aggregates over one group plus 500
+// compare-and-set writes to the SAME `alert_groups` row, which the CAS then
+// serialised — O(n) contention on one row, at exactly the moment a customer's
+// cluster is on fire. The module, the table and the shared row are all deleted, so
+// there is no longer a row for 500 alerts to contend on and no
+// `rollup_publishes_per_group` to count. The O(groups) invariant that bounded it
+// is tombstoned in `driver_test.go`.
 //
-// `internal/grouping/service/joinmany_test.go` proves the new shape against
-// counting fakes. These are its end-to-end counterpart: the same property, against
-// a real Postgres, through the real HTTP route, the real River workers and a Slack
-// double that enforces Slack's published contract. Under the old code
-// `rollup_publishes_per_group` here would read ~500 instead of ~3.
+// ⛔ AND SO IS THE CLAIM THAT REPLACED THE STORM ASSERTIONS. These were `TestStorm*`
+// and asserted storm collapse; ADR 0042 removed damping, and what was argued to
+// survive was the better half — "five hundred alerts share one `group_key`, so they
+// open ONE generation, ONE Slack thread and ONE root card". A CONVERSATION IS A CASE
+// now, and a Case belongs to one Alert, so five hundred alerts open five hundred
+// conversations. Every assertion of that shape is tombstoned individually below,
+// each with the number it used to demand.
 //
-// ⛔ THESE WERE `TestStorm*` AND THEY ASSERTED STORM COLLAPSE. ADR 0042 removed
-// storm damping outright, so every claim of the form "oto withholds N replies
-// because a group is busy" is gone. What survived is what was never damping in
-// the first place, and it is the more valuable half: five hundred alerts share
-// one `group_key`, so they open ONE generation, ONE Slack thread and ONE root
-// card, and oto's chatter stays an order of magnitude below the alert count
-// because a notification is minted per triggering change rather than per alert.
+// ⭐ WHAT SURVIVES IS STILL WORTH RUNNING, and it is the durability half rather than
+// the noise half: nothing is silently lost, every accepted alert is a row or a
+// recorded rejection, no batch is permanently refused, no delivery is lost or
+// duplicated against the wire, nothing is broadcast out of a thread, no thread
+// wedges, and the ingest endpoint answers only 202 and 503 under load. Those are
+// ADR 0007's invariants and none of them ever depended on the group.
 
 // ------------------------------------------------------------ the 500 batch
 
@@ -65,19 +68,37 @@ func TestBurstSingleBatchOf500Alerts(t *testing.T) {
 
 	assertBurstInvariants(t, e, r, invariantSpec{
 		DistinctAlerts: alerts,
-		Groups:         1,
-		// One `group.upserted` for the generation opening and one for the single
-		// material rollup this batch produces — plus slack for a periodic sweep
-		// that recomputes. The defect this bounds would read 500.
-		MaxRollupsPerGroup: 8,
+		// ⛔ IT WAS `Groups: 1` (git-bug `7570090`). Five hundred alerts used to
+		// share ONE generation; a conversation now holds exactly one Case and a Case
+		// belongs to one Alert, so five hundred alerts are five hundred
+		// conversations. The number is not a bigger version of the old one — it is
+		// the opposite claim.
+		Conversations: alerts,
 	})
 
-	// ⛔ THE THING THE PRODUCT IS FOR. Five hundred alerts must not become five
-	// hundred Slack threads, or five hundred messages of any kind.
-	if r.SlackRoots != 1 {
-		t.Errorf("500 alerts opened %d Slack root messages, want 1 — this is the exact "+
-			"failure oto exists to prevent", r.SlackRoots)
-	}
+	// ⛔⛔ THE PRODUCT CLAIM THAT WAS ASSERTED HERE IS NO LONGER TRUE, AND NOTHING
+	// HAS REPLACED IT (git-bug `7570090`). It read:
+	//
+	//     "THE THING THE PRODUCT IS FOR. Five hundred alerts must not become five
+	//      hundred Slack threads, or five hundred messages of any kind."
+	//     if r.SlackRoots != 1 { ... "this is the exact failure oto exists to prevent" }
+	//
+	// The fan-in that made it true was the `alert_groups` generation, and the
+	// ruling deleted the entity: one Case, one thread, ALWAYS. Five hundred alerts
+	// therefore open five hundred threads by construction. Asserting `!= 1` would
+	// now fail on correct behaviour, and quietly relaxing it to `== alerts` would
+	// dress the reversal up as a passing test.
+	//
+	// What IS still assertable is that oto opens no MORE threads than it has
+	// conversations — no duplicate roots, none orphaned — and that is invariant 6
+	// in `assertBurstInvariants`, which compares roots against threads directly.
+	//
+	// ⚠️ WHETHER FIVE HUNDRED THREADS IS ACCEPTABLE IS A PRODUCT QUESTION THIS
+	// TICKET DID NOT ANSWER. It needs a ruling and a budget before this package can
+	// assert on it again. Recorded here rather than filed silently, because this
+	// was the headline claim of the whole load suite.
+	t.Logf("%d alerts opened %d Slack root messages (one per conversation)",
+		alerts, r.SlackRoots)
 	// ⭐ AND IT IS NOT DAMPING THAT BUYS THIS. One batch arriving at one group is
 	// ONE triggering change, so it mints one notification and spends one or two
 	// Slack calls on it — the same small constant it would spend on four alerts.
@@ -122,16 +143,15 @@ func TestBurstChunkedBatchExercisesB17(t *testing.T) {
 
 	assertBurstInvariants(t, e, r, invariantSpec{
 		DistinctAlerts: alerts,
-		Groups:         1,
-		// One per chunk is the CORRECT shape here: each chunk is its own
-		// transaction and its own `Recompute`. Five chunks, one opening, plus
-		// slack.
-		MaxRollupsPerGroup: 12,
+		// One conversation per alert (git-bug `7570090`); chunking does not change
+		// the cardinality, only how many transactions open them.
+		Conversations: alerts,
 	})
 
-	if r.SlackRoots != 1 {
-		t.Errorf("2200 alerts opened %d Slack root messages, want 1", r.SlackRoots)
-	}
+	// ⛔ `r.SlackRoots != 1` WAS ASSERTED HERE AND IS DELETED for the reason given
+	// at length in the 500-alert case above: the fan-in is gone.
+	t.Logf("%d alerts opened %d Slack root messages (one per conversation)",
+		alerts, r.SlackRoots)
 }
 
 // --------------------------------------------------------- sustained burst
@@ -225,21 +245,24 @@ func TestBurstSustainedAcrossSeveralMinutes(t *testing.T) {
 
 	assertBurstInvariants(t, e, r, invariantSpec{
 		DistinctAlerts: total,
-		Groups:         sustainedGroups,
-		// One opening and one material rollup per wave — plus generous slack for
-		// the periodic sweeps that also recompute.
-		MaxRollupsPerGroup: 2*waves + 6,
+		// ⛔ IT WAS `Groups: sustainedGroups` (git-bug `7570090`). The `Group` field
+		// on a `batchSpec` is now only the `alertname` the batch carries; it no
+		// longer decides a conversation, because every alert opens its own.
+		Conversations: total,
 	})
 
-	// ⭐ ONE ROOT PER GROUP AND NOTHING PER ALERT. The shared assertions already
-	// bound the total chatter and require that nothing was broadcast; what is
-	// specific here is that thirty batch arrivals still produced ONE conversation
-	// per incident rather than one per notification — and that this holds with no
-	// damping anywhere in the path (ADR 0042).
-	if r.SlackRoots != sustainedGroups {
-		t.Errorf("%d Slack root messages for %d groups, want one each",
-			r.SlackRoots, sustainedGroups)
-	}
+	// ⛔ `r.SlackRoots != sustainedGroups` WAS ASSERTED HERE AND IS DELETED (git-bug
+	// `7570090`). It said "ONE ROOT PER GROUP AND NOTHING PER ALERT": thirty batch
+	// arrivals produced one conversation per incident rather than one per
+	// notification. The per-INCIDENT half is what the generation provided and what
+	// the ruling removed; the per-NOTIFICATION half — that a second batch about an
+	// alert amends its existing thread instead of opening a new one — is still
+	// true and is still asserted, as `SlackRoots == Threads` in invariant 6.
+	//
+	// ⚠️ This is the same open question the 500-alert case records: what bounds a
+	// per-Case fan-out has no ruling yet.
+	t.Logf("%d Slack root messages across %d waves over %d alertnames",
+		r.SlackRoots, waves, sustainedGroups)
 }
 
 // ------------------------------------------------------------- the shedder
@@ -316,11 +339,10 @@ func TestBurstSheddingSays503NeverA429(t *testing.T) {
 
 	assertBurstInvariants(t, e, r, invariantSpec{
 		DistinctAlerts: total,
-		Groups:         1,
-		// 48 batches into one group. Each is its own `Recompute`, so the bound is
-		// per-batch and not per-alert: that is still O(batches x groups) and 1920
-		// alerts produce at most ~50 rollups rather than 1920.
-		MaxRollupsPerGroup: concurrent + 8,
+		// One conversation per alert (git-bug `7570090`), whatever the batch
+		// concurrency: shedding changes WHEN a batch lands, never how many
+		// conversations its alerts open.
+		Conversations: total,
 	})
 
 	// Whether the gate actually fired is a property of the machine, so it is

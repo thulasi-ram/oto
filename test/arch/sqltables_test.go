@@ -109,9 +109,10 @@ type tableClaim struct {
 
 // drillTableClaims IS the table list in CONTEXT.md §4's `drill` row.
 //
-// Twelve tables across six modules, plus the one `drill` owns. The reads are
-// ordered as `Artifacts` walks them, which is the order of the pipeline itself:
-// accept, identify, group, notify, deliver.
+// Eleven tables across five modules, plus the one `drill` owns. It was twelve
+// across six until git-bug `7570090` dropped `alert_groups`. The reads are ordered
+// as `Artifacts` walks them, which is the order of the pipeline itself: accept,
+// identify, notify, deliver — the `group` step went with the entity.
 var drillTableClaims = []tableClaim{
 	{
 		table: "ingest_batches", owner: "ingestion", access: tableRead,
@@ -147,18 +148,26 @@ var drillTableClaims = []tableClaim{
 		why: "LEFT JOINed onto the case for the rule name, so a drill can tell " +
 			"`no rule matched` from `the source has no Prometheus to look one up in`.",
 	},
+	// ⛔ THE `alert_groups` CLAIM WAS HERE AND IS DELETED (git-bug `7570090`,
+	// migration `00069`). It read: "stage 4 is the group the Alert landed in. Deleted
+	// on disposal by id, `AND synthetic`; the CASCADE from here is what removes
+	// `notifications` and `notification_deliveries`."
+	//
+	// ⭐⭐ THAT LAST CLAUSE IS WHY THE NEXT ENTRY CHANGED ACCESS, and it is the most
+	// load-bearing consequence of dropping the table. Disposal never deleted
+	// `notifications` itself — it relied on
+	// `notifications.group_id REFERENCES alert_groups(id) ON DELETE CASCADE` to do it.
+	// `case_id`, `subject_id` and `conversation_id` carry NO foreign key, and ADR 0024
+	// gives `notifications` no reaper, so with the group gone NOTHING would have
+	// removed a drill's intents. `dispose.go` now deletes them explicitly, by
+	// conversation — which is also why it must delete ALL of a conversation's intents
+	// rather than the manifest's single `notification_id`: that is what the CASCADE
+	// took.
 	{
-		table: "alert_groups", owner: "grouping", access: tableDelete,
-		why: "stage 4 is the group the Alert landed in. Deleted on disposal by id, " +
-			"`AND synthetic`; the CASCADE from here is what removes `notifications` and " +
-			"`notification_deliveries`. Membership is NOT removed by it: since 00051 " +
-			"membership is `alert_cases.group_id`, whose FK is ON DELETE SET NULL, " +
-			"and the episodes go with the alert one step later.",
-	},
-	{
-		table: "notifications", owner: "notification", access: tableRead,
-		why: "stage 5 is the OLDEST intent for the generation — the one the drill " +
-			"caused — with its status and suppression reason. CASCADEd away with the group.",
+		table: "notifications", owner: "notification", access: tableDelete,
+		why: "stage 5 is the intent the drill caused, with its status and suppression " +
+			"reason. Deleted EXPLICITLY on disposal, by conversation: it used to be " +
+			"CASCADEd away by the group's FK, and no FK replaced it.",
 	},
 	{
 		table: "notification_policies", owner: "notification", access: tableRead,
@@ -172,9 +181,9 @@ var drillTableClaims = []tableClaim{
 	},
 	{
 		table: "channel_threads", owner: "channels", access: tableDelete,
-		why: "the thread the group opened, which is most of what `POST /channels/{id}/test` " +
-			"cannot prove. `subject_id` carries no FK to `alert_groups`, so nothing cascades " +
-			"and disposal deletes it by subject, BEFORE the group.",
+		why: "the thread the Case opened, which is most of what `POST /channels/{id}/test` " +
+			"cannot prove. `subject_id` carries no FK, so nothing cascades and disposal " +
+			"deletes it by subject.",
 	},
 	{
 		table: "channels", owner: "channels", access: tableRead,
@@ -354,9 +363,12 @@ type deleteStatement struct {
 // ⛔ IT IS A BELT-AND-BRACES PREDICATE AND IT IS NOT DECORATION. dispose.go argues
 // it at length: the ids already come from the drill's own manifest, so the clause
 // only matters when the manifest is wrong — and the blast radius of a wrong manifest
-// on these two tables is a customer's entire alert history. It was argued in a
+// on this table is a customer's entire alert history. It was argued in a
 // comment on a file nothing in the build system knew was special. Now it is asserted.
-var syntheticGuarded = map[string]bool{"alerts": true, "alert_groups": true}
+// ⛔ `alert_groups` LEFT THIS SET WITH THE TABLE (git-bug `7570090`). It held the
+// DENORMALISED copy of the provenance mark; `alerts.synthetic` is the original and
+// the only one now, which `00039`'s own header always called the source of truth.
+var syntheticGuarded = map[string]bool{"alerts": true}
 
 // TestGatedDeletesStayScopedByID asserts the two invariants dispose.go states about
 // itself in prose, because prose is what the last reviewer had.
@@ -412,10 +424,10 @@ func TestGatedDeletesStayScopedByID(t *testing.T) {
 		if syntheticGuarded[s.table] && !guard.MatchString(s.sql) {
 			t.Errorf(""+
 				"%s: DELETE FROM %s has lost its `AND synthetic` guard\n  %s\n"+
-				"⛔ This is the belt-and-braces predicate on the two riskiest deletes in "+
+				"⛔ This is the belt-and-braces predicate on the riskiest delete in "+
 				"oto. It is not a filter — the ids are already the drill's own — it is what "+
-				"makes a CORRUPTED manifest unable to delete a real customer's alert or "+
-				"group. Restoring it is cheaper than any argument for removing it.",
+				"makes a CORRUPTED manifest unable to delete a real customer's alert. "+
+				"Restoring it is cheaper than any argument for removing it.",
 				s.file, s.table, s.sql)
 		}
 	}
@@ -533,7 +545,7 @@ func TestSchemaScanReadsTheLiveSchema(t *testing.T) {
 	schema := schemaTables(t)
 
 	for _, want := range []string{
-		"alerts", "alert_events", "alert_groups", "notifications", "channel_threads",
+		"alerts", "alert_events", "notifications", "channel_threads",
 		"ingest_batches", "rule_snapshots", "delivery_drills",
 	} {
 		if !schema[want] {

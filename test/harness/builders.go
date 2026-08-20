@@ -192,69 +192,17 @@ func (h *H) SourceOfKind(org Org, cl Cluster, kind, baseURL string) Source {
 	return s
 }
 
-// Group is one seeded AlertGroup generation. One generation owns exactly one
-// Slack thread, which is why the generation is part of the identity.
-type Group struct {
-	// ID is alert_groups.id.
-	ID uuid.UUID
-	// OrgID is the tenant.
-	OrgID uuid.UUID
-	// SourceID is the source the group was routed from.
-	SourceID uuid.UUID
-	// ClusterID is the cluster.
-	ClusterID uuid.UUID
-	// Key is the DURABLE group identity (SPEC §C.4) — stable across
-	// alertmanager.yml route edits, which AM's own groupKey is not.
-	Key alerts.GroupKey
-	// Generation is 1 for a freshly built group.
-	Generation int
-	// Labels are the group labels the key was derived from.
-	Labels map[string]string
-}
-
-// Group seeds an open group for a default alert label set.
-func (h *H) Group(org Org, src Source, cl Cluster) Group {
-	return h.GroupWith(org, src, cl, map[string]string{
-		"alertname": "HarnessAlert",
-		"namespace": "harness",
-		"severity":  "critical",
-	})
-}
-
-// GroupWith seeds an open group for one ALERT'S label set. The group_key is
-// COMPUTED, never invented: `groups_key_ck` accepts only `gk_` plus 26
-// base32hex characters, and a hand-rolled string that happens to match is a
-// group whose identity does not agree with the ingest path's.
+// ⛔ THE `Group` BUILDER WAS HERE AND IS DELETED (git-bug `7570090`, migration
+// `00069`). It seeded one `alert_groups` generation, and `alert_groups` is
+// dropped: A CONVERSATION IS A CASE. There is no generation to open, no
+// `group_key` to compute and no membership to record, so a builder that returned
+// a `Group` would be handing every caller an id that names nothing.
 //
-// ⭐ The argument is the alert's labels, not Alertmanager's groupLabels. Since
-// ADR 0038 the group key is `(org, cluster, alertname, namespace-or-∅)` and the
-// group's own `group_labels` are `SplitLabels` of the same set, so seeding a
-// group means naming an alert — which is what a group has always meant.
-func (h *H) GroupWith(org Org, src Source, cl Cluster, alertLabels map[string]string) Group {
-	h.T.Helper()
-
-	labels, err := alerts.NewLabelSet(alertLabels)
-	if err != nil {
-		h.T.Fatalf("harness: group labels: %v", err)
-	}
-	g := Group{
-		ID:         id.New(),
-		OrgID:      org.ID,
-		SourceID:   src.ID,
-		ClusterID:  cl.ID,
-		Key:        alerts.ComputeGroupKey(org.ID, cl.Key, labels),
-		Generation: 1,
-		Labels:     alerts.SplitLabels(labels).Map(),
-	}
-	now := h.Now()
-	h.Exec(`INSERT INTO alert_groups
-	          (id, org_id, source_id, cluster_id, group_key, generation, title, state,
-	           group_labels, first_seen_at, last_activity_at)
-	        VALUES ($1, $2, $3, $4, $5, $6, $7, 'open', $8::jsonb, $9, $9)`,
-		g.ID, g.OrgID, g.SourceID, g.ClusterID, g.Key.String(), g.Generation,
-		"A group", jsonObject(h.T, g.Labels), now)
-	return g
-}
+// What replaces it is `Case`, below: seed an `Alert`, then a `Case` of it, and
+// the Case IS the conversation. A test that used to key a thread or a
+// notification on `group.ID` keys it on the Case id instead —
+// `(conversation_kind, conversation_id) = ('case', case.ID)` for a notification,
+// `(channel_id, 'case', case.ID)` for a `channel_threads` row.
 
 // Alert is one seeded Alert — the durable identity, not the episode.
 type Alert struct {
@@ -325,24 +273,27 @@ type Case struct {
 	OrgID uuid.UUID
 	// AlertID is the Alert this episode belongs to.
 	AlertID uuid.UUID
-	// GroupID is the group generation, or uuid.Nil when ungrouped.
-	GroupID uuid.UUID
 	// Seq is 1, 2, 3... per alert.
 	Seq int
 }
 
 // Case seeds an open, firing case of a and points the Alert's
 // current_case_id at it, which is the projection the read path uses.
-func (h *H) Case(a Alert, g Group) Case {
+//
+// ⭐ THE CASE IS THE CONVERSATION (git-bug `7570090`). It used to take a `Group`
+// and write `alert_cases.group_id`; 00069 dropped both, so an episode belongs to
+// its Alert and to nothing else. A test that needs a thread or a notification to
+// land somewhere names THIS row: `('case', ac.ID)`.
+func (h *H) Case(a Alert) Case {
 	h.T.Helper()
 
-	o := Case{ID: id.New(), OrgID: a.OrgID, AlertID: a.ID, GroupID: g.ID, Seq: 1}
+	o := Case{ID: id.New(), OrgID: a.OrgID, AlertID: a.ID, Seq: 1}
 	now := h.Now()
 	h.Exec(`INSERT INTO alert_cases
-	          (id, org_id, alert_id, group_id, seq, state, started_at, last_observed_at,
+	          (id, org_id, alert_id, seq, state, started_at, last_observed_at,
 	           source_starts_at, source_updated_at)
-	        VALUES ($1, $2, $3, $4, $5, 'open', $6, $6, $6, $6)`,
-		o.ID, o.OrgID, o.AlertID, nullableUUID(o.GroupID), o.Seq, now)
+	        VALUES ($1, $2, $3, $4, 'open', $5, $5, $5, $5)`,
+		o.ID, o.OrgID, o.AlertID, o.Seq, now)
 	h.Exec(`UPDATE alerts SET current_case_id = $1 WHERE id = $2`, o.ID, a.ID)
 	return o
 }
@@ -401,11 +352,4 @@ func nullable(s string) any {
 		return nil
 	}
 	return s
-}
-
-func nullableUUID(u uuid.UUID) any {
-	if u == uuid.Nil {
-		return nil
-	}
-	return u
 }

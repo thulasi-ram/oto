@@ -29,7 +29,7 @@ import (
 //
 //	SLACK'S RENDERING — whether the card is legible, whether emoji resolve,
 //	  whether mrkdwn is interpreted as intended, whether the colour bar appears,
-//	  what a broadcast's in-channel reference actually shows. None of that is a
+//	  whether a mention renders where oto put it. None of that is a
 //	  property of the request, and no fake can establish it. It is the residual,
 //	  and docs/setup/slack.md is the checklist for the person who can close it.
 //
@@ -270,9 +270,32 @@ func TestOtoNeverThreadsOffAReplyEvenWhenHandedOne(t *testing.T) {
 
 // ---------------------------------------------------------------- ADR 0020
 
-// ADR 0020's mechanism is one parameter, and the whole decision rests on it
-// being set on the right messages and only those.
-func TestBroadcastIsOneParameterOnAThreadReplyAndIsSetNowhereElse(t *testing.T) {
+// ⛔⛔ `TestBroadcastIsOneParameterOnAThreadReplyAndIsSetNowhereElse` WAS HERE AND
+// IS REPLACED BY ITS OWN NEGATIVE (git-bug 7570090).
+//
+// It posted a root and two `ModeBroadcastReply` re-fires and asserted that
+// `reply_broadcast` was set on both replies, absent from the root, and always
+// accompanied by `thread_ts` — because ADR 0020's whole mechanism was one parameter
+// and the decision rested on it being set on the right messages and only those.
+// Slack thread-broadcast is now removed from oto entirely: `BroadcastPolicy.Warrants`
+// returned true for `refired`, which ADR 0040 left with no producer, and for
+// `all_resolved`, which was opt-in and default-off, so the mechanism had never fired
+// in a default deployment.
+//
+// ⭐ THE FAKE STILL PARSES `reply_broadcast`, AND THAT IS THE WHOLE POINT. It models
+// SLACK's API, not oto's behaviour, and Slack still accepts the parameter — so
+// keeping it turns this harness into the standing guard that oto never broadcasts
+// again. A deletion that also deleted the observer would have left nothing to
+// notice a regression.
+
+// TestOtoNeverSetsReplyBroadcastOnAnything is that guard.
+//
+// ⛔ IT IS DELIBERATELY A SWEEP OVER EVERY MODE THE PROVIDER HAS, not a check on the
+// one mode that used to broadcast. A regression would not arrive as "broadcast came
+// back"; it would arrive as a new mode, a new option list, or a copied line in
+// `messageOptions` — so the assertion is over what oto SENDS rather than over what
+// oto MEANT, which is the only form the fake can hold it to.
+func TestOtoNeverSetsReplyBroadcastOnAnything(t *testing.T) {
 	t.Parallel()
 	fake, channel := newSlackConformanceChannel(t)
 	ctx := t.Context()
@@ -284,88 +307,57 @@ func TestBroadcastIsOneParameterOnAThreadReplyAndIsSetNowhereElse(t *testing.T) 
 		t.Fatalf("post the root: %v", err)
 	}
 	if _, err := channel.Deliver(ctx, chdomain.DeliverRequest{
-		Message: card(t, "broadcast_refired"),
-		Mode:    chdomain.ModeBroadcastReply,
+		Message: card(t, "thread_reply_acked"),
+		Mode:    chdomain.ModeThreadReply,
 		ReplyTo: &root.Ref,
 	}); err != nil {
-		t.Fatalf("post the broadcasting re-fire: %v", err)
+		t.Fatalf("post the thread reply: %v", err)
 	}
-	// ⛔ THE SECOND BROADCAST WAS `storm_notice` AND ADR 0042 DELETED IT. The claim
-	// under test is about the PARAMETER, not about which card carries it: a
-	// broadcast must set `reply_broadcast` AND `thread_ts` on every message that
-	// uses the mode, and one card sent twice proves that as well as two cards did.
-	// ⛔ AND THE CARD CHANGED AGAIN: `broadcast_unacked_reminder` went with the
-	// reminder (git-bug bd0fb1d), so `refired` — the only broadcast §H.6 still
-	// admits — carries the claim now. The claim itself is unchanged, which is the
-	// point of it being about the PARAMETER.
-	if _, err := channel.Deliver(ctx, chdomain.DeliverRequest{
-		Message: card(t, "broadcast_refired"),
-		Mode:    chdomain.ModeBroadcastReply,
-		ReplyTo: &root.Ref,
-	}); err != nil {
-		t.Fatalf("post the second broadcasting reminder: %v", err)
-	}
-
-	posts := fake.CallsTo("chat.postMessage")
-	if len(posts) != 3 {
-		t.Fatalf("got %d posts, want 3", len(posts))
-	}
-	if posts[0].ReplyBroadcast {
-		t.Error("the root broadcast; `reply_broadcast` is meaningless without thread_ts")
-	}
-	for i, c := range posts[1:] {
-		if !c.ReplyBroadcast {
-			t.Errorf("broadcasting reply %d did not set reply_broadcast", i)
-		}
-		// ⛔ A BROADCAST IS STILL A THREAD REPLY. Slack documents `reply_broadcast`
-		// as "used in conjunction with thread_ts"; without one it is silently
-		// nothing, and ADR 0020's entire model — thread keeps the detail, channel
-		// gets a pointer — collapses into a second root message.
-		if c.ThreadTS != root.Ref.MessageID {
-			t.Errorf("broadcasting reply %d has thread_ts=%q, want the root %q",
-				i, c.ThreadTS, root.Ref.MessageID)
+	for _, name := range []string{"root_update_acked", "root_silenced", "root_resolved"} {
+		if _, err := channel.Amend(ctx, root.Ref, card(t, name)); err != nil {
+			t.Fatalf("amend to %s: %v", name, err)
 		}
 	}
 
-	// ⛔⛔ ADR 0020 RULE 4, ASSERTED ON THE BYTES SLACK RECEIVED. The in-channel
-	// reference carries no buttons — that half of Slack's documented claim is the
-	// half nobody disputes — so the top-level `text` is very nearly all a channel
-	// reader gets, and it has to stand on its own.
-	//
-	// ⛔ THE MENTION ASSERTIONS WERE HERE AND ARE DELETED (git-bug bd0fb1d). They
-	// pinned that the audience appeared in the top-level `text` and NOT inside an
-	// attachment — the position being the whole point, because Slack strips
-	// attachments from the in-channel reference. The owner withdrew the unacked
-	// reminder and ruled the mention goes with it, so nothing emits an audience and
-	// there is no position left to defend.
-	//
-	// ⭐ WHAT REPLACES THEM IS THE STRONGER HALF, AND IT IS BELOW UNCHANGED: the
-	// broadcast text must be SELF-SUFFICIENT. That was always the point of rule 4 —
-	// a reader in the channel, with no buttons and no attachment, still has to be
-	// able to tell what happened. It never depended on anybody being mentioned.
-	//
-	// ⚠️ THE WORDS MOVED WITH THE CARD, AND THE RULE DID NOT. This probe used to want
-	// "unacknowledged", which was the reminder's own word. `refired` is
-	// self-sufficient on different evidence — HOW BAD (`Severity critical`), WHAT and
-	// WHERE (in the lead), and WHEN it came back (`firing again since`). Checking for
-	// the old word against a new card would have been asserting the sentence rather
-	// than the property.
-	broadcast := posts[1]
-	for _, want := range []string{"Severity critical", "firing again since"} {
-		if !strings.Contains(broadcast.Text, want) {
-			t.Errorf("the broadcast text is not self-sufficient — no %q: %q", want, broadcast.Text)
+	calls := append(fake.CallsTo("chat.postMessage"), fake.CallsTo("chat.update")...)
+	if len(calls) != 5 {
+		t.Fatalf("got %d write calls, want 5 (a root, a reply, three amends)", len(calls))
+	}
+	for i, c := range calls {
+		if c.ReplyBroadcast {
+			t.Errorf("call %d (%s) set reply_broadcast; oto has no broadcast mechanism and "+
+				"must never ask Slack to surface a message in a channel (git-bug 7570090)",
+				i, c.Method)
 		}
+	}
+
+	// ⛔ AND THE THREAD REPLY IS STILL A THREAD REPLY. Deleting the broadcast arm
+	// from `Channel.Deliver` touched the same switch that sets `thread_ts`, so the
+	// parameter that MUST still be there is asserted in the same breath as the one
+	// that must not.
+	replies := fake.CallsTo("chat.postMessage")
+	if len(replies) != 2 {
+		t.Fatalf("got %d posts, want 2", len(replies))
+	}
+	if replies[1].ThreadTS != root.Ref.MessageID {
+		t.Errorf("the thread reply has thread_ts=%q, want the root %q",
+			replies[1].ThreadTS, root.Ref.MessageID)
 	}
 }
 
-// `chat.update` is documented as accepting `reply_broadcast` — ADR 0020 calls the
+// `chat.update` is documented as accepting `reply_broadcast` — ADR 0020 called the
 // post-quietly-then-broadcast-later path "the sanctioned mechanism" — with one
 // hard restriction: `no_dual_broadcast_content_update`, "can't broadcast an old
 // reply and update the content at the same time".
 //
-// oto does not use that path yet. What must hold TODAY is that no ordinary amend
-// ever sets the parameter, because an amend always carries content and would earn
-// the error on every single edit.
+// ⛔ OTO NEVER BUILT THAT PATH AND NOW NEVER WILL (git-bug 7570090). This test is
+// KEPT, and it is stronger than when it was written: it used to hold that no
+// ORDINARY amend sets the parameter, because an amend always carries content and
+// would earn the error on every single edit. It now holds that NO amend does,
+// because there is no mechanism that could. A negative assertion whose subject has
+// been deleted is the cheapest regression guard there is — see
+// `TestOtoNeverSetsReplyBroadcastOnAnything` above for the same argument at
+// corpus scope.
 func TestAnAmendNeverCarriesReplyBroadcast(t *testing.T) {
 	t.Parallel()
 	fake, channel := newSlackConformanceChannel(t)

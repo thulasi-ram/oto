@@ -28,11 +28,17 @@ type TxRunner interface {
 // why this module can re-evaluate at send time instead of shipping a snapshot of
 // a state that has since moved on.
 type Intent struct {
-	GroupID      uuid.UUID
+	// CaseID is THE CONVERSATION, and it is required.
+	//
+	// ⛔ IT WAS `GroupID uuid.UUID` AND `CaseID *uuid.UUID` — a required group and an
+	// optional case (git-bug `7570090`). The owner ruled one Case per conversation, so
+	// the two have swapped places: the Case is what a conversation IS, and every
+	// notification lands in exactly one. `AlertID` stays optional because it is the
+	// FOCUS, not the conversation — which alert inside the episode a fact is about.
+	CaseID       uuid.UUID
 	Reason       domain.Reason
 	StateVersion int
 	AlertID      *uuid.UUID
-	CaseID       *uuid.UUID
 	// Actor labels the human or system that caused this, for the rendered card.
 	// ACTOR, NEVER SUBJECT.
 	Actor string
@@ -58,7 +64,11 @@ type destination struct {
 // two channels disagreed about whether a resolve warrants a broadcast would be very
 // hard to explain to the person reading the channel.
 type OrgDefaults struct {
-	Broadcast domain.BroadcastPolicy
+	// ⛔ `Broadcast domain.BroadcastPolicy` WAS HERE AND IS DELETED (git-bug
+	// `7570090`). It carried the org's opt-in for surfacing `all_resolved` in the
+	// channel, and the comment above still explains why it was an ORG default rather
+	// than a per-channel one — that argument stands for `Verbosity`, which is now the
+	// only member.
 	// Verbosity is the fallback for a Channel with no verbosity of its own. Empty
 	// means the schema default.
 	Verbosity domain.Verbosity
@@ -111,7 +121,6 @@ func planInput(
 		Capabilities:  c.Capabilities,
 		ThreadExists:  rootExists,
 		Flapping:      flapping,
-		Broadcast:     def.Broadcast,
 	}
 }
 
@@ -238,9 +247,9 @@ func (s *NotificationService) Evaluate(
 		return Result{}, errs.Validation("alert_scoped_reason_needs_alert",
 			"this reason is about one alert and must name it",
 			errs.Violation{Field: "alert_id", Code: "required", Message: string(in.Reason)})
-	case in.GroupID == uuid.Nil:
-		return Result{}, errs.Validation("group_required", "a notification is about a group",
-			errs.Violation{Field: "group_id", Code: "required", Message: "a group id is required"})
+	case in.CaseID == uuid.Nil:
+		return Result{}, errs.Validation("case_required", "a notification is about a Case",
+			errs.Violation{Field: "case_id", Code: "required", Message: "a case id is required"})
 	}
 
 	var out Result
@@ -258,9 +267,8 @@ func (s *NotificationService) evaluate(
 	now := s.clk.Now().UTC()
 
 	snap, err := s.snapshots.Snapshot(ctx, scope, domain.SnapshotQuery{
-		GroupID: in.GroupID,
-		AlertID: in.AlertID,
 		CaseID:  in.CaseID,
+		AlertID: in.AlertID,
 	})
 	if err != nil {
 		return Result{}, err
@@ -272,9 +280,6 @@ func (s *NotificationService) evaluate(
 	// "one alert resolved" can become "all alerts resolved". Everything
 	// downstream — the mode plan, the verbosity gate, the broadcast decision,
 	// the footer phrase and the idempotency key — reads the reconciled value.
-	in.Reason = domain.ReconcileWithWire(
-		in.Reason, snap.Group.NotificationReason, snap.Group.AllResolved())
-
 	n := s.mint(scope, in, snap, now)
 
 	// ⭐ THE MATCHER SEES THE GROUP'S LABELS PLUS THE FOCUSED ALERT'S OWN. The second
@@ -403,15 +408,14 @@ func (s *NotificationService) mint(
 		OrgID:       scope.OrgID(),
 		SubjectKind: kind,
 		SubjectID:   subjectID,
-		GroupID:     in.GroupID,
-		// The delivery target, stored rather than re-derived at fan-out. Every
-		// intent that reaches `mint` names a group — `Notify` rejects a nil GroupID
-		// at :244 — so this arm is total here; the digest path builds its own row in
+		// The delivery target, stored rather than re-derived at fan-out. Every intent
+		// that reaches `mint` names a Case — `Notify` rejects a nil `CaseID` at the
+		// door — so this arm is total here; the digest path builds its own row in
 		// `digest.go` and names its own conversation there.
-		ConversationKind: domain.ConversationAlertGroup,
-		ConversationID:   in.GroupID,
+		ConversationKind: domain.ConversationCase,
+		ConversationID:   in.CaseID,
 		AlertID:          in.AlertID,
-		CaseID:           in.CaseID,
+		CaseID:           &in.CaseID,
 		Reason:           in.Reason,
 		StateVersion:     stateVersion,
 		Status:           domain.StatusPending,
@@ -443,17 +447,16 @@ func (s *NotificationService) mint(
 // than the truth, but insertable and honest about it, and far better than refusing
 // to notify at all because the id was optional at the door.
 func subjectOf(in Intent) (domain.SubjectKind, uuid.UUID) {
-	switch in.Reason.Subject() {
-	case domain.SubjectAlert:
-		if in.AlertID != nil {
-			return domain.SubjectAlert, *in.AlertID
-		}
-	case domain.SubjectCase:
-		if in.CaseID != nil {
-			return domain.SubjectCase, *in.CaseID
-		}
+	// ⛔ THE `SubjectCase` ARM AND THE FALLBACK HAVE MERGED, and that is the shape of
+	// the whole ticket in six lines. The arm used to be conditional because `CaseID`
+	// was optional and the fallback was the GROUP — "coarser than the truth, but
+	// insertable and honest about it", as the comment above still says. `CaseID` is
+	// now required, so the coarse answer and the honest one are the same answer and
+	// there is nothing left to fall back TO.
+	if in.Reason.Subject() == domain.SubjectAlert && in.AlertID != nil {
+		return domain.SubjectAlert, *in.AlertID
 	}
-	return domain.SubjectAlertGroup, in.GroupID
+	return domain.SubjectCase, in.CaseID
 }
 
 // suppressors evaluates the suppressors that do not depend on a destination.
@@ -504,7 +507,7 @@ func (s *NotificationService) suppressors(
 		// are allocating a new SubjectKind in reason.go, this line needs no change —
 		// that is the point of keying it on `in.GroupID`.
 		count, err := s.notifications.CountRecent(ctx, scope,
-			in.GroupID, snap.TakenAt.Add(-t.Window))
+			in.CaseID, snap.TakenAt.Add(-t.Window))
 		if err != nil {
 			return sup, err
 		}
@@ -522,10 +525,7 @@ func (s *NotificationService) suppressors(
 // tenant whose settings row is unreadable gets the defaults and a warning in the
 // log, not silence in their Slack channel.
 func (s *NotificationService) orgDefaults(ctx context.Context, scope db.TenantScope) OrgDefaults {
-	def := OrgDefaults{
-		Broadcast: domain.DefaultBroadcastPolicy(),
-		Verbosity: domain.VerbosityStatusChanges,
-	}
+	def := OrgDefaults{Verbosity: domain.VerbosityStatusChanges}
 	if s.settings == nil {
 		return def
 	}
@@ -538,7 +538,6 @@ func (s *NotificationService) orgDefaults(ctx context.Context, scope db.TenantSc
 	if got.Verbosity.Valid() {
 		def.Verbosity = got.Verbosity
 	}
-	def.Broadcast = got.Broadcast
 	return def
 }
 
@@ -555,7 +554,7 @@ func (s *NotificationService) orgDefaults(ctx context.Context, scope db.TenantSc
 // here would make `plan` the one method a reader has to check before trusting that a
 // tenant boundary is in hand.
 func (s *NotificationService) plan(
-	ctx context.Context, _ db.TenantScope, reason domain.Reason,
+	_ context.Context, _ db.TenantScope, reason domain.Reason,
 	snap domain.Snapshot, match Match, def OrgDefaults,
 ) ([]destination, domain.Suppressors) {
 	var sup domain.Suppressors
@@ -581,15 +580,12 @@ func (s *NotificationService) plan(
 
 		p := domain.PlanFor(in)
 
-		if p.BroadcastDamped {
-			// ⭐ A DAMPED BROADCAST IS RECORDED, NEVER SILENT. The one remaining reason
-			// for it is `no_capability`: this destination cannot surface a reply
-			// in-channel, so the fact lands on the thread instead. That is the world's
-			// constraint rather than a decision of oto's, and it is still written down,
-			// because §B.6 requires every quiet to be accounted for.
-			s.log.DebugContext(ctx, "notification: broadcast damped",
-				"reason", string(reason), "channel_id", c.ID, "damped_by", p.BroadcastDampReason)
-		}
+		// ⛔ THE DAMPED-BROADCAST RECORD WAS HERE AND IS DELETED (git-bug `7570090`).
+		// It wrote a suppression row when a destination could not surface a reply
+		// in-channel, on the principle that "§B.6 requires every quiet to be accounted
+		// for" — a principle that still governs everything else in this function. There
+		// is no broadcast to damp: `BroadcastPolicy` is deleted and no mode surfaces a
+		// reply in the channel, so the quiet it accounted for cannot occur.
 
 		if p.ReplyDropped {
 			// ⛔ `storm` AND `flapping` USED TO BE ARMS HERE AND BOTH ARE GONE.

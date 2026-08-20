@@ -11,11 +11,8 @@
  * at the next `seq`, unacknowledged. `#seq` on the row is the whole of that
  * story now.
  *
- * ⛔ A CASE IS NOT A GROUP AND NEVER SPANS TWO ALERTS. Alertmanager's
- * notification grouping — one batch, one chat thread — is an AlertGroup, lives
- * at `/groups`, and is plumbing. This screen carries `group_id` as a filter so a
- * group can hand its cases over, and that is the only relationship between them.
- * It is not a correlation and it is not an incident: oto records signals.
+ * ⛔ A CASE NEVER SPANS TWO ALERTS. It is one firing episode of ONE alert, and
+ * it is not a correlation and not an incident: oto records signals.
  *
  * ⭐ THE DEFAULT VIEW IS THE QUEUE, AND IT IS SPELLED `state=open`. The screen
  * opens on episodes that are still running, because "what is firing that I need
@@ -71,7 +68,7 @@ import { Chip } from "~/components/ui/surfaces";
 import { ToggleGroup, ToggleGroupItem } from "~/components/ui/ToggleGroup";
 import { ErrorState, PageEmptyState, TableSkeleton } from "~/components/ui/states";
 import { cn } from "~/lib/cn";
-import { count as fmtCount, idempotencyKey, shortId } from "~/lib/format";
+import { count as fmtCount, idempotencyKey } from "~/lib/format";
 import { createKeysetFeed, keepPrevious, type KeysetFeed } from "~/lib/keysetFeed";
 
 const PAGE_SIZE = 100;
@@ -168,14 +165,13 @@ export default function CasesRoute() {
 
   /**
    * The filters this bar has no control for, kept because a URL is how one
-   * screen hands work to another: a group links here with `group_id`, a drill
-   * links here with `synthetic=true`, and dropping them on arrival would make
-   * the link a lie. Each is shown, and each can be taken off.
+   * screen hands work to another: a drill links here with `synthetic=true`, and
+   * dropping it on arrival would make the link a lie. Each is shown, and each
+   * can be taken off.
    */
   const narrowings = createMemo<readonly Narrowing[]>(() => {
     const out: Narrowing[] = [];
     const carry: readonly (readonly [string, string])[] = [
-      ["group_id", "group"],
       ["cluster", "cluster"],
       ["namespace", "namespace"],
       ["alertname", "alert"],
@@ -185,7 +181,7 @@ export default function CasesRoute() {
     for (const [param, label] of carry) {
       const value = str(param);
       if (value !== "") {
-        out.push({ param, label, value: param === "group_id" ? shortId(value) : value });
+        out.push({ param, label, value });
       }
     }
     return out;
@@ -241,7 +237,7 @@ export default function CasesRoute() {
     if (ack() !== null) q["ack"] = [ack()];
     if (severities().length > 0) q["severity"] = [...severities()];
 
-    for (const key of ["cluster", "namespace", "alertname", "group_id"] as const) {
+    for (const key of ["cluster", "namespace", "alertname"] as const) {
       const values = csv(key);
       if (values.length > 0) q[key] = [...values];
     }

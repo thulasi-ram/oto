@@ -130,17 +130,29 @@ func (EnrichRunArgs) InsertOpts() river.InsertOpts {
 // an error (SPEC §L.9).
 type NotifyEvaluateArgs struct {
 	Payload
-	GroupID uuid.UUID `json:"group_id"`
+	// ⛔ IT WAS `GroupID uuid.UUID` (git-bug `7570090`). A conversation holds exactly
+	// one Case, so the Case IS what an evaluation is about and what its tenancy is
+	// resolved through.
+	//
+	// ⚠️ THIS IS A WIRE FIELD ON A QUEUED JOB, so a job enqueued by a release-N binary
+	// and drained by a release-N+1 one would arrive with `group_id` set and `case_id`
+	// absent, and evaluate against the zero UUID. oto is pre-release with zero tags
+	// and the owner has authorised a database reset, so there is no such queue to
+	// drain — recorded because that is the only reason this is safe as a rename
+	// rather than a two-release migration.
+	CaseID uuid.UUID `json:"case_id"`
 	// Reason is the §H.6 Reason enum value that triggered this evaluation.
 	Reason string `json:"reason"`
-	// StateVersion is the alert_groups.state_version this evaluation is about.
+	// StateVersion is the state_version this evaluation is about.
 	StateVersion int `json:"state_version"`
 	// AlertID is set when the fact is about one Alert. MANDATORY for the
 	// alert-scoped reasons (acked, unacked, refired, rule_changed) — see
 	// notifications_focus_ck.
 	AlertID *uuid.UUID `json:"alert_id,omitempty"`
-	// CaseID narrows to one episode when the fact is about one.
-	CaseID *uuid.UUID `json:"case_id,omitempty"`
+	// ⛔ AND THE OPTIONAL `CaseID *uuid.UUID` THAT WAS HERE IS GONE, MERGED INTO THE
+	// REQUIRED ONE ABOVE. It "narrowed to one episode when the fact is about one" —
+	// a narrowing of the group. The Case is the subject now, so the narrowing and the
+	// subject are the same field. `AlertID` stays optional: it is the FOCUS.
 	// Actor labels the human or system that caused this, for the rendered card.
 	Actor string `json:"actor,omitempty"`
 }

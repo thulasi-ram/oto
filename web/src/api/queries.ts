@@ -79,8 +79,22 @@ export const REFERENCE_STALE_MS = 5 * 60_000;
  */
 export const CAPABILITY_STALE_MS = 30 * 60_000;
 
-/** The recent alerts a policy dry run is offered to run against. */
-export const RECENT_ALERTS: AlertListQuery = { limit: 20, sort: "-last_seen_at" };
+/**
+ * The recent alerts a policy dry run is offered to run against.
+ *
+ * ⭐ `include: ["current_case"]` IS LOAD-BEARING, NOT A CONVENIENCE. The preview
+ * endpoint takes a `case_id` and nothing else (git-bug 7570090): a Case IS the
+ * conversation, so "who would this reach?" is a question about one firing
+ * episode. The picker still shows ALERTS, because a case has no name of its own
+ * and `KubePodCrashLooping · prod-eu` is what an operator recognises — but what
+ * it sends is `current_case.id`, and without this `include` that id is absent
+ * and every row is unpickable.
+ */
+export const RECENT_ALERTS: AlertListQuery = {
+  limit: 20,
+  sort: "-last_seen_at",
+  include: ["current_case"],
+};
 
 /**
  * How long the dry-run picker stays quiet, however loud the stream is.
@@ -307,12 +321,6 @@ export const FRESHNESS: Readonly<Record<string, Freshness>> = {
   "cases.list": { by: "live" },
   "cases.detail": { by: "live" },
   "cases.timeline": { by: "live" },
-
-  "groups.all": { by: "live" },
-  "groups.list": { by: "live" },
-  "groups.detail": { by: "live" },
-  "groups.alerts": { by: "live" },
-  "groups.timeline": { by: "live" },
 
   // Health arrives as `source.health`; the rejection feed and the failed-batch
   // list hang under the same source prefix and ride the same frame.

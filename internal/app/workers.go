@@ -94,7 +94,6 @@ func (c *Container) handlers() jobs.Handlers {
 		// every tenant rather than a map. See effectiveRetention for why that one
 		// cannot take this shape.
 		CaseReap:         c.reapCases,
-		GroupClose:       c.closeGroups,
 		PartitionsManage: c.managePartitions,
 		RetentionPrune:   c.pruneRetention,
 		CacheExpire:      c.expireCache,
@@ -290,31 +289,6 @@ func (c *Container) reapOneTenant(ctx context.Context, scope db.TenantScope) err
 			slog.Int("expired", snoozes.Expired))
 	}
 	return nil
-}
-
-// closeGroups is `group.close` (§G.3): close generations whose members have all
-// ended.
-//
-// ⚠️ IT DOES NOT FREEZE THEIR THREADS, though this comment said so until git-bug
-// e5c060b. Nothing freezes anything — `Freeze` never had a production caller and
-// migration 00066 deleted the state. What actually stops a re-fire joining the old
-// card is that the next observation opens generation N+1, and a new generation is a
-// NEW thread (`channel_threads.subject_id` is the generation row).
-func (c *Container) closeGroups(ctx context.Context, job *jobs.Job[jobs.GroupCloseArgs]) error {
-	return c.perTenantSweep(ctx, jobs.KindGroupClose, job.Args.TenantFanOut,
-		func(f jobs.TenantFanOut) db.JobArgs { return jobs.GroupCloseArgs{TenantFanOut: f} },
-		func(ctx context.Context, scope db.TenantScope) error {
-			res, err := c.Grouping.CloseIdle(ctx, scope, sweepLimit)
-			if err != nil {
-				return err
-			}
-			if res.Closed > 0 {
-				c.Logger.InfoContext(ctx, "group.close",
-					slog.String("org_id", scope.OrgID().String()),
-					slog.Int("closed", res.Closed), slog.Int("held", res.Held))
-			}
-			return nil
-		})
 }
 
 // ⛔ THERE IS NO `scoreFlaps` HANDLER ANY MORE, BECAUSE THERE IS NO `flap.score`

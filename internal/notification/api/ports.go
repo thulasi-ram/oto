@@ -128,10 +128,20 @@ type RendererSource interface {
 // It is OPTIONAL. Without it, `alert_id` and `case_id` are refused with a
 // field violation telling the caller to supply `group_id`, which is honest — far
 // better than previewing against the wrong subject.
-type SubjectResolver interface {
-	GroupIDForAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID) (uuid.UUID, error)
-	GroupIDForCase(ctx context.Context, s db.TenantScope, caseID uuid.UUID) (uuid.UUID, error)
-}
+// ⛔ ITS TWO METHODS WERE `GroupIDForAlert` AND `GroupIDForCase` AND BOTH ARE
+// DELETED (git-bug `7570090`). They resolved an alert or a case to the
+// `alert_groups` generation whose thread a preview would land in, so that a preview
+// asked about an alert did not render against the wrong conversation. With a Case as
+// the conversation the question answers itself and needs no port.
+//
+// ⚠️ THE PORT IS KEPT AS AN EMPTY INTERFACE ONLY IF SOMETHING STILL NEEDS THE SEAM —
+// otherwise delete it at the call site too. A port with no methods is the dead-config
+// shape this project has closed five tickets about.
+// ⛔ AND THE EMPTY-INTERFACE STUB IS GONE TOO. It was left as `interface{}` "only if
+// something still needs the seam", and nothing did — a port with no methods is the
+// dead-config shape this project has closed five tickets about. The tenancy check it
+// silently performed is restored at the call site in `preview.go`, where it is
+// visible.
 
 // Requeuer re-enqueues the dispatch job for a manually retried delivery.
 //

@@ -75,8 +75,19 @@ var threadPointerLost = map[string]bool{
 // message says nothing about WHY, so the honest read is "the destination refused
 // this shape". It is permanent — a refusal does not become an acceptance on
 // attempt twelve — and it is deliberately not `conversationDead`, because the
-// conversation is fine and the ordinary non-broadcasting reply that ADR 0020's
-// `CapBroadcast` degradation falls back to may well succeed in it.
+// conversation is fine and an ordinary thread reply may well succeed in it.
+//
+// ⚠️ OTO CAN NO LONGER PROVOKE THIS CODE, AND THE ENTRY STAYS ANYWAY. The
+// justification used to cite "the ordinary non-broadcasting reply that ADR 0020's
+// `CapBroadcast` degradation falls back to"; broadcast is deleted (git-bug
+// 7570090) and there is no degradation path left to fall back FROM. But this map
+// classifies strings SLACK SENDS TO OTO, not mechanisms oto invokes, and the two
+// are not the same list. Keeping a defensive classification of an upstream code
+// costs one map entry; deleting it means an unexpected code falls through
+// `classify`'s `default:` and retries twelve times against a destination that has
+// already said no — which is the exact defect this whole bucket was created to
+// fix. Entries leave this file when SLACK retires the code, never when oto stops
+// being able to earn it.
 var channelPolicyBlocked = map[string]bool{
 	"restricted_action_non_threadable_channel": true,
 	"restricted_action_thread_only_channel":    true,
@@ -134,12 +145,20 @@ var authFailed = map[string]bool{
 //	no_dual_broadcast_content_update   "Can't broadcast an old reply and update
 //	                                    the content at the same time."
 //
-// The last one is not hypothetical. ADR 0020 names "post quietly, broadcast on a
-// later evaluation with chat.update" as the SANCTIONED mechanism for a
-// transition whose importance is not knowable at post time, and it is exactly
-// the call that earns this error if the content moves in the same request. The
-// path is not built yet; the classification is here before it is, because the
-// alternative is discovering it as a retry storm.
+// ⛔ THE LAST ONE'S JUSTIFICATION IS NOW HISTORY AND THE ENTRY IS NOT. It used to
+// read: ADR 0020 names "post quietly, broadcast on a later evaluation with
+// chat.update" as the SANCTIONED mechanism for a transition whose importance is
+// not knowable at post time, and that is exactly the call that earns this error if
+// the content moves in the same request. That path was never built and now never
+// will be — broadcast is deleted (git-bug 7570090) — so oto cannot earn the code
+// from its own behaviour.
+//
+// The classification stays for the reason given on `channelPolicyBlocked`: this is
+// a map over what SLACK SAYS, and `chat.update` still documents `reply_broadcast`.
+// An unclassified code retries twelve times, and "oto cannot currently provoke it"
+// is a statement about today's call sites, not about what a workspace, a proxy or
+// a future caller can put on the wire. Removing it would trade one map entry for a
+// retry storm nobody would recognise.
 var renderInvalid = map[string]bool{
 	"invalid_blocks":                    true,
 	"invalid_blocks_format":             true,

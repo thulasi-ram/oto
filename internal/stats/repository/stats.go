@@ -8,9 +8,17 @@ package repository
 // access path for every read here, which is what keeps Postgres-only viable.
 //
 // The overview counts read the CURRENT-STATE PROJECTIONS on `alerts`,
-// `alert_groups`, `notification_deliveries`, `source_health` and `channels` —
-// each an indexed column on a bounded table — and never the append-only event
-// stream.
+// `notification_deliveries`, `source_health` and `channels` — each an indexed
+// column on a bounded table — and never the append-only event stream. It also
+// touches `alert_cases`, twice and only ever by primary key: once for the ack
+// axis, which lives on the firing episode, and once as the middle hop of the
+// drill exclusion. Neither is a count over that table.
+//
+// ⛔ `alert_groups` WAS THE FIFTH PROJECTION IN THAT LIST AND IS DELETED (git-bug
+// `7570090`, migration `00069`). It supplied the group half of the roll-up and the
+// `synthetic` flag the delivery count filtered on; the first is gone from the
+// contract and the second moved to `alerts.synthetic`, which was always the source
+// of truth. See `overviewSQL` below for the whole argument.
 
 import (
 	"context"
@@ -177,23 +185,72 @@ func (r *StatsRepository) AlertQuality(
 // `resolved` and `expired` are counted into separate columns and are never
 // summed, because conflating them is precisely the lie oto exists to prevent.
 //
-// ⛔⛔ THE FIRST THREE CTEs EXCLUDE DELIVERY DRILLS, and each one had to be
-// changed separately because each counts a different table:
+// ⛔⛔ THE FIRST TWO CTEs EXCLUDE DELIVERY DRILLS, and both now read the SAME
+// column, because there is only one honest one:
 //
 //   - `a` reads `alerts.synthetic` directly.
-//   - `g` reads `alert_groups.synthetic`, which is denormalised at
-//     generation-open time for exactly this predicate.
-//   - `d` has no column of its own, so it walks the two FKs it already has —
-//     delivery -> notification -> group — and reads the group's flag. Both hops
-//     are primary-key lookups on a set already bounded by the time window, which
-//     is a far better bargain than a fourth denormalised boolean that a future
-//     writer could forget to set.
+//   - `d` has no column of its own, so it walks the FKs it already has —
+//     delivery -> notification -> case -> alert — and reads the ALERT's flag.
+//     Every hop is a primary-key lookup on a set already bounded by the time
+//     window, which is a far better bargain than a denormalised boolean that a
+//     future writer could forget to set.
 //
 // A drill that showed up here would tell an operator their estate had one more
-// firing alert, one more open group and one more sent delivery than it does, on
-// the dashboard they check first. The other two CTEs need no predicate:
-// `source_health` and `channels` count configuration, and a drill creates
-// neither.
+// firing alert and one more sent delivery than it does, on the dashboard they
+// check first. The other two CTEs need no predicate: `source_health` and
+// `channels` count configuration, and a drill creates neither.
+//
+// ⛔ THERE WAS A THIRD, `g`, AND IT IS DELETED WITH `alert_groups` (git-bug
+// `7570090`, migration `00069`). It counted open and closed generations off
+// `alert_groups.state` and excluded drills with `NOT alert_groups.synthetic`.
+// A Case is the conversation now; there is no container to count and no
+// denormalised copy of the flag to read.
+//
+// ⛔ AND THE COPY `d` USED TO READ HAD ALREADY OUTLIVED ITS ONLY JUSTIFICATION.
+// 00039 added `alert_groups.synthetic` — in its own words — so the dashboard could
+// exclude drills "with an indexed predicate instead of a nested loop through
+// `alert_group_members`". `00051_membership_is_derived_not_recorded.sql` DROPPED
+// that table and made membership a column on the Case, so the nested loop the
+// denormalisation was bought to avoid stopped existing one release before this
+// ticket touched it. What remained was a second boolean with a write-path
+// obligation and no performance to show for it. `alerts.synthetic` is the source
+// of truth (00039:73), and its comment is unambiguous about what happens if an
+// aggregate over `notification_deliveries` skips it: "it is wrong".
+//
+// ⭐⭐ THE NEW PATH GOES THROUGH THE CASE, NOT STRAIGHT TO THE ALERT, AND THAT IS
+// FORCED RATHER THAN PREFERRED. `notifications` carries both `alert_id` and
+// `case_id`, and the two are NOT equally present:
+//
+//   - `alert_id` is the NARROWER fact and is OPTIONAL. `notifications_focus_ck`
+//     (00011:233) demands it for four Reasons only — acked, unacked, refired,
+//     rule_changed — and `notification/service.NotifyInput` says so itself:
+//     "`AlertID` stays optional because it is the narrower fact".
+//   - `case_id` is written for EVERY non-digest intent. `Notify` refuses a nil
+//     `CaseID` at the door, and 00069 makes the Case the conversation, so a
+//     notification that is about anything at all is about one firing episode.
+//
+// Joining `alert_id` would therefore leave every drill delivery whose notification
+// named no alert UNEXCLUDED — a `fired` drill notification is exactly such a row —
+// and it would do it silently, inflating `sent` with oto's own plumbing. The
+// second hop cannot fail in the other direction either: `alert_cases.alert_id` is
+// `NOT NULL REFERENCES alerts(id)` (00007:122), so a Case always resolves to its
+// Alert and the two-hop path is total wherever the one-hop path is.
+//
+// ⚠️ BOTH HOPS ARE LEFT JOINS AND THE PREDICATE IS `COALESCE(…, false)`, FOR ONE
+// ROW SHAPE: A DIGEST. A digest names no alert and no case — its subject is a
+// WINDOW OVER A NAMESPACE, the pair `(policy_id, digest_window_start)` (00058) —
+// so the chain reaches no `alerts` row and `al.synthetic` is NULL. A digest's
+// deliveries MUST BE COUNTED: it is a real message to a real operator, and it can
+// never be a drill artefact because the digest reader excludes synthetics from its
+// CONTENTS (00058, `notification/repository/digest.go`). Two ways to get that
+// wrong, both silent:
+//
+//   - an INNER join drops every digest delivery from the dashboard;
+//   - a bare `NOT al.synthetic` drops them too, because NULL is not false and a
+//     predicate that evaluates to NULL discards the row.
+//
+// `COALESCE(al.synthetic, false)` is what states "unreachable means not synthetic"
+// out loud rather than leaving the digest's fate to three-valued logic.
 //
 // ⛔ AND THE SOURCE CTE JOINS `alert_sources`, BECAUSE A DELETED SOURCE GOES ON
 // REPORTING ITS LAST VERDICT FOREVER. `SoftDelete` sets `alert_sources.deleted_at`
@@ -246,13 +303,6 @@ WITH a AS (
    AND NOT al.synthetic
    AND ($2::text[] IS NULL OR al.cluster_key = ANY($2))
    AND al.last_seen_at >= $3 AND al.last_seen_at <= $4
-), g AS (
-  SELECT
-    COUNT(*) FILTER (WHERE state = 'open')   AS open,
-    COUNT(*) FILTER (WHERE state = 'closed') AS closed
-  FROM alert_groups
- WHERE org_id = $1 AND NOT synthetic
-   AND last_activity_at >= $3 AND last_activity_at <= $4
 ), d AS (
   SELECT
     COUNT(*) FILTER (WHERE dv.status = 'sent')    AS sent,
@@ -263,8 +313,14 @@ WITH a AS (
     COUNT(*) FILTER (WHERE dv.ambiguous)          AS ambiguous
   FROM notification_deliveries dv
   JOIN notifications n ON n.id = dv.notification_id AND n.org_id = dv.org_id
-  JOIN alert_groups ag ON ag.id = n.group_id        AND ag.org_id = n.org_id
- WHERE dv.org_id = $1 AND NOT ag.synthetic
+  -- delivery -> notification -> case -> alert, reading alerts.synthetic, which is
+  -- the source of truth (00039). LEFT, both of them, and the predicate COALESCEs:
+  -- a digest names no case, so the chain ends at NULL there, and a digest delivery
+  -- is a real message that must be COUNTED. See the header for why this is the
+  -- case path and not n.alert_id.
+  LEFT JOIN alert_cases ac ON ac.id = n.case_id   AND ac.org_id = n.org_id
+  LEFT JOIN alerts      al ON al.id = ac.alert_id AND al.org_id = ac.org_id
+ WHERE dv.org_id = $1 AND NOT COALESCE(al.synthetic, false)
    AND dv.created_at >= $3 AND dv.created_at <= $4
 ), s AS (
   SELECT
@@ -287,11 +343,10 @@ WITH a AS (
  WHERE org_id = $1 AND deleted_at IS NULL
 )
 SELECT a.firing, a.suppressed, a.resolved, a.expired, a.acked, a.unacked, a.flapping,
-       g.open, g.closed,
        d.sent, d.failed, d.dead, d.skipped, d.pending, d.ambiguous,
        s.healthy, s.degraded, s.unreachable, s.unknown, s.max_skew, s.divergence,
        c.healthy, c.degraded, c.auth_failed, c.config_invalid
-  FROM a, g, d, s, c`
+  FROM a, d, s, c`
 
 // Overview returns the dashboard roll-up for one window.
 func (r *StatsRepository) Overview(
@@ -309,7 +364,6 @@ func (r *StatsRepository) Overview(
 	err := r.db(ctx).QueryRow(ctx, overviewSQL, s.OrgID(), clusterArg, since, until).Scan(
 		&o.Alerts.Firing, &o.Alerts.Suppressed, &o.Alerts.Resolved, &o.Alerts.Expired,
 		&o.Alerts.Acked, &o.Alerts.Unacked, &o.Alerts.Flapping,
-		&o.Groups.Open, &o.Groups.Closed,
 		&o.Deliveries.Sent, &o.Deliveries.Failed, &o.Deliveries.Dead,
 		&o.Deliveries.Skipped, &o.Deliveries.Pending, &o.Deliveries.Ambiguous,
 		&o.Sources.Healthy, &o.Sources.Degraded, &o.Sources.Unreachable, &o.Sources.Unknown,

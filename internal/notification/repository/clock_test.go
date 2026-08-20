@@ -53,12 +53,19 @@ func TestMain(m *testing.M) { harness.Main(m) }
 // lag is how far behind the creating pod the writing pod's clock is.
 const lag = 2 * time.Second
 
-// fixture seeds the FK graph these four tables hang off: an org, a group
-// generation to be the subject, and one webhook destination.
+// fixture seeds the FK graph these four tables hang off: an org, a CASE to be the
+// subject, and one webhook destination.
+//
+// ⛔ IT SEEDED AN `alert_groups` GENERATION AND THE TABLE IS GONE (git-bug
+// `7570090`, migration `00069`). The subject is now the Case, which is also the
+// CONVERSATION — these tests only need a subject id that satisfies
+// `notifications_subject_ck` and `threads_subjkind_ck`, and every one of them is
+// about a CLOCK rather than about what the subject is, so the swap changes no
+// assertion below.
 type fixture struct {
 	h       *harness.H
 	scope   db.TenantScope
-	groupID uuid.UUID
+	caseID  uuid.UUID
 	channel uuid.UUID
 }
 
@@ -68,8 +75,7 @@ func newFixture(t *testing.T) fixture {
 	h := harness.New(t)
 	org := h.Org()
 	cluster := h.Cluster(org)
-	source := h.Source(org, cluster)
-	group := h.Group(org, source, cluster)
+	ac := h.Case(h.Alert(org, cluster))
 
 	channelID := id.New()
 	// `created_at`/`updated_at` are NAMED and take the harness clock: 00032 took
@@ -79,7 +85,7 @@ func newFixture(t *testing.T) fixture {
 	        VALUES ($1, $2, 'webhook', $3, '{}'::jsonb, 'webhook.json', $4, $4)`,
 		channelID, org.ID, "dest-"+org.Slug, h.Now())
 
-	return fixture{h: h, scope: org.Scope, groupID: group.ID, channel: channelID}
+	return fixture{h: h, scope: org.Scope, caseID: ac.ID, channel: channelID}
 }
 
 // idem builds a `notifications_idem_ck`-shaped key: 64 lowercase hex characters.
@@ -136,13 +142,15 @@ func TestNotificationStatusSurvivesADispatcherBehindTheEvaluator(t *testing.T) {
 	repo := repository.NewNotificationRepository(h.Pool)
 
 	n, created, err := repo.Insert(h.Ctx, fx.scope, domain.Notification{
-		ID:               id.New(),
-		OrgID:            fx.scope.OrgID(),
-		SubjectKind:      domain.SubjectAlertGroup,
-		SubjectID:        fx.groupID,
-		GroupID:          fx.groupID,
-		ConversationKind: domain.ConversationAlertGroup,
-		ConversationID:   fx.groupID,
+		ID:          id.New(),
+		OrgID:       fx.scope.OrgID(),
+		SubjectKind: domain.SubjectCase,
+		SubjectID:   fx.caseID,
+		// `notifications_subject_ck` requires `case_id` present and equal to
+		// `subject_id` for this kind, and the conversation is the same Case.
+		CaseID:           &fx.caseID,
+		ConversationKind: domain.ConversationCase,
+		ConversationID:   fx.caseID,
 		Reason:           domain.ReasonFired,
 		StateVersion:     1,
 		IdempotencyKey:   idem("a"),
@@ -180,13 +188,15 @@ func TestDeliveryWritesSurviveAWorkerBehindTheFanOut(t *testing.T) {
 	threads := repository.NewThreadRepository(h.Pool)
 
 	n, _, err := notifications.Insert(h.Ctx, fx.scope, domain.Notification{
-		ID:               id.New(),
-		OrgID:            fx.scope.OrgID(),
-		SubjectKind:      domain.SubjectAlertGroup,
-		SubjectID:        fx.groupID,
-		GroupID:          fx.groupID,
-		ConversationKind: domain.ConversationAlertGroup,
-		ConversationID:   fx.groupID,
+		ID:          id.New(),
+		OrgID:       fx.scope.OrgID(),
+		SubjectKind: domain.SubjectCase,
+		SubjectID:   fx.caseID,
+		// `notifications_subject_ck` requires `case_id` present and equal to
+		// `subject_id` for this kind, and the conversation is the same Case.
+		CaseID:           &fx.caseID,
+		ConversationKind: domain.ConversationCase,
+		ConversationID:   fx.caseID,
 		Reason:           domain.ReasonFired,
 		StateVersion:     1,
 		IdempotencyKey:   idem("b"),
@@ -196,7 +206,7 @@ func TestDeliveryWritesSurviveAWorkerBehindTheFanOut(t *testing.T) {
 	require.NoError(t, err)
 
 	th, err := threads.Ensure(h.Ctx, fx.scope, fx.channel,
-		domain.SubjectAlertGroup, fx.groupID, h.Now())
+		domain.SubjectCase, fx.caseID, h.Now())
 	require.NoError(t, err)
 
 	d, madeNew, err := deliveries.Create(h.Ctx, fx.scope, repository.NewDelivery{
@@ -264,13 +274,15 @@ func TestClaimIsNotExpiredAtTheMomentItIsTaken(t *testing.T) {
 	deliveries := repository.NewDeliveryRepository(h.Pool)
 
 	n, _, err := notifications.Insert(h.Ctx, fx.scope, domain.Notification{
-		ID:               id.New(),
-		OrgID:            fx.scope.OrgID(),
-		SubjectKind:      domain.SubjectAlertGroup,
-		SubjectID:        fx.groupID,
-		GroupID:          fx.groupID,
-		ConversationKind: domain.ConversationAlertGroup,
-		ConversationID:   fx.groupID,
+		ID:          id.New(),
+		OrgID:       fx.scope.OrgID(),
+		SubjectKind: domain.SubjectCase,
+		SubjectID:   fx.caseID,
+		// `notifications_subject_ck` requires `case_id` present and equal to
+		// `subject_id` for this kind, and the conversation is the same Case.
+		CaseID:           &fx.caseID,
+		ConversationKind: domain.ConversationCase,
+		ConversationID:   fx.caseID,
 		Reason:           domain.ReasonFired,
 		StateVersion:     1,
 		IdempotencyKey:   idem("c"),
@@ -316,7 +328,7 @@ func TestThreadWritesSurviveAWorkerBehindTheOneThatOpenedIt(t *testing.T) {
 	threads := repository.NewThreadRepository(h.Pool)
 
 	th, err := threads.Ensure(h.Ctx, fx.scope, fx.channel,
-		domain.SubjectAlertGroup, fx.groupID, h.Now())
+		domain.SubjectCase, fx.caseID, h.Now())
 	require.NoError(t, err)
 	require.Equal(t, h.Now(), th.CreatedAt.UTC(),
 		"created_at must come from the caller's clock, not from the database")
@@ -377,22 +389,22 @@ func TestTheFourTablesHaveNoClockOfTheirOwn(t *testing.T) {
 		id.New(), orgID, fx.channel)
 
 	refused("notifications",
-		`INSERT INTO notifications (id, org_id, subject_kind, subject_id, group_id, conversation_kind, conversation_id, reason,
+		`INSERT INTO notifications (id, org_id, subject_kind, subject_id, case_id, conversation_kind, conversation_id, reason,
 		     state_version, idempotency_key)
-		 VALUES ($1, $2, 'alert_group', $3, $3, 'alert_group', $3, 'fired', 1, $4)`,
-		id.New(), orgID, fx.groupID, idem("d"))
+		 VALUES ($1, $2, 'case', $3, $3, 'case', $3, 'fired', 1, $4)`,
+		id.New(), orgID, fx.caseID, idem("d"))
 
 	threadID := id.New()
 	h.Exec(`INSERT INTO channel_threads (id, org_id, channel_id, subject_kind, subject_id,
 	           created_at, updated_at)
-	        VALUES ($1, $2, $3, 'alert_group', $4, $5, $5)`,
-		threadID, orgID, fx.channel, fx.groupID, h.Now())
+	        VALUES ($1, $2, $3, 'case', $4, $5, $5)`,
+		threadID, orgID, fx.channel, fx.caseID, h.Now())
 
 	notificationID := id.New()
-	h.Exec(`INSERT INTO notifications (id, org_id, subject_kind, subject_id, group_id, conversation_kind, conversation_id, reason,
+	h.Exec(`INSERT INTO notifications (id, org_id, subject_kind, subject_id, case_id, conversation_kind, conversation_id, reason,
 	           state_version, idempotency_key, created_at, updated_at)
-	        VALUES ($1, $2, 'alert_group', $3, $3, 'alert_group', $3, 'fired', 1, $4, $5, $5)`,
-		notificationID, orgID, fx.groupID, idem("e"), h.Now())
+	        VALUES ($1, $2, 'case', $3, $3, 'case', $3, 'fired', 1, $4, $5, $5)`,
+		notificationID, orgID, fx.caseID, idem("e"), h.Now())
 
 	refused("notification_deliveries",
 		`INSERT INTO notification_deliveries (id, org_id, notification_id, channel_id, mode)

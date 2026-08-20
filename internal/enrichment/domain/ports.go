@@ -56,7 +56,7 @@ type Enricher interface {
 // Enricher never has to query oto's own database to know what it is enriching.
 type Subject struct {
 	OrgID       string
-	SubjectKind string // "alert" | "case" | "group"
+	SubjectKind string // "alert" | "case" — "group" went with git-bug 7570090
 	SubjectID   string
 	Alert       AlertSnapshot
 	Case        CaseSnapshot

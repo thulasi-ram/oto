@@ -599,7 +599,6 @@ func fxOpenCase(t *testing.T, now time.Time) domain.Case {
 		ID:              fxCase,
 		OrgID:           apitest.OrgID,
 		AlertID:         fxAlertID,
-		GroupID:         fxGroupID,
 		Seq:             3,
 		State:           domain.CaseOpen,
 		StartedAt:       now.Add(-2 * time.Hour),
@@ -631,7 +630,6 @@ func fxEndedCase(t *testing.T, now time.Time) domain.Case {
 		ID:             fxEndedOccID,
 		OrgID:          apitest.OrgID,
 		AlertID:        fxAlertID,
-		GroupID:        fxGroupID,
 		Seq:            2,
 		State:          domain.CaseClosed,
 		StartedAt:      now.Add(-30 * time.Hour),
@@ -658,7 +656,6 @@ func fxSuppressedCase(t *testing.T, now time.Time) domain.Case {
 		ID:      fxSuppOccID,
 		OrgID:   apitest.OrgID,
 		AlertID: fxAlertID,
-		GroupID: fxGroupID,
 		Seq:     1,
 		// ⭐ SUPPRESSED IS NOT A STORED STATE (ADR 0040): it is an OPEN episode with a
 		// suppression reason, and `AlertState` is what reads the pair back as
@@ -932,8 +929,14 @@ func newAlertsWorld(t *testing.T) *fakeAlertsService {
 		notifications: service.NotificationResult{
 			Notifications: []service.NotificationSummary{
 				{
-					ID:                fxNotifSent,
-					GroupID:           fxGroupID,
+					ID: fxNotifSent,
+					// ⭐ THE SUBJECT IS CARRIED, NOT GUESSED (git-bug `7570090`). It
+					// used to be `GroupID` doing duty as both the delivery target and
+					// the subject; a Case-shaped intent has a subject that varies, so
+					// the pair is explicit. `fired` is case-scoped, so this one is
+					// about the episode.
+					SubjectKind:       "case",
+					SubjectID:         fxCase,
 					AlertID:           &fxAlertID,
 					CaseID:            &fxCase,
 					PolicyID:          &fxPolicyID,
@@ -950,8 +953,12 @@ func newAlertsWorld(t *testing.T) *fakeAlertsService {
 				{
 					// A SUPPRESSED intent, in oto's own suppression vocabulary. Its
 					// `updated_at` is deliberately absent so the null renders.
-					ID:               fxNotifQuiet,
-					GroupID:          fxGroupID,
+					ID: fxNotifQuiet,
+					// The OTHER arm of the subject vocabulary: this intent names an
+					// alert and no episode, so `alert` is the only subject it can
+					// honestly claim.
+					SubjectKind:      "alert",
+					SubjectID:        fxAlertID,
 					AlertID:          &fxAlertID,
 					Reason:           "repeat",
 					Status:           "suppressed",

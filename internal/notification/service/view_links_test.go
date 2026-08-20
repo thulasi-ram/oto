@@ -2,7 +2,6 @@ package service_test
 
 import (
 	"context"
-	"net/url"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -22,46 +21,89 @@ import (
 // built for a grafana source are three 404s — one of them wearing a "Silence"
 // button, which is the single affordance v1 offers (R3, §H.3).
 //
-// The guard has two halves and they are only correct together, so the tests are
-// split the same way. The kind half is SQL — `groupFactsSQL` is what refuses to
-// hand a non-Alertmanager base_url upstairs — and the first two tests run it
-// against a REAL Postgres, because a snapshot literal cannot be wrong about a
-// query on the same terms. The renderer's half is "empty means no link and no
-// button", which the third test pins from a snapshot literal, since that is the
-// contract every `SnapshotSource` must be held to and not just this one.
+// ⛔⛔ THE GUARD HAD TWO HALVES AND THE SQL HALF NO LONGER EXISTS (git-bug
+// `7570090`, migration `00069`). `groupFactsSQL` was what refused to hand a
+// non-Alertmanager base_url upstairs, and it is deleted with `alert_groups`:
+// `conversationFactsSQL` reads `alert_cases` joined to `alerts`, and NEITHER TABLE
+// HAS A `source_id`, so there is no `alert_sources` row to ask about `kind` and
+// `GroupFacts.AlertmanagerURL` is now PERMANENTLY EMPTY for every source. The
+// field's own comment states it, and `repository/snapshot.go:152` states it again
+// as a deliberate degradation: "Restoring the affordance needs a column on
+// `alert_cases`, which is a schema change and is not this one."
+//
+// ⚠️ SO THE V1 SILENCE BUTTON IS GONE FROM EVERY CARD, NOT JUST FROM GRAFANA'S.
+// That is a product regression, taken knowingly, and the first test below is what
+// keeps it from being a silent one.
 
-// cardFor seeds `org → cluster → source(kind) → group(labels)` and projects the
-// card oto would post for it, THROUGH the real read model.
-func cardFor(
-	t *testing.T, h *harness.H, kind, baseURL string, groupLabels map[string]string,
-) *service.NotificationView {
-	t.Helper()
-	return cardForGroup(t, h, kind, baseURL, groupLabels, false)
+// TestNoCardCarriesADeepLinkOrASilenceButton pins the loss, THROUGH the real read
+// model.
+//
+// ⛔⛔ IT ASSERTS A REGRESSION, in the shape `domain/refire_visibility_test.go` uses
+// for the same purpose: the defect is visible in the test suite rather than
+// discovered by an operator at 03:00.
+//
+// ⛔ IT REPLACES TWO TESTS AND IS NOT EITHER OF THEM.
+// `TestAlertmanagerSourceGetsTheDeepLinks` asserted that an `alertmanager` source
+// DOES get all three URL shapes and the Silence action; that behaviour is
+// structurally unreachable, so the test is DELETED rather than retargeted — there
+// is nothing left that could make it pass. `TestGrafanaSourceGetsNoDeepLink`
+// asserted that a `grafana` source does NOT; it passes today for a reason that has
+// nothing to do with `kind`, which makes it a test that can no longer fail for its
+// own reason, so it is deleted too. What is worth pinning is the fact that
+// replaced them both, asserted over the source kind that used to be the POSITIVE
+// case — because that is the one whose passing proves the affordance is gone.
+//
+// ⭐ IF YOU ARE HERE BECAUSE THIS FAILED, the affordance has been restored: put
+// `TestAlertmanagerSourceGetsTheDeepLinks` back from git history, restore the
+// `kind = 'alertmanager'` predicate this file's header describes, and delete this
+// test.
+func TestNoCardCarriesADeepLinkOrASilenceButton(t *testing.T) {
+	t.Parallel()
+
+	h := harness.New(t)
+
+	// A source of kind `alertmanager` with a real console root: the case the links
+	// exist FOR, and the one that used to produce all three shapes.
+	view := cardFor(t, h, "alertmanager", "https://am.example.com",
+		map[string]string{"alertname": "HighErrorRate", "severity": "critical"})
+
+	require.Empty(t, view.Links.Alertmanager,
+		"the read model vouched for an Alertmanager console it can no longer identify: "+
+			"neither `alerts` nor `alert_cases` carries a `source_id`, so any URL here is "+
+			"fabricated")
+	require.Empty(t, view.Links.AlertmanagerSilenceNew)
+	require.False(t, hasSilenceAction(view),
+		"a Silence button that 404s costs the operator the affordance AND the trust")
+
+	// The rest of the card is untouched: this is a missing link, not a broken card.
+	require.NotEmpty(t, view.Links.Group)
+	require.NotEmpty(t, view.Actions, "the Acknowledge button is still there")
 }
 
-// cardForGroup is cardFor with one extra question: whether to blank the group's
-// labels after seeding it.
+// cardFor seeds `org → cluster → source(kind) → alert → case` and projects the card
+// oto would post for it, THROUGH the real read model.
 //
-// ⭐ A LABEL-LESS GROUP CAN NO LONGER BE BUILT, ONLY INHERITED. Since ADR 0038 a
-// group's `group_labels` are `SplitLabels` of the alert's own set, and a label
-// set must carry a non-empty `alertname` — so every group opened from now on has
-// at least one label to filter on. `{}` is the shape every PRE-00050 generation
-// still has on disk (00050 adds no backfill and re-keying live groups was
-// rejected), which is why the bare-console link still has to work and still has
-// to be tested. Blanking after the fact is how a legacy row is reached.
-func cardForGroup(
-	t *testing.T, h *harness.H, kind, baseURL string,
-	groupLabels map[string]string, legacyBare bool,
+// ⛔ IT SEEDED A GROUP, AND `cardForGroup`'s `legacyBare` LEG IS DELETED WITH IT.
+// That leg blanked `alert_groups.group_labels` to reach a pre-00050 generation with
+// nothing to filter on, so that the BARE console link (`/#/alerts`, no filter) was
+// still exercised. There is no such row and no such link: `GroupFacts.GroupLabels`
+// is now the one Alert's own label set, which `NewLabelSet` refuses to build without
+// a non-empty `alertname`, so a label-less conversation cannot be reached at all.
+//
+// ⚠️ THE SOURCE IS STILL SEEDED, AND IT IS NOW INERT. Nothing joins to it — that is
+// precisely what this file is about — but seeding it keeps the fixture honest about
+// what the tenant contains, so a restored `source_id` join finds a row rather than
+// passing for the wrong reason.
+func cardFor(
+	t *testing.T, h *harness.H, kind, baseURL string, alertLabels map[string]string,
 ) *service.NotificationView {
 	t.Helper()
 
 	org := h.Org()
 	cluster := h.Cluster(org)
-	source := h.SourceOfKind(org, cluster, kind, baseURL)
-	group := h.GroupWith(org, source, cluster, groupLabels)
-	if legacyBare {
-		h.Exec(`UPDATE alert_groups SET group_labels = '{}'::jsonb WHERE id = $1`, group.ID)
-	}
+	_ = h.SourceOfKind(org, cluster, kind, baseURL)
+	alert := h.AlertWith(org, cluster, alertLabels)
+	ac := h.Case(alert)
 
 	views, err := service.NewViewService(service.ViewConfig{
 		Snapshots: repository.NewSnapshotRepository(h.Pool, h.Clock),
@@ -70,8 +112,15 @@ func cardForGroup(
 	})
 	require.NoError(t, err)
 
+	alertID := alert.ID
 	view, err := views.Build(h.Ctx, harness.Scope(t, org.ID), service.ViewRequest{
-		Notification: domain.Notification{GroupID: group.ID, Reason: domain.ReasonFired},
+		Notification: domain.Notification{
+			ConversationKind: domain.ConversationCase,
+			ConversationID:   ac.ID,
+			CaseID:           &ac.ID,
+			AlertID:          &alertID,
+			Reason:           domain.ReasonFired,
+		},
 	})
 	require.NoError(t, err)
 	return view
@@ -87,65 +136,14 @@ func hasSilenceAction(view *service.NotificationView) bool {
 	return false
 }
 
-// TestAlertmanagerSourceGetsTheDeepLinks is the case the links exist for: for a
-// source of kind `alertmanager` the API root and the UI root are the same
-// origin, so all three URL shapes resolve and the Silence button is real.
-func TestAlertmanagerSourceGetsTheDeepLinks(t *testing.T) {
-	t.Parallel()
-
-	h := harness.New(t)
-	const base = "https://am.example.com"
-
-	// The filter is built from the GROUP LABELS, so this card carries the two
-	// filtered shapes.
-	view := cardFor(t, h, "alertmanager", base, map[string]string{"alertname": "HighErrorRate", "severity": "critical"})
-
-	// The filter names the AXES, not every label: `group_labels` are `SplitLabels`
-	// of the alert's set (ADR 0038), and `severity` is not an axis. Filtering the
-	// console by `alertname` is also the more useful of the two — it is the shape
-	// the generation actually spans.
-	escaped := url.QueryEscape(`{alertname="HighErrorRate"}`)
-	require.Equal(t, base+"/#/alerts?filter="+escaped, view.Links.Alertmanager)
-	require.Equal(t, base+"/#/silences/new?filter="+escaped, view.Links.AlertmanagerSilenceNew)
-	require.True(t, hasSilenceAction(view),
-		"an alertmanager source's card must carry the one action v1 offers")
-
-	// A group with no labels to filter on still gets the third shape — the bare
-	// alert list — because there is still a console to open.
-	bare := cardForGroup(t, h, "alertmanager", base,
-		map[string]string{"alertname": "HighErrorRate"}, true)
-	require.Equal(t, base+"/#/alerts", bare.Links.Alertmanager)
-}
-
-// TestGrafanaSourceGetsNoDeepLink is the defect.
-//
-// The card is otherwise identical to the one above — same labels, same base_url
-// shape, same everything but `alert_sources.kind` — and it must come out with
-// nothing rather than with Alertmanager's URL shapes pointed at a Grafana. This
-// is the verdict `silenceBaseURLs` already reaches on the silences feed by
-// leaving such a source out of its map.
-func TestGrafanaSourceGetsNoDeepLink(t *testing.T) {
-	t.Parallel()
-
-	h := harness.New(t)
-
-	view := cardFor(t, h, "grafana",
-		"https://grafana.example.com/api/alertmanager/grafana",
-		map[string]string{"alertname": "HighErrorRate", "severity": "critical"})
-
-	require.Empty(t, view.Links.Alertmanager,
-		"a grafana base_url is an API prefix, not a console oto may send anyone to")
-	require.Empty(t, view.Links.AlertmanagerSilenceNew)
-	require.False(t, hasSilenceAction(view),
-		"a Silence button that 404s costs the operator the affordance AND the trust")
-
-	// The rest of the card is untouched: this is a missing link, not a broken card.
-	require.NotEmpty(t, view.Links.Group)
-	require.NotEmpty(t, view.Actions, "the Acknowledge button is still there")
-}
-
 // TestSourceWithNoVouchedURLGetsNoDeepLink pins the renderer's own half of the
 // guard, at the seam rather than at the database.
+//
+// ⭐ IT IS THE HALF THAT SURVIVED `7570090` UNCHANGED, AND IT IS NOW THE ONLY HALF.
+// The database no longer chooses between a vouched URL and an empty one — it always
+// answers empty — so this is what still holds the CONTRACT rather than today's
+// implementation of it: whatever hands over an empty `AlertmanagerURL` must produce
+// a card with no link and no button.
 //
 // `SnapshotSource` is a PORT: the read model is today's implementation, and the
 // contract it satisfies is that `AlertmanagerURL` is a vouched UI root or the
@@ -157,9 +155,8 @@ func TestSourceWithNoVouchedURLGetsNoDeepLink(t *testing.T) {
 	t.Parallel()
 
 	views, err := service.NewViewService(service.ViewConfig{
-		Snapshots:    unvouchedSnapshots{},
-		BaseURL:      "https://oto.example.com",
-		MaxInstances: 10,
+		Snapshots: unvouchedSnapshots{},
+		BaseURL:   "https://oto.example.com",
 	})
 	require.NoError(t, err)
 
@@ -184,7 +181,7 @@ func (unvouchedSnapshots) Snapshot(
 ) (domain.Snapshot, error) {
 	return domain.Snapshot{
 		Group: domain.GroupFacts{
-			ID: q.GroupID, GroupKey: "gk", Generation: 1, Title: "A group",
+			ID: q.CaseID, GroupKey: "", Generation: 1, Title: "A case",
 			GroupLabels:     map[string]string{"alertname": "HighErrorRate", "severity": "critical"},
 			State:           "open",
 			AlertmanagerURL: "",

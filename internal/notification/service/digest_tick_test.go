@@ -360,7 +360,7 @@ func (digestEvents) AppendNotificationSuppressed(
 }
 
 func (digestEvents) AppendDeliveryOutcome(
-	context.Context, db.TenantScope, domain.Delivery, uuid.UUID, *uuid.UUID, string, time.Time,
+	context.Context, db.TenantScope, domain.Delivery, *uuid.UUID, *uuid.UUID, string, time.Time,
 ) error {
 	return nil
 }
@@ -466,12 +466,13 @@ func tickPolicy(window time.Duration, floor int, matchers ...domain.Matcher) dom
 	}
 }
 
+// ⛔ THE BUCKET LOST `GroupID`, `Title` AND `Severity` (git-bug `7570090`). A digest
+// bucket is now the ADR-0038 axes — `alertname` plus `namespace` — read off `alerts`,
+// not a generation row, so there is no group id to carry and no group title or max
+// member severity to denormalise. `GroupLabels` and the Case count are the whole of it.
 func bucket(namespace string, cases int) repository.DigestBucket {
 	return repository.DigestBucket{
-		GroupID:     uuid.New(),
 		GroupLabels: map[string]string{"alertname": "Whatever", "namespace": namespace},
-		Title:       "A group",
-		Severity:    "critical",
 		Cases:       cases,
 	}
 }
@@ -546,9 +547,19 @@ func TestAWindowThatClearsItsFloorIsOneDigestAboutThePolicyAndTheWindow(t *testi
 		"`subject_id` must be the POLICY half of the pair. One UUID column cannot hold "+
 			"(policy, window), and hashing the two into a synthetic id would make `subject_id` "+
 			"resolve against no table")
-	assert.Equal(t, uuid.Nil, n.GroupID,
-		"a digest claimed a delivery group. It spans many generations, which is the whole "+
-			"reason migration 00058 relaxed `notifications.group_id`")
+	// ⛔ THIS ASSERTED `n.GroupID == uuid.Nil` — "a digest claimed a delivery group" —
+	// AND `GroupID` IS DELETED (git-bug `7570090`, migration `00069`). The property is
+	// asserted STRUCTURALLY rather than dropped, and it is now stronger than the
+	// absence it used to be: the delivery target is the pair, a digest's conversation
+	// is its own kind keyed by the POLICY, and the thing the old assertion forbade —
+	// a digest landing in some signal's conversation — is now expressible as the
+	// positive fact that it does not.
+	assert.Equal(t, domain.ConversationDigest, n.ConversationKind,
+		"a digest landed in a signal's conversation. It spans many episodes, so it opens "+
+			"its own conversation keyed by its policy")
+	assert.Equal(t, p.ID, n.ConversationID,
+		"the digest's conversation is keyed by the POLICY: one ongoing conversation per "+
+			"policy per channel, one reply per window")
 	require.NotNil(t, n.PolicyID)
 	assert.Equal(t, p.ID, *n.PolicyID)
 	require.NotNil(t, n.DigestWindowStart)

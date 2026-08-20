@@ -220,13 +220,6 @@ const NAV: readonly NavEntry[] = [
       { href: "/alerts", label: "Alerts", prefix: "/alerts" },
     ],
   },
-  // ⛔ AlertGroups ARE NOT IN THIS RAIL, AND THAT IS THE DECISION RATHER THAN AN
-  // OVERSIGHT. An AlertGroup is Alertmanager's notification grouping — the thing
-  // that owns one Slack thread — so it is plumbing an operator arrives at from a
-  // chat card or from a case, never a place they set out for. `/groups` is a
-  // real screen and every link into it still resolves; it simply is not somewhere
-  // the product offers to take you.
-  //
   // ADR 0034. The BARE path, not `/notifications/policies` — the route redirects
   // to its first section, and an href the location never exactly equals is what
   // stops `<A>` from stamping its own `aria-current="page"` on a row whose child

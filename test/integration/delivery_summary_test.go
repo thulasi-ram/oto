@@ -15,7 +15,9 @@ import (
 //
 // `delivery_summary` was declared on four response schemas — the alert detail,
 // the case detail, the group detail and the notification detail — and
-// emitted by NONE of them. Because the field was optional, every schema
+// emitted by NONE of them. ⛔ IT IS THREE SCHEMAS NOW: the group detail left the
+// contract with `alert_groups` (git-bug `7570090`), and A CONVERSATION IS A CASE,
+// so the case detail is where a thread's roll-up is read. Because the field was optional, every schema
 // validator passed and the absence was invisible: nothing in the build, the
 // contract or the test suite could tell "this endpoint has no deliveries to
 // report" from "this endpoint never computes the field".
@@ -25,7 +27,7 @@ import (
 // Slack channel needs to know whether nothing fired or whether four deliveries
 // died on an expired token. From outside the database those are identical.
 //
-// So this test asserts PRESENCE FIRST, on all four, against a real Postgres with
+// So this test asserts PRESENCE FIRST, on all three, against a real Postgres with
 // a fan-out in five different states — sent, skipped, dead, failed and pending —
 // and only then checks the arithmetic.
 
@@ -49,13 +51,15 @@ func (d deliverySummary) present() bool {
 		d.Dead != nil && d.Skipped != nil && d.Pending != nil
 }
 
-// fanOut is the seeded world: one alert in one group, notified once, fanned out
-// over five channels that ended in five different states.
+// fanOut is the seeded world: one alert with one open Case, notified once,
+// fanned out over five channels that ended in five different states.
+//
+// ⛔ `groupID` WAS A FIELD HERE AND IS DELETED (git-bug `7570090`). The Case IS
+// the conversation, so `caseID` is the only conversation id the seed has.
 type fanOut struct {
 	token          string
 	alertID        uuid.UUID
 	caseID         uuid.UUID
-	groupID        uuid.UUID
 	notificationID uuid.UUID
 	// suppressedID is a second intent with NO deliveries at all. It is the case
 	// an omitted field hid most damagingly: "oto formed this intent and told
@@ -63,17 +67,25 @@ type fanOut struct {
 	suppressedID uuid.UUID
 }
 
-// TestDeliverySummaryIsEmittedByAllFourDetailEndpoints.
-func TestDeliverySummaryIsEmittedByAllFourDetailEndpoints(t *testing.T) {
+// TestDeliverySummaryIsEmittedByAllThreeDetailEndpoints.
+//
+// ⛔ IT WAS `...ByAllFourDetailEndpoints` AND THE FOURTH IS DELETED, NOT
+// RETARGETED (git-bug `7570090`): `GET /alert-groups/{id}` left the contract with
+// the entity, and `GET /cases/{id}` — probe 2 — already covers the conversation
+// the group detail used to report on.
+func TestDeliverySummaryIsEmittedByAllThreeDetailEndpoints(t *testing.T) {
 	env := newEnv(t)
 	seed := seedFanOut(t, env)
 
 	// ---- 1. GET /alerts/{id} -------------------------------------------
 	//
-	// The alert roll-up spans the intents that NAME the alert and the intents
-	// about the group generations it has been a member of. oto notifies about
-	// generations, so counting only the alert-scoped reasons would report zero
-	// here — a false silence on the very page the field exists for.
+	// ⭐ THE ALERT ROLL-UP HAS TO REACH THROUGH ITS CASES, and the seed is built to
+	// prove it: the `fired` intent below carries `alert_id NULL` and names the Case
+	// as its subject, because that is what a `fired` notification actually looks
+	// like once a conversation is a Case (git-bug `7570090`). A roll-up that
+	// counted only `notifications.alert_id` reports zero here — a false silence on
+	// the very page the field exists for — and the old fan-out through
+	// `notifications.group_id` is gone, so `alert_cases` is the only path left.
 	var alertBody struct {
 		Data struct {
 			DeliverySummary *deliverySummary `json:"delivery_summary"`
@@ -93,17 +105,9 @@ func TestDeliverySummaryIsEmittedByAllFourDetailEndpoints(t *testing.T) {
 		seed.token, nil, http.StatusOK, &occBody)
 	assertFanOut(t, "GET /cases/{id}", occBody.Data.DeliverySummary)
 
-	// ---- 3. GET /alert-groups/{id} -------------------------------------
-	var groupBody struct {
-		Data struct {
-			DeliverySummary *deliverySummary `json:"delivery_summary"`
-		} `json:"data"`
-	}
-	env.do(t, http.MethodGet, "/api/v1/alert-groups/"+seed.groupID.String(),
-		seed.token, nil, http.StatusOK, &groupBody)
-	assertFanOut(t, "GET /alert-groups/{id}", groupBody.Data.DeliverySummary)
-
-	// ---- 4. GET /notifications/{id} ------------------------------------
+	// ---- 3. GET /notifications/{id} ------------------------------------
+	//
+	// ⛔ `GET /alert-groups/{id}` WAS PROBE 3 AND IS DELETED (git-bug `7570090`).
 	var notifBody struct {
 		Data struct {
 			DeliverySummary *deliverySummary `json:"delivery_summary"`
@@ -113,7 +117,7 @@ func TestDeliverySummaryIsEmittedByAllFourDetailEndpoints(t *testing.T) {
 		seed.token, nil, http.StatusOK, &notifBody)
 	assertFanOut(t, "GET /notifications/{id}", notifBody.Data.DeliverySummary)
 
-	// ---- 5. The intent nobody was told about ---------------------------
+	// ---- 4. The intent nobody was told about ---------------------------
 	//
 	// ⛔ THE CASE THE OLD CODE DROPPED SILENTLY. `summarise` returned nil for an
 	// empty fan-out and the field carried `omitempty`, so a SUPPRESSED
@@ -191,7 +195,7 @@ func assertFanOut(t *testing.T, where string, got *deliverySummary) {
 	}
 }
 
-// seedFanOut writes one alert, one case, one group generation, one
+// seedFanOut writes one alert, one open Case — which IS the conversation — one
 // notification with five deliveries in five states, and one suppressed intent
 // with none.
 //
@@ -220,7 +224,6 @@ func seedFanOut(t *testing.T, e *env) fanOut {
 		token:          boot.Token,
 		alertID:        id.New(),
 		caseID:         id.New(),
-		groupID:        id.New(),
 		notificationID: id.New(),
 		suppressedID:   id.New(),
 	}
@@ -252,21 +255,16 @@ func seedFanOut(t *testing.T, e *env) fanOut {
 	         'critical','prod','{"alertname":"HighErrorRate"}'::jsonb,'firing',$4,$4,$4,1)`,
 		out.alertID, orgID, clusterID, now)
 
-	exec(`INSERT INTO alert_groups (id, org_id, source_id, cluster_id, group_key, title, state,
-	         state_version, total_count, firing_count, first_seen_at, last_activity_at)
-	      VALUES ($1,$2,$3,$4,'gk_0123456789abcdefghijklmnop','HighErrorRate · prod','open',
-	         1,1,1,$5,$5)`, out.groupID, orgID, sourceID, clusterID, now)
-
-	exec(`INSERT INTO alert_cases (id, org_id, alert_id, group_id, seq, state,
+	// ⛔ AN `alert_groups` GENERATION WAS SEEDED HERE AND IS DELETED (git-bug
+	// `7570090`). The episode below is the conversation; there is no generation to
+	// open and no membership to record.
+	exec(`INSERT INTO alert_cases (id, org_id, alert_id, seq, state,
 	         started_at, last_observed_at, source_starts_at)
-	      VALUES ($1,$2,$3,$4,1,'open',$5,$5,$5)`,
-		out.caseID, orgID, out.alertID, out.groupID, now)
+	      VALUES ($1,$2,$3,1,'open',$4,$4,$4)`,
+		out.caseID, orgID, out.alertID, now)
 
 	exec(`UPDATE alerts SET current_case_id = $2 WHERE id = $1`,
 		out.alertID, out.caseID)
-
-	// The episode's own `group_id` above IS the membership since 00051; there is no
-	// join table row to add.
 
 	// A Slack channel MUST carry a credential (`channels_cred_ck`) and the sealed
 	// blob has a 29-byte floor — a 12-byte nonce, a 16-byte tag and at least one
@@ -278,23 +276,27 @@ func seedFanOut(t *testing.T, e *env) fanOut {
 	      VALUES ($1,$2,'slack_bot_token', decode(repeat('00', 32), 'hex'), 1, $3)`,
 		credentialID, orgID, now)
 
-	// ⛔ The intent is GROUP-scoped, with alert_id NULL — which is what a `fired`
-	// notification actually looks like. An alert roll-up that only counted
-	// `notifications.alert_id` would report zero for this, and zero here is the
-	// false silence the whole feature exists to prevent.
-	exec(`INSERT INTO notifications (id, org_id, subject_kind, subject_id, group_id, conversation_kind, conversation_id, reason,
+	// ⛔ The intent is CASE-scoped, with alert_id NULL — which is what a `fired`
+	// notification actually looks like now that a conversation is a Case (git-bug
+	// `7570090`). An alert roll-up that only counted `notifications.alert_id` would
+	// report zero for this, and zero here is the false silence the whole feature
+	// exists to prevent. `notifications_subject_ck`'s `case` arm demands
+	// `case_id IS NOT NULL AND subject_id = case_id`, so the subject and the
+	// conversation are the same id twice and that is not a redundancy: subject is
+	// what the fact is ABOUT, conversation is where it LANDS.
+	exec(`INSERT INTO notifications (id, org_id, subject_kind, subject_id, case_id, conversation_kind, conversation_id, reason,
 	         state_version, idempotency_key, status, created_at, updated_at)
-	      VALUES ($1,$2,'alert_group',$3,$3,'alert_group',$3,'fired',1,
+	      VALUES ($1,$2,'case',$3,$3,'case',$3,'fired',1,
 	         '0000000000000000000000000000000000000000000000000000000000000001','partial',$4,$4)`,
-		out.notificationID, orgID, out.groupID, now)
+		out.notificationID, orgID, out.caseID, now)
 
-	exec(`INSERT INTO notifications (id, org_id, subject_kind, subject_id, group_id, conversation_kind, conversation_id, alert_id,
+	exec(`INSERT INTO notifications (id, org_id, subject_kind, subject_id, conversation_kind, conversation_id, alert_id,
 	         case_id, reason, state_version, idempotency_key, status, suppressed_reason,
 	         created_at, updated_at)
-	      VALUES ($1,$2,'alert_group',$3,$3,'alert_group',$3,$4,$5,'acked',1,
+	      VALUES ($1,$2,'case',$3,'case',$3,$4,$3,'acked',1,
 	         '0000000000000000000000000000000000000000000000000000000000000002','suppressed',
-	         'throttled',$6,$6)`,
-		out.suppressedID, orgID, out.groupID, out.alertID, out.caseID, now)
+	         'throttled',$5,$5)`,
+		out.suppressedID, orgID, out.caseID, out.alertID, now)
 
 	// Five channels, because `deliveries_fanout_uniq` is (notification, channel,
 	// mode) and five states need five destinations to be expressible at once.
@@ -354,21 +356,31 @@ func seedFanOut(t *testing.T, e *env) fanOut {
 			providerMessageID, errText, errClass, d.sentAt, now, updatedAt)
 	}
 
-	// ⛔ THE DECOY. A second generation in the SAME org, with its own notification
-	// and its own two deliveries, which this alert has never been a member of.
-	// Every roll-up above must still report five. Without it, a query that
-	// forgot its subject predicate — or scoped only by org — would pass every
-	// other assertion in this file.
-	decoyGroup, decoyNotification := id.New(), id.New()
-	exec(`INSERT INTO alert_groups (id, org_id, source_id, cluster_id, group_key, title, state,
-	         state_version, total_count, firing_count, first_seen_at, last_activity_at)
-	      VALUES ($1,$2,$3,$4,'gk_abcdefghijklmnopqrstuv0123','Unrelated · prod','open',
-	         1,1,1,$5,$5)`, decoyGroup, orgID, sourceID, clusterID, now)
-	exec(`INSERT INTO notifications (id, org_id, subject_kind, subject_id, group_id, conversation_kind, conversation_id, reason,
+	// ⛔ THE DECOY. A second alert with its own Case — its own CONVERSATION — its
+	// own notification and its own two deliveries, which the alert above has
+	// nothing to do with. Every roll-up above must still report five. Without it, a
+	// query that forgot its subject predicate — or scoped only by org — would pass
+	// every other assertion in this file.
+	//
+	// ⚠️ IT IS A SECOND ALERT AND NOT A SECOND CASE OF THE SAME ONE, deliberately:
+	// `case_one_open_idx` admits one open Case per Alert, and a decoy the schema
+	// refuses is a decoy that silently stops decoying.
+	decoyAlert, decoyCase, decoyNotification := id.New(), id.New(), id.New()
+	exec(`INSERT INTO alerts (id, org_id, cluster_id, alert_key, source_fingerprint, alertname,
+	         severity, cluster_key, labels, state,
+	         first_seen_at, last_seen_at, last_state_change_at, total_cases)
+	      VALUES ($1,$2,$3,'ak_abcdefghijklmnopqrstuv0123','9a8b7c6d5e4f3021','Unrelated',
+	         'warning','prod','{"alertname":"Unrelated"}'::jsonb,'firing',$4,$4,$4,1)`,
+		decoyAlert, orgID, clusterID, now)
+	exec(`INSERT INTO alert_cases (id, org_id, alert_id, seq, state,
+	         started_at, last_observed_at, source_starts_at)
+	      VALUES ($1,$2,$3,1,'open',$4,$4,$4)`, decoyCase, orgID, decoyAlert, now)
+	exec(`UPDATE alerts SET current_case_id = $2 WHERE id = $1`, decoyAlert, decoyCase)
+	exec(`INSERT INTO notifications (id, org_id, subject_kind, subject_id, case_id, conversation_kind, conversation_id, reason,
 	         state_version, idempotency_key, status, created_at, updated_at)
-	      VALUES ($1,$2,'alert_group',$3,$3,'alert_group',$3,'fired',1,
+	      VALUES ($1,$2,'case',$3,$3,'case',$3,'fired',1,
 	         '0000000000000000000000000000000000000000000000000000000000000003','delivered',$4,$4)`,
-		decoyNotification, orgID, decoyGroup, now)
+		decoyNotification, orgID, decoyCase, now)
 	for i := range 2 {
 		channelID := id.New()
 		exec(`INSERT INTO channels (id, org_id, type, name, config, credential_id,

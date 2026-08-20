@@ -21,6 +21,15 @@ import (
 //	priority`, asserted by a schema introspection test against the live
 //	database, not by reading the migration files (§D.4.0).
 //
+// ⛔ THE AC NAMES THREE TABLES AND ONLY TWO EXIST (git-bug `7570090`, migration
+// `00069`). `alert_groups` is dropped, so the gate below scopes to `alerts` and
+// `alert_cases`. This is a NARROWING OF THE SUBJECT, not of the rule: the
+// alternation is unchanged and every surviving signal table is still walked.
+// `assertEveryScopedTableAnswered` is what makes the narrowing safe — a table
+// listed here that the database cannot answer for is a failure, so the gate can
+// never quietly stop covering one. SPEC.md §I.1.1 still spells all three and the
+// amendment that drops the third belongs there, not here.
+//
 // ⭐ THE LAST THREE TERMS ARE ADR 0036's ANTI-CASELOAD CLAUSE, and they are the
 // price of the word. `AlertOccurrence` became `AlertCase` on an FR-1 argument made
 // by name; the honest objection was never to the ROW, it was to the WORD, because
@@ -63,10 +72,11 @@ import (
 var personSubject = regexp.MustCompile(
 	`assigned|owner|watcher|subscriber|incident|ticket|sla_|^case$|case_status|priority`)
 
-// scopedTables are the three tables AC-50 names. They are the tables whose rows
-// are a fact about a SIGNAL; a person-subject column on any of them turns the
-// row into a fact about a human, which is the whole scope boundary.
-var scopedTables = []string{"alerts", "alert_cases", "alert_groups"}
+// scopedTables are the tables AC-50 names that still exist. They are the tables
+// whose rows are a fact about a SIGNAL; a person-subject column on any of them
+// turns the row into a fact about a human, which is the whole scope boundary.
+// `alert_groups` was the third and left with the entity (git-bug `7570090`).
+var scopedTables = []string{"alerts", "alert_cases"}
 
 // querier is the read surface both a pool and a transaction offer, so the gate
 // and the planted-violation test run the SAME query against a live schema and
@@ -169,8 +179,9 @@ func forbiddenColumnFailure(bad []column) string {
 
 	return fmt.Sprintf(
 		"the live schema carries %d person-subject column(s): %s\n\n"+
-			"AC-50 (SPEC §I.1.1, ADR 0013): `alerts`, `alert_cases` and `alert_groups` "+
-			"contain no column matching `%s`.\n\n"+
+			"AC-50 (SPEC §I.1.1, ADR 0013): `alerts` and `alert_cases` — and, until "+
+			"git-bug 7570090 dropped it, `alert_groups` — contain no column matching "+
+			"`%s`.\n\n"+
 			"CONTEXT.md: `case.acked_by = alice` is a fact about the CASE — it was "+
 			"acknowledged, by whom. `case.assigned_to = alice` is a fact about ALICE — she "+
 			"owes work. Identical columns; opposite products. A column is worse than a word: a "+
@@ -222,13 +233,19 @@ func TestPersonSubjectColumnGateFires(t *testing.T) {
 
 	// THE VIOLATIONS. `assigned_to` is the column CONTEXT.md names as the one
 	// that turns a fact about a signal into a fact about a human; `sla_due_at` is
-	// a deadline on a person, on a different table, spelled with the alternation's
+	// a deadline on a person, on a DIFFERENT table, spelled with the alternation's
 	// only underscored member. `case_status` is ADR 0036's anti-caseload clause:
 	// the first column a caseload would grow, a status a human sets alongside the
 	// `state` Alertmanager owns, and the one the word `case` makes thinkable.
+	//
+	// ⚠️ `sla_due_at` MOVED FROM `alert_groups` TO `alert_cases` (git-bug
+	// `7570090`) and the plant is still THREE columns over EVERY scoped table,
+	// which is the property that matters: a walk hard-coded to `alerts` fails on
+	// the two `alert_cases` plants, and a walk that stops at the first hit per
+	// table fails on the second one.
 	for _, ddl := range []string{
 		`ALTER TABLE alerts ADD COLUMN assigned_to UUID`,
-		`ALTER TABLE alert_groups ADD COLUMN sla_due_at TIMESTAMPTZ`,
+		`ALTER TABLE alert_cases ADD COLUMN sla_due_at TIMESTAMPTZ`,
 		`ALTER TABLE alert_cases ADD COLUMN case_status TEXT`,
 	} {
 		if _, err := tx.Exec(h.Ctx, ddl); err != nil {
@@ -255,7 +272,7 @@ func TestPersonSubjectColumnGateFires(t *testing.T) {
 	}
 	sort.Strings(got)
 
-	want := []string{"alert_cases.case_status", "alert_groups.sla_due_at", "alerts.assigned_to"}
+	want := []string{"alert_cases.case_status", "alert_cases.sla_due_at", "alerts.assigned_to"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("planted exactly %v, gate reported %v", want, got)
 	}

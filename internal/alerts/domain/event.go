@@ -446,6 +446,22 @@ type EventParams struct {
 	OrgID   uuid.UUID
 	AlertID uuid.UUID
 	CaseID  uuid.UUID
+	// GroupID is READABLE BUT NO LONGER WRITABLE, and that asymmetry is deliberate
+	// rather than an oversight (git-bug `7570090`, migration 00069).
+	//
+	// ⛔ NOTHING IN THE TREE SETS IT ANY MORE EXCEPT THE ROW MAPPER. Every appender
+	// that used to — the four §B.3 edges in this file, which copied it off the Case,
+	// and `grouping/service`'s own `group.*` appends — is gone, so no event minted
+	// from now on names a group. The ONE remaining writer is
+	// `alerts/repository/event.go` rehydrating a stored row.
+	//
+	// ⛔ AND IT MAY NOT BE DELETED WHILE THAT IS TRUE. `alert_events` is append-only
+	// history with a thirteen-month retention, and 00069 deliberately keeps both the
+	// column and `ev_subject_ck` — "READABLE, UNWRITABLE", the 00051/00054 bargain.
+	// Historical `group.opened`, `group.closed` and `group.member_*` rows carry a
+	// group id and NOTHING ELSE as their subject; dropping this field would make the
+	// subject check below refuse them, and the timeline would start failing to load
+	// on any alert old enough to have one. The zero value is what a NEW event has.
 	GroupID uuid.UUID
 	Type    EventType
 	At      ObservationTime
@@ -526,7 +542,10 @@ func (e Event) AlertID() uuid.UUID { return e.alertID }
 // CaseID is the AlertCase this event is about, or uuid.Nil.
 func (e Event) CaseID() uuid.UUID { return e.caseID }
 
-// GroupID is the AlertGroup generation this event is about, or uuid.Nil.
+// GroupID is the AlertGroup generation this event is about, or uuid.Nil — which is
+// what every event minted since git-bug `7570090` answers. It is HISTORY: see the
+// note on EventParams.GroupID for why the field is readable and unwritable rather
+// than deleted.
 func (e Event) GroupID() uuid.UUID { return e.groupID }
 
 // Type is the closed-enum kind of fact this event records.

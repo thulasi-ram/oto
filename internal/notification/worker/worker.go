@@ -19,7 +19,7 @@ import (
 // and data that decided its own authorisation would undo the whole tenancy
 // boundary.
 type ScopeResolver interface {
-	ForGroup(ctx context.Context, groupID uuid.UUID) (db.TenantScope, error)
+	ForCase(ctx context.Context, caseID uuid.UUID) (db.TenantScope, error)
 	ForDelivery(ctx context.Context, deliveryID uuid.UUID) (db.TenantScope, error)
 }
 
@@ -110,10 +110,10 @@ func (w *Workers) NotifyEvaluate(ctx context.Context, job *jobs.Job[jobs.NotifyE
 			errs.Violation{Field: "reason", Code: "enum", Message: args.Reason}))
 	}
 
-	scope, err := w.scopes.ForGroup(ctx, args.GroupID)
+	scope, err := w.scopes.ForCase(ctx, args.CaseID)
 	if err != nil {
 		if errs.IsKind(err, errs.KindNotFound) {
-			// The group was deleted between the enqueue and now. There is nothing to
+			// The Case was deleted between the enqueue and now. There is nothing to
 			// notify about and nothing a retry could recover.
 			return jobs.Permanent(err)
 		}
@@ -121,11 +121,10 @@ func (w *Workers) NotifyEvaluate(ctx context.Context, job *jobs.Job[jobs.NotifyE
 	}
 
 	res, err := w.notifier.Evaluate(ctx, scope, service.Intent{
-		GroupID:      args.GroupID,
+		CaseID:       args.CaseID,
 		Reason:       reason,
 		StateVersion: args.StateVersion,
 		AlertID:      args.AlertID,
-		CaseID:       args.CaseID,
 		Actor:        args.Actor,
 	})
 	if err != nil {
@@ -133,7 +132,7 @@ func (w *Workers) NotifyEvaluate(ctx context.Context, job *jobs.Job[jobs.NotifyE
 	}
 
 	w.log.DebugContext(ctx, "notification: evaluated",
-		"group_id", args.GroupID, "reason", args.Reason,
+		"case_id", args.CaseID, "reason", args.Reason,
 		"notification_id", res.Notification.ID, "created", res.Created,
 		"deliveries", res.Deliveries, "suppressed", string(res.Suppressed))
 	return nil

@@ -73,12 +73,48 @@ type Loaded struct {
 	Subject domain.Subject
 	// AlertID is the Alert identity this case belongs to.
 	AlertID uuid.UUID
-	// GroupID is the AlertGroup generation carrying it, or uuid.Nil when the
-	// case is not in an open group. No group means nothing to amend.
-	GroupID uuid.UUID
-	// StateVersion is `alert_groups.state_version` at load time. It pins the
-	// enriched notification to the group state it was minted against
-	// (SPEC §C.7), which is what stops a late enrichment resending an old card.
+	// CaseID is the firing episode this run is about, and it is what the
+	// notification coordinates are keyed on.
+	//
+	// ⛔ IT WAS `GroupID uuid.UUID` — "the AlertGroup generation carrying it, or
+	// uuid.Nil when the case is not in an open group" (git-bug `7570090`). A
+	// conversation holds exactly one Case, so the Case IS the conversation and
+	// there is no container left for an episode to be in or absent from.
+	//
+	// ⭐ THE `uuid.Nil` GUARD SURVIVES THE RENAME AND STILL MEANS SOMETHING, which
+	// is why this is a typed field rather than a re-parse of `Subject.Case.ID`. The
+	// old guard read "no group means nothing to amend"; the new one reads "no case
+	// means no conversation to amend", and a loader that could not resolve the
+	// episode has to be able to say so instead of handing a zero id downstream.
+	CaseID uuid.UUID
+	// StateVersion is the version the enriched notification is pinned to, so a late
+	// enrichment amends the card it was minted against instead of resending an
+	// older one (SPEC §C.7). It feeds `NotifyEvaluateArgs.StateVersion`, which
+	// feeds `notifications_idem_uniq`.
+	//
+	// ⛔⛔ IT WAS `alert_groups.state_version` AND ITS SOURCE IS GONE (git-bug
+	// `7570090`). The group carried the version; the Case has no version column, so
+	// the adapter in `internal/app` that used to fill this has nothing to read and
+	// leaves it 0. THE FIELD IS KEPT RATHER THAN DELETED BECAUSE THE GUARANTEE IS
+	// STILL OWED, and deleting it would erase the question along with the answer.
+	//
+	// ⚠️ WHAT A CONSTANT 0 COSTS, stated plainly so nobody has to rediscover it from
+	// a support ticket. The key is sha256(org, subject_kind, subject_id, reason,
+	// state_version), so every `enriched` evaluation for one Case now hashes
+	// IDENTICALLY, forever. The FIRST amendment is minted; every later one collides
+	// on the unique index and is swallowed silently, because a 23505 there is the
+	// mechanism working (§L.9). A slow enricher finishing second amends nothing.
+	// Note this is the OPPOSITE failure to the one the pin prevented — not a stale
+	// card resent, but a fresh card never sent — and only the Case carrying its own
+	// monotonic version fixes it.
+	//
+	//oto:retired `alert_groups.state_version` was the only column that ever fed this
+	// and the table is deleted; the adapter in `internal/app` that filled it has
+	// nothing left to read. The field is KEPT because the §C.7 idempotency guarantee
+	// it carries is still OWED and unmet, and deleting the field would erase the
+	// question along with the answer — the paragraphs above are the standing account
+	// of what a constant 0 costs, and they have to sit on the declaration that causes
+	// it. `reachable-ok` would be a lie: no writer exists anywhere, seen or unseen.
 	StateVersion int
 	// SourceID is the AlertSource, needed by any enricher that calls upstream.
 	SourceID uuid.UUID
@@ -105,7 +141,7 @@ type Notifier interface {
 	// that and already enqueued the evaluation, scheduled at the far end of the
 	// pre-notification budget as a backstop. This call only says "the budget is
 	// spent, you need not wait for me" — the two evaluations carry the same
-	// (group, reason, state_version) and collapse on `notifications_idem_uniq`
+	// (case, reason, state_version) and collapse on `notifications_idem_uniq`
 	// (§C.7), so at most one card is ever posted no matter which arrives first, or
 	// whether this one arrives at all.
 	//
@@ -116,18 +152,25 @@ type Notifier interface {
 }
 
 // PreNotificationNotice names the case whose pre-notification pass is over.
+//
+// ⛔ `GroupID` LED BOTH NOTICES AND IS DELETED FROM BOTH (git-bug `7570090`). It
+// was the DESTINATION — which generation's thread the fact landed on — while
+// `CaseID` beside it was the optional narrowing of the SUBJECT. One Case per
+// conversation makes destination and subject the same id, so the two fields
+// collapse into one and `CaseID` is now REQUIRED on both notices. uuid.Nil is no
+// longer a "no narrowing given" signal: it means the notice has nowhere to go,
+// and the pipeline declines to send it rather than enqueueing a job that would
+// evaluate against the zero UUID.
 type PreNotificationNotice struct {
-	GroupID      uuid.UUID
-	AlertID      uuid.UUID
 	CaseID       uuid.UUID
+	AlertID      uuid.UUID
 	StateVersion int
 }
 
 // EnrichedNotice is the one coalesced fact the async phase reports.
 type EnrichedNotice struct {
-	GroupID      uuid.UUID
-	AlertID      uuid.UUID
 	CaseID       uuid.UUID
+	AlertID      uuid.UUID
 	StateVersion int
 	// Enrichers names what completed, in deterministic order. It is the raw
 	// material for the ":sparkles: +2 enrichments — …" context line (SPEC §H.6)

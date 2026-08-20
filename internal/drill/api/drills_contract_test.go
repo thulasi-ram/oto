@@ -146,7 +146,10 @@ func settledDrill() domain.Drill {
 	d := runningDrill()
 	d.AlertID = uuid.MustParse("88888888-8888-4888-8888-888888888888")
 	d.CaseID = uuid.MustParse("99999999-9999-4999-8999-999999999999")
-	d.GroupID = uuid.MustParse("aaaaaaa1-aaaa-4aaa-8aaa-aaaaaaaaaaa1")
+	// ⛔ `d.GroupID` WAS SET HERE AND THE FIELD IS DELETED (git-bug `7570090`). The
+	// manifest's group id addressed an `alert_groups` row; the Case above is now both
+	// the artefact and the conversation, so it is the only deep link a settled drill
+	// hands a client between the alert and the notification.
 	d.NotificationID = uuid.MustParse("bbbbbbb1-bbbb-4bbb-8bbb-bbbbbbbbbbb1")
 	d.FinishedAt = contractEpoch.Add(9 * time.Second)
 	return d
@@ -175,7 +178,12 @@ func settledResult() domain.Result {
 		Mode:              "post_root",
 		ThreadID:          "1723023262.114300",
 		ProviderMessageID: "1723023262.114300",
-		Broadcast:         false,
+		// ⛔ `Broadcast: false` WAS SET HERE AND NEITHER `domain.Destination` NOR
+		// `DrillDestinationDTO` HAS THE FIELD. This file is what caught the ordering:
+		// `broadcast` was `required` under `additionalProperties: false`, so
+		// `schema.Assert` refused the body while the contract still wanted the byte,
+		// and then refused it again the moment the contract dropped the property and the
+		// DTO still emitted one. Exactly the class of finding it was written for.
 	}}
 	return res
 }

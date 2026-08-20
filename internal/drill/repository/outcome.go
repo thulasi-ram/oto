@@ -38,9 +38,18 @@ type destinationWire struct {
 	Mode              string    `json:"mode"`
 	ThreadID          string    `json:"thread_id,omitempty"`
 	ProviderMessageID string    `json:"provider_message_id,omitempty"`
-	Broadcast         bool      `json:"broadcast"`
-	Error             string    `json:"error,omitempty"`
-	ErrorClass        string    `json:"error_class,omitempty"`
+	// ⛔ A `Broadcast bool` TAGGED `json:"broadcast"` WAS HERE AND IS DELETED. The thread
+	// broadcast mechanism is removed, so the flag could only ever have been written
+	// false, and `domain.Destination` no longer carries it.
+	//
+	// ⭐ REMOVING IT FROM A DURABLE FORMAT IS SAFE IN THE ONE DIRECTION THAT MATTERS,
+	// and the reason is this struct's whole point: `encoding/json` ignores a key with
+	// no field, so an outcome written by an older release still decodes — it simply
+	// stops carrying a false nobody read. The dangerous edit on a durable format is
+	// RENAMING a field the compiler is happy about, which is why the tags are here and
+	// not on the domain type.
+	Error      string `json:"error,omitempty"`
+	ErrorClass string `json:"error_class,omitempty"`
 }
 
 func encodeOutcome(res domain.Result) ([]byte, error) {
@@ -65,7 +74,6 @@ func encodeOutcome(res domain.Result) ([]byte, error) {
 			Mode:              d.Mode,
 			ThreadID:          d.ThreadID,
 			ProviderMessageID: d.ProviderMessageID,
-			Broadcast:         d.Broadcast,
 			Error:             d.Error,
 			ErrorClass:        d.ErrorClass,
 		})
@@ -106,7 +114,6 @@ func decodeOutcome(b []byte) (domain.Result, error) {
 			Mode:              d.Mode,
 			ThreadID:          d.ThreadID,
 			ProviderMessageID: d.ProviderMessageID,
-			Broadcast:         d.Broadcast,
 			Error:             d.Error,
 			ErrorClass:        d.ErrorClass,
 		})

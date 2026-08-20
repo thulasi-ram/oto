@@ -23,30 +23,79 @@ import (
 // `notify.evaluate`, since a notification intent with no group is an intent about
 // nothing.
 type ObserveOptions struct {
-	// GroupID is the AlertGroup generation these observations join.
-	GroupID *uuid.UUID
-	// GroupReason is a GROUP-SCOPED §H.6 Reason the orchestrator derived from the
+	// ⛔ `GroupID *uuid.UUID` WAS HERE AND IS DELETED (git-bug `7570090`): a
+	// conversation is a Case, so observations join no generation.
+	//
+	// BatchReason is a BATCH-SCOPED §H.6 Reason the orchestrator derived from the
 	// batch itself rather than from any alert's transition — today, exactly
 	// `repeat`, which Alertmanager's `notification_reason` is the only witness to.
+	//
+	// ⛔ IT WAS `GroupReason` AND IT FANS OUT DIFFERENTLY NOW. One batch used to
+	// produce ONE notification, because the batch was one generation and the
+	// generation was one conversation. A conversation is a Case, so the same fact
+	// produces one notification PER OPEN CASE in the batch.
+	//
+	// ⭐ THAT IS MORE MESSAGES AND NOT MORE NOISE, and the distinction is §H.6's:
+	// `repeat` is a root UPDATE and never a repost (`chat.update`, silent, Tier 3).
+	// Fifty alerts now refresh fifty roots instead of one, because each has its own
+	// conversation to refresh — which is the cardinality the owner ruled for.
 	//
 	// ⛔ It is passed IN rather than derived here on purpose. Mapping
 	// Alertmanager's wire vocabulary onto oto's Reason enum is `notification`'s
 	// job (§H.6), and this module must not learn a second copy of that table.
 	// `alerts` is told the answer; it never asks the question.
-	GroupReason string
+	BatchReason string
 }
 
-// ObserveOutcome is what one Observation did. It is the caller's audit of a
-// batch, and it is deliberately flat: the reconciler counts divergences from it
-// and the ingest worker logs it.
+// ObserveOutcome is what one Observation did. It is the caller's audit of a batch,
+// and it is deliberately flat.
+//
+// ⛔⛔ NOTHING IN PRODUCTION READS ANY FIELD ON IT, AND HAS NOT SINCE git-bug
+// `7570090`. The doc line that stood here said "the reconciler counts divergences
+// from it and the ingest worker logs it"; neither is true. The single consumer is
+// `app.alertObserver.ObserveBatch`, which takes `len(res.Outcomes)` and discards
+// the records. Every field below is therefore unreachable, and that is a fact about
+// the whole record rather than about any one of them.
+//
+// ⭐ SEVEN OF ITS TEN FIELDS WERE ALREADY DECLARED DEBT BEFORE THIS TICKET, with
+// the ruling written into `tools/lintreach/baseline.txt` against `AlertID`: its last
+// production reader was `alertObserver.joinMembers`, which built a
+// `grouping.JoinMember` out of it, and "deleting only this one field while AlertKey,
+// AlertCreated, From, To, Clamped and ClampSkew stay would be arbitrary — what
+// ObserveOutcome is FOR is one argument about the whole audit record". The three
+// fields marked below lost their production reader — the deleted `settleGroup`, which
+// recomputed a generation's counts and severity from them — to the same deletion, in
+// the same way. They join the cluster; they are not a new question.
+//
+// ⚠️ AND WHAT THE TESTS READ OFF THEM IS NOT DECORATION. `Transition` is the only
+// place the §B.3 EDGE is named — T1 vs T7 is the difference between a first sighting
+// and a re-fire, and no event type distinguishes them — and `CaseID` is what binds a
+// published UI frame to the episode it describes (`observe_flush_test.go`). Deleting
+// the fields deletes the only assertions that oto picks the right row of §B.3.
+// Whether this record earns its keep at all is one decision about ten fields, and it
+// is a decision the baseline has already deferred once.
 type ObserveOutcome struct {
 	AlertID  uuid.UUID
 	AlertKey string
 	// CaseID is the episode the observation landed on, or uuid.Nil when it
 	// landed on none — a `resolved` observation for an Alert with no open episode
 	// resolves nothing.
+	//
+	//oto:retired its production reader was `alertObserver.settleGroup`, deleted with
+	// the grouping module; the field is kept because it is the only thing binding a
+	// published UI frame to the episode it describes, and because seven siblings on
+	// this record are already carried as declared debt for the same reason. Not
+	// `reachable-ok`: there is genuinely no production reader, and claiming one would
+	// be the opposite of true.
 	CaseID uuid.UUID
 	// Transition names the §B.3 row that ran, or "" when none did.
+	//
+	//oto:retired its production reader was `alertObserver.settleGroup`, deleted with
+	// the grouping module. The field is kept because it is the ONLY name the §B.3 edge
+	// has — T1 and T7 both emit `case.opened`, so nothing else in the tree can tell a
+	// first sighting from a re-fire — and the tests that read it are the only proof
+	// the state machine picks the right row. There is no production reader to be
+	// blind to; `reachable-ok` would be the wrong claim.
 	Transition string
 	// From and To are the case states either side of the edge.
 	From string
@@ -54,6 +103,12 @@ type ObserveOutcome struct {
 	// AlertCreated is true on the first ever sighting of this alert_key.
 	AlertCreated bool
 	// CaseOpened is true for T1 and T7.
+	//
+	//oto:retired its production reader was `alertObserver.settleGroup`, deleted with
+	// the grouping module — it was how a batch knew a generation had gained an
+	// episode. Kept with `CaseID` and `Transition` as one audit record rather than
+	// cherry-picked out of it. No production reader exists, so this is `retired` and
+	// not `reachable-ok`.
 	CaseOpened bool
 	// Clamped records that §B.3.2 pulled `ended_at` forward because the upstream
 	// clock ran backwards. THE CALLER MUST accumulate ClampSkew into
@@ -202,12 +257,36 @@ func (s *Service) observe(
 	// thing again, and §H.6 turns that into a root UPDATE and never a repost. It
 	// is the largest noise reduction available to oto and it is the one Reason no
 	// per-alert transition can produce, because nothing transitioned.
-	if opt.GroupReason != "" && opt.GroupID != nil && *opt.GroupID != uuid.Nil {
-		acc.notifies = append(acc.notifies, notifyRequest{
-			groupID: *opt.GroupID,
-			reason:  opt.GroupReason,
-			actor:   string(domain.ActorIngest.String()),
-		})
+	if opt.BatchReason != "" {
+		// ⭐ ONE PER OPEN CASE, and `acc.latest` is exactly the right source: it is
+		// "the batch's view of each Alert's current episode", already read in one
+		// round trip at step 3, so this costs no extra query. A closed episode is
+		// skipped — a repeat is Alertmanager saying the same thing again, and there
+		// is no conversation to refresh for an alert that is not firing.
+		//
+		// ⛔⛔ IT RANGES OVER `alertIDs`, NOT OVER THE MAP, AND THAT IS NOT A STYLE
+		// CHOICE. Ranging `acc.latest` directly is Go map order, so the enqueued
+		// `notify.evaluate` jobs reached `EnqueueMany` in a random order —
+		// MEASURED at 2 departures in 10 runs, not reasoned. Every sibling producer
+		// on this accumulator is deterministic on purpose: `projectionOrder` exists
+		// three fields up "so the flush is deterministic". A batch that enqueues the
+		// same work in a different order each run makes a failure impossible to
+		// reproduce from its own logs, which is the cost this file already pays to
+		// avoid everywhere else.
+		for _, id := range alertIDs {
+			ac, ok := acc.latest[id]
+			if !ok {
+				continue
+			}
+			if !ac.EndedAt().IsZero() {
+				continue
+			}
+			acc.notifies = append(acc.notifies, notifyRequest{
+				caseID: ac.ID(),
+				reason: opt.BatchReason,
+				actor:  string(domain.ActorIngest.String()),
+			})
+		}
 	}
 
 	// 4. The batch's writes, ONE round trip each, mirroring the reads above
@@ -524,18 +603,16 @@ func (s *Service) applyOpen(
 		// human's acknowledgement stopped applying is a timeline entry nobody is
 		// told about.
 		acc.notifies = append(acc.notifies, notifyRequest{
-			groupID: groupOf(opt, opened),
 			reason:  reasonUnacked,
 			alertID: ptr(alert.ID()),
-			caseID:  ptr(opened.ID()),
+			caseID:  opened.ID(),
 			actor:   actor.Kind().String(),
 		})
 	}
 	acc.notifies = append(acc.notifies, notifyRequest{
-		groupID: groupOf(opt, opened),
 		reason:  reasonFired,
 		alertID: ptr(alert.ID()),
-		caseID:  ptr(opened.ID()),
+		caseID:  opened.ID(),
 		actor:   actor.Kind().String(),
 	})
 	return opened, nil
@@ -549,7 +626,7 @@ func (s *Service) applyOpen(
 // routed to `applyOpen`.
 func (s *Service) applyEdge(
 	ctx context.Context, scope db.TenantScope, alert domain.Alert, o domain.Observation,
-	r domain.TransitionResult, actor domain.Actor, opt ObserveOptions,
+	r domain.TransitionResult, actor domain.Actor, _ ObserveOptions,
 	out *ObserveOutcome, acc *observeAccum,
 ) (domain.Case, bool, error) {
 	if err := s.persistTransition(ctx, scope, r, o); err != nil {
@@ -573,10 +650,9 @@ func (s *Service) applyEdge(
 	// stop. It is false at W=0, where no close is ever deferred.
 	if reason := reasonFor(r.ID); reason != "" && !r.CloseDeferred {
 		acc.notifies = append(acc.notifies, notifyRequest{
-			groupID: groupOf(opt, ac),
 			reason:  reason,
 			alertID: ptr(alert.ID()),
-			caseID:  ptr(ac.ID()),
+			caseID:  ac.ID(),
 			actor:   actor.Kind().String(),
 		})
 	}
@@ -587,7 +663,7 @@ func (s *Service) applyEdge(
 // `case.opened` event. A new episode ALWAYS starts unacked (T10).
 func (s *Service) openEpisode(
 	ctx context.Context, scope db.TenantScope, alert domain.Alert, o domain.Observation,
-	at domain.ObservationTime, actor domain.Actor, opt ObserveOptions, seq int,
+	at domain.ObservationTime, actor domain.Actor, _ ObserveOptions, seq int,
 ) (domain.Case, []domain.Event, error) {
 	caseID := id.New()
 
@@ -598,7 +674,6 @@ func (s *Service) openEpisode(
 		ID:              caseID,
 		OrgID:           scope.OrgID(),
 		AlertID:         alert.ID(),
-		GroupID:         idOrNil(opt.GroupID),
 		Seq:             seq,
 		Actor:           actor,
 		At:              at,
@@ -616,7 +691,6 @@ func (s *Service) openEpisode(
 	persisted, err := s.cases.OpenCase(ctx, scope, domain.OpenCase{
 		ID:              draft.ID(),
 		AlertID:         draft.AlertID(),
-		GroupID:         opt.GroupID,
 		Seq:             draft.Seq(),
 		StartedAt:       draft.StartedAt(),
 		SourceStartsAt:  draft.SourceStartsAt(),
@@ -1064,13 +1138,6 @@ func kindOf(t domain.TransitionID) domain.TransitionKind {
 	}
 }
 
-func groupOf(opt ObserveOptions, o domain.Case) uuid.UUID {
-	if opt.GroupID != nil && *opt.GroupID != uuid.Nil {
-		return *opt.GroupID
-	}
-	return o.GroupID()
-}
-
 func alertCreatedEvent(a domain.Alert, at domain.ObservationTime, actor domain.Actor) (domain.Event, error) {
 	return domain.NewEvent(domain.EventParams{
 		ID:        id.New(),
@@ -1102,7 +1169,6 @@ func autoUnackEvent(o domain.Case, at domain.ObservationTime) (domain.Event, err
 		OrgID:     o.OrgID(),
 		AlertID:   o.AlertID(),
 		CaseID:    o.ID(),
-		GroupID:   o.GroupID(),
 		Type:      domain.EventCaseUnacknowledged,
 		At:        at,
 		Actor:     actor,
@@ -1128,13 +1194,6 @@ func nilID(v uuid.UUID) *uuid.UUID {
 	}
 	out := v
 	return &out
-}
-
-func idOrNil(p *uuid.UUID) uuid.UUID {
-	if p == nil {
-		return uuid.Nil
-	}
-	return *p
 }
 
 func strPtr(v string) *string {

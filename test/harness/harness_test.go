@@ -34,31 +34,32 @@ func TestPostgresAndBuildersProduceAUsableTenant(t *testing.T) {
 	org := h.Org()
 	user := h.User(org)
 	cluster := h.Cluster(org)
-	source := h.Source(org, cluster)
-	group := h.Group(org, source, cluster)
+	// The source is seeded for its own sake: it proves the `alert_sources` FK graph
+	// resolves. Nothing reads it back now that the group it used to be routed into
+	// is gone (git-bug `7570090`).
+	h.Source(org, cluster)
 	alert := h.AlertWith(org, cluster, harness.DefaultLabels())
-	ac := h.Case(alert, group)
+	ac := h.Case(alert)
 
 	if !org.Scope.Valid() || org.Scope.OrgID() != org.ID {
 		t.Fatalf("the scope does not authorise its own org: %v", org.Scope)
 	}
 
-	// The identity keys are COMPUTED, not invented: both CHECK constraints would
-	// have rejected a hand-rolled string, and a string that happened to match
-	// would still not agree with the ingest path.
-	var storedAlertKey, storedGroupKey string
+	// The identity key is COMPUTED, not invented: `alerts_key_ck` would have
+	// rejected a hand-rolled string, and a string that happened to match would
+	// still not agree with the ingest path.
+	//
+	// ⛔ `alert_groups.group_key` WAS READ BACK HERE TOO (git-bug `7570090`). The
+	// table is dropped, so `alert_key` is the only computed identity a seed still
+	// carries — and the episode below is the conversation, which needs no key.
+	var storedAlertKey string
 	if err := h.Pool.QueryRow(h.Ctx,
-		`SELECT a.alert_key, g.group_key
-		   FROM alerts a JOIN alert_groups g ON g.org_id = a.org_id
-		  WHERE a.id = $1 AND g.id = $2`, alert.ID, group.ID).
-		Scan(&storedAlertKey, &storedGroupKey); err != nil {
+		`SELECT alert_key FROM alerts WHERE id = $1`, alert.ID).
+		Scan(&storedAlertKey); err != nil {
 		t.Fatalf("read back the seeded rows: %v", err)
 	}
 	if storedAlertKey != harness.AlertKey(org.ID, cluster.Key, alert.Labels).String() {
 		t.Fatalf("alert_key %q does not match the computed identity", storedAlertKey)
-	}
-	if storedGroupKey != group.Key.String() {
-		t.Fatalf("group_key %q != %q", storedGroupKey, group.Key)
 	}
 
 	// The case is the alert's current one, which is the projection every

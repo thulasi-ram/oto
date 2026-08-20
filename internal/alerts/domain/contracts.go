@@ -57,9 +57,19 @@ type Observation struct {
 	// See the column comment in 00039_delivery_drills.sql for the complete list
 	// of reads that were changed. An aggregate that forgets is a silently wrong
 	// number in a report a customer is paying for.
-	Synthetic  bool
-	BatchID    uuid.UUID
-	SourceID   uuid.UUID
+	Synthetic bool
+	BatchID   uuid.UUID
+	// ⛔ `SourceID uuid.UUID` WAS HERE AND IS DELETED (git-bug `7570090`). It named
+	// the `alert_sources` row the batch arrived on, and its only reader was the
+	// grouping module, which stamped `alert_groups.source_id` so a generation could
+	// be joined back to the Alertmanager it came from. There is no generation and no
+	// join, and NOTHING `alerts` OWNS CARRIES A SOURCE — not `alerts`, not
+	// `alert_cases`, not `clusters` — so carrying the id one module further would be
+	// carrying it to nobody.
+	//
+	// ⭐ THE PROVENANCE ITSELF IS NOT LOST, only this copy of it: `ingest_batches`
+	// still records `source_id` on every batch (`ingestion/service/accept.go`), which
+	// is where "which Alertmanager sent this" is answered and always was.
 	ClusterID  uuid.UUID
 	ClusterKey ClusterKey
 
@@ -90,42 +100,41 @@ type Observation struct {
 	// reason to reject an observation (C12).
 	SkewMS int64
 
-	// -------------------------------------------------- the grouping provenance
+	// ------------------------------------------------ the envelope's own account
 	//
-	// ⛔ NONE OF THE THREE FIELDS BELOW IS A §C.4 KEY INPUT ANY MORE, AND NOTHING
-	// MAY MAKE ONE OF THEM ONE AGAIN. Since ADR 0038 the group key is derived from
-	// the alert's OWN labels — `(org, cluster, alertname, namespace-or-∅)` — every
-	// one of which is already on this struct as `ClusterKey` and `Labels`. What
-	// remains here is what Alertmanager was DOING when the observation arrived:
-	// provenance recorded on the generation and rendered in a card's footer, never
-	// identity.
+	// ⛔ `Receiver string` AND `SourceGroupKey string` WERE HERE AND ARE BOTH
+	// DELETED (git-bug `7570090`). They were the Alertmanager receiver this webhook
+	// was delivered to and Alertmanager's own `groupKey`, and they travelled on the
+	// Observation for exactly one consumer: the INGEST ORCHESTRATOR, which stamped
+	// them onto the `alert_groups` generation it resolved at §G.4 step 4. There is
+	// no generation, no step 4 and no orchestrator, so both were being carried
+	// across a module boundary to be dropped on the floor.
 	//
-	// ⭐ They are still CARRIED, NEVER READ, by this module. They travel on the
-	// Observation because the Observation is the only thing that crosses from
-	// `ingestion` to the INGEST ORCHESTRATOR, which resolves the AlertGroup
-	// generation at §G.4 step 4 — between the alert upsert and the state machine.
+	// ⭐ NEITHER FACT IS LOST, AND THAT IS WHY DELETING THE FIELDS IS SAFE RATHER
+	// THAN MERELY TIDY. `ingest_batches` already stores `receiver` and `group_key`
+	// verbatim off the envelope (`ingestion/service/accept.go`, columns added with
+	// the table), retained for `orgs.settings.raw_retention_days`. "Which receiver
+	// did this arrive through" and "what did Alertmanager call this group" are
+	// answered from the batch — which is the honest place, because they are
+	// properties of a DELIVERY and never of an alert.
 	//
-	// ⛔ `alerts` must not import `grouping` to record a signal: an observation
-	// whose group could not be resolved is still recorded in full. The RESOLVED
-	// group comes back in through ObserveOptions.GroupID, which is why that field
-	// exists at all.
+	// ⛔ AND THE HAZARD THAT GUARDED `SourceGroupKey` STILL APPLIES WHEREVER IT IS
+	// READ, so it is restated rather than deleted with the field: Alertmanager's
+	// `groupKey` IS NEVER PARSED and is never an identity. It embeds the route path,
+	// it is unescaped and unbounded, and it changes on every `alertmanager.yml`
+	// reload — anything keyed by it would be reborn on every route edit (§C.4).
+	// Since ADR 0038 oto's own key is derived from the alert's OWN labels, every one
+	// of which is already on this struct as `ClusterKey` and `Labels`.
 
-	// Receiver is the Alertmanager receiver this webhook was delivered to, "" for
-	// a reconciler-sourced observation. PROVENANCE ONLY: one alert reaching two
-	// receivers via `continue: true` used to occupy two groups at once, and a
-	// thing cannot be identical to two different things.
-	Receiver string
-	// SourceGroupKey is Alertmanager's OWN `groupKey`, carried verbatim so it can
-	// be stored verbatim for observability.
-	//
-	// ⛔ IT IS NEVER PARSED, and it is never the group's identity. It embeds the
-	// route path, it is unescaped and unbounded, and it changes on every
-	// `alertmanager.yml` reload — a group keyed by it would be reborn, with a new
-	// Slack thread, every time an operator edited a route (§C.4).
-	SourceGroupKey string
 	// NotificationReason is Alertmanager's `notification_reason` for this
-	// delivery (C5), recorded on the generation and feeding the §H.6 table. Empty
-	// on Alertmanager older than 0.32.0.
+	// delivery (C5). Empty on Alertmanager older than 0.32.0.
+	//
+	// ⭐ IT SURVIVED ITS TWO NEIGHBOURS BECAUSE IT ALONE HAS A LIVE READER.
+	// `app.batchReasonFor` maps it onto the one §H.6 Reason no per-alert transition
+	// can produce — `repeat`, a root UPDATE rather than a repost, which
+	// `alerts/service` calls the largest noise reduction available to oto. It is
+	// read from `obs[0]`, so it must stay on the Observation and not move to the
+	// batch with the other two.
 	NotificationReason string
 }
 
@@ -394,10 +403,16 @@ type CaseFilter struct {
 // ⛔ THERE IS NO `ReopenOf`. `seq` is 1-based and gapless, so the episode this
 // one succeeds is the row at `seq - 1` and a column repeating that was a second
 // spelling of the same edge. ADR 0040 dropped it with `reopen_count`.
+//
+// ⛔ AND THERE IS NO `GroupID *uuid.UUID`. It named the `alert_groups` generation
+// the new episode joined, and it is DELETED (git-bug `7570090`) from both ends at
+// once: no caller had set it since the ingest orchestrator stopped resolving a
+// group, and `repository.OpenCase` had already dropped it from the INSERT's
+// argument list, so it was a nil pointer travelling between two places that had
+// both stopped caring. A Case IS the conversation; it joins nothing.
 type OpenCase struct {
 	ID              uuid.UUID
 	AlertID         uuid.UUID
-	GroupID         *uuid.UUID
 	Seq             int
 	StartedAt       time.Time
 	SourceStartsAt  time.Time

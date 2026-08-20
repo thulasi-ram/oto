@@ -76,7 +76,7 @@ func TestEvaluateTwiceAllocatesOneSequence(t *testing.T) {
 	require.NoError(t, err)
 
 	intent := service.Intent{
-		GroupID:      fx.groupID,
+		CaseID:       fx.caseID,
 		Reason:       domain.ReasonFired,
 		StateVersion: 1,
 	}
@@ -94,7 +94,7 @@ func TestEvaluateTwiceAllocatesOneSequence(t *testing.T) {
 	require.Zero(t, second.Deliveries, "a re-run creates no delivery, so it must count none")
 
 	th, err := threads.Ensure(ctx, fx.scope, fx.channel.ID,
-		domain.SubjectAlertGroup, fx.groupID, clk.Now().UTC())
+		domain.SubjectCase, fx.caseID, clk.Now().UTC())
 	require.NoError(t, err)
 
 	next, lastSent := nextSeqOf(t, fx.pool, th.ID)

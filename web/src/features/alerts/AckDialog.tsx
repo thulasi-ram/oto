@@ -11,18 +11,12 @@
  * would drift is the sentence explaining that a receipt does not change the
  * signal. `SnoozeDialog` beside it made the same call for the same reason.
  *
- * ⛔ IT NEVER RUNS THE REQUEST ITSELF. The caller hands in `onSubmit`, because
- * the receipt is written by a different endpoint depending on what is being
- * acknowledged — `POST /cases/{id}/ack` for one firing episode, or
- * `POST /alert-groups/{id}/ack` to fan one out across a group's members, and
- * `…/unack` for either when `withdrawing` — and the idempotency key is minted
- * here, once per gesture, so a caller cannot re-mint one on a retry.
+ * ⛔ IT NEVER RUNS THE REQUEST ITSELF. The caller hands in `onSubmit` — `POST
+ * /cases/{id}/ack`, or `…/unack` when `withdrawing` — and the idempotency key is
+ * minted here, once per gesture, so a caller cannot re-mint one on a retry.
  *
- * ⚠️ `withdrawing` IS NOT DECORATION AND WAS NOT ALWAYS REACHABLE. The prop and its
- * second generated gate existed for a while with no caller passing them, because
- * the group-scoped `unack` endpoint did not exist: fanning an acknowledgement out
- * across a group was a one-way gesture over every one of its members. The dialog
- * was one prop away from working, and the missing half was on the server.
+ * ⚠️ `withdrawing` GATES THE REQUEST ON THE CONTRACT'S `UnackRequest` rather than
+ * `AckRequest`, which is a second generated schema and not a cosmetic flag.
  *
  * Validation is local **and** server-side, and the two are not redundant: the
  * local pass (valibot, mirroring the contract's bounds) stops an obviously bad
@@ -116,26 +110,18 @@ const UnackFormSchema = v.pipe(
 /* -------------------------------------------------------------------------- */
 
 /**
- * What a receipt is being written on.
- *
- * ⛔ `"case"` IS THE ONLY REAL SUBJECT. A Case is one contiguous firing episode
- * of one alert, and it is the thing a human can have seen — which is why the
- * endpoint is `POST /cases/{id}/ack` and why the receipt clears itself when the
- * next episode opens. There is no receipt on an Alert: an identity outlives its
- * firings, so "seen" would go on saying so about a firing nobody has looked at.
- *
- * ⛔ `"group"` IS A FAN-OUT AND NOT A SUBJECT AT ALL. `POST
- * /alert-groups/{id}/ack` writes one receipt onto each member's open case; the
- * group itself carries none, and every string under this mode says whose
- * receipts are being written rather than pretending the batch can be
- * acknowledged.
+ * ⛔ A CASE IS THE ONLY SUBJECT, AND SINCE git-bug 7570090 IT IS THE ONLY ONE
+ * THERE HAS EVER BEEN A SECOND CANDIDATE FOR. A Case is one contiguous firing
+ * episode of one alert, and it is the thing a human can have seen — which is
+ * why the endpoint is `POST /cases/{id}/ack` and why the receipt clears itself
+ * when the next episode opens. There is no receipt on an Alert: an identity
+ * outlives its firings, so "seen" would go on saying so about a firing nobody
+ * has looked at. The `subject` prop that used to pick between a case and an
+ * AlertGroup fan-out went with the AlertGroup.
  */
-export type AckSubject = "case" | "group";
-
 export interface AckDialogProps {
   readonly open: boolean;
   readonly onClose: () => void;
-  readonly subject: AckSubject;
   /** Withdrawing a receipt rather than writing one. Gated by a second schema. */
   readonly withdrawing?: boolean;
   /**
@@ -148,38 +134,13 @@ export interface AckDialogProps {
   readonly onSuccess: () => void;
 }
 
-const TITLE: Record<AckSubject, string> = {
-  case: "Acknowledge this case",
-  group: "Acknowledge every member's open case",
-};
+const TITLE = "Acknowledge this case";
 
-/**
- * ⭐ THE GROUP SENTENCE SAYS WHAT THE FAN-OUT DOES **NOT** COVER. It writes one
- * receipt per member that is in the group now, and nothing more: an alert
- * notified under it ten minutes from now is unacknowledged, because a receipt is
- * a record that a human saw something and cannot be written in advance of their
- * seeing it. An operator who believes otherwise has silenced their own future
- * signal, so the limit is stated at the moment they commit rather than
- * discovered later.
- */
-const DESCRIPTION: Record<AckSubject, string> = {
-  case: "A receipt that a human has seen this firing. It does not change the alert: it stays firing until the upstream says otherwise, and the receipt clears itself when the next firing opens.",
-  group:
-    "One receipt per member whose case is still open. It changes nothing about the signals — they stay firing until the upstream says otherwise — and alerts notified under this group afterwards are NOT acknowledged, because a receipt is never predictive.",
-};
+const DESCRIPTION =
+  "A receipt that a human has seen this firing. It does not change the alert: it stays firing until the upstream says otherwise, and the receipt clears itself when the next firing opens.";
 
-/**
- * ⭐ THE GROUP SENTENCE SAYS THE WITHDRAWAL IS A FAN-OUT TOO. Where the group ack
- * writes one receipt per member, the withdrawal removes one per member — it is
- * the same verb read backwards and not a claim over the set, so an alert
- * notified under the group afterwards was never acknowledged and is not
- * "un-acked" either. Members that carry no receipt are simply skipped.
- */
-const WITHDRAW_DESCRIPTION: Record<AckSubject, string> = {
-  case: "Recorded as a deliberate withdrawal, which is distinct from the automatic one that happens when the next firing opens.",
-  group:
-    "Removes the receipt from every member whose case is still open, recorded as a deliberate withdrawal — distinct from the automatic one that happens when the next firing opens. A member that carries no receipt is skipped rather than failing the request.",
-};
+const WITHDRAW_DESCRIPTION =
+  "Recorded as a deliberate withdrawal, which is distinct from the automatic one that happens when the next firing opens.";
 
 export const AckDialog: Component<AckDialogProps> = (props) => {
   const [note, setNote] = createSignal("");
@@ -219,12 +180,10 @@ export const AckDialog: Component<AckDialogProps> = (props) => {
       <ModalContent class="max-w-96">
         <ModalHeader>
           <ModalTitle>
-            {props.withdrawing === true ? "Withdraw acknowledgement" : TITLE[props.subject]}
+            {props.withdrawing === true ? "Withdraw acknowledgement" : TITLE}
           </ModalTitle>
           <ModalDescription>
-            {props.withdrawing === true
-              ? WITHDRAW_DESCRIPTION[props.subject]
-              : DESCRIPTION[props.subject]}
+            {props.withdrawing === true ? WITHDRAW_DESCRIPTION : DESCRIPTION}
           </ModalDescription>
         </ModalHeader>
 
@@ -243,17 +202,9 @@ export const AckDialog: Component<AckDialogProps> = (props) => {
           <Show when={mutation.error instanceof ApiError && mutation.error.status === 412}>
             <ErrorBanner>
               <Switch>
-                <Match when={props.withdrawing === true && props.subject === "group"}>
-                  There is nothing here to withdraw — no member of this group has a case that is
-                  still open. They may have resolved while this dialog was open.
-                </Match>
                 <Match when={props.withdrawing === true}>
                   This case ended before the request landed, so there is no receipt left to
                   withdraw. The alert may have resolved while this dialog was open.
-                </Match>
-                <Match when={props.subject === "group"}>
-                  There is nothing here to acknowledge — no member of this group has a case that is
-                  still open. They may have resolved while this dialog was open.
                 </Match>
                 <Match when={true}>
                   This case ended before the request landed, so there is nothing to acknowledge. The

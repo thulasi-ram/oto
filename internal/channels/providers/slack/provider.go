@@ -31,11 +31,18 @@ const (
 // CapDedupeKey is absent deliberately: Slack does no dedupe of its own, and
 // claiming it would let the dispatch service skip oto's idempotency key — which is
 // the only thing standing between an at-least-once queue and a duplicated page.
+//
+// ⛔ `domain.CapBroadcast` WAS THE FIFTH TERM AND IS DELETED (git-bug 7570090).
+// Slack was the ONLY provider that ever claimed it — the webhook descriptor never
+// did — so this line was the whole of oto's broadcast advertisement. Slack still
+// accepts `reply_broadcast`; oto no longer asks for it, and a capability oto
+// cannot exercise is a promise to the dispatch service it cannot keep. The bit
+// position itself is held open in `channels/domain/ports.go` because the bitmask
+// is persisted; see the tombstone there before touching the iota.
 const capabilities = domain.CapThreading |
 	domain.CapAmend |
 	domain.CapRichLayout |
-	domain.CapInteractive |
-	domain.CapBroadcast
+	domain.CapInteractive
 
 // Provider mints Slack Channels from stored config and a sealed credential.
 //

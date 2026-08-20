@@ -287,11 +287,13 @@ func TestEnrichmentFailureNeverBlocksTheNotification(t *testing.T) {
 
 	released := e.notifier.releaseCalls()
 	require.Len(t, released, 1, "exactly one release, whatever the enrichers did")
-	assert.Equal(t, e.groupID, released[0].GroupID)
-	assert.Equal(t, e.alertID, released[0].AlertID)
 	assert.Equal(t, e.caseID, released[0].CaseID)
+	assert.Equal(t, e.alertID, released[0].AlertID)
 	assert.Equal(t, 7, released[0].StateVersion,
-		"pinned to the group state the evaluation was minted against (SPEC §C.7)")
+		"pinned to the state the evaluation was minted against (SPEC §C.7). ⚠️ The env "+
+			"still supplies a 7; the PRODUCTION adapter no longer can, because the group "+
+			"carried that version and went with git-bug 7570090. This assertion proves the "+
+			"value is threaded, NOT that anything upstream still mints a distinct one")
 }
 
 // TestTheCardIsReleasedEvenWhenTheReleaseItselfFails: a failure to release is
@@ -314,13 +316,20 @@ func TestTheCardIsReleasedEvenWhenTheReleaseItselfFails(t *testing.T) {
 	assert.Len(t, e.notifier.releaseCalls(), 1, "it was attempted")
 }
 
-// TestAnUngroupedCaseReleasesNothing: no open group means no card to
-// amend and nothing to release.
-func TestAnUngroupedCaseReleasesNothing(t *testing.T) {
+// TestACaselessLoadReleasesNothing: no conversation means no card to amend and
+// nothing to release.
+//
+// ⛔ IT WAS `TestAnUngroupedCaseReleasesNothing` AND PINNED `loaded.GroupID` TO
+// uuid.Nil (git-bug `7570090`). The scenario it described — an episode in no open
+// group — cannot happen any more, because one Case IS the conversation. What
+// survives is the GUARD, which is why this is renamed rather than deleted: a
+// loader that could not resolve the episode still hands back a zero id, and the
+// pipeline must decline to enqueue an evaluation against it.
+func TestACaselessLoadReleasesNothing(t *testing.T) {
 	t.Parallel()
 
 	e := newEnv(t, nil, &stubEnricher{name: "test.alpha"})
-	e.subjects.loaded.GroupID = uuid.Nil
+	e.subjects.loaded.CaseID = uuid.Nil
 
 	out := e.run(t, domain.PhaseInline)
 
@@ -791,7 +800,7 @@ func TestTheAsyncPassAnnouncesExactlyOnceHoweverManyEnrichersFinished(t *testing
 	require.Len(t, notices, 1, "one call per pass, whatever the number of enrichers")
 	assert.Equal(t, []string{"test.one", "test.three", "test.two"}, notices[0].Enrichers,
 		"named in deterministic order, so the context line does not churn")
-	assert.Equal(t, e.groupID, notices[0].GroupID)
+	assert.Equal(t, e.caseID, notices[0].CaseID)
 	assert.Equal(t, 7, notices[0].StateVersion)
 }
 

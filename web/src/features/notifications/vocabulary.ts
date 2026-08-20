@@ -31,8 +31,6 @@ import type {
 /** Every reason a notification can carry, phrased as the event it records. */
 export const REASON_LABEL: Record<NotificationReason, string> = {
   fired: "started firing",
-  new_alerts: "new alerts joined",
-  some_resolved: "some resolved",
   all_resolved: "all resolved",
   repeat: "repeat",
   suppressed: "suppressed upstream",

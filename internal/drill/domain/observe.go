@@ -16,10 +16,19 @@ import (
 // whereas an instrumented pipeline would happily report a stage that no longer
 // exists.
 type Artifacts struct {
-	Batch        BatchFact
-	Alert        AlertFact
+	Batch BatchFact
+	Alert AlertFact
+	// Case is also THE CONVERSATION. Every artefact below is reached through it:
+	// the notification by `(conversation_kind, conversation_id) = ('case', case)`
+	// and the thread by `(subject_kind, subject_id) = ('case', case)`.
+	//
+	// ⛔ `Group GroupFact` WAS HERE AND IS DELETED (git-bug `7570090`). It carried
+	// the `alert_groups` generation and the membership row, and both are dropped from
+	// the schema; the notification and the thread were reached THROUGH it, by
+	// `notifications.group_id` and by `subject_kind = 'alert_group'`, and they are now
+	// reached through the Case directly. The evidence got shorter, not weaker: one
+	// fewer row has to exist for a drill to prove a card landed.
 	Case         CaseFact
-	Group        GroupFact
 	Notification NotificationFact
 	Threads      []ThreadFact
 	Deliveries   []DeliveryFact
@@ -62,16 +71,14 @@ type CaseFact struct {
 	RuleName       string
 }
 
-// GroupFact is the AlertGroup generation and the membership row.
-type GroupFact struct {
-	Found      bool
-	ID         uuid.UUID
-	Key        string
-	Generation int
-	Synthetic  bool
-	Member     bool
-	Title      string
-}
+// ⛔ `GroupFact` WAS HERE AND IS DELETED (git-bug `7570090`). It was the
+// `alert_groups` generation plus the membership row — `ID`, `Key`, `Generation`,
+// `Synthetic`, `Member`, `Title` — and every one of those columns is dropped with
+// the table. `Member` was the interesting one: it existed because a generation
+// could be resolved BEFORE the alert joined it, so a drill that reported "grouped"
+// one poll early would be claiming something it had not seen. That race has no
+// successor to inherit — a Case is opened BY its alert, so there is no window in
+// which the conversation exists and the alert is not in it.
 
 // NotificationFact is the intent, including a suppressed one.
 type NotificationFact struct {
@@ -126,14 +133,26 @@ type Destination struct {
 	Mode              string
 	ThreadID          string
 	ProviderMessageID string
-	// Broadcast records whether this delivery went out as a channel-visible
-	// broadcast reply rather than a thread reply. On a drill it is expected to be
-	// false — a first notification posts a root — and it is reported anyway so an
-	// operator can see the decision was made rather than skipped.
-	Broadcast  bool
-	Error      string
-	ErrorClass string
+	Error             string
+	ErrorClass        string
 }
+
+// ⛔ `Destination.Broadcast bool` WAS HERE AND IS DELETED. It was
+// `Mode == "broadcast_reply"`, reported "so an operator can see the decision was
+// made rather than skipped" — and there is no decision left to see: the thread
+// broadcast mechanism is removed, `BroadcastPolicy.Warrants` had exactly one
+// reachable Reason and the owner ruled it goes. A boolean that can only ever read
+// false is not evidence, it is a column an operator learns to ignore.
+//
+// ⚠️ `Mode` SURVIVES AND IS THE HONEST VERSION OF THE SAME QUESTION. It carries the
+// provider's own word for what oto did — `post_root`, `update_root`, `thread_reply`
+// — so a result screen that wants to say how the card landed reads that instead of
+// a derived flag with one possible value.
+//
+// ⭐ THE TRANSPORT WENT WITH IT, AND THE ORDER WAS FORCED. `broadcast` was a
+// `required` property of `DrillDestinationDTO` under `additionalProperties: false`,
+// so the published contract had to drop it before `api/dto.go` could — a schema that
+// demands a byte the domain has no fact for is a schema no honest handler satisfies.
 
 // Observe turns evidence into the staged result.
 //
@@ -149,7 +168,6 @@ func Observe(a Artifacts, timedOut bool) Result {
 		processStage(a),
 		identityStage(a),
 		caseStage(a),
-		groupStage(a),
 		ruleStage(a),
 		policyStage(a),
 		threadStage(a),
@@ -225,7 +243,8 @@ func caseStage(a Artifacts) Stage {
 			Detail: "waiting for a firing episode to open"}
 	}
 	return Stage{Name: StageCase, Status: StatusPassed,
-		Detail: "a firing episode opened — this is the row an operator would acknowledge",
+		Detail: "a firing episode opened — this is the row an operator would acknowledge, " +
+			"and it is the conversation the card lands in",
 		Facts: map[string]string{
 			"case_id": a.Case.ID.String(),
 			"seq":     strconv.Itoa(a.Case.Seq),
@@ -233,29 +252,18 @@ func caseStage(a Artifacts) Stage {
 		}}
 }
 
-func groupStage(a Artifacts) Stage {
-	if !a.Group.Found {
-		return Stage{Name: StageGroup, Status: StatusPending,
-			Detail: "waiting for the §C.4 group generation to resolve"}
-	}
-	if !a.Group.Member {
-		return Stage{Name: StageGroup, Status: StatusPending,
-			Detail: "the generation exists but the alert has not joined it yet"}
-	}
-	if !a.Group.Synthetic {
-		return Stage{Name: StageGroup, Status: StatusFailed,
-			Detail: "the group generation was opened but is NOT marked synthetic — it would be " +
-				"counted in the dashboard group totals. Report this.",
-			Facts: map[string]string{"group_key": a.Group.Key}}
-	}
-	return Stage{Name: StageGroup, Status: StatusPassed,
-		Detail: "a group generation was opened and the alert joined it — this generation owns the thread",
-		Facts: map[string]string{
-			"group_id":   a.Group.ID.String(),
-			"group_key":  a.Group.Key,
-			"generation": strconv.Itoa(a.Group.Generation),
-		}}
-}
+// ⛔ `groupStage` WAS HERE AND IS DELETED (git-bug `7570090`). It reported four
+// things and each has a successor or an obituary:
+//
+//   - "waiting for the §C.4 group generation to resolve" — there is no generation.
+//   - "the generation exists but the alert has not joined it yet" — a Case is opened
+//     BY its alert, so there is no window between the two to report on.
+//   - "the group generation was opened but is NOT marked synthetic" — that alarm was
+//     about `alert_groups.synthetic`, a second copy of the provenance mark that no
+//     longer exists. `identityStage` still raises it for `alerts.synthetic`, which is
+//     now the whole mark.
+//   - "this generation owns the thread" — the CASE owns the thread, and `caseStage`
+//     says so in the sentence an operator reads.
 
 func ruleStage(a Artifacts) Stage {
 	if !a.Case.Found {
@@ -304,7 +312,7 @@ func policyStage(a Artifacts) Stage {
 		facts["policy_id"] = a.Notification.PolicyID.String()
 	}
 	return Stage{Name: StagePolicy, Status: StatusPassed,
-		Detail: "a notification policy matched and routed this group to at least one destination",
+		Detail: "a notification policy matched and routed this Case to at least one destination",
 		Facts:  facts}
 }
 
@@ -315,10 +323,17 @@ func policyStage(a Artifacts) Stage {
 // working credentials, a working renderer and no notification policy, so the
 // channel test passes and no alert ever arrives — and until now nothing in the
 // product said so.
+//
+// ⚠️ ITS SENTENCE USED TO SAY "THIS GROUP'S LABELS" AND NOW SAYS "THIS ALERT'S"
+// (git-bug `7570090`). That is a correction, not a rewording: a policy is matched
+// against the alert's own label set rather than against `SplitLabels` of a
+// generation, so the labels an operator has to widen a matcher over are the ones
+// the identity stage printed one line earlier — not a derived four-axis subset they
+// have no way to see.
 func suppressionDetail(reason string) string {
 	switch reason {
 	case "no_policy":
-		return "no notification policy matched this group's labels, so nothing was sent. " +
+		return "no notification policy matched this alert's labels, so nothing was sent. " +
 			"This is the most common reason a working oto install never delivers anything: " +
 			"add a notification policy, or widen an existing one's matchers."
 	case "channel_disabled":
@@ -349,7 +364,7 @@ func suppressionDetail(reason string) string {
 func threadStage(a Artifacts) Stage {
 	if len(a.Threads) == 0 {
 		return Stage{Name: StageThread, Status: StatusPending,
-			Detail: "waiting for a channel thread to be opened for this group"}
+			Detail: "waiting for a channel thread to be opened for this Case"}
 	}
 	for _, t := range a.Threads {
 		if t.State == "open" {
@@ -485,7 +500,6 @@ func destinations(a Artifacts) []Destination {
 			Mode:              d.Mode,
 			ThreadID:          ts[d.ChannelID],
 			ProviderMessageID: d.ProviderMessageID,
-			Broadcast:         d.Mode == "broadcast_reply",
 			Error:             d.Error,
 			ErrorClass:        d.ErrorClass,
 		})

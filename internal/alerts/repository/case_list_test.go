@@ -16,7 +16,7 @@ import (
 
 // ⭐⭐ THE ORG-WIDE CASE LIST IS THE ONE READ THAT CROSSES TWO TABLES.
 //
-// `GET /api/v1/cases` filters on `alert_cases` — state, ack, group — and on
+// `GET /api/v1/cases` filters on `alert_cases` — state and ack — and on
 // `alerts` — severity, cluster, namespace, alertname — and the second half is
 // reached through a correlated `EXISTS` rather than a JOIN, because the two
 // tables share five column names. What is under test here is WHICH ROWS EACH
@@ -42,20 +42,17 @@ type caseListWorld struct {
 	repo *repository.CaseRepository
 	org  harness.Org
 
-	groupA uuid.UUID
-	groupB uuid.UUID
-
 	// openUnacked is the triage queue's whole population: firing, nobody has
-	// looked at it, severity critical, group A.
+	// looked at it, severity critical.
 	openUnacked uuid.UUID
-	// openAcked is firing and signed for. Group A, severity critical.
+	// openAcked is firing and signed for. Severity critical.
 	openAcked uuid.UUID
 	// ended is a closed episode, resolved upstream. It must never appear under
 	// `?state=open`, and it is the row that proves the state facet selects on
 	// liveness rather than on nothing at all.
 	ended uuid.UUID
-	// warning is firing and unacked like the first, but severity `warning` and
-	// group B — the row every alert-side facet has to be able to exclude.
+	// warning is firing and unacked like the first, but severity `warning` —
+	// the row every alert-side facet has to be able to exclude.
 	warning uuid.UUID
 	// synthetic belongs to an alert oto manufactured for a delivery drill. It
 	// must be absent unless asked for by name.
@@ -68,45 +65,35 @@ func newCaseListWorld(t *testing.T) caseListWorld {
 	h := harness.New(t)
 	org := h.Org()
 	cl := h.Cluster(org)
-	src := h.Source(org, cl)
-
-	gA := h.GroupWith(org, src, cl, map[string]string{
-		"alertname": "HighErrorRate", "namespace": "payments", "severity": "critical",
-	})
-	gB := h.GroupWith(org, src, cl, map[string]string{
-		"alertname": "DiskFilling", "namespace": "storage", "severity": "warning",
-	})
 
 	w := caseListWorld{
-		h:      h,
-		repo:   repository.NewCaseRepository(h.Pool),
-		org:    org,
-		groupA: gA.ID,
-		groupB: gB.ID,
+		h:    h,
+		repo: repository.NewCaseRepository(h.Pool),
+		org:  org,
 	}
 
-	seed := func(g harness.Group, kv map[string]string) uuid.UUID {
+	seed := func(kv map[string]string) uuid.UUID {
 		a := h.AlertWith(org, cl, kv)
-		return h.Case(a, g).ID
+		return h.Case(a).ID
 	}
 
-	w.openUnacked = seed(gA, map[string]string{
+	w.openUnacked = seed(map[string]string{
 		"alertname": "HighErrorRate", "namespace": "payments",
 		"severity": "critical", "instance": "i-1",
 	})
-	w.openAcked = seed(gA, map[string]string{
+	w.openAcked = seed(map[string]string{
 		"alertname": "HighErrorRate", "namespace": "payments",
 		"severity": "critical", "instance": "i-2",
 	})
-	w.ended = seed(gA, map[string]string{
+	w.ended = seed(map[string]string{
 		"alertname": "HighErrorRate", "namespace": "payments",
 		"severity": "critical", "instance": "i-3",
 	})
-	w.warning = seed(gB, map[string]string{
+	w.warning = seed(map[string]string{
 		"alertname": "DiskFilling", "namespace": "storage",
 		"severity": "warning", "instance": "i-4",
 	})
-	w.synthetic = seed(gA, map[string]string{
+	w.synthetic = seed(map[string]string{
 		"alertname": "HighErrorRate", "namespace": "payments",
 		"severity": "critical", "instance": "i-5",
 	})
@@ -287,28 +274,6 @@ func TestTheCaseListsIdentityFacetsAreAnsweredThroughTheAlert(t *testing.T) {
 		[]uuid.UUID{w.synthetic},
 		w.list(t, domain.CaseFilter{Synthetic: ptrTo(true)}),
 		"a drill's own result screen is the one caller that asks for these by name")
-}
-
-// TestTheCaseListsGroupFacetNamesTheNotificationGrouping.
-//
-// The promise: `?group_id=` restricts to the episodes one AlertGroup generation
-// holds — the object that owns one Slack thread. It is plumbing, not a
-// correlation and not an incident, and this filter is how "which episodes is that
-// thread about" is answered.
-func TestTheCaseListsGroupFacetNamesTheNotificationGrouping(t *testing.T) {
-	t.Parallel()
-
-	w := newCaseListWorld(t)
-
-	require.Equal(t,
-		[]uuid.UUID{w.ended, w.openAcked, w.openUnacked},
-		w.list(t, domain.CaseFilter{GroupIDs: []uuid.UUID{w.groupA}}))
-	require.Equal(t,
-		[]uuid.UUID{w.warning},
-		w.list(t, domain.CaseFilter{GroupIDs: []uuid.UUID{w.groupB}}))
-	require.Equal(t,
-		[]uuid.UUID{w.warning, w.ended, w.openAcked, w.openUnacked},
-		w.list(t, domain.CaseFilter{GroupIDs: []uuid.UUID{w.groupA, w.groupB}}))
 }
 
 // ⛔ TestTheCaseListCannotSeeAnotherTenantsEpisodes.

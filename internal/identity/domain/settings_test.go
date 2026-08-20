@@ -12,7 +12,9 @@ import (
 
 func intp(v int) *int       { return &v }
 func strp(v string) *string { return &v }
-func boolp(v bool) *bool    { return &v }
+
+// ⛔ `boolp` WAS HERE AND IS DELETED WITH ITS ONLY CALLER (git-bug 7570090).
+// `broadcast_on_resolved` was the only boolean field on `SettingsPatch`.
 
 // TestBoundsAreEnforcedServerSide is the property the settings UI must not be
 // trusted with. The request that sets `refire_grace_s` to 0 arrives from `curl`
@@ -161,7 +163,7 @@ func TestOriginDistinguishesAnOverrideFromTheDefault(t *testing.T) {
 func TestClearReturnsAKeyToTheDefault(t *testing.T) {
 	t.Parallel()
 
-	p := domain.SettingsPatch{RefireGraceS: intp(900), BroadcastOnResolved: boolp(true)}
+	p := domain.SettingsPatch{RefireGraceS: intp(900), DefaultVerbosity: strp("all")}
 	if p.Origin(domain.KeyRefireGrace) != domain.OriginOrg {
 		t.Fatal("setup: the override did not register")
 	}
@@ -173,9 +175,13 @@ func TestClearReturnsAKeyToTheDefault(t *testing.T) {
 	if got := p.Settings().RefireGrace; got != domain.DefaultRefireGrace {
 		t.Fatalf("after clear, effective %v, want the shipped default %v", got, domain.DefaultRefireGrace)
 	}
-	// Clearing one key must not disturb another.
-	if p.Origin(domain.KeyBroadcastOnResolved) != domain.OriginOrg {
-		t.Fatal("clearing refire_grace also cleared broadcast_on_resolved")
+	// Clearing one key must not disturb another. ⚠️ THE SECOND KEY IS DELIBERATELY A
+	// NON-INTEGER ONE: `Clear` reaches the integer keys through `intPtr` and the rest
+	// through a switch, so a bug in the switch is invisible if both keys are ints.
+	// This was `broadcast_on_resolved` until git-bug 7570090 deleted it, and
+	// `default_verbosity` is now the only non-integer key there is.
+	if p.Origin(domain.KeyDefaultVerbosity) != domain.OriginOrg {
+		t.Fatal("clearing refire_grace also cleared default_verbosity")
 	}
 }
 

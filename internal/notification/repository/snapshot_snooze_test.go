@@ -17,8 +17,8 @@ import (
 // TIMESTAMP SOMEBODY REMEMBERED TO COPY.
 //
 // The suppression path reads this snapshot and nothing else: `AllMembersSnoozed`
-// gates a group card and `FocusSnoozed` gates a fact about one alert
-// (`notification/service/notify.go`). Both used to be filled from
+// gates a card whose query named no focus and `FocusSnoozed` gates a fact about one
+// alert (`notification/service/notify.go`). Both used to be filled from
 // `alerts.snoozed_until` — a bare timestamp maintained by three write paths in
 // another module, reached as a string literal in SQL with no import and no
 // compiler error to break — while the authoritative row, which knows who
@@ -34,41 +34,53 @@ import (
 //	          speaking again — a card held back here is a card held back for a
 //	          reason that stopped applying.
 //
+// ⛔ THE CONSERVATIVE DIRECTION MOVED ONE LEVEL DOWN, IT DID NOT LEAVE
+// (git-bug `7570090`). A conversation holds exactly ONE Case and a Case has one
+// Alert, so there is no longer a group with one awake member for a majority-quiet
+// card to hide. What is left of the same conservatism is WHICH ROWS COUNT: an ended
+// snooze and an unswept one silence nothing, and a terminal Case is never quiet at
+// all — because the alert nobody asked to be quiet about is now the alert this card
+// IS about, and getting it wrong costs the whole alert rather than one line of it.
+//
 // ⛔ INTEGRATION AGAINST A REAL POSTGRES, ON PURPOSE. There is no unit-testable
 // seam: the behaviour under test is which table a `SELECT` names and which rows
 // its predicate admits, and a fake would name whichever table its author
 // believed in.
 
-// quietWorld is one group generation holding three members, one per way an alert
-// can relate to a snooze.
+// quietWorld is three conversations, one per way an alert can relate to a snooze.
 type quietWorld struct {
-	fx fixture
+	fx snapFixture
 
-	// held is the member oto is genuinely quiet about.
+	// held is the alert oto is genuinely quiet about.
 	held uuid.UUID
 	// woken had its snooze ended early: `ended_at` is set.
 	woken uuid.UUID
 	// unswept holds a live row whose clock ran out ten minutes ago.
 	unswept uuid.UUID
+
+	// caseOf names each alert's one Case, which is also its conversation.
+	caseOf map[uuid.UUID]uuid.UUID
 }
 
 func newQuietWorld(t *testing.T) quietWorld {
 	t.Helper()
 
-	fx := newFixture(t)
+	fx := newSnapFixture(t)
 	h := fx.h
 	now := h.Now()
 
-	w := quietWorld{fx: fx}
+	w := quietWorld{fx: fx, caseOf: map[uuid.UUID]uuid.UUID{}}
 
 	w.held = seedQuietAlert(t, h, fx, "HeldRightNow")
 	w.woken = seedQuietAlert(t, h, fx, "WokenEarly")
 	w.unswept = seedQuietAlert(t, h, fx, "ClockRanOutUnswept")
 
-	// The episode IS the membership since 00051: `seedQuietCase` writes
-	// `group_id`, and there is no second row to insert.
+	// ⭐ THREE CONVERSATIONS AND NOT ONE. These used to be three members of one
+	// generation, which is what made "every member quiet" a question worth asking of
+	// a set; a Case has exactly one Alert, so each of them is its own card and the
+	// question is asked three times.
 	for _, alertID := range []uuid.UUID{w.held, w.woken, w.unswept} {
-		seedQuietCase(t, h, fx, alertID, now.Add(-30*time.Minute))
+		w.caseOf[alertID] = seedQuietCase(t, h, fx, alertID, now.Add(-30*time.Minute))
 	}
 
 	seedQuietSnooze(t, h, fx, w.held, now.Add(-time.Hour), now.Add(3*time.Hour), nil)
@@ -79,13 +91,12 @@ func newQuietWorld(t *testing.T) quietWorld {
 	return w
 }
 
-func (w quietWorld) snapshot(t *testing.T, q domain.SnapshotQuery) domain.Snapshot {
+// snapshot reads the conversation of one alert. The Case is the conversation, so
+// naming the alert names the card.
+func (w quietWorld) snapshot(t *testing.T, alertID uuid.UUID, q domain.SnapshotQuery) domain.Snapshot {
 	t.Helper()
 
-	q.GroupID = w.fx.groupID
-	if q.MaxAlerts == 0 {
-		q.MaxAlerts = 10
-	}
+	q.CaseID = w.caseOf[alertID]
 	snap, err := repository.NewSnapshotRepository(w.fx.h.Pool, w.fx.h.Clock).
 		Snapshot(w.fx.h.Ctx, w.fx.scope, q)
 	require.NoError(t, err,
@@ -100,88 +111,134 @@ func TestTheCardsSnoozeFactsComeFromTheAuthoritativeRow(t *testing.T) {
 	t.Parallel()
 
 	w := newQuietWorld(t)
-	snap := w.snapshot(t, domain.SnapshotQuery{})
 
-	require.Len(t, snap.Alerts, 3, "every member renders; a snooze is a chip, not a filter")
-	require.Equal(t, 3, snap.MemberCount)
+	held := w.snapshot(t, w.held, domain.SnapshotQuery{})
+	require.Len(t, held.Alerts, 1, "the one Alert renders; a snooze is a chip, not a filter")
+	require.Equal(t, 1, held.MemberCount)
+	require.Equal(t, 1, held.SnoozedMemberCount)
+	require.Contains(t, held.SnoozedAlerts, w.held)
+	require.NotNil(t, held.Alerts[0].SnoozedUntil,
+		"the wake-up time comes off the snooze row, which is the only thing that has one")
 
-	require.Equal(t, 1, snap.SnoozedMemberCount,
-		"exactly one member is genuinely quiet. Counting the ended snooze or the unswept one "+
-			"would suppress a card for a quiet period that has already finished — an alert "+
-			"nobody is told about for a reason that stopped applying.")
+	woken := w.snapshot(t, w.woken, domain.SnapshotQuery{})
+	require.Len(t, woken.Alerts, 1)
+	require.Equal(t, 1, woken.MemberCount)
+	require.Zero(t, woken.SnoozedMemberCount,
+		"an ended snooze is over; `ended_at` is the row saying so. Counting it would "+
+			"suppress a card for a quiet period that has already finished — an alert nobody "+
+			"is told about for a reason that stopped applying.")
+	require.NotContains(t, woken.SnoozedAlerts, w.woken)
 
-	require.Contains(t, snap.SnoozedAlerts, w.held)
-	require.NotContains(t, snap.SnoozedAlerts, w.woken,
-		"an ended snooze is over; `ended_at` is the row saying so")
-	require.NotContains(t, snap.SnoozedAlerts, w.unswept,
+	unswept := w.snapshot(t, w.unswept, domain.SnapshotQuery{})
+	require.Len(t, unswept.Alerts, 1)
+	require.Zero(t, unswept.SnoozedMemberCount,
 		"a live row whose clock has run out is over too. The expiry sweep runs every 60 "+
 			"seconds, so for up to a minute `ended_at IS NULL` and the quiet period is "+
 			"finished — the read has to ask the clock, not just the column.")
+	require.NotContains(t, unswept.SnoozedAlerts, w.unswept)
 }
 
-// TestTheGroupIsSuppressedOnlyWhenEveryMemberIsGenuinelyQuiet is the decision the
+// TestTheCardIsSuppressedOnlyWhenItsOneAlertIsGenuinelyQuiet is the decision the
 // snapshot exists to feed.
-//
-// ⛔ THE CONSERVATIVE DIRECTION IS THE POINT. A group with ONE awake member is
-// not snoozed: silencing the whole card because most of it is quiet hides the one
-// alert nobody asked to be quiet about.
-func TestTheGroupIsSuppressedOnlyWhenEveryMemberIsGenuinelyQuiet(t *testing.T) {
+func TestTheCardIsSuppressedOnlyWhenItsOneAlertIsGenuinelyQuiet(t *testing.T) {
 	t.Parallel()
 
 	w := newQuietWorld(t)
-	require.False(t, w.snapshot(t, domain.SnapshotQuery{}).AllMembersSnoozed(),
-		"two of three members are awake, so the card must still go out")
 
-	// Give the other two live snoozes and the group goes quiet — the same read,
-	// the same table, a different set of rows.
-	h := w.fx.h
-	now := h.Now()
-	h.Exec(`UPDATE alert_snoozes SET ended_at = NULL, ended_reason = NULL,
-	          snoozed_at = $2, snoozed_until = $3
-	        WHERE alert_id IN ($4, $5) AND org_id = $1`,
-		w.fx.scope.OrgID(), now.Add(-time.Hour), now.Add(3*time.Hour), w.woken, w.unswept)
+	require.True(t, w.snapshot(t, w.held, domain.SnapshotQuery{}).AllMembersSnoozed(),
+		"the one alert this card is about is genuinely quiet, so oto says nothing")
+	require.False(t, w.snapshot(t, w.woken, domain.SnapshotQuery{}).AllMembersSnoozed(),
+		"its snooze was ended early; oto is speaking about this alert again")
+	require.False(t, w.snapshot(t, w.unswept, domain.SnapshotQuery{}).AllMembersSnoozed(),
+		"the clock has run out; the sweep is a lag in the bookkeeping, not in the promise")
+}
 
-	snap := w.snapshot(t, domain.SnapshotQuery{})
-	require.Equal(t, snap.MemberCount, snap.SnoozedMemberCount)
-	require.True(t, snap.AllMembersSnoozed())
+// TestTheTwoQuietTestsAgreeOnOneAlert is a NEW invariant, and it is one the
+// collapse creates rather than one it inherits.
+//
+// ⭐ `notify.go` CHOOSES BETWEEN THEM ON WHETHER THE QUERY NAMED A FOCUS —
+// `FocusSnoozed` when it did, `AllMembersSnoozed` when it did not — and while a
+// group had many members those two could legitimately disagree. Over one Alert they
+// are the same question asked twice, so a divergence would mean the SAME fact is
+// suppressed or sent depending only on whether the caller happened to pass an
+// `AlertID`. That is exactly the class of defect the missing `After(now)` guard on
+// `readFocus` used to produce, and this pins it shut.
+func TestTheTwoQuietTestsAgreeOnOneAlert(t *testing.T) {
+	t.Parallel()
+
+	w := newQuietWorld(t)
+
+	for _, alertID := range []uuid.UUID{w.held, w.woken, w.unswept} {
+		withFocus := w.snapshot(t, alertID, domain.SnapshotQuery{AlertID: &alertID})
+		without := w.snapshot(t, alertID, domain.SnapshotQuery{})
+		require.NotNil(t, withFocus.Focus)
+		require.Equal(t, without.AllMembersSnoozed(), withFocus.FocusSnoozed(withFocus.TakenAt),
+			"quiet must not depend on whether the caller named the alert its Case is about")
+	}
 }
 
 // TestTheFocusSnoozeIsReadFromItsOwnRow covers the other half of the suppression
-// decision: a fact about ONE alert is decided by that alert's own snooze (§B.8.1),
-// never by the group's.
+// decision: a fact about ONE alert is decided by that alert's own snooze (§B.8.1).
 func TestTheFocusSnoozeIsReadFromItsOwnRow(t *testing.T) {
 	t.Parallel()
 
 	w := newQuietWorld(t)
 	now := w.fx.h.Now()
 
-	held := w.snapshot(t, domain.SnapshotQuery{AlertID: &w.held})
+	held := w.snapshot(t, w.held, domain.SnapshotQuery{AlertID: &w.held})
 	require.NotNil(t, held.Focus)
 	require.True(t, held.FocusSnoozed(held.TakenAt))
 	require.NotNil(t, held.Focus.SnoozedUntil)
 	require.WithinDuration(t, now.Add(3*time.Hour), *held.Focus.SnoozedUntil, time.Second,
 		"the wake-up time comes off the snooze row, which is the only thing that has one")
 
-	woken := w.snapshot(t, domain.SnapshotQuery{AlertID: &w.woken})
+	woken := w.snapshot(t, w.woken, domain.SnapshotQuery{AlertID: &w.woken})
 	require.NotNil(t, woken.Focus)
 	require.False(t, woken.FocusSnoozed(woken.TakenAt),
 		"an ended snooze suppresses nothing; oto is speaking about this alert again")
 
 	// ⚠️ THIS IS THE CASE `readFocus` USED TO GET WRONG. It wrote its map entry
-	// with no `After(now)` guard while `readMembers` had one, so an unswept snooze
+	// with no `After(now)` guard while the member read had one, so an unswept snooze
 	// made the focus look quiet on one path and awake on the other. The two are
 	// the same question and now give the same answer.
-	unswept := w.snapshot(t, domain.SnapshotQuery{AlertID: &w.unswept})
+	unswept := w.snapshot(t, w.unswept, domain.SnapshotQuery{AlertID: &w.unswept})
 	require.NotNil(t, unswept.Focus)
 	require.False(t, unswept.FocusSnoozed(unswept.TakenAt),
 		"the clock has run out; the sweep is a lag in the bookkeeping, not in the promise")
 	require.NotContains(t, unswept.SnoozedAlerts, w.unswept,
-		"the focus read applies the same clock guard the member read does")
+		"the focus read applies the same clock guard the conversation read does")
+}
+
+// TestTheFocusMayBeAnAlertThisCaseIsNotAbout is why `readFocus` is still its own
+// read after the collapse made it derivable.
+//
+// ⛔ A CASE HAS EXACTLY ONE ALERT, SO THE OBVIOUS SIMPLIFICATION IS TO FILL THE
+// FOCUS FROM IT. This is the query that would then be answered with the wrong
+// alert: the policy preview takes one Case and, optionally, one alert, and a card
+// that quietly rendered the Case's own alert under the heading of the one it was
+// asked about would be a lie its reader cannot see.
+func TestTheFocusMayBeAnAlertThisCaseIsNotAbout(t *testing.T) {
+	t.Parallel()
+
+	w := newQuietWorld(t)
+
+	snap := w.snapshot(t, w.woken, domain.SnapshotQuery{AlertID: &w.held})
+	require.NotNil(t, snap.Focus)
+	require.Equal(t, w.held, snap.Focus.ID,
+		"the focus is the alert the caller named, not the Case's own")
+	require.Len(t, snap.Alerts, 1)
+	require.Equal(t, w.woken, snap.Alerts[0].ID,
+		"and the member list is still the conversation's, which is a different alert")
+	require.True(t, snap.FocusSnoozed(snap.TakenAt),
+		"the fact is about `held`, which is quiet, so §B.8.1 says oto stays quiet")
+	require.False(t, snap.AllMembersSnoozed(),
+		"while the conversation's own alert is awake — the two disagree here precisely "+
+			"because the query asked about two different alerts")
 }
 
 // TestAnAlertThatWasNeverSnoozedIsSimplyAwake asserts the LEFT-ness of the join:
 // the overwhelmingly common case is an alert with no snooze row at all, and it
-// must still be a member of the card.
+// must still appear on its own card.
 func TestAnAlertThatWasNeverSnoozedIsSimplyAwake(t *testing.T) {
 	t.Parallel()
 
@@ -190,13 +247,14 @@ func TestAnAlertThatWasNeverSnoozedIsSimplyAwake(t *testing.T) {
 	now := h.Now()
 
 	plain := seedQuietAlert(t, h, w.fx, "NeverQuietened")
-	seedQuietCase(t, h, w.fx, plain, now.Add(-20*time.Minute))
+	w.caseOf[plain] = seedQuietCase(t, h, w.fx, plain, now.Add(-20*time.Minute))
 
-	snap := w.snapshot(t, domain.SnapshotQuery{AlertID: &plain})
-	require.Len(t, snap.Alerts, 4,
+	snap := w.snapshot(t, plain, domain.SnapshotQuery{AlertID: &plain})
+	require.Len(t, snap.Alerts, 1,
 		"an INNER join here would drop every alert nobody has ever snoozed, which is nearly "+
-			"all of them — the members would silently become the snoozed members")
-	require.Equal(t, 4, snap.MemberCount)
+			"all of them — every card would render with no instance on it at all")
+	require.Equal(t, 1, snap.MemberCount)
+	require.Zero(t, snap.SnoozedMemberCount)
 	require.NotNil(t, snap.Focus)
 	require.Nil(t, snap.Focus.SnoozedUntil)
 	require.False(t, snap.Focus.Snoozed(snap.TakenAt))
@@ -224,7 +282,7 @@ func TestTheSnapshotReadsNoSnoozeColumnOnAlerts(t *testing.T) {
 // reaches and not how a row comes to exist. The names are this file's own so it
 // stays compilable independently of its neighbours.
 
-func seedQuietAlert(t *testing.T, h *harness.H, fx fixture, name string) uuid.UUID {
+func seedQuietAlert(t *testing.T, h *harness.H, fx snapFixture, name string) uuid.UUID {
 	t.Helper()
 
 	alertID := id.New()
@@ -240,17 +298,19 @@ func seedQuietAlert(t *testing.T, h *harness.H, fx fixture, name string) uuid.UU
 	return alertID
 }
 
+// seedQuietCase writes one episode and NAMES NO GROUP: `alert_cases.group_id` is
+// dropped (git-bug `7570090`, migration `00069`), so the Case IS the conversation.
 func seedQuietCase(
-	t *testing.T, h *harness.H, fx fixture, alertID uuid.UUID, startedAt time.Time,
+	t *testing.T, h *harness.H, fx snapFixture, alertID uuid.UUID, startedAt time.Time,
 ) uuid.UUID {
 	t.Helper()
 
 	caseID := id.New()
 	h.Exec(`INSERT INTO alert_cases
-	          (id, org_id, alert_id, group_id, seq, state, started_at,
+	          (id, org_id, alert_id, seq, state, started_at,
 	           last_observed_at, source_starts_at, ack_state)
-	        VALUES ($1, $2, $3, $4, 1, 'open', $5, $5, $5, 'unacked')`,
-		caseID, fx.scope.OrgID(), alertID, fx.groupID, startedAt)
+	        VALUES ($1, $2, $3, 1, 'open', $4, $4, $4, 'unacked')`,
+		caseID, fx.scope.OrgID(), alertID, startedAt)
 	return caseID
 }
 
@@ -258,7 +318,7 @@ func seedQuietCase(
 // open — which is NOT the same as a quiet period still in force, and telling
 // those two apart is most of what this file is about.
 func seedQuietSnooze(
-	t *testing.T, h *harness.H, fx fixture, alertID uuid.UUID,
+	t *testing.T, h *harness.H, fx snapFixture, alertID uuid.UUID,
 	at, until time.Time, endedAt *time.Time,
 ) {
 	t.Helper()

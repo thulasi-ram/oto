@@ -99,18 +99,55 @@ WITH bounds AS (
      AND o.started_at <  b.day_end
    GROUP BY a.cluster_key, a.alertname
 ), notif AS (
-  -- The membership fan-out reads alert_cases.group_id, which IS the
-  -- membership since 00051 (case_group_idx leads with org_id, group_id). It can
-  -- produce more rows than the old join table did, because one alert can hold
-  -- several episodes in one generation; the two count(DISTINCT ...) aggregates
-  -- are why that changes no number.
+  -- ⛔⛔ THE MEMBERSHIP FAN-OUT IS DELETED AND THE CTE IS RE-ATTRIBUTED, NOT DROPPED
+  -- (git-bug 7570090, migration 00069). The join was
+  --     JOIN alert_cases o ON o.group_id = n.group_id AND o.org_id = n.org_id
+  -- and it named TWO dropped columns at once, so it fails as a 42703 on whichever
+  -- one the planner resolves first.
+  --
+  -- ⭐ DELETING THE CTE WAS THE WRONG REPAIR AND IT IS WORTH SAYING WHY, because it
+  -- is the cheap one. alert_quality_daily.notifications and .deliveries are NOT NULL
+  -- columns fed by COALESCE(n.*, 0) below, and the DTO that publishes them survives
+  -- untouched. Drop the CTE and every INSERT writes 0 into both, forever, while the
+  -- dashboard keeps drawing the number as though it had been measured. A metric that
+  -- is SILENTLY zero is strictly worse than one that was removed: removed, somebody
+  -- asks where it went.
+  --
+  -- ⭐ THE ATTRIBUTION IS NOW EXACT WHERE IT USED TO BE A FAN-OUT. The old join said
+  -- "a notification on a generation's thread belongs to every alert in that
+  -- generation" -- one notification, forty alerts, forty rows, and count(DISTINCT
+  -- n.id) deduplicated only WITHIN a (cluster_key, alertname) bucket, never across
+  -- them. A conversation now holds exactly ONE Case and a Case belongs to exactly ONE
+  -- alert (alert_cases.alert_id is NOT NULL), so conversation_id resolves to a single
+  -- alert and each notification is counted once, against the alert it was actually
+  -- about.
+  --
+  -- ⚠️ SO THE NUMBERS MOVE, DOWNWARD, AND THAT IS A CORRECTION RATHER THAN A LOSS.
+  -- Any alert that shared a generation with others had its notifications and
+  -- deliveries counts inflated by every sibling's traffic. Recomputing a past day will
+  -- therefore lower it. Nothing goes permanently to zero: an alert whose Cases were
+  -- notified about still counts them.
+  --
+  -- ⚠️ A DIGEST STILL FALLS OUT, exactly as it did before. Its conversation_kind is
+  -- 'digest' and its conversation_id is a notification_policies.id, so it joins no
+  -- Case -- the same outcome the old join reached by a digest carrying a NULL
+  -- group_id. A digest is a window over a namespace and has no one alert to be
+  -- charged to; leaving it uncounted here is the same judgement 00058 made.
+  --
+  -- The kind is tested explicitly rather than left to the id: an inner join on a
+  -- policy id would match no Case today, but relying on two id spaces never
+  -- colliding is a coincidence and not an invariant.
+  --
+  -- It rides notif_created_idx (org_id, created_at) to bound the day, then
+  -- alert_cases_pkey for each hit.
   SELECT a.cluster_key,
          a.alertname,
          count(DISTINCT n.id) AS notifications,
          count(DISTINCT d.id) AS deliveries
     FROM notifications n
    CROSS JOIN bounds b
-    JOIN alert_cases o   ON o.group_id = n.group_id AND o.org_id = n.org_id
+    JOIN alert_cases o   ON o.id = n.conversation_id AND o.org_id = n.org_id
+                        AND n.conversation_kind = 'case'
     JOIN alerts a              ON a.id = o.alert_id       AND a.org_id = n.org_id
     LEFT JOIN notification_deliveries d
                                ON d.notification_id = n.id AND d.org_id = n.org_id

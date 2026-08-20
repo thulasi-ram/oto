@@ -8,12 +8,20 @@ import (
 
 // ⛔⛔ THIS FILE PINS A KNOWN CONTRADICTION, NOT A DESIRED BEHAVIOUR.
 //
-// ADR 0020 grants exactly two Reasons an irreversible `reply_broadcast`, and
-// `refired` is one of them, on this reasoning: a re-fire lands in the AlertGroup
-// generation that is already open, so it produces a root UPDATE and a thread reply
-// and NO new root message — *"the thread said resolved and people stopped
-// following it"*. Its quiet form is invisible, which is the only property that
-// earns a channel post.
+// ADR 0020 granted exactly two Reasons an irreversible `reply_broadcast`, and
+// `refired` was one of them, on this reasoning: a re-fire lands in a conversation
+// that is already open, so it produces a root UPDATE and a thread reply and NO new
+// root message — *"the thread said resolved and people stopped following it"*. Its
+// quiet form is invisible, which is the only property that earned a channel post.
+//
+// ⛔⛔ THREAD-BROADCAST IS NOW REMOVED FROM OTO ENTIRELY (git-bug `7570090`), AND THAT
+// MAKES THIS FILE'S DEFECT WORSE RATHER THAN MOOT. The mechanism was already reaching
+// nobody — `refired` had no producer after ADR 0040 retired T8 and the only other
+// member was opt-in and default off (see the ⛔⭐ block in `PlanFor`) — so no operator
+// loses a delivery. But it was also the one mechanism that could have rescued a
+// re-fire from the verbosity hole below, and the hole is unchanged. ⭐ THE VERBOSITY
+// GATE IS NOW THE ONLY THING STANDING BETWEEN A RE-FIRE AND SILENCE, which is exactly
+// what the second test asserts.
 //
 // ⚠️ THE REASONING SURVIVED ADR 0040 AND THE WORDING DID NOT. This paragraph used
 // to open "a re-fire INSIDE `refire_grace` reopens the existing case". T8 is
@@ -42,9 +50,14 @@ import (
 // will fail, which is the point: the defect is visible in the test suite rather
 // than discovered during an incident.
 
-// The half that is correct: at the shipped default verbosity, a re-fire both
-// survives the gate and warrants a broadcast.
-func TestARefireIsBroadcastAtTheDefaultVerbosity(t *testing.T) {
+// The half that is correct: at the shipped default verbosity, a re-fire survives the
+// gate and reaches the thread.
+//
+// (⛔ THIS TEST ALSO ASSERTED `DefaultBroadcastPolicy().Warrants(ReasonRefired)`, and
+// there is no broadcast policy to ask — git-bug `7570090`. The assertion is deleted
+// rather than re-pointed: it pinned a default set, and an empty mechanism has no
+// default set to pin.)
+func TestARefireReachesTheThreadAtTheDefaultVerbosity(t *testing.T) {
 	t.Parallel()
 
 	// The schema default, and what `Normalise` falls back to.
@@ -53,11 +66,6 @@ func TestARefireIsBroadcastAtTheDefaultVerbosity(t *testing.T) {
 		t.Fatalf("verbosity %q drops the `refired` reply. A re-fire produces no new root "+
 			"message, so dropping it makes a genuine re-fire silent at "+
 			"oto's OWN DEFAULT — a missed page out of the box", v)
-	}
-	if !domain.DefaultBroadcastPolicy().Warrants(domain.ReasonRefired) {
-		t.Fatal("`refired` no longer warrants a broadcast; ADR 0020 puts it in the set of two " +
-			"because its quiet form is invisible, and nothing since has made a re-fire " +
-			"announce itself any louder")
 	}
 }
 

@@ -317,10 +317,9 @@ func (s *Service) expire(
 			return err
 		}
 		if _, err := s.enqueueNotify(ctx, scope, []notifyRequest{{
-			groupID: r.Case.GroupID(),
 			reason:  reasonExpired,
 			alertID: ptr(alert.ID()),
-			caseID:  ptr(r.Case.ID()),
+			caseID:  r.Case.ID(),
 			actor:   domain.ActorReaper.String(),
 		}}, nil); err != nil {
 			return err
@@ -583,13 +582,13 @@ func (s *Service) closeDue(
 		// TransitionResult.CloseDeferred), so this is the first and only time the
 		// channel is told the episode ended.
 		if _, err := s.enqueueNotify(ctx, scope, []notifyRequest{{
-			groupID: r.Case.GroupID(),
-			// `some_resolved`, exactly as an immediate T5 produces — whether the
-			// GROUP is wholly resolved is a fact about membership this module does
-			// not read, and the notify worker upgrades it. See reasonFor.
-			reason:  reasonSomeResolved,
+			// `all_resolved`, exactly as an immediate T5 produces. ⛔ It was
+			// `some_resolved` with the note that group-wholeness "is a fact about
+			// membership this module does not read, and the notify worker upgrades
+			// it" — there is no membership and no upgrade (git-bug `7570090`).
+			reason:  reasonAllResolved,
 			alertID: ptr(alert.ID()),
-			caseID:  ptr(r.Case.ID()),
+			caseID:  r.Case.ID(),
 			actor:   domain.ActorReaper.String(),
 		}}, nil); err != nil {
 			return err

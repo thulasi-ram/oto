@@ -199,15 +199,6 @@ type Notification struct {
 	OrgID       uuid.UUID
 	SubjectKind SubjectKind
 	SubjectID   uuid.UUID
-	// GroupID is THE DELIVERY TARGET — which AlertGroup generation's thread this
-	// fact lands on — and it is mandatory for every SubjectKind except
-	// `digest` (notifications_target_ck, migration 00058).
-	//
-	// ⚠️ IT IS THE ZERO UUID FOR A DIGEST, AND THAT IS THE COLUMN BEING NULL. A
-	// digest spans many generations, so it has no single thread to land in; it opens
-	// its own conversation keyed by its policy. Anything that dereferences this
-	// without asking `SubjectKind` first will address the nil UUID.
-	GroupID uuid.UUID
 	// ConversationKind and ConversationID are THE DELIVERY TARGET, as a pair
 	// (migration 00064, git-bug 7570090). They answer "where does this land", the
 	// way (SubjectKind, SubjectID) answers "what is this about".
@@ -219,10 +210,13 @@ type Notification struct {
 	// the CHECK and a third branch in every reader. As a pair, a digest is ONE KIND
 	// AMONG SEVERAL and the next kind needs no migration.
 	//
-	// ⛔ `GroupID` SURVIVES AND IS NOT THE SAME QUESTION. Several readers use it to
-	// answer SUBJECT-shaped ones — the per-alert rollup, the drill artifact read,
-	// the audit filter — and those are answered deliberately when `alert_groups`
-	// goes, not by deleting a column they happen to use.
+	// ⛔ AND `GroupID` IS NOW GONE — THIS IS THE MOMENT THAT NOTE POINTED AT. It said
+	// the column survived because several readers used it to answer SUBJECT-shaped
+	// questions — the per-alert rollup, the drill artifact read, the audit filter —
+	// and that those would be "answered deliberately when `alert_groups` goes, not by
+	// deleting a column they happen to use". `alert_groups` has gone (migration
+	// `00069`), and each of those readers was re-pointed at the pair or at
+	// `(SubjectKind, SubjectID)` according to which question it was actually asking.
 	ConversationKind ConversationKind
 	ConversationID   uuid.UUID
 	// AlertID is set when the fact is about ONE alert. It is MANDATORY for the
@@ -369,15 +363,16 @@ func AggregateStatus(statuses []DeliveryStatus) Status {
 type ConversationKind string
 
 const (
-	// ConversationAlertGroup is one AlertGroup GENERATION's thread.
+	// ConversationCase is one Case's thread. A conversation holds exactly ONE Case.
 	//
-	// ⚠️ TRANSITIONAL. It names a row in a table git-bug 7570090 deletes, and its
-	// replacement is already ruled: `case`. The owner decided on 2026-08-19 that a
-	// conversation holds exactly ONE Case, never a collapse of several, so this
-	// kind is REPLACED rather than reinterpreted when `alert_groups` goes. Quietly
-	// widening it to mean "generation or case" is how that distinction would be
-	// lost — a generation could hold many cases and a conversation may not.
-	ConversationAlertGroup ConversationKind = "alert_group"
+	// ⛔ IT WAS `ConversationAlertGroup ConversationKind = "alert_group"` AND THE
+	// REPLACEMENT IS THE ONE ITS OWN COMMENT PREDICTED (git-bug `7570090`). That
+	// comment called itself TRANSITIONAL and said the replacement was "already
+	// ruled: `case`", warning that quietly widening the kind to mean "generation or
+	// case" was how the distinction would be lost — a generation could hold many
+	// cases and a conversation may not. So this is a REPLACEMENT, not a rename: the
+	// cardinality changed with the spelling.
+	ConversationCase ConversationKind = "case"
 	// ConversationDigest is a digest's own conversation, keyed by its policy. It
 	// spans many generations, which is why it could never carry a group id and why
 	// it was the exception the pair exists to retire.
@@ -394,8 +389,8 @@ const (
 // silently opened under the wrong key.
 func (k ConversationKind) SubjectKind() SubjectKind {
 	switch k {
-	case ConversationAlertGroup:
-		return SubjectAlertGroup
+	case ConversationCase:
+		return SubjectCase
 	case ConversationDigest:
 		return SubjectDigest
 	}

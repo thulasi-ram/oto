@@ -50,15 +50,18 @@ func (r *DrillRepository) Artifacts(
 		if err := r.readCase(ctx, s, out.Alert.ID, &out); err != nil {
 			return domain.Artifacts{}, err
 		}
-		if err := r.readGroup(ctx, s, out.Alert.ID, &out); err != nil {
-			return domain.Artifacts{}, err
-		}
 	}
-	if out.Group.Found {
-		if err := r.readNotification(ctx, s, out.Group.ID, &out); err != nil {
+	// ⛔ THE CASE IS THE HINGE, WHERE A `readGroup` USED TO STAND (git-bug `7570090`).
+	// The walk was alert → case → GROUP → notification → thread, because the group
+	// generation was what `notifications.group_id` and `channel_threads.subject_id`
+	// both addressed. Both now address the Case, so the group read is not replaced by
+	// another read — it is gone, and one fewer row has to exist before a drill can
+	// say where the card went.
+	if out.Case.Found {
+		if err := r.readNotification(ctx, s, out.Case.ID, &out); err != nil {
 			return domain.Artifacts{}, err
 		}
-		if err := r.readThreads(ctx, s, out.Group.ID, &out); err != nil {
+		if err := r.readThreads(ctx, s, out.Case.ID, &out); err != nil {
 			return domain.Artifacts{}, err
 		}
 	}
@@ -190,46 +193,37 @@ SELECT o.id, o.seq,
 	return nil
 }
 
-func (r *DrillRepository) readGroup(
-	ctx context.Context, s db.TenantScope, alertID uuid.UUID, out *domain.Artifacts,
-) error {
-	var group domain.GroupFact
-	err := r.db(ctx).QueryRow(ctx, `
-SELECT g.id, g.group_key, g.generation, g.synthetic, g.title
-  FROM alert_cases o
-  JOIN alert_groups g ON g.id = o.group_id AND g.org_id = o.org_id
- WHERE o.org_id = $1 AND o.alert_id = $2
- ORDER BY g.generation DESC
- LIMIT 1`, s.OrgID(), alertID,
-	).Scan(&group.ID, &group.Key, &group.Generation, &group.Synthetic, &group.Title)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
-	}
-	if err != nil {
-		return mapErr(err, "read the drill's group")
-	}
-	group.Found = true
-	// Membership IS how the group was found, so reaching here proves both. The
-	// separate flag exists because the group can be resolved before the alert
-	// joins it, and a drill that reported "grouped" one poll early would be
-	// claiming something it had not seen.
-	//
-	// Since 00051 the membership is `alert_cases.group_id` rather than a row
-	// in `alert_group_members`. The proof is the same and it is now stronger: the
-	// old join table could hold a membership row for an episode the group no longer
-	// had, because nothing ever wrote `left_at`.
-	group.Member = true
-	out.Group = group
-	return nil
-}
+// ⛔ `readGroup` WAS HERE AND IS DELETED (git-bug `7570090`). It JOINed
+// `alert_groups` onto `alert_cases` by `o.group_id` for the generation's key, its
+// generation number, its `synthetic` mark and its title; the table and the column
+// are both dropped. It also set `Member` unconditionally on the grounds that
+// "membership IS how the group was found" — since 00051 that membership WAS
+// `alert_cases.group_id`, so the join and the membership proof were the same fact
+// twice, and both went with the column.
+//
+// ⭐ THE ARGUMENT THAT SURVIVES IT is the one about `alert_group_members`: a
+// membership recorded in its own row could outlive the thing it recorded, because
+// nothing ever wrote `left_at`. Deriving beat storing then, and this is the same
+// move one step further — the conversation is not stored beside the Case, it IS the
+// Case.
 
-// readNotification takes the OLDEST intent for the generation, not the newest.
+// readNotification takes the OLDEST intent for the Case's conversation, not the
+// newest.
 //
 // ⭐ The first intent is the one the drill caused; anything after it is a
 // consequence (a repeat, a resolution) and reporting the latest would make a
-// drill's policy verdict drift as the group lived on.
+// drill's policy verdict drift as the Case lived on.
+//
+// ⛔ IT ADDRESSES THE CONVERSATION, NOT THE SUBJECT, and the two are different
+// questions even when they carry the same uuid. This read exists to answer "where
+// did the card go", so it matches `(conversation_kind, conversation_id)` — the pair
+// that replaced `notifications.group_id` (migration 00064) — rather than
+// `(subject_kind, subject_id)`, which answers "what was the fact about". A digest
+// is about a window and lands in its policy's conversation; a drill's fact is about
+// its Case and lands in the Case's, and asking the delivery-target half is what
+// keeps this query reading the same column the thread is keyed by.
 func (r *DrillRepository) readNotification(
-	ctx context.Context, s db.TenantScope, groupID uuid.UUID, out *domain.Artifacts,
+	ctx context.Context, s db.TenantScope, caseID uuid.UUID, out *domain.Artifacts,
 ) error {
 	var (
 		notif                  domain.NotificationFact
@@ -240,9 +234,9 @@ func (r *DrillRepository) readNotification(
 SELECT n.id, n.status, n.suppressed_reason, n.reason, n.policy_id, p.name
   FROM notifications n
   LEFT JOIN notification_policies p ON p.id = n.policy_id AND p.org_id = n.org_id
- WHERE n.org_id = $1 AND n.group_id = $2
+ WHERE n.org_id = $1 AND n.conversation_kind = 'case' AND n.conversation_id = $2
  ORDER BY n.created_at ASC
- LIMIT 1`, s.OrgID(), groupID,
+ LIMIT 1`, s.OrgID(), caseID,
 	).Scan(&notif.ID, &notif.Status, &suppressed, &notif.Reason, &policyID, &policyName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
@@ -262,8 +256,17 @@ SELECT n.id, n.status, n.suppressed_reason, n.reason, n.policy_id, p.name
 	return nil
 }
 
+// readThreads finds the conversation by its Case.
+//
+// ⚠️ THE COLUMN IS STILL SPELLED `subject_kind` AND THE VALUE IS NO LONGER
+// `'alert_group'` (git-bug `7570090`). `channel_threads` keys a conversation by
+// `(subject_kind, subject_id)` and `'alert_group'` named a generation; the kind a
+// Case conversation writes is `'case'` (`ConversationCase.SubjectKind()`). Renaming
+// the column to say `conversation_kind`, the way `notifications` already does, is
+// 7570090's later stage — so this predicate reads a little crooked on purpose
+// rather than reading a value nothing writes.
 func (r *DrillRepository) readThreads(
-	ctx context.Context, s db.TenantScope, groupID uuid.UUID, out *domain.Artifacts,
+	ctx context.Context, s db.TenantScope, caseID uuid.UUID, out *domain.Artifacts,
 ) error {
 	rows, err := r.db(ctx).Query(ctx, `
 SELECT t.channel_id, c.name, t.state,
@@ -271,8 +274,8 @@ SELECT t.channel_id, c.name, t.state,
        COALESCE(t.dead_reason, ''), t.last_sent_seq
   FROM channel_threads t
   JOIN channels c ON c.id = t.channel_id AND c.org_id = t.org_id
- WHERE t.org_id = $1 AND t.subject_kind = 'alert_group' AND t.subject_id = $2`,
-		s.OrgID(), groupID)
+ WHERE t.org_id = $1 AND t.subject_kind = 'case' AND t.subject_id = $2`,
+		s.OrgID(), caseID)
 	if err != nil {
 		return mapErr(err, "read the drill's threads")
 	}

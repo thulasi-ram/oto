@@ -79,8 +79,7 @@ func notifyReasons(acc *observeAccum) []string {
 func TestObserveOne_T1_OpensTheFirstEpisode(t *testing.T) {
 	now := harness.Epoch
 	f := newFixture(t, now)
-	group := f.h.Group(f.org, f.h.Source(f.org, f.cluster), f.cluster)
-	opt := ObserveOptions{GroupID: &group.ID}
+	opt := ObserveOptions{}
 
 	obs := f.observation(domain.ObservedByIngest, "firing", now, now.Add(-time.Minute), time.Time{})
 	acc := f.observeOnce(obs, opt)
@@ -111,7 +110,9 @@ func TestObserveOne_T1_OpensTheFirstEpisode(t *testing.T) {
 		domain.EventCaseOpened.String(),
 	}, eventTypes(acc))
 	assert.Equal(t, []string{reasonFired}, notifyReasons(acc))
-	assert.Equal(t, group.ID, acc.notifies[0].groupID)
+	// ⭐ THE INTENT NAMES THE CASE, because the Case IS the conversation
+	// (git-bug `7570090`). It used to name the generation the batch carried in.
+	assert.Equal(t, ac.ID(), acc.notifies[0].caseID)
 }
 
 // TestObserveOne_T7_OutOfAnAckedEpisodeIsDecidedInOnePlace is the regression test
@@ -127,8 +128,7 @@ func TestObserveOne_T1_OpensTheFirstEpisode(t *testing.T) {
 func TestObserveOne_T7_OutOfAnAckedEpisodeIsDecidedInOnePlace(t *testing.T) {
 	now := harness.Epoch
 	f := newFixture(t, now)
-	group := f.h.Group(f.org, f.h.Source(f.org, f.cluster), f.cluster)
-	opt := ObserveOptions{GroupID: &group.ID}
+	opt := ObserveOptions{}
 	ctx := t.Context()
 
 	// 1. The first episode, opened by the real path.
@@ -197,9 +197,7 @@ func TestObserveOne_T7_OutOfAnAckedEpisodeIsDecidedInOnePlace(t *testing.T) {
 	// applying is a timeline entry nobody is told about.
 	assert.Equal(t, []string{reasonUnacked, reasonFired}, notifyReasons(acc))
 	for _, n := range acc.notifies {
-		assert.Equal(t, group.ID, n.groupID)
-		require.NotNil(t, n.caseID)
-		assert.Equal(t, opened.ID(), *n.caseID, "both intents are about the NEW episode")
+		assert.Equal(t, opened.ID(), n.caseID, "both intents are about the NEW episode")
 	}
 	assert.Equal(t, []uuid.UUID{opened.ID()}, acc.enrichIDs)
 	assert.Equal(t, 1, acc.newEpisode[out.AlertID])

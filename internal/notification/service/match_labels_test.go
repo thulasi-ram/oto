@@ -80,12 +80,15 @@ func TestTheMatcherSeesTheFocusedAlertsOwnLabels(t *testing.T) {
 		}
 	})
 
-	t.Run("a group-scoped reason carries no focus and is unchanged", func(t *testing.T) {
+	t.Run("a reason with no focus is matched on the conversation's labels alone", func(t *testing.T) {
 		t.Parallel()
 
-		// `all_resolved` and `new_alerts` are about the generation, not one member,
-		// so there is no focused alert and the group's own labels are the whole
-		// input — exactly as before this change.
+		// ⛔ THE SUB-TEST WAS NAMED FOR A "group-scoped reason" AND CITED `new_alerts`,
+		// WHICH IS DELETED (git-bug `7570090`). The shape it covers survives and is now
+		// the COMMON one rather than a group-level special case: `AlertID` is the FOCUS
+		// and is optional, so `all_resolved`, `repeat` and `expired` all arrive without
+		// one. With no focus to merge over, the conversation's own labels are the whole
+		// matcher input.
 		snap := domain.Snapshot{Group: domain.GroupFacts{GroupLabels: group}}
 		got := matchLabels(snap)
 		if len(got) != len(group) {

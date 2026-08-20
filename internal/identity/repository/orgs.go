@@ -46,17 +46,23 @@ type settingsJSON struct {
 	RawRetentionDays    *int `json:"raw_retention_days,omitempty"`
 	EventRetentionMonth *int `json:"event_retention_months,omitempty"`
 
-	// The keys added when the tuning surface became editable. They are
-	// `omitempty` like the rest, so an org that has never opened the settings
-	// screen still stores `{}` and still reports every value as a DEFAULT.
-	DefaultVerbosity    *string `json:"default_verbosity,omitempty"`
-	BroadcastOnResolved *bool   `json:"broadcast_on_resolved,omitempty"`
+	// The one key added when the tuning surface became editable. It is `omitempty`
+	// like the rest, so an org that has never opened the settings screen still
+	// stores `{}` and still reports every value as a DEFAULT.
+	DefaultVerbosity *string `json:"default_verbosity,omitempty"`
 
-	// ⛔ FOUR KEYS FOLLOWED THIS COMMENT AND ALL FOUR ARE DELETED (git-bug
-	// `bd0fb1d`): the unacked-reminder delay and the three that carried its mention
-	// surface. The paragraph described "every one of these" and there is no longer a
-	// "these" — the struct closes here. The remaining two keys above are the whole
-	// of `orgs.settings`.
+	// ⛔ `broadcast_on_resolved` FOLLOWED `default_verbosity` AND IS DELETED
+	// (git-bug 7570090). It was the last non-integer key besides the verbosity, and
+	// the only boolean this blob ever held.
+	//
+	// ⛔ FOUR KEYS FOLLOWED THOSE AND ALL FOUR ARE DELETED (git-bug `bd0fb1d`): the
+	// unacked-reminder delay and the three that carried its mention surface. The
+	// struct closes here; the nine keys above are the whole of `orgs.settings`.
+	//
+	// ⚠️ NOTHING HERE DELETES A STORED KEY. `orgs.settings` is one JSONB document,
+	// so a row written before this commit still HOLDS `broadcast_on_resolved` and
+	// `encoding/json` simply drops it on read. Migration 00069 removes it from every
+	// row; until it runs the value is unreachable rather than absent.
 }
 
 // toPatch maps the stored blob onto the domain's override record. It is a
@@ -74,7 +80,6 @@ func (s settingsJSON) toPatch() domain.SettingsPatch {
 		RawRetentionDays:    s.RawRetentionDays,
 		EventRetentionMonth: s.EventRetentionMonth,
 		DefaultVerbosity:    s.DefaultVerbosity,
-		BroadcastOnResolved: s.BroadcastOnResolved,
 	}
 }
 
@@ -90,7 +95,6 @@ func fromPatch(p domain.SettingsPatch) settingsJSON {
 		RawRetentionDays:    p.RawRetentionDays,
 		EventRetentionMonth: p.EventRetentionMonth,
 		DefaultVerbosity:    p.DefaultVerbosity,
-		BroadcastOnResolved: p.BroadcastOnResolved,
 	}
 }
 

@@ -87,7 +87,7 @@ func (r *Renderer) Render(
 		summary  string
 	)
 	switch o.Mode {
-	case domain.ModeThreadReply, domain.ModeBroadcastReply:
+	case domain.ModeThreadReply:
 		payload, fallback, summary = r.renderReply(v, o)
 	case domain.ModePostRoot, domain.ModeUpdateRoot:
 		payload, fallback = r.renderRoot(v, o)
@@ -305,10 +305,11 @@ func reasonPhrase(reason string) string {
 	switch reason {
 	case reasonFired:
 		return "first notification"
-	case reasonNewAlerts:
-		return "new alerts added"
-	case reasonSomeResolved:
-		return "some alerts resolved"
+	// ⛔ `new_alerts` ("new alerts added") AND `some_resolved` ("some alerts
+	// resolved") HAD FOOTER CLAUSES HERE AND THEY ARE DELETED (git-bug 7570090).
+	// Both Reasons are gone from the vocabulary: each asserted a plurality, and a
+	// conversation holds one Case, which is one Alert's episode. A footer clause for
+	// a Reason no row can spell is a card nobody can see.
 	case reasonAllResolved:
 		return "all alerts resolved"
 	case reasonRepeat:

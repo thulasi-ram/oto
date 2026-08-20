@@ -4,7 +4,7 @@
 // ⭐⭐ WHY IT IS NOT THE CHANNEL TEST. `POST /channels/{id}/test` renders one card
 // and hands it to the provider. It proves the token works and the Block Kit is
 // legal, and it proves nothing else — it does not touch ingestion, alert
-// identity, grouping, the notification policy match, the rule snapshot,
+// identity, the firing episode, the notification policy match, the rule snapshot,
 // `channel_threads`, the ordering gate or the delivery record. Every failure oto
 // can have lives in the stages it skips: a policy that matches nothing, a thread
 // that will not open, a scope Slack silently ignores. A drill runs them all,
@@ -16,9 +16,16 @@
 // keeps; a drill that leaked into `alert_quality_daily`, the dashboard or the
 // alert list would make every number slightly false, and a slightly false number
 // is believed. So the alert a drill manufactures carries a PROVENANCE MARK —
-// `ingest_batches.mode = 'synthetic'`, propagated to `alerts.synthetic` and
-// `alert_groups.synthetic` — that no payload can forge, every aggregate excludes,
-// and `retention.prune` eventually deletes. See 00039_delivery_drills.sql.
+// `ingest_batches.mode = 'synthetic'`, propagated to `alerts.synthetic` — that no
+// payload can forge, every aggregate excludes, and `retention.prune` eventually
+// deletes. See 00039_delivery_drills.sql.
+//
+// ⛔ THE MARK USED TO HAVE A SECOND DESTINATION, `alert_groups.synthetic`, AND IT IS
+// DELETED WITH THE TABLE (git-bug `7570090`). One mark on one row is not a weakening:
+// the aggregates that had to exclude a drill keyed off `alerts.synthetic`, and the
+// second copy existed only because a generation was a row of its own that the
+// dashboard counted separately. A Case is not counted separately — it is reached
+// through its alert — so there is nothing left for a second mark to protect.
 //
 // LAYERING. This package is a PERIPHERAL read-across module in the mould of
 // `stats`: its repository reads several modules' tables because a staged result

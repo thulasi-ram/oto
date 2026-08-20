@@ -1363,13 +1363,6 @@ export const PREVIEW_DETAIL: AlertDetail = {
     cluster_key: "prod-eu",
     health_status: "healthy",
   },
-  group: {
-    id: GROUP_ID,
-    group_key: "alertname=KubernetesStatefulSetReplicasMismatch,namespace=payments",
-    generation: 4,
-    title: "payments · KubernetesStatefulSetReplicasMismatch",
-    state: "open",
-  },
   delivery_summary: { total: 11, sent: 8, failed: 2, dead: 1, skipped: 3, pending: 0 },
 };
 
@@ -1601,12 +1594,20 @@ export const PREVIEW_SNOOZE_HISTORY: readonly SnoozeHistoryEntry[] = [
   },
 ];
 
+/**
+ * The notifications the delivery section is drawn for.
+ *
+ * All three are `case`-kind. They were `alert_group`-kind, addressing a group id
+ * that no longer names anything: `alert_groups` is deleted and a Case IS the
+ * conversation now (git-bug 7570090), so the subject of a firing-episode fact is
+ * the case. `subject_id` is `CASE_ID` and the retired `group_id` field is gone
+ * from the wire, not merely unused here.
+ */
 export const PREVIEW_NOTIFICATIONS: readonly Notification[] = [
   {
     id: "n1000000-0000-4000-8000-000000000001",
-    subject_kind: "alert_group",
-    subject_id: GROUP_ID,
-    group_id: GROUP_ID,
+    subject_kind: "case",
+    subject_id: CASE_ID,
     alert_id: DETAIL_ID,
     case_id: CASE_ID,
     reason: "refired",
@@ -1619,10 +1620,10 @@ export const PREVIEW_NOTIFICATIONS: readonly Notification[] = [
   },
   {
     id: "n1000000-0000-4000-8000-000000000002",
-    subject_kind: "alert_group",
-    subject_id: GROUP_ID,
-    group_id: GROUP_ID,
+    subject_kind: "case",
+    subject_id: CASE_ID,
     alert_id: DETAIL_ID,
+    case_id: CASE_ID,
     reason: "fired",
     policy_id: "5a1b7d8e-6f9c-4a1b-2d3e-4f5061728394",
     state_version: 8,
@@ -1633,10 +1634,10 @@ export const PREVIEW_NOTIFICATIONS: readonly Notification[] = [
   },
   {
     id: "n1000000-0000-4000-8000-000000000003",
-    subject_kind: "alert_group",
-    subject_id: GROUP_ID,
-    group_id: GROUP_ID,
+    subject_kind: "case",
+    subject_id: CASE_ID,
     alert_id: DETAIL_ID,
+    case_id: CASE_ID,
     reason: "snoozed",
     policy_id: null,
     state_version: 7,

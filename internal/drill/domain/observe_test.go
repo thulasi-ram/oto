@@ -18,7 +18,6 @@ func full() domain.Artifacts {
 		Batch:              domain.BatchFact{Found: true, Status: "processed", AlertCount: 1},
 		Alert:              domain.AlertFact{Found: true, ID: uuid.New(), Key: "ak_x", Synthetic: true, State: "firing"},
 		Case:               domain.CaseFact{Found: true, ID: uuid.New(), Seq: 1, State: "firing", RuleSnapshotID: uuid.New()},
-		Group:              domain.GroupFact{Found: true, ID: uuid.New(), Key: "gk_x", Generation: 1, Synthetic: true, Member: true},
 		Notification:       domain.NotificationFact{Found: true, ID: uuid.New(), Status: "delivered", Reason: "fired", PolicyName: "all critical"},
 		Threads:            []domain.ThreadFact{{ChannelID: channel, ChannelName: "#sre", State: "open", ProviderConversationID: "C1", ProviderThreadID: "1700000000.000100", LastSentSeq: 1}},
 		Deliveries:         []domain.DeliveryFact{{ChannelID: channel, ChannelName: "#sre", Status: "sent", Mode: "post_root", ThreadSeq: 1, ProviderMessageID: "1700000000.000100"}},
@@ -62,8 +61,16 @@ func TestObserveHappyPath(t *testing.T) {
 	if len(res.Destinations) != 1 || res.Destinations[0].Status != "sent" {
 		t.Errorf("destinations = %+v, want one sent delivery", res.Destinations)
 	}
-	if res.Destinations[0].Broadcast {
-		t.Error("a first notification posts a root; broadcast must be false")
+	// ⛔ AN ASSERTION ON `Destinations[0].Broadcast` STOOD HERE AND IS DELETED. It
+	// read "a first notification posts a root; broadcast must be false", and it was
+	// the only thing pinning `Broadcast = Mode == "broadcast_reply"` — a derivation
+	// whose input value no code can produce now that the thread broadcast mechanism is
+	// removed. The field is gone from `domain.Destination`, so the test cannot be
+	// retargeted at anything: what remains true is asserted one line up, where `Mode`
+	// still carries the provider's own word for how the card landed.
+	if res.Destinations[0].Mode != "post_root" {
+		t.Errorf("mode = %q, want post_root — a first notification posts a root",
+			res.Destinations[0].Mode)
 	}
 }
 
@@ -115,11 +122,33 @@ func TestObserveFailsWhenTheSyntheticMarkDidNotPropagate(t *testing.T) {
 	}
 }
 
-func TestObserveFailsWhenTheGroupMarkDidNotPropagate(t *testing.T) {
-	a := full()
-	a.Group.Synthetic = false
-	if got := domain.Observe(a, false).FailedStage; got != domain.StageGroup {
-		t.Fatalf("failed_stage = %q, want %q", got, domain.StageGroup)
+// ⛔ `TestObserveFailsWhenTheGroupMarkDidNotPropagate` WAS HERE AND IS DELETED
+// (git-bug `7570090`), NOT RETARGETED. It set `a.Group.Synthetic = false` and
+// demanded `failed_stage == group`. The behaviour it pinned is genuinely gone rather
+// than moved: the mark it watched was `alert_groups.synthetic`, a SECOND copy of the
+// provenance mark on a row that no longer exists, and there is no Case-shaped
+// equivalent to point it at — `alert_cases` has no `synthetic` column, because a Case
+// is reached through its alert and no aggregate counts it on its own.
+//
+// ⭐ THE PROMISE IT DEFENDED IS STILL DEFENDED, by
+// `TestObserveFailsWhenTheSyntheticMarkDidNotPropagate` above: `alerts.synthetic` is
+// now the whole mark, and a drill still fails loudly rather than quietly polluting
+// every statistic oto reports.
+
+// ⛔ THE STAGE LIST ITSELF LOST A MEMBER, so this asserts the shape of the chain
+// rather than any one stage's verdict: `group` sat between `case` and `rule_snapshot`
+// and nothing may quietly put a tenth stage back without saying which row it looks at.
+func TestObserveReportsNoGroupStage(t *testing.T) {
+	res := domain.Observe(full(), false)
+	for _, st := range res.Stages {
+		if st.Name == "group" {
+			t.Fatalf("the chain still reports a `group` stage: %+v — `alert_groups` is "+
+				"deleted, so there is no row for it to have looked at", st)
+		}
+	}
+	if got := stage(t, res, domain.StageCase).Detail; !strings.Contains(got, "conversation") {
+		t.Errorf("case detail = %q; it must say the Case is the conversation, which is "+
+			"what the group stage used to claim for a generation", got)
 	}
 }
 

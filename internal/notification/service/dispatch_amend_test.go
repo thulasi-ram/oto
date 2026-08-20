@@ -151,7 +151,7 @@ func newDispatchRig(t *testing.T, tgt *target) dispatchRig {
 
 	policies, err := service.NewPolicyService(policyStore{policy: domain.Policy{
 		ID: fx.policyID, OrgID: fx.orgID, Name: "all", Priority: 1, Enabled: true,
-		Reasons:    []domain.Reason{domain.ReasonFired, domain.ReasonNewAlerts},
+		Reasons:    []domain.Reason{domain.ReasonFired, domain.ReasonAllResolved},
 		ChannelIDs: []uuid.UUID{fx.channel.ID},
 	}}, channels)
 	require.NoError(t, err)
@@ -230,7 +230,7 @@ func (h dispatchRig) rowsFor(t *testing.T, notificationID uuid.UUID) []domain.De
 func (h dispatchRig) evaluate(t *testing.T, reason domain.Reason, version int) uuid.UUID {
 	t.Helper()
 	res, err := h.notifier.Evaluate(t.Context(), h.fx.scope, service.Intent{
-		GroupID: h.fx.groupID, Reason: reason, StateVersion: version,
+		CaseID: h.fx.caseID, Reason: reason, StateVersion: version,
 	})
 	require.NoError(t, err)
 	require.True(t, res.Created)
@@ -265,7 +265,7 @@ func TestRootAmendIsItsOwnDeliveryRow(t *testing.T) {
 	require.NoError(t, h.dispatcher.Dispatch(ctx, h.fx.scope, first[0].ID))
 
 	th, err := h.threads.Ensure(ctx, h.fx.scope, h.fx.channel.ID,
-		domain.SubjectAlertGroup, h.fx.groupID, first[0].CreatedAt)
+		domain.SubjectCase, h.fx.caseID, first[0].CreatedAt)
 	require.NoError(t, err)
 	require.True(t, th.RootLanded())
 
@@ -274,7 +274,13 @@ func TestRootAmendIsItsOwnDeliveryRow(t *testing.T) {
 	require.Equal(t, hex("a"), hash)
 
 	// 2. A fact that touches the root AND says something new: §H.6's two rows.
-	secondID := h.evaluate(t, domain.ReasonNewAlerts, 2)
+	//
+	// ⛔ IT WAS `new_alerts`, WHICH IS DELETED (git-bug `7570090`). `all_resolved` is
+	// the successor `domain/mode.go:hasReply` names: §H.6 made `some_resolved`
+	// update-only, the fact it described is now minted as `all_resolved`, and
+	// `all_resolved` is not in the update-only list — so a resolve now produces the
+	// amend-plus-reply pair this test is about.
+	secondID := h.evaluate(t, domain.ReasonAllResolved, 2)
 	second := h.rowsFor(t, secondID)
 	require.Len(t, second, 2, "update_root and thread_reply each need their own row")
 	require.Equal(t, domain.ModeUpdateRoot, second[0].Mode)
@@ -340,7 +346,7 @@ func TestRootAmendFailureIsRetryable(t *testing.T) {
 	first := h.rowsFor(t, firstID)
 	require.NoError(t, h.dispatcher.Dispatch(ctx, h.fx.scope, first[0].ID))
 
-	secondID := h.evaluate(t, domain.ReasonNewAlerts, 2)
+	secondID := h.evaluate(t, domain.ReasonAllResolved, 2)
 	second := h.rowsFor(t, secondID)
 	require.Len(t, second, 2)
 
@@ -356,14 +362,53 @@ func TestRootAmendFailureIsRetryable(t *testing.T) {
 	require.Equal(t, domain.ClassRetryable, amend.ErrorClass)
 	require.NotNil(t, amend.NextAttemptAt)
 
-	// The fact reached the timeline, which is what the UI reads.
+	// ⛔⛔ THE FACT NO LONGER REACHES THE TIMELINE, AND THIS ASSERTS THE DEFECT.
+	//
+	// It read `require.Equal(t, 1, failures)` — "the fact reached the timeline, which
+	// is what the UI reads" — and it is now zero. Nothing about the delivery changed;
+	// what changed is `repository.AppendDeliveryOutcome`
+	// (`internal/notification/repository/events.go:297`), which lost its `groupID`
+	// parameter with `notifications.group_id` (git-bug `7570090`, migration `00069`).
+	//
+	// ⭐ THE DELIVERY TIMELINE IS WRITTEN FOR A NOTIFICATION WITH NO FOCUSED ALERT,
+	// and this assertion exists because it briefly was not.
+	//
+	// ⛔ THE DEFECT, RECORDED SO THE SHAPE IS RECOGNISED AGAIN. `AppendDeliveryOutcome`
+	// guarded on `groupID != uuid.Nil { … } else if alertID == nil { return nil }`.
+	// Every signal notification had a group, so in practice ONLY a digest was refused.
+	// When `notifications.group_id` was dropped (git-bug `7570090`) the parameter went
+	// with it and the guard collapsed to `alertID == nil` — and the replacement comment
+	// asserted that was "unchanged behaviour". It was not: `AlertID` is the FOCUS and is
+	// genuinely optional, since only the four `AlertScoped()` Reasons must carry one and
+	// `enrichment/service.NotifyEnriched` says it "names an alert only when the
+	// enrichment happened to be about one". So every Case-scoped delivery silently
+	// stopped writing ANY `delivery.*` event: a channel failing for an hour and a
+	// delivery oto had given up on were both invisible in the timeline the UI reads,
+	// which is the §B.6 failure this module refuses everywhere else.
+	//
+	// The guard now reads `alertID == nil && caseID == nil` — "names no subject at
+	// all", which is what the original meant and what `ev_subject_ck` demands. A digest
+	// names neither and is still the only thing refused.
 	var failures int
 	require.NoError(t, h.fx.pool.QueryRow(ctx,
 		`SELECT count(*) FROM alert_events
 		  WHERE org_id = $1 AND type = 'delivery.failed'
 		    AND payload->>'delivery_id' = $2`,
 		h.fx.orgID, second[0].ID.String()).Scan(&failures))
-	require.Equal(t, 1, failures)
+	require.Equal(t, 1, failures,
+		"a failed delivery must write its `delivery.failed` event even when the "+
+			"notification names no alert")
+
+	// The wider statement, so a future narrowing of the guard is caught at the type
+	// it affects FIRST rather than only at this one: the root post succeeded earlier
+	// in this test and must have recorded its own outcome too.
+	var anyDeliveryEvent int
+	require.NoError(t, h.fx.pool.QueryRow(ctx,
+		`SELECT count(*) FROM alert_events
+		  WHERE org_id = $1 AND type LIKE 'delivery.%'`, h.fx.orgID).Scan(&anyDeliveryEvent))
+	require.GreaterOrEqual(t, anyDeliveryEvent, 2,
+		"this conversation sent a root card and failed an amend; both belong on the "+
+			"delivery timeline")
 
 	// The reply behind it has not been sent out of order.
 	reply, err := h.deliveries.Get(ctx, h.fx.scope, second[1].ID)

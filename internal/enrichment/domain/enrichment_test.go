@@ -260,7 +260,16 @@ func TestNewEnrichmentRefusesWhatTheTableWouldRefuse(t *testing.T) {
 		// subject_kind — enrichments_subjkind_ck.
 		{name: "subject alert", with: func(p *domain.EnrichmentParams) { p.SubjectKind = domain.SubjectAlert }},
 		{name: "subject case", with: func(p *domain.EnrichmentParams) { p.SubjectKind = domain.SubjectCase }},
-		{name: "subject group", with: func(p *domain.EnrichmentParams) { p.SubjectKind = domain.SubjectGroup }},
+		// ⛔ `{name: "subject group", ... p.SubjectKind = domain.SubjectGroup}` WAS THE
+		// THIRD ACCEPTED KIND AND IS DELETED (git-bug `7570090`). It is replaced by the
+		// REJECTION below rather than merely dropped: a deleted vocabulary entry that
+		// nothing asserts against is one nobody notices creeping back, and `'group'` is
+		// still spelled in `enrichments_subjkind_ck` until 00069 narrows it.
+		{
+			name:     "the retired group kind is refused",
+			with:     func(p *domain.EnrichmentParams) { p.SubjectKind = "group" },
+			wantCode: "enrichment_bad_subject_kind",
+		},
 		{
 			name:     "empty subject kind",
 			with:     func(p *domain.EnrichmentParams) { p.SubjectKind = "" },

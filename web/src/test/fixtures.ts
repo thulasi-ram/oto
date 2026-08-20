@@ -15,7 +15,6 @@ import type {
   Channel,
   Cluster,
   DeliveryDrill,
-  GroupDetail,
   Notification,
   Case,
   CaseDetail,
@@ -125,6 +124,14 @@ export function alert(patch: Partial<Alert> = {}): Alert {
     flap_score: 0,
     is_flapping: false,
     synthetic: false,
+    // ⭐ THE OPEN EPISODE IS PART OF THE DEFAULT ROW, because in production it
+    // always is: every alert list the app compiles sends
+    // `include=["current_case","rule"]` (`filters.ts`), and the dry-run picker
+    // sends `include=["current_case"]` because the policy preview takes a
+    // `case_id` and nothing else (git-bug 7570090). A firing alert with no
+    // `current_case` is a shape only a hand-written fixture produces, and a
+    // picker that filters on it found every seeded row unpickable.
+    current_case: alertCase(),
     ...patch,
   };
 }
@@ -153,44 +160,6 @@ export function alertDetail(patch: Partial<AlertDetail> = {}): AlertDetail {
     delivery_summary: { total: 0, sent: 0, failed: 0, pending: 0, suppressed: 0 },
     ...patch,
   } as AlertDetail;
-}
-
-/**
- * One **case** — the correlation, which the contract still calls an alert group.
- *
- * ⛔ NOT `alertCase()` ABOVE IT. That builds a `Case`, which is one ALERT'S
- * FIRING EPISODE; this builds the notification-group generation the UI calls a
- * Case. The two are different objects that share a word by an accepted decision,
- * so the names here stay apart from the screen's vocabulary rather than following
- * it — a fixture called `case()` would be ambiguous at every call site.
- */
-export function groupDetail(patch: Partial<GroupDetail> = {}): GroupDetail {
-  return {
-    id: "0f1e2d3c-4b5a-4697-8899-aabbccddeeff",
-    group_key: "alertname=HighErrorRate,namespace=payments",
-    generation: 1,
-    source_id: "1a2b3c4d-5e6f-4708-8192-a3b4c5d6e7f8",
-    cluster_key: "prod",
-    receiver: "platform-alerts",
-    group_labels: { alertname: "HighErrorRate", namespace: "payments" },
-    title: "HighErrorRate in payments",
-    state: "open",
-    severity: "critical",
-    state_version: 1,
-    firing_count: 3,
-    suppressed_count: 0,
-    resolved_count: 0,
-    expired_count: 0,
-    total_count: 3,
-    acked_count: 0,
-    snoozed_count: 0,
-    first_seen_at: T0,
-    last_activity_at: T0,
-    severity_counts: { critical: 3 },
-    top_alerts: [],
-    delivery_summary: { total: 0, sent: 0, failed: 0, dead: 0, skipped: 0, pending: 0 },
-    ...patch,
-  } as GroupDetail;
 }
 
 export function cluster(patch: Partial<Cluster> = {}): Cluster {
@@ -269,11 +238,16 @@ export function policy(patch: Partial<Policy> = {}): Policy {
 export function notification(patch: Partial<Notification> = {}): Notification {
   return {
     id: "7c3d9f0a-8b1e-4c3d-4f50-617283940516",
-    subject_kind: "alert_group",
+    // A `case`-kind fact, because a Case IS the conversation (git-bug 7570090).
+    // ⛔ IT WAS `alert_group`-KIND WITH A `group_id`, and both went: the enum no
+    // longer admits the value and `NotificationDTO` no longer carries the field.
+    // `case_id` now matches `subject_id` rather than being `null` — a `case`-kind
+    // row whose case link is absent is a shape the server cannot produce, and a
+    // fixture that produces it teaches the tests a domain that does not exist.
+    subject_kind: "case",
     subject_id: "9d4e0a1b-9c2f-4d4e-5061-728394051627",
-    group_id: "9d4e0a1b-9c2f-4d4e-5061-728394051627",
     alert_id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d38ae",
-    case_id: null,
+    case_id: "9d4e0a1b-9c2f-4d4e-5061-728394051627",
     reason: "fired",
     policy_id: "5a1b7d8e-6f9c-4a1b-2d3e-4f5061728394",
     state_version: 1,
@@ -408,12 +382,16 @@ export function orgSettings(
     flap_digest_interval_s: 900,
     raw_retention_days: 30,
     event_retention_months: 13,
-    unacked_reminder_after_s: 0,
     default_verbosity: "status_changes",
-    broadcast_on_resolved: false,
-    unacked_reminder_mention: "none",
-    unacked_reminder_mention_list: [],
-    unacked_reminder_mention_min_severity: "critical",
+    // ⛔ FIVE KEYS WERE HERE AND NONE OF THEM EXISTS ON THE WIRE ANY MORE.
+    // `broadcast_on_resolved` went with Slack thread-broadcast (git-bug 7570090);
+    // `unacked_reminder_after_s` and the three `unacked_reminder_mention*` went
+    // with the unacked reminder (git-bug bd0fb1d) and this bag outlived them.
+    //
+    // ⚠️ IT IS TYPED `Record<string, unknown>`, WHICH IS WHY NOTHING CAUGHT THEM.
+    // The whole point of this helper is to stand in for the server, and `origins`
+    // below is built from `Object.keys(settings)` — so every ghost key here was a
+    // key the tuning screen was told the server serves and has an origin for.
     ...patch.settings,
   };
 
@@ -480,7 +458,9 @@ export function drill(
 export function statsOverview(patch: Partial<StatsOverview> = {}): StatsOverview {
   return {
     alerts: { firing: 0, suppressed: 0, resolved: 0, expired: 0, acked: 0, unacked: 0, flapping: 0 },
-    groups: { open: 0, closed: 0 },
+    // ⛔ `groups: { open, closed }` WAS HERE AND IS DELETED (git-bug 7570090).
+    // `StatsOverviewDTO` no longer publishes a group tally because there are no
+    // alert groups to tally, and no dashboard tile read it.
     deliveries: { sent: 0, failed: 0, dead: 0, skipped: 0, pending: 0, ambiguous: 0 },
     sources: { healthy: 0, degraded: 0, unreachable: 0, unknown: 0 },
     channels: { healthy: 0, degraded: 0, auth_failed: 0, config_invalid: 0 },

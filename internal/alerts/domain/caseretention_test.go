@@ -634,7 +634,7 @@ func TestARefireAfterTheWindowOpensTheNextCaseUnacknowledged(t *testing.T) {
 	assert.Empty(t, res.Events, "the new episode appends its own case.opened")
 
 	next, evs, err := OpenNewCase(OpenCaseParams{
-		ID: nextCaseIDFix, OrgID: orgA, AlertID: alertID, GroupID: groupIDFix, Seq: d.Seq,
+		ID: nextCaseIDFix, OrgID: orgA, AlertID: alertID, Seq: d.Seq,
 		Actor: actor(t, ActorIngest), At: at(t, refire, refire), EventID: eventIDFix,
 	})
 	require.NoError(t, err)

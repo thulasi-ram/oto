@@ -22,21 +22,26 @@ const (
 	ModeUpdateRoot Mode = "update_root"
 	// ModeThreadReply appends a reply under the root.
 	ModeThreadReply Mode = "thread_reply"
-	// ModeBroadcastReply surfaces a thread reply in-channel — Slack's
-	// `reply_broadcast`, the API form of the "Also send to #channel" checkbox.
+
+	// ⛔ `ModeBroadcastReply` ("broadcast_reply") WAS HERE AND IS DELETED, WITH THE
+	// WHOLE MECHANISM BEHIND IT (git-bug `7570090`). It was Slack's `reply_broadcast`,
+	// the API form of the "Also send to #channel" checkbox: a thread reply that also
+	// surfaces once in the channel. Nothing in oto produces it any more — read the ⛔⭐
+	// block in `PlanFor` below for WHY the mechanism reached nobody, which is the part
+	// worth carrying forward.
 	//
-	// It is decided by BroadcastPolicy over the TRANSITION and then modulated by
-	// the destination (ADR 0020); it used to be hard-coded to one Reason. It is
-	// IRREVERSIBLE, it costs a `chat.postMessage` against the ~1/second/channel
-	// budget, and its in-channel form carries NEITHER COLOUR NOR BUTTONS — see
-	// broadcast.go.
-	ModeBroadcastReply Mode = "broadcast_reply"
+	// ⛔ IT IS DELETED FROM THE MODE SET, NOT LEFT DECODABLE, and the reason is the
+	// same one `reason.go` gives for the plurality Reasons: `api/openapi/openapi.yaml`
+	// has already dropped it from `DeliveryMode`, oto is unreleased, and the database
+	// is being reset — so no row, no client and no renderer can ever meet the value.
+	// A mode kept readable for a reader that cannot exist is a value the next person
+	// has to rule out. `Valid` refusing it is the point, not a regression.
 )
 
 // Valid reports whether m is in the closed set.
 func (m Mode) Valid() bool {
 	switch m {
-	case ModePostRoot, ModeUpdateRoot, ModeThreadReply, ModeBroadcastReply:
+	case ModePostRoot, ModeUpdateRoot, ModeThreadReply:
 		return true
 	default:
 		return false
@@ -48,8 +53,19 @@ func (m Mode) Valid() bool {
 func (m Mode) NeedsRoot() bool { return m != ModePostRoot }
 
 // IsReply reports whether this mode appends to a thread rather than touching the
-// root.
-func (m Mode) IsReply() bool { return m == ModeThreadReply || m == ModeBroadcastReply }
+// root. Its ONE caller-facing job is the reply-ordering gate.
+//
+// ⛔ IT USED TO READ `m == ModeThreadReply || m == ModeBroadcastReply`, and it
+// existed BECAUSE there were two reply modes: every caller asking "does this append
+// to the thread?" had to remember both, and forgetting the broadcast half was a
+// silent bug — a broadcast that skipped the reply-ordering gate would land out of
+// order. There is one reply mode now (git-bug `7570090`), so the predicate is a
+// single comparison.
+//
+// ⭐ IT IS KEPT RATHER THAN INLINED. `m == ModeThreadReply` at three call sites is
+// three places to edit when a second reply mode returns, and the last time there
+// were two the cost of forgetting one was silent misordering.
+func (m Mode) IsReply() bool { return m == ModeThreadReply }
 
 // Capability mirrors `channels.capabilities`, a persisted bitmask. The bit
 // positions are a STORED WIRE CONTRACT shared with the channels port: renumbering
@@ -66,8 +82,10 @@ const (
 	CapRichLayout
 	// CapInteractive means buttons that call back into oto.
 	CapInteractive
-	// CapBroadcast means a thread reply can be surfaced in-channel.
-	CapBroadcast
+	// ⛔ `CapBroadcast` WAS BIT 5 AND IS DELETED (git-bug 7570090). The position is
+	// HELD, not reclaimed: `channels.capabilities` is a persisted bitmask and
+	// renumbering would silently re-label every configured channel in the database.
+	_
 	// CapDedupeKey means the provider does its own dedupe.
 	CapDedupeKey
 )
@@ -110,10 +128,19 @@ func (r Reason) TouchesRoot() bool { return rootModeFor(r, true) != "" }
 // type at all, before any verbosity or capability gating.
 func hasReply(r Reason) bool {
 	switch r {
-	case ReasonFired, ReasonSomeResolved, ReasonRepeat, ReasonUnacked:
+	case ReasonFired, ReasonRepeat, ReasonUnacked:
 		// `repeat interval elapsed` is the important one. It UPDATES AND NEVER
 		// POSTS — that single rule is the largest noise reduction available to
 		// oto, and it is exactly what stock Alertmanager and Grafana get wrong.
+		//
+		// ⛔ `some_resolved` WAS THE FOURTH ARM AND THE REASON IS DELETED (git-bug
+		// `7570090`). ⚠️ ITS REMOVAL IS A BEHAVIOUR CHANGE, NOT A TIDY-UP: §H.6 made
+		// `some_resolved` update-only — one member of forty going quiet did not earn a
+		// reply — and the fact it named is now minted as `all_resolved`, which is NOT in
+		// this list and DOES earn one. So a single alert resolving now produces a thread
+		// reply where it produced only a root amend before. That is the ruling, not a
+		// leak: with one Alert per Case, "one of them stopped" and "the whole thing is
+		// over" are the same event, and the second is the one worth a reply.
 		return false
 	default:
 		return true
@@ -189,9 +216,13 @@ type PlanInput struct {
 	// declaration while its last reader is gone. `reachable-ok` would be the wrong
 	// marker here — it claims a route exists, and the whole point is that none does.
 	Flapping bool
-	// Broadcast is the org's policy over which transitions surface in the channel
-	// (ADR 0020). The zero value is the approved default set.
-	Broadcast BroadcastPolicy
+	// ⛔ `Broadcast BroadcastPolicy` WAS HERE AND IS DELETED WITH THE MECHANISM IT
+	// CONFIGURED (git-bug `7570090`). It was the org's policy over which transitions
+	// surface in the channel (ADR 0020), and its zero value was the approved default
+	// set — which is the tell: the default set was "broadcast nothing unless the org
+	// opts `all_resolved` in", so the field's job was to carry an opt-in almost nobody
+	// took. `broadcast_on_resolved` goes with it, and so does the `Warrants` call in
+	// `PlanFor` below.
 	// ⛔ `ChannelNoticeClaimed` WAS HERE AND IS DELETED WITH THE LATCH IT REPORTED
 	// (`channels.storm_notice_at`). It said "this destination won the once-per-channel
 	// right to announce that oto had started withholding" — a field that exists only
@@ -234,18 +265,23 @@ type Plan struct {
 	// — or "the root card is being posted fresh and already says this". None of them
 	// is oto judging a firing not worth mentioning.
 	ReplyDropReason string
-	// BroadcastDamped reports that this transition WARRANTED a broadcast and got a
-	// quiet reply instead. It is not an error and not a suppression: the fact is
-	// still delivered on the thread. It is recorded because a damped broadcast is
-	// invisible by construction, and "oto decided not to shout" is exactly the
-	// kind of decision §B.6 refuses to take silently.
-	BroadcastDamped bool
-	// BroadcastDampReason is why. It is now exactly ONE value, "no_capability": the
-	// destination cannot surface a reply in-channel, which is the world's constraint
-	// and not a decision. `storm` and `flapping` were the other two and both are
-	// gone with the dampers they named — a damped broadcast for either meant oto had
-	// chosen to be quieter about a real transition.
-	BroadcastDampReason string
+	// ⛔ `BroadcastDamped bool` AND `BroadcastDampReason string` WERE HERE AND ARE
+	// DELETED (git-bug `7570090`). They reported that a transition WARRANTED a
+	// broadcast and got a quiet reply instead — not an error and not a suppression,
+	// because the fact still landed on the thread, but recorded anyway, since a damped
+	// broadcast is invisible by construction and "oto decided not to shout" is exactly
+	// the kind of decision §B.6 refuses to take silently.
+	//
+	// ⭐ THE PRINCIPLE THEY SERVED OUTLIVES THEM AND IS WHAT `ReplyDropReason` ABOVE IS
+	// FOR: any narrowing oto applies to its own output has to be reportable. What died
+	// is the thing being narrowed. By the end there was exactly one damp reason,
+	// `no_capability` — the destination could not surface a reply in-channel, the
+	// world's constraint rather than oto's opinion — and with no broadcast to damp,
+	// nothing can set either field. A field nothing can write is the dead shape
+	// `reason.go` refuses for a Reason, and a struct field is no different.
+	//
+	// ⚠️ THEIR LAST READER IS THE `p.BroadcastDamped` log line in
+	// `notification/service.notify`, which goes with them.
 }
 
 // Empty reports that this destination gets nothing.
@@ -397,38 +433,79 @@ func PlanFor(in PlanInput) Plan {
 		return drop("no_threading")
 	}
 
-	// ---- broadcast -------------------------------------------------------
-	// The reply survives. ADR 0020 decides whether it surfaces in the channel:
-	// POLICY decides that the TRANSITION warrants it, and the destination's own
-	// gates — already passed above — decide whether this channel gets it. Broadcast
-	// never overrides a destination's volume setting; a channel that has opted out
-	// of thread replies does not receive louder ones.
+	// ---- the reply, and the broadcast decision that used to follow it ----
 	//
-	// ⛔ THERE IS ONE WAY TO EARN A BROADCAST AND THERE USED TO BE TWO. `Warrants`
-	// asks whether the TRANSITION is one an on-call engineer would be angry to have
-	// missed; two Reasons qualify and neither is per-alert noise. The second road was
-	// `WarrantsChannelNotice` — a fact about the CHANNEL rather than the thread,
-	// behind a once-per-channel latch — and it existed for exactly one Reason,
-	// `storm`, whose content was "oto has started withholding individual
-	// notifications". A product that does not withhold has nothing to announce, so
-	// the road and its latch are deleted with the damper.
-	mode := ModeThreadReply
-	wantsBroadcast := in.Broadcast.Warrants(in.Reason)
-	switch {
-	case !wantsBroadcast:
-		// The reply stays on the thread, which is where a fact about the response
-		// belongs. Nothing was withheld.
-	case in.Capabilities.Has(CapBroadcast):
-		mode = ModeBroadcastReply
-	default:
-		// §H.10 capability degradation: broadcast → reply. The fact still
-		// lands on the thread; only the channel-level summons is lost.
-		p.BroadcastDamped, p.BroadcastDampReason = true, "no_capability"
-	}
-
-	// A Reason with a reply but no root — `comment` — still needs the reply, and
-	// a destination that cannot amend has already had its root promoted above.
-	p.Modes = append(p.Modes, mode)
+	// ⛔⛔ THE BROADCAST STEP WAS HERE AND THE MECHANISM IS DELETED FROM OTO ENTIRELY
+	// (git-bug `7570090`). It read `in.Broadcast.Warrants(in.Reason)` and, on a
+	// destination carrying `CapBroadcast`, promoted the surviving thread reply to
+	// `broadcast_reply` — Slack's `reply_broadcast`, the API form of "Also send to
+	// #channel". `broadcast.go` held the whole argument and is gone with it; this note
+	// is the part a reader still needs, because the PREMISE of that argument is still
+	// true and the conclusion no longer is.
+	//
+	// ⭐ THE PREMISE, WHICH STILL HOLDS. ADR 0008 made `chat.update` the primary verb
+	// and bought its quiet with a property nobody wrote down: **`chat.update` is
+	// completely silent** — no notification, no unread badge, no bump in the channel
+	// list. A card can go from `warning` to `critical` and every person in the channel
+	// can miss it. Thread replies have the same shape: they notify thread participants
+	// and nobody else. `reply_broadcast` was Slack's answer, and it was the ONLY
+	// mechanism oto had for channel-level urgency. ⚠️ OTO NOW HAS NONE. That is a
+	// product gap, not a solved problem, and anyone reaching for one should read the
+	// three constraints below first — they are why the answer was never "broadcast
+	// more".
+	//
+	// ⛔ THE THREE BINDING PROPERTIES OF A BROADCAST, ALL COUNTER-INTUITIVE, ALL STILL
+	// TRUE OF SLACK:
+	//
+	//  1. THE CHANNEL-VISIBLE ARTEFACT IS A STRIPPED REFERENCE, NOT A COPY. Slack
+	//     delivers a `thread_broadcast` subtype that is "a pointer or reference to the
+	//     actual thread", and "the reference cannot contain attachments or message
+	//     buttons". §H.1 S3 puts ALL of oto's blocks inside exactly one attachment,
+	//     because that attachment is the only way to get the colour bar — so the
+	//     in-channel form had NO COLOUR BAR AND NO BUTTONS, and its top-level `text`
+	//     had to carry the severity in words and never lean on a colour or an
+	//     Acknowledge button.
+	//  2. BROADCASTING IS IRREVERSIBLE. Nothing un-broadcasts. The bar was therefore
+	//     "would an on-call engineer be angry to have MISSED this?", never "is this
+	//     interesting?" — a channel that learns to scroll past oto has lost the only
+	//     mechanism oto had for genuine urgency.
+	//  3. A BROADCAST IS A `chat.postMessage` AND AN UPDATE IS NOT. Posts are what the
+	//     ~1 message/second/channel budget constrains; `chat.update` is Tier 3 and
+	//     effectively free. Choosing to broadcast moved a fact from the cheap verb to
+	//     the expensive one, which is why the set was tiny and nothing in it was
+	//     per-alert.
+	//
+	// ⭐⭐ AND WHY IT GOES: BY THE END THE MECHANISM WAS ALREADY REACHING NOBODY. The
+	// set was four Reasons, then a revised ADR 0020 cut it to the two whose quiet form
+	// is genuinely INVISIBLE, then `unacked_reminder` left with git-bug bd0fb1d — its
+	// audience was people who had NOT engaged and in-thread it reached only the
+	// already-engaged, which is the wrong audience, and the owner withdrew the feature
+	// because oto sends nothing unprompted. That left `refired` carrying the default
+	// set alone, and ADR 0040 retired T8: a re-fire now always opens a NEW episode, so
+	// nothing has produced a `refired` since. The only other member was `all_resolved`,
+	// behind `broadcast_on_resolved`, OPT-IN AND DEFAULT OFF — closure is welcome on a
+	// quiet channel and doubles traffic on a busy one, and nobody was ever woken
+	// because a resolve arrived quietly. ⛔ SO ON DEFAULT SETTINGS `Warrants` COULD
+	// RETURN TRUE FOR NOTHING AT ALL: one member had no producer, the other had no
+	// subscriber. Deleting it removes no delivery any operator was receiving.
+	//
+	// ⛔ WHAT MUST NOT COME BACK AS A SUBSTITUTE. `storm` was removed from the set
+	// before the set was: a storm means MANY alerts, so a per-thread broadcast of "oto
+	// has gone quiet" produced exactly the flood the damping existed to prevent — oto
+	// shouting, once per group, about having started to be quiet. It was replaced by a
+	// once-per-channel latched notice, and both went with storm damping itself, because
+	// a product that withholds nothing has nothing to announce. ⛔ AND A PER-REASON
+	// DIAL IS NOT THE ANSWER EITHER: the policy was deliberately ONE boolean, because a
+	// dial per Reason makes broadcast the thing each team negotiates rather than the
+	// thing oto is confident about, which is how a channel ends up scrolling past oto.
+	// ⭐ IF CHANNEL-LEVEL URGENCY IS REBUILT, THE HARD PART IS FINDING A TRANSITION
+	// WITH A LIVE PRODUCER WHOSE QUIET FORM IS INVISIBLE — that is the requirement the
+	// old set failed, and the capability bit is deliberately still reserved above so
+	// the answer does not have to renumber a stored contract to arrive.
+	//
+	// A Reason with a reply but no root — `comment` — still needs the reply, and a
+	// destination that cannot amend has already had its root promoted above.
+	p.Modes = append(p.Modes, ModeThreadReply)
 	return p
 }
 

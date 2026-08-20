@@ -17,7 +17,8 @@ import (
 // added here, which is the point: the person-scope test below sweeps this list.
 func allStatsTypes() []any {
 	return []any{
-		AlertQuality{}, AlertCounts{}, GroupCounts{}, DeliveryCounts{},
+		// ⛔ `GroupCounts{}` WAS IN THIS LIST AND IS DELETED (git-bug `7570090`).
+		AlertQuality{}, AlertCounts{}, DeliveryCounts{},
 		SourceCounts{}, ChannelCounts{}, Overview{},
 	}
 }
@@ -247,8 +248,10 @@ func TestExpiredIsCountedApartFromResolved(t *testing.T) {
 		assert.True(t, ok, "AlertCounts must carry %s", name)
 	}
 
-	// No ALERT-scoped type merges them into one bucket. (GroupCounts.Closed is a
-	// legitimate generation fact and is deliberately not swept here.)
+	// No ALERT-scoped type merges them into one bucket. (The carve-out this note
+	// used to make — `GroupCounts.Closed` is a legitimate generation fact and was
+	// deliberately not swept — went with the type, git-bug `7570090`. Every type
+	// left in this package is alert-scoped, so the sweep now has no exception.)
 	for _, v := range []any{AlertQuality{}, AlertCounts{}} {
 		ty := reflect.TypeOf(v)
 		for _, merged := range []string{"Closed", "Ended", "Done", "Finished", "Terminal", "Inactive"} {
@@ -299,17 +302,18 @@ func TestOverview_IsTheWholeDashboardAndNothingPersonal(t *testing.T) {
 
 	// Each half is present.
 	assert.IsType(t, AlertCounts{}, o.Alerts)
-	assert.IsType(t, GroupCounts{}, o.Groups)
 	assert.IsType(t, DeliveryCounts{}, o.Deliveries)
 	assert.IsType(t, SourceCounts{}, o.Sources)
 	assert.IsType(t, ChannelCounts{}, o.Channels)
 
-	// And exactly those five: a sixth half would be where a person snuck in.
-	assert.Equal(t, 5, reflect.TypeOf(Overview{}).NumField())
+	// And exactly those four: a fifth half would be where a person snuck in.
+	// ⛔ IT WAS FIVE AND `Groups` IS THE ONE THAT WENT (git-bug `7570090`). The
+	// count is asserted rather than described precisely so that re-adding a half —
+	// under any name — has to be argued for here.
+	assert.Equal(t, 4, reflect.TypeOf(Overview{}).NumField())
 
 	o = Overview{
 		Alerts:     AlertCounts{Firing: 2, Suppressed: 1, Resolved: 8, Expired: 3, Acked: 1, Unacked: 2, Flapping: 1},
-		Groups:     GroupCounts{Open: 1, Closed: 4},
 		Deliveries: DeliveryCounts{Sent: 10, Failed: 1, Dead: 1},
 		Sources:    SourceCounts{Healthy: 1, MaxClockSkewMS: 1200},
 		Channels:   ChannelCounts{Healthy: 2},
@@ -320,7 +324,7 @@ func TestOverview_IsTheWholeDashboardAndNothingPersonal(t *testing.T) {
 }
 
 func TestCountTypesAreAllPlainCounters(t *testing.T) {
-	for _, v := range []any{AlertCounts{}, GroupCounts{}, DeliveryCounts{}, ChannelCounts{}} {
+	for _, v := range []any{AlertCounts{}, DeliveryCounts{}, ChannelCounts{}} {
 		ty := reflect.TypeOf(v)
 		t.Run(ty.Name(), func(t *testing.T) {
 			for i := range ty.NumField() {

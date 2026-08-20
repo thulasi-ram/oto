@@ -243,8 +243,6 @@ const PolicyFormSchema = v.pipe(
  */
 const REASON_LABEL: Record<NotificationReason, string> = {
   fired: "started firing",
-  new_alerts: "new alerts joined",
-  some_resolved: "some resolved",
   all_resolved: "all resolved",
   repeat: "repeat",
   suppressed: "suppressed upstream",
@@ -912,19 +910,40 @@ function describeSuppression(reason: NotificationSuppressedReason | undefined): 
 }
 
 /**
- * An alert as the dry-run picker holds it: what to send, and what to call it.
+ * An episode as the dry-run picker holds it: what to send, and what to call it.
  *
  * The label is captured with the choice rather than looked up later, because
  * the point of holding it is to survive the row leaving the list.
+ *
+ * ⛔ `caseId` IS WHAT GOES ON THE WIRE, AND THE ALERT ID IS NO LONGER SENT AT
+ * ALL (git-bug 7570090). `PolicyPreviewRequest` took `alert_id` and `group_id`
+ * and now takes `case_id` only: a Case IS the conversation, so a routing
+ * question is asked about one firing episode rather than about an identity that
+ * may not be firing. The LABEL still comes from the alert, because a case has no
+ * name of its own — `case #19` names nothing an operator recognises, and
+ * `KubePodCrashLooping · prod-eu · payments` is the whole reason this picker
+ * exists instead of a UUID box.
  */
-interface PickedAlert {
-  readonly id: string;
+interface PickedCase {
+  readonly caseId: string;
   readonly label: string;
 }
 
-function pickedAlert(a: Alert): PickedAlert {
+/**
+ * One alert as a pickable episode, or `null` when it has no open case.
+ *
+ * ⚠️ `null` IS THE COMMON CASE AND NOT AN ERROR. `RECENT_ALERTS` sorts by
+ * `-last_seen_at` and filters nothing, so a resolved or expired alert is in the
+ * list and has no `current_case` — there is no episode to dry-run against. It is
+ * dropped from the options rather than offered and then rejected by the server,
+ * because a picker that lets you choose something Preview cannot use is worse
+ * than one that is shorter.
+ */
+function pickedCase(a: Alert): PickedCase | null {
+  const id = a.current_case?.id;
+  if (id === undefined || id === null) return null;
   return {
-    id: a.id,
+    caseId: id,
     label: `${a.alertname} · ${a.cluster_key}${a.namespace ? ` · ${a.namespace}` : ""}`,
   };
 }
@@ -938,13 +957,13 @@ function pickedAlert(a: Alert): PickedAlert {
  * policy would do in isolation.
  */
 const PolicyPreviewPanel: Component<{ readonly draft: CreatePolicyRequest }> = (props) => {
-  // ⛔ THE CHOICE IS THE ALERT, NOT ITS ID. The list is the twenty most recently
-  // seen alerts and the stream reorders it, so an id held on its own can stop
-  // naming any option the picker offers: `<Select>` would fall back to blank
+  // ⛔ THE CHOICE IS THE EPISODE, NOT ITS ID. The list is the twenty most
+  // recently seen alerts and the stream reorders it, so an id held on its own can
+  // stop naming any option the picker offers: `<Select>` would fall back to blank
   // while Preview stayed enabled, and the operator would dry-run a routing
-  // policy against an alert the screen could no longer name. Holding what was
+  // policy against an episode the screen could no longer name. Holding what was
   // chosen means the picker can keep offering it.
-  const [picked, setPicked] = createSignal<PickedAlert | null>(null);
+  const [picked, setPicked] = createSignal<PickedCase | null>(null);
   const [reason, setReason] = createSignal<NotificationReason>("fired");
 
   // A short list of recent alerts to dry-run against, so nobody has to paste a
@@ -967,7 +986,11 @@ const PolicyPreviewPanel: Component<{ readonly draft: CreatePolicyRequest }> = (
    * selected. Keeping `rows` stable across `picked()` changes is what breaks
    * that cycle.
    */
-  const rows = createMemo<readonly PickedAlert[]>(() => (recent.data?.data ?? []).map(pickedAlert));
+  // ⚠️ `.filter()` AFTER THE MAP, not a `flatMap` on the alert list: the twenty
+  // rows include alerts with no open case, and those have no episode to preview.
+  const rows = createMemo<readonly PickedCase[]>(() =>
+    (recent.data?.data ?? []).map(pickedCase).filter((c): c is PickedCase => c !== null),
+  );
 
   /**
    * What the picker offers: the recent twenty, plus the alert already chosen if
@@ -977,15 +1000,15 @@ const PolicyPreviewPanel: Component<{ readonly draft: CreatePolicyRequest }> = (
    * silently changes under the operator between reading the list and pressing
    * Preview.
    */
-  const options = createMemo<readonly PickedAlert[]>(() => {
+  const options = createMemo<readonly PickedCase[]>(() => {
     const chosen = picked();
-    if (chosen === null || rows().some((o) => o.id === chosen.id)) return rows();
+    if (chosen === null || rows().some((o) => o.caseId === chosen.caseId)) return rows();
     return [...rows(), chosen];
   });
 
   const preview = useMutation(() => ({
     mutationFn: (): Promise<PolicyPreview> =>
-      previewPolicy({ alert_id: picked()?.id ?? "", reason: reason(), policy: props.draft }),
+      previewPolicy({ case_id: picked()?.caseId ?? "", reason: reason(), policy: props.draft }),
   }));
 
   // Named, not boxed — the same change as the channel dialog's provider group.
@@ -1026,10 +1049,10 @@ const PolicyPreviewPanel: Component<{ readonly draft: CreatePolicyRequest }> = (
               it has something to offer. This picker cannot hide the same way —
               it is the point of the dry run — so it disables itself and says
               "Loading recent alerts…" instead. */}
-          <Select<PickedAlert>
+          <Select<PickedCase>
             class={FIELD}
             options={[...options()]}
-            optionValue="id"
+            optionValue="caseId"
             optionTextValue="label"
             value={picked()}
             onChange={setPicked}
@@ -1039,9 +1062,12 @@ const PolicyPreviewPanel: Component<{ readonly draft: CreatePolicyRequest }> = (
               <SelectItem item={itemProps.item}>{itemProps.item.rawValue.label}</SelectItem>
             )}
           >
-            <SelectLabel class="block">Against this alert</SelectLabel>
+            {/* "episode", not "alert": the request names a case, and a label that
+                said "alert" would promise the dry run covers an identity that is
+                not currently firing. */}
+            <SelectLabel class="block">Against this episode</SelectLabel>
             <SelectTrigger>
-              <SelectValue<PickedAlert>>{(state) => state.selectedOption().label}</SelectValue>
+              <SelectValue<PickedCase>>{(state) => state.selectedOption().label}</SelectValue>
             </SelectTrigger>
             <SelectHiddenSelect />
             <SelectContent />

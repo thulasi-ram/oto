@@ -14,7 +14,7 @@ import "testing"
 // TestTheReasonSubjectAllocationIsTotal is issue 36bb67d's done-when #2: the
 // Reason → SubjectKind allocation covers the closed Reason set EXACTLY.
 //
-// ⭐ IT IS THE GATE ON A TWENTIETH REASON. `Subject` reads a map, and a Go map
+// ⭐ IT IS THE GATE ON A SIXTEENTH REASON. `Subject` reads a map, and a Go map
 // answers a missing key with the zero value — so a Reason added to `allReasons`
 // and forgotten here would not fail to compile and would not panic. It would
 // return the EMPTY SubjectKind, and a notification would be written claiming to be
@@ -25,7 +25,7 @@ import "testing"
 //
 // The three assertions are the three ways the allocation can be wrong:
 //
-//   - a Reason with no subject — the forgotten nineteenth;
+//   - a Reason with no subject — the forgotten sixteenth;
 //   - a key that is not a Reason — a typo'd string literal, or a Reason that
 //     migration 00018 removed from the vocabulary and nobody removed from here,
 //     which would keep `Valid` accepting a value notifications_reason_ck refuses;
@@ -42,15 +42,18 @@ func TestTheReasonSubjectAllocationIsTotal(t *testing.T) {
 		kind, ok := reasonSubjects[r]
 		if !ok {
 			t.Errorf("reason %q declares no subject. Every Reason must say WHAT it is "+
-				"about (alert, case, alert_group or digest): a Reason with no entry here "+
+				"about (alert, case or digest): a Reason with no entry here "+
 				"returns the empty SubjectKind from Subject() and is refused by Valid(), so "+
 				"it cannot produce a notification at all", r)
 			continue
 		}
 		if !kind.Valid() {
-			t.Errorf("reason %q declares subject %q, which is not one of the four kinds "+
-				"notifications_subjkind_ck admits (%q, %q, %q, %q)",
-				r, kind, SubjectAlert, SubjectCase, SubjectAlertGroup, SubjectDigest)
+			// `alert_group` was the fourth kind named here and is deleted (git-bug
+			// `7570090`), along with the two plurality Reasons that could only ever have
+			// claimed it.
+			t.Errorf("reason %q declares subject %q, which is not one of the three kinds "+
+				"notifications_subjkind_ck admits (%q, %q, %q)",
+				r, kind, SubjectAlert, SubjectCase, SubjectDigest)
 		}
 		if got := r.Subject(); got != kind {
 			t.Errorf("reason %q: Subject() returned %q but the allocation says %q", r, got, kind)

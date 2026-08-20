@@ -62,7 +62,6 @@ type driftRig struct {
 	scope   db.TenantScope
 	org     harness.Org
 	cluster harness.Cluster
-	group   harness.Group
 	source  uuid.UUID
 
 	alerts *alerts.Service
@@ -84,7 +83,6 @@ func newDriftRig(t *testing.T) *driftRig {
 		scope:   org.Scope,
 		org:     org,
 		cluster: cluster,
-		group:   h.Group(org, source, cluster),
 		source:  source.ID,
 		lookup:  &driftLookup{},
 	}
@@ -148,10 +146,10 @@ func (r *driftRig) open(t *testing.T, a harness.Alert, seq int) uuid.UUID {
 	caseID := id.New()
 	now := r.h.Now()
 	r.h.Exec(`INSERT INTO alert_cases
-	            (id, org_id, alert_id, group_id, seq, state, started_at, last_observed_at,
+	            (id, org_id, alert_id, seq, state, started_at, last_observed_at,
 	             source_starts_at, source_updated_at)
-	          VALUES ($1, $2, $3, $4, $5, 'open', $6, $6, $6, $6)`,
-		caseID, a.OrgID, a.ID, r.group.ID, seq, now)
+	          VALUES ($1, $2, $3, $4, 'open', $5, $5, $5, $5)`,
+		caseID, a.OrgID, a.ID, seq, now)
 	r.h.Exec(`UPDATE alerts SET current_case_id = $1, total_cases = $2, last_seen_at = $3
 	           WHERE id = $4`, caseID, seq, now, a.ID)
 	return caseID

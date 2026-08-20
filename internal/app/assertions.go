@@ -9,7 +9,6 @@ import (
 	channelsservice "github.com/thulasiram/oto/internal/channels/service"
 	enrichservice "github.com/thulasiram/oto/internal/enrichment/service"
 	enrichworker "github.com/thulasiram/oto/internal/enrichment/worker"
-	groupingservice "github.com/thulasiram/oto/internal/grouping/service"
 	identityapi "github.com/thulasiram/oto/internal/identity/api"
 	identityrepo "github.com/thulasiram/oto/internal/identity/repository"
 	identityservice "github.com/thulasiram/oto/internal/identity/service"
@@ -57,13 +56,10 @@ var (
 
 	// --- the cross-module ports this package writes adapters for -------------
 	_ alertsservice.StreamAppender     = streamAppender{}
-	_ groupingservice.StreamAppender   = streamAppender{}
 	_ alertsservice.NotificationReader = (*notificationReader)(nil)
-	_ alertsservice.GroupVersionReader = (*groupVersions)(nil)
 	_ alertsservice.EnrichmentReader   = enrichmentReader{}
 	_ alertsservice.SourceHealth       = sourceHealth{}
 	_ alertsservice.SettingsReader     = orgSettings{}
-	_ groupingservice.SettingsReader   = orgSettings{}
 	_ notifservice.SettingsReader      = orgSettings{}
 	_ rulesservice.RuleLookup          = ruleLookup{}
 	_ enrichservice.SubjectLoader      = subjectLoader{}
@@ -73,15 +69,15 @@ var (
 	// PAT mint): the identity service satisfies the sources-side port directly,
 	// and this line is what breaks if either side of that seam drifts.
 	_ sourcesservice.IngestTokens        = (*identityservice.Service)(nil)
-	_ notifapi.SubjectResolver           = subjectResolver{}
 	_ notifworker.ScopeResolver          = (*notifrepo.ScopeResolver)(nil)
 	_ notifservice.CredentialUnsealer    = (*secrets.Keyring)(nil)
 	_ channelsservice.CredentialResolver = (*channelsrepo.CredentialRepository)(nil)
 
-	// --- grouping reaches the shared kernel through `alerts/service` ----------
-	_ groupingservice.EventAppender  = (*alertsservice.Service)(nil)
-	_ groupingservice.TimelineReader = (*alertsservice.Service)(nil)
-	_ groupingservice.MemberActions  = (*alertsservice.Service)(nil)
+	// ⛔ THE FOUR `grouping` PORT ASSERTIONS WERE HERE AND ARE DELETED (git-bug
+	// `7570090`): `StreamAppender`, `SettingsReader`, and the three the module
+	// reached the shared kernel through — `EventAppender`, `TimelineReader` and
+	// `MemberActions`. `alertsservice.GroupVersionReader = (*groupVersions)(nil)`
+	// went with them. There is no `internal/grouping` to declare a port.
 
 	// --- silences reads alerts through a consumer-declared port --------------
 	_ silencesservice.AlertLister = (*alertsservice.Service)(nil)
@@ -104,7 +100,7 @@ var (
 	_ channelsapi.SlackInteractions      = (*channelsservice.InteractionService)(nil)
 	_ channelsservice.SlackNotice        = (*slackprovider.Notice)(nil)
 	_ channelsservice.SlackActors        = slackActors{}
-	_ channelsservice.AlertGroups        = slackGroupActions{}
+	_ channelsservice.Cases              = slackCaseActions{}
 	_ channelsservice.SlackConversations = slackConversations{}
 
 	// --- sources: both halves of the module are the SERVICE ------------------

@@ -20,8 +20,15 @@ import (
 // can disagree. `started_by` is written for attribution and never read, which is
 // the shape SPEC R8 asks for: a per-person metric cannot be built from a column
 // nothing selects.
+//
+// ⛔ `group_id` IS STORED AND NO LONGER PROJECTED EITHER, FOR A DIFFERENT REASON
+// (git-bug `7570090`): the `alert_groups` row it pointed at does not exist. It has no
+// FK (00039), so the column outlives the table holding stale uuids rather than
+// failing, and it is another agent's migration to drop. Until then nothing here
+// reads it or writes it — a manifest entry for a row nobody can delete is not a
+// manifest entry, and COALESCEing a value into it would keep minting garbage.
 const drillColumns = `id, source_id, drill_label, severity, batch_id, alert_id,
-       case_id, group_id, notification_id, outcome,
+       case_id, notification_id, outcome,
        started_by_label, started_at, deadline_at, finished_at, disposed_at`
 
 // drillRow is the row model. Unexported, per the three-model rule.
@@ -33,7 +40,6 @@ type drillRow struct {
 	batchID        *uuid.UUID
 	alertID        *uuid.UUID
 	caseID         *uuid.UUID
-	groupID        *uuid.UUID
 	notificationID *uuid.UUID
 	outcome        []byte
 	startedByLabel string
@@ -46,7 +52,7 @@ type drillRow struct {
 func (r *drillRow) scanDest() []any {
 	return []any{
 		&r.id, &r.sourceID, &r.label, &r.severity, &r.batchID, &r.alertID,
-		&r.caseID, &r.groupID, &r.notificationID, &r.outcome,
+		&r.caseID, &r.notificationID, &r.outcome,
 		&r.startedByLabel, &r.startedAt, &r.deadlineAt, &r.finishedAt, &r.disposedAt,
 	}
 }
@@ -60,7 +66,6 @@ func (r *drillRow) toDomain() (domain.Drill, error) {
 		BatchID:        idOrNil(r.batchID),
 		AlertID:        idOrNil(r.alertID),
 		CaseID:         idOrNil(r.caseID),
-		GroupID:        idOrNil(r.groupID),
 		NotificationID: idOrNil(r.notificationID),
 		StartedByLabel: r.startedByLabel,
 		StartedAt:      r.startedAt.UTC(),
@@ -158,13 +163,11 @@ func (r *DrillRepository) RecordArtefacts(
 	_, err := r.db(ctx).Exec(ctx, `
 UPDATE delivery_drills
    SET alert_id        = COALESCE(alert_id, $3),
-       case_id   = COALESCE(case_id, $4),
-       group_id        = COALESCE(group_id, $5),
-       notification_id = COALESCE(notification_id, $6),
+       case_id         = COALESCE(case_id, $4),
+       notification_id = COALESCE(notification_id, $5),
        updated_at      = now()
  WHERE org_id = $1 AND id = $2`,
-		s.OrgID(), id, nilID(a.Alert.ID), nilID(a.Case.ID),
-		nilID(a.Group.ID), nilID(a.Notification.ID))
+		s.OrgID(), id, nilID(a.Alert.ID), nilID(a.Case.ID), nilID(a.Notification.ID))
 	if err != nil {
 		return mapErr(err, "record the drill's artefacts")
 	}

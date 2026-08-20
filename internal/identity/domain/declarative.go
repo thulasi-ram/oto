@@ -145,12 +145,6 @@ func (d *Declarative) set(key SettingKey, e DeclaredEntry) error {
 			return err
 		}
 		d.patch.DefaultVerbosity = &s
-	case KeyBroadcastOnResolved:
-		b, err := asBool(e.Value)
-		if err != nil {
-			return err
-		}
-		d.patch.BroadcastOnResolved = &b
 	default:
 		return fmt.Errorf("%s cannot be set declaratively", key)
 	}
@@ -179,9 +173,6 @@ func (d Declarative) Keys() []SettingKey {
 }
 
 // Patch is the declarative layer as a patch, for merging OVER an org's own.
-//
-// It returns a copy of the slice-valued field so that no caller can reach into
-// the resolved layer and edit the deployment's stated configuration through it.
 func (d Declarative) Patch() SettingsPatch {
 	// ⛔ IT USED TO DEEP-COPY `UnackedReminderMentionList`, THE ONE SLICE-VALUED
 	// FIELD, so no caller could edit the deployment's stated configuration through
@@ -264,21 +255,17 @@ func asStr(v any) (string, error) {
 	return strings.TrimSpace(s), nil
 }
 
-func asBool(v any) (bool, error) {
-	switch t := v.(type) {
-	case bool:
-		return t, nil
-	case string:
-		b, err := strconv.ParseBool(strings.TrimSpace(t))
-		if err != nil {
-			return false, fmt.Errorf("%q is not true or false", t)
-		}
-		return b, nil
-	default:
-		return false, fmt.Errorf("%v is not true or false", v)
-	}
-}
-
+// ⛔ `asBool` WAS HERE AND IS DELETED (git-bug 7570090). It accepted a real YAML
+// boolean and the string an environment variable can only ever be, so
+// `OTO_TUNING_BROADCAST_ON_RESOLVED=true` and `tuning.broadcast_on_resolved: true`
+// both parsed. `broadcast_on_resolved` was the only boolean-valued setting, and it
+// went with the broadcast.
+//
+// ⚠️ IF A BOOLEAN SETTING COMES BACK, SO DOES THIS: the `case string` arm is the
+// one a plain `v.(bool)` misses, and it is the environment-variable case — every
+// value that arrives through the env is a string, so a bare cast would reject the
+// only form an operator can type there.
+//
 // ⛔ `asList` WAS HERE AND IS DELETED (git-bug bd0fb1d). It accepted the three
 // shapes a list-valued setting could arrive in — a YAML sequence, the []string a
 // comma-separated environment value becomes, and a single bare string with no

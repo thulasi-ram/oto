@@ -120,7 +120,6 @@ func TestAppendTimelineEventRefusesARetiredType(t *testing.T) {
 	t.Parallel()
 
 	scope := retiredTestScope(t)
-	groupID := uuid.New()
 
 	for _, typ := range []domain.EventType{
 		domain.EventGroupMemberJoined,
@@ -143,7 +142,6 @@ func TestAppendTimelineEventRefusesARetiredType(t *testing.T) {
 
 			err := svc.AppendTimelineEvent(context.Background(), scope, TimelineEventRequest{
 				Type:    typ,
-				GroupID: groupID,
 				AlertID: uuid.New(),
 				CaseID:  uuid.New(),
 				Summary: "a fact nothing may record any more",
@@ -183,29 +181,38 @@ func TestAppendTimelineEventStillAcceptsLiveTypes(t *testing.T) {
 
 	scope := retiredTestScope(t)
 
-	// The two facts that REPLACED the membership events: `group.member_joined` is
-	// implied by `case.opened`, `group.member_left` by the episode ending. If the
-	// guard could not tell these from the retired pair it would have taken the
-	// replacements with it.
+	// `case.opened` is the fact that REPLACED the membership events:
+	// `group.member_joined` is implied by it, `group.member_left` by the episode
+	// ending. If the guard could not tell it from the retired pair it would have
+	// taken the replacement with it.
 	//
-	// ⚠️ THE THIRD ENTRY WAS `group.storm_started` AND IT IS NOW `group.closed`.
-	// The storm type was chosen as a not-retired control precisely because it was
-	// the group-scoped event nothing had retired; it was retired and is now DELETED
-	// (migration 00060), so leaving it here would first have made this control
-	// assert the opposite of what it claims — which the `tc.typ.Retired()` check
-	// below would have caught, loudly — and would now simply not compile. The right
-	// fix was a genuinely live type rather than a deleted assertion. `group.closed`
-	// is the sibling of `group.opened`: minted by `grouping/service`, carried
-	// through this same seam, group-scoped, and very much alive.
+	// ⛔ TWO ENTRIES WERE `group.opened` AND `group.closed` AND THEY ARE REPLACED
+	// BY `rule.definition_changed` AND `enrichment.completed` (git-bug `7570090`).
+	// The group pair was chosen because it was group-scoped, live, and carried
+	// through this same seam — and it was `grouping/service` that minted both. That
+	// module is deleted, and with `TimelineEventRequest.GroupID` deleted too a
+	// group-scoped request now has NO subject at all, so it would be refused by
+	// `ev_subject_ck` before the retirement guard was ever consulted. The control
+	// would then have passed for the wrong reason, or failed while claiming the
+	// guard was too broad.
+	//
+	// ⭐ THE REPLACEMENTS ARE THE SEAM'S REAL TRAFFIC, which is what a control
+	// should be made of: `rule.*` and `enrichment.*` are exactly what the two
+	// remaining callers narrate through `timelineRecorder`, and both are subjected
+	// by an alert and an episode rather than by a container.
 	for _, tc := range []struct {
 		typ domain.EventType
 		req TimelineEventRequest
 	}{
-		{domain.EventGroupOpened, TimelineEventRequest{GroupID: uuid.New(), Summary: "generation opened"}},
+		{domain.EventRuleDefinitionChanged, TimelineEventRequest{
+			AlertID: uuid.New(), CaseID: uuid.New(), Summary: "the rule drifted",
+		}},
 		{domain.EventCaseOpened, TimelineEventRequest{
 			AlertID: uuid.New(), CaseID: uuid.New(), Summary: "case opened",
 		}},
-		{domain.EventGroupClosed, TimelineEventRequest{GroupID: uuid.New(), Summary: "generation closed"}},
+		{domain.EventEnrichmentCompleted, TimelineEventRequest{
+			AlertID: uuid.New(), CaseID: uuid.New(), Summary: "enrichment completed",
+		}},
 	} {
 		t.Run(tc.typ.String(), func(t *testing.T) {
 			svc, events := newSeamService(t)

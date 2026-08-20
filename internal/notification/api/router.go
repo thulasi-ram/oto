@@ -33,7 +33,6 @@ type Options struct {
 	Preview   Previewer
 	Views     ViewBuilder
 	Renderers RendererSource
-	Subjects  SubjectResolver
 	Enqueuer  Requeuer
 
 	Clock clock.Clock
@@ -54,7 +53,6 @@ type Router struct {
 	preview   Previewer
 	views     ViewBuilder
 	renderers RendererSource
-	subjects  SubjectResolver
 	enqueuer  Requeuer
 
 	clk     clock.Clock
@@ -76,7 +74,6 @@ func NewRouter(o Options) *Router {
 		preview:       o.Preview,
 		views:         o.Views,
 		renderers:     o.Renderers,
-		subjects:      o.Subjects,
 		enqueuer:      o.Enqueuer,
 		clk:           clk,
 		baseURL:       o.BaseURL,

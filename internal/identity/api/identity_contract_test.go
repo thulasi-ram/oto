@@ -487,11 +487,10 @@ func contractOrg(t *testing.T) (domain.Org, domain.Declarative) {
 	}
 
 	org.Overrides = domain.SettingsPatch{
-		RefireGraceS:        intPtrOf(1800),
-		GroupCloseDelayS:    intPtrOf(600),
-		FlapThreshold:       intPtrOf(8),
-		DefaultVerbosity:    strPtrOf("all"),
-		BroadcastOnResolved: boolPtrOf(true),
+		RefireGraceS:     intPtrOf(1800),
+		GroupCloseDelayS: intPtrOf(600),
+		FlapThreshold:    intPtrOf(8),
+		DefaultVerbosity: strPtrOf("all"),
 	}
 	if err := org.Overrides.Validate(); err != nil {
 		t.Fatalf("the fixture's own overrides are outside the bounds the server enforces: %v", err)
@@ -1372,4 +1371,7 @@ func violationMessage(t *testing.T, p apitest.Problem, field string) string {
 
 func intPtrOf(v int) *int       { return &v }
 func strPtrOf(v string) *string { return &v }
-func boolPtrOf(v bool) *bool    { return &v }
+
+// ⛔ `boolPtrOf` WAS HERE AND IS DELETED WITH ITS ONLY CALLER (git-bug 7570090).
+// `broadcast_on_resolved` was the only boolean field on `SettingsPatch`, so there
+// is no `*bool` left for a fixture to build.

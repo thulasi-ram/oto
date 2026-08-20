@@ -188,11 +188,9 @@ func TestTheNeighbourhoodIsReportedStrongestRelationFirst(t *testing.T) {
 		found: []relatedalerts.Related{
 			related(relatedalerts.RelationNamespace, "DiskFilling", baseTime.Add(-10*time.Minute)),
 			related(relatedalerts.RelationAlertName, "HighErrorRate", baseTime.Add(-time.Minute)),
-			related(relatedalerts.RelationGroup, "LatencyHigh", baseTime.Add(-30*time.Minute)),
 			related(relatedalerts.RelationAlertName, "HighErrorRate", baseTime.Add(-20*time.Minute)),
 		},
 		counts: map[string]int{
-			relatedalerts.RelationGroup:     1,
 			relatedalerts.RelationAlertName: 2,
 			relatedalerts.RelationNamespace: 1,
 		},
@@ -213,18 +211,18 @@ func TestTheNeighbourhoodIsReportedStrongestRelationFirst(t *testing.T) {
 		relations = append(relations, a.Relation)
 	}
 	assert.Equal(t, []string{
-		relatedalerts.RelationGroup,
 		relatedalerts.RelationAlertName,
 		relatedalerts.RelationAlertName,
 		relatedalerts.RelationNamespace,
 	}, relations,
-		"same_group is the strongest signal available and the only one oto did not invent")
+		"⛔ same_group led this list and went with the AlertGroup (git-bug 7570090); "+
+			"same_alertname is the strongest signal LEFT, and unlike the one it replaces "+
+			"it is oto's own inference rather than Alertmanager's routing decision")
 
 	// Within a relation: newest first.
-	assert.True(t, p.Alerts[1].StartedAt.After(p.Alerts[2].StartedAt))
+	assert.True(t, p.Alerts[0].StartedAt.After(p.Alerts[1].StartedAt))
 
 	assert.Equal(t, map[string]int{
-		relatedalerts.RelationGroup:     1,
 		relatedalerts.RelationAlertName: 2,
 		relatedalerts.RelationNamespace: 1,
 	}, p.Counts, "the count is the honest number; the list is a sample")
@@ -233,7 +231,7 @@ func TestTheNeighbourhoodIsReportedStrongestRelationFirst(t *testing.T) {
 func TestTheQueryIsWindowedAroundTheCaseStart(t *testing.T) {
 	t.Parallel()
 
-	st := &store{found: []relatedalerts.Related{related(relatedalerts.RelationGroup, "X", baseTime)}}
+	st := &store{found: []relatedalerts.Related{related(relatedalerts.RelationAlertName, "X", baseTime)}}
 
 	_, err := relatedalerts.New(st, clock.NewFake(baseTime.Add(9*time.Hour))).Enrich(scoped(t), subject())
 	require.NoError(t, err)
@@ -241,8 +239,11 @@ func TestTheQueryIsWindowedAroundTheCaseStart(t *testing.T) {
 	assert.Equal(t, baseTime.Add(-time.Hour), st.sawQ.From)
 	assert.Equal(t, baseTime.Add(time.Hour), st.sawQ.To,
 		"the window is centred on the FIRE, not on when the enricher happened to run")
-	assert.Equal(t, alertID, st.sawQ.AlertID)
-	assert.Equal(t, caseID, st.sawQ.CaseID, "the subject is excluded from its own results")
+	assert.Equal(t, alertID, st.sawQ.AlertID, "the subject is excluded from its own results")
+	// ⛔ `assert.Equal(t, caseID, st.sawQ.CaseID, ...)` FOLLOWED THIS AND IS DELETED
+	// (git-bug `7570090`). It shared the exclusion message with the line above, which
+	// flattered it: the exclusion is `o.alert_id <> $2` and was never by case. CaseID
+	// existed to resolve same_group, and the query no longer binds it.
 	assert.Equal(t, "HighErrorRate", st.sawQ.AlertName)
 	assert.Equal(t, "payments", st.sawQ.Namespace)
 	assert.Equal(t, relatedalerts.MaxPerRelation, st.sawQ.Limit)
@@ -251,7 +252,7 @@ func TestTheQueryIsWindowedAroundTheCaseStart(t *testing.T) {
 func TestAnCaseWithNoStartFallsBackToTheClock(t *testing.T) {
 	t.Parallel()
 
-	st := &store{found: []relatedalerts.Related{related(relatedalerts.RelationGroup, "X", baseTime)}}
+	st := &store{found: []relatedalerts.Related{related(relatedalerts.RelationAlertName, "X", baseTime)}}
 	s := subject()
 	s.Case.StartedAt = time.Time{}
 
@@ -264,7 +265,7 @@ func TestAnCaseWithNoStartFallsBackToTheClock(t *testing.T) {
 func TestTheWindowIsOverridable(t *testing.T) {
 	t.Parallel()
 
-	st := &store{found: []relatedalerts.Related{related(relatedalerts.RelationGroup, "X", baseTime)}}
+	st := &store{found: []relatedalerts.Related{related(relatedalerts.RelationAlertName, "X", baseTime)}}
 	e := relatedalerts.New(st, clock.NewFake(baseTime)).WithWindow(10 * time.Minute)
 
 	res, err := e.Enrich(scoped(t), subject())
@@ -307,8 +308,8 @@ func TestTruncationIsReportedWhenTheCountsExceedTheSample(t *testing.T) {
 	t.Parallel()
 
 	st := &store{
-		found:  []relatedalerts.Related{related(relatedalerts.RelationGroup, "X", baseTime)},
-		counts: map[string]int{relatedalerts.RelationGroup: 40},
+		found:  []relatedalerts.Related{related(relatedalerts.RelationAlertName, "X", baseTime)},
+		counts: map[string]int{relatedalerts.RelationAlertName: 40},
 	}
 
 	res, err := relatedalerts.New(st, clock.NewFake(baseTime)).Enrich(scoped(t), subject())
@@ -324,8 +325,8 @@ func TestTheOrderIsStableAcrossRuns(t *testing.T) {
 
 	shared := baseTime.Add(-5 * time.Minute)
 	st := &store{found: []relatedalerts.Related{
-		{Relation: relatedalerts.RelationGroup, AlertID: "bbbb", AlertName: "B", StartedAt: shared},
-		{Relation: relatedalerts.RelationGroup, AlertID: "aaaa", AlertName: "A", StartedAt: shared},
+		{Relation: relatedalerts.RelationAlertName, AlertID: "bbbb", AlertName: "B", StartedAt: shared},
+		{Relation: relatedalerts.RelationAlertName, AlertID: "aaaa", AlertName: "A", StartedAt: shared},
 	}}
 
 	first, err := relatedalerts.New(st, clock.NewFake(baseTime)).Enrich(scoped(t), subject())
@@ -389,8 +390,8 @@ func TestAnUpstreamRefusalIsAnErrorAndNothingElse(t *testing.T) {
 
 	st := &store{
 		err:    errs.New(errs.KindInternal, "alerts_query_failed", "the pool is exhausted"),
-		found:  []relatedalerts.Related{related(relatedalerts.RelationGroup, "X", baseTime)},
-		counts: map[string]int{relatedalerts.RelationGroup: 1},
+		found:  []relatedalerts.Related{related(relatedalerts.RelationAlertName, "X", baseTime)},
+		counts: map[string]int{relatedalerts.RelationAlertName: 1},
 	}
 
 	res, err := relatedalerts.New(st, clock.NewFake(baseTime)).Enrich(scoped(t), subject())
@@ -421,7 +422,7 @@ func TestAWithdrawnBudgetSurfacesAsADeadlineAndNoResult(t *testing.T) {
 
 	st := &store{
 		honours: true,
-		found:   []relatedalerts.Related{related(relatedalerts.RelationGroup, "X", baseTime)},
+		found:   []relatedalerts.Related{related(relatedalerts.RelationAlertName, "X", baseTime)},
 	}
 
 	res, err := relatedalerts.New(st, clock.NewFake(baseTime)).Enrich(expired(t), subject())
@@ -463,7 +464,11 @@ func TestANilClockFallsBackToTheSystemClock(t *testing.T) {
 func TestTheRelationSetIsClosed(t *testing.T) {
 	t.Parallel()
 
-	assert.Equal(t, "same_group", relatedalerts.RelationGroup)
+	// ⛔ `assert.Equal(t, "same_group", relatedalerts.RelationGroup)` LED THIS LIST
+	// AND IS DELETED (git-bug `7570090`). The relation was computed from
+	// `alert_cases.group_id` and migration 00069 drops that column, so the closed
+	// set did not shrink by preference — it shrank because the thing its strongest
+	// member was derived from stopped existing.
 	assert.Equal(t, "same_alertname", relatedalerts.RelationAlertName)
 	assert.Equal(t, "same_namespace", relatedalerts.RelationNamespace)
 

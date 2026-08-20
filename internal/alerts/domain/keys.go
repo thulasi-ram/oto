@@ -242,6 +242,26 @@ func SplitLabels(ls LabelSet) Labels {
 //
 // ⚠️ THE AXES ARE AS-YET UNVALIDATED AGAINST PRODUCTION PAYLOADS. See
 // `tools/groupreplay`.
+//
+// ⚠️ AND `tools/groupreplay` IS NOW THE ONLY THING THAT CALLS THIS. Every other
+// caller went with `alert_groups` (git-bug `7570090`): nothing in oto derives a
+// group key at request time any more, because a Case is the conversation and there
+// is no generation to key. That harness is not dead code — it is the instrument
+// that would answer the ⚠️ above, from a corpus of stored `ingest_batches`.
+//
+// ⛔ DO NOT CONFUSE THIS WITH THE `group_key` INGESTION STILL HANDLES. That one is
+// ALERTMANAGER'S OWN `groupKey`, a raw string off the envelope stored verbatim on
+// `ingest_batches.group_key` for observability and never parsed. It is a different
+// value with the same name, it needs no hash, and it does not keep this function
+// alive.
+//
+// see that call: `tools/lintreach/main.go:484` skips every package under
+// `<module>/tools/` so the gate does not gate itself. So the finding is a blind
+// spot and not a fact — deleting this would break `go build ./...`. It is
+// `reachable-ok` rather than `retired` for exactly that reason: `retired` would
+// claim no route exists, and one does.
+//
+//oto:reachable-ok `tools/groupreplay/replay.go:236` calls it, and this gate cannot
 func ComputeGroupKey(orgID uuid.UUID, clusterKey ClusterKey, labels LabelSet) GroupKey {
 	h := sha256.New()
 	writeField(h, orgID[:])

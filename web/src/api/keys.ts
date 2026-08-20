@@ -31,7 +31,6 @@ import type {
   AlertRollupQuery,
   CaseListQuery,
   FailedBatchListQuery,
-  GroupListQuery,
   NotificationListQuery,
   RejectionListQuery,
   RuleSnapshotQuery,
@@ -112,13 +111,6 @@ export const qk = {
     list: (query: CaseListQuery) => ["cases", "list", query] as const,
     detail: (id: string) => ["cases", "detail", id] as const,
     timeline: (id: string, query: TimelineQuery) => ["cases", "timeline", id, query] as const,
-  },
-  groups: {
-    all: () => ["groups"] as const,
-    list: (query: GroupListQuery) => ["groups", "list", query] as const,
-    detail: (id: string) => ["groups", "detail", id] as const,
-    alerts: (id: string) => ["groups", "alerts", id] as const,
-    timeline: (id: string, query: TimelineQuery) => ["groups", "timeline", id, query] as const,
   },
   labels: {
     names: () => ["labels", "names"] as const,

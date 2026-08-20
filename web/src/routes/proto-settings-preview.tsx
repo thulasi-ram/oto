@@ -79,7 +79,15 @@ const NUMERIC_KEYS = [
   "flap_digest_interval_s",
   "raw_retention_days",
   "event_retention_months",
-  "unacked_reminder_after_s",
+  // ⛔ `unacked_reminder_after_s` WAS LISTED HERE AND THE CONTRACT HAS NO BOUND FOR
+  // IT (git-bug bd0fb1d). ⚠️ THAT WAS A LIVE BREAK, NOT A TIDY-UP: `rangeOf` THROWS
+  // for a key with no declared `minimum` — by design, so a screen can never invent
+  // the server's numbers — so `previewBounds()` raised on every render of this route
+  // and the whole preview was blank. `tsc` cannot see it: these are strings in an
+  // `as const` array and `rangeOf` takes a `string`.
+  //
+  // ⚠️ IF A NUMERIC KEY IS ADDED OR REMOVED FROM THE TUNING SURFACE, THIS LIST HAS
+  // TO MOVE WITH IT. Nothing derives it from `KNOBS`, which is the reason it drifted.
 ] as const;
 
 function previewBounds(): ReadonlyMap<string, Bound> {

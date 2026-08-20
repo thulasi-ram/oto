@@ -608,7 +608,7 @@ func (s *Service) deferStragglers(ctx context.Context, caseID uuid.UUID, results
 // with the new context, plus at most one thread reply — never a reply per
 // enricher, which is how enrichment turns into spam.
 func (s *Service) announce(ctx context.Context, scope db.TenantScope, loaded Loaded, results []domain.Enrichment) bool {
-	if s.notifier == nil || loaded.GroupID == uuid.Nil {
+	if s.notifier == nil || loaded.CaseID == uuid.Nil {
 		return false
 	}
 
@@ -624,20 +624,21 @@ func (s *Service) announce(ctx context.Context, scope db.TenantScope, loaded Loa
 		return false
 	}
 
-	caseID := uuid.Nil
-	if ac, err := uuid.Parse(loaded.Subject.Case.ID); err == nil {
-		caseID = ac
-	}
-
+	// ⛔ A `uuid.Parse(loaded.Subject.Case.ID)` WAS HERE AND IS DELETED (git-bug
+	// `7570090`). It recovered the case id from the Subject's string field and
+	// swallowed the parse error, which was tolerable while the case was only the
+	// OPTIONAL narrowing and the group was the id that had to be right. The case is
+	// the subject now, so it is a typed field on Loaded and the guard above is what
+	// enforces it: a best-effort parse of the one id the notice cannot go without
+	// is exactly the wrong shape.
 	if err := s.notifier.NotifyEnriched(ctx, scope, EnrichedNotice{
-		GroupID:      loaded.GroupID,
+		CaseID:       loaded.CaseID,
 		AlertID:      loaded.AlertID,
-		CaseID:       caseID,
 		StateVersion: loaded.StateVersion,
 		Enrichers:    names,
 	}); err != nil {
 		s.log.WarnContext(ctx, "enrichment: could not request the enriched notification",
-			"group_id", loaded.GroupID, "error", err)
+			"case_id", loaded.CaseID, "error", err)
 		return false
 	}
 	return true
@@ -651,22 +652,17 @@ func (s *Service) announce(ctx context.Context, scope db.TenantScope, loaded Loa
 // degradation is a card a second or two later without a rule block, never a card
 // that never comes.
 func (s *Service) release(ctx context.Context, scope db.TenantScope, loaded Loaded) bool {
-	if s.notifier == nil || loaded.GroupID == uuid.Nil {
+	if s.notifier == nil || loaded.CaseID == uuid.Nil {
 		return false
 	}
-	caseID := uuid.Nil
-	if ac, err := uuid.Parse(loaded.Subject.Case.ID); err == nil {
-		caseID = ac
-	}
 	if err := s.notifier.NotifyPreNotificationReady(ctx, scope, PreNotificationNotice{
-		GroupID:      loaded.GroupID,
+		CaseID:       loaded.CaseID,
 		AlertID:      loaded.AlertID,
-		CaseID:       caseID,
 		StateVersion: loaded.StateVersion,
 	}); err != nil {
 		s.log.WarnContext(ctx, "enrichment: could not release the deferred first notification; "+
 			"the scheduled backstop will send it",
-			"group_id", loaded.GroupID, "case_id", caseID, "error", err)
+			"case_id", loaded.CaseID, "error", err)
 		return false
 	}
 	return true
@@ -677,10 +673,11 @@ func (s *Service) narrate(ctx context.Context, scope db.TenantScope, loaded Load
 	if s.events == nil || len(results) == 0 {
 		return
 	}
-	caseID := uuid.Nil
-	if ac, err := uuid.Parse(loaded.Subject.Case.ID); err == nil {
-		caseID = ac
-	}
+	// The same parse the two notify paths above dropped: Loaded now carries the
+	// case id typed, so the timeline reads it instead of recovering it from the
+	// Subject's string. The uuid.Nil check stays — narrating an event that names
+	// neither an alert nor a case would append a row nothing can be joined to.
+	caseID := loaded.CaseID
 	if loaded.AlertID == uuid.Nil && caseID == uuid.Nil {
 		return
 	}

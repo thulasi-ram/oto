@@ -17,8 +17,10 @@ import (
 // ⭐ WHAT IT IS FOR. It is the ONE appender that goes through `domain.NewEvent`,
 // and therefore the one place every §D.4 invariant is proved before a row exists.
 // The C.8 idempotency claim and the closed EventType enum both live in this
-// module. `grouping` records its `group.*` facts through this seam, and so do
-// `rules` and `enrichment` for their `rule.*` and `enrichment.*` ones.
+// module. `rules` and `enrichment` record their `rule.*` and `enrichment.*` facts
+// through this seam. ⛔ `grouping` WAS THE THIRD CALLER AND ITS `group.*` APPENDS
+// ARE DELETED WITH IT (git-bug `7570090`); the enum still CONTAINS those types
+// because rows already carry them and must still be read back.
 //
 // ⛔ IT IS NOT THE ONLY WRITER OF `alert_events`, AND SAYING SO WAS A LIE THIS
 // COMMENT TOLD FOR LONGER THAN IT SHOULD HAVE. `notification/repository/events.go`
@@ -30,12 +32,16 @@ import (
 // would need a `notification ──► alerts` module edge that CONTEXT.md §4 does not
 // draw, which is a separate decision and a separate change.
 //
-// ⚠️ THE THREE CALLERS DO NOT ARRIVE THE SAME WAY, and the difference is CONTEXT.md
-// §4 rather than taste. `grouping ──► alerts` is a declared module edge, so grouping
-// names `TimelineEventRequest` directly. `enrichment` has no such edge and `rules`
+// ⚠️ THE CALLERS DO NOT ALL ARRIVE THE SAME WAY, and the difference is CONTEXT.md
+// §4 rather than taste. `enrichment` has no `──► alerts` module edge and `rules`
 // must not grow a second one for a narration, so both declare an `EventRecorder`
 // port of their own and `internal/app/adapters.go`'s timelineRecorder satisfies it
 // over this method. One writer either way; what changes is who has to know it.
+//
+// ⛔ THE OTHER SHAPE IS GONE WITH ITS ONLY USER: `grouping ──► alerts` WAS a declared
+// module edge, so grouping named `TimelineEventRequest` directly instead of
+// declaring a port. Both remaining callers go through a port, which is why this
+// request type is now reached only from `internal/app`.
 //
 // ⛔ WHAT IT IS NOT FOR. It is not a shim around the shared domain kernel. Value
 // objects and the §C identity functions live in `internal/alerts/domain`, which
@@ -67,12 +73,21 @@ import (
 // As the kernel's value object, whose only field is unexported and whose only
 // parser is `NewEventType`, it is a compile error, and the six `group.*` constants
 // this file used to re-export as bare strings have nowhere left to be re-added.
+//
+// ⛔ `GroupID uuid.UUID` WAS A FIELD HERE AND IS DELETED (git-bug `7570090`). It was
+// the third subject a cross-module fact could name, and the only writers that ever
+// set it were `grouping`'s own `group.opened`/`group.closed` appends — deleted with
+// the module. The two callers that remain, `timelineRecorder`'s rule and enrichment
+// narrators in `internal/app`, have never set it: both facts are about an alert or
+// an episode, which is the whole reason they are narrated at all.
 type TimelineEventRequest struct {
-	Type    domain.EventType
-	GroupID uuid.UUID
-	// AlertID and CaseID name the alert or episode the fact is about; a
-	// membership event names the member. At least one of the three subjects is
-	// required (ev_subject_ck).
+	Type domain.EventType
+	// AlertID and CaseID name the alert or episode the fact is about. At least one
+	// of them is required (ev_subject_ck).
+	//
+	// ⚠️ `ev_subject_ck` ITSELF STILL ADMITS `group_id` AS A THIRD SUBJECT, because
+	// the column and its CHECK are dropped by a migration that has not landed. What
+	// changed is that no path through THIS seam can produce one.
 	AlertID uuid.UUID
 	CaseID  uuid.UUID
 	Summary string
@@ -84,9 +99,23 @@ type TimelineEventRequest struct {
 	ActorKind  string
 	ActorID    string
 	ActorLabel string
-	// OccurredAt is the upstream claim; zero means "use oto's clock". RecordedAt
-	// is always oto's clock and is what the timeline orders by (C12).
-	OccurredAt time.Time
+
+	// ⛔ `OccurredAt time.Time` WAS HERE AND IS DELETED (git-bug `7570090`). It was
+	// the UPSTREAM claim about when the fact happened, with "zero means use oto's
+	// clock" as its documented default, and `grouping/service` was the only caller in
+	// the tree that ever passed a non-zero one: it dated a `group.opened` to the
+	// observation time of the batch that created the generation rather than to the
+	// moment the row was written. No other cross-module narrator has an upstream
+	// clock to quote — a rule change and an enrichment both HAPPEN when oto does
+	// them — so every request through this seam took the default, and the field was
+	// a parameter with exactly one value.
+	//
+	// ⭐ THE DISTINCTION IT ENCODED SURVIVES AND IS NOT THIS FIELD. §C12 is that
+	// `occurred_at` is the upstream claim and `recorded_at` is always oto's clock and
+	// is what the timeline ORDERS BY; `domain.ObservationTime` still carries both and
+	// the state-machine path — which does have an upstream clock, on the Observation
+	// — still supplies a real `occurred_at`. Only the cross-module seam, which never
+	// did, stopped pretending it might.
 }
 
 // AppendTimelineEvent writes one fact onto the timeline, inside the caller's
@@ -152,12 +181,12 @@ func (s *Service) AppendTimelineEvent(ctx context.Context, scope db.TenantScope,
 		return err
 	}
 
+	// ⛔ THIS READ `occurred := in.OccurredAt; if occurred.IsZero() { occurred = now }`
+	// (git-bug `7570090`). With the field deleted the branch had one arm, so the
+	// default is now stated once: a fact narrated across a module boundary occurred
+	// when oto recorded it, because the narrator has no upstream clock to quote.
 	now := s.Now()
-	occurred := in.OccurredAt
-	if occurred.IsZero() {
-		occurred = now
-	}
-	at, err := domain.NewObservationTime(occurred, now)
+	at, err := domain.NewObservationTime(now, now)
 	if err != nil {
 		return err
 	}
@@ -167,7 +196,6 @@ func (s *Service) AppendTimelineEvent(ctx context.Context, scope db.TenantScope,
 		OrgID:     scope.OrgID(),
 		AlertID:   in.AlertID,
 		CaseID:    in.CaseID,
-		GroupID:   in.GroupID,
 		Type:      in.Type,
 		At:        at,
 		Actor:     actor,

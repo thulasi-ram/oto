@@ -138,9 +138,6 @@ function world(opts: { readonly snoozes?: readonly ActiveSnooze[] } = {}): World
     // `/cases` — the primary list, one row per firing episode.
     "GET /api/v1/cases": list([]),
 
-    // `/groups` — Alertmanager's notification grouping, reached from a card.
-    "GET /api/v1/alert-groups": list([]),
-
     // `/notifications/policies`.
     "GET /api/v1/notification-policies": list([]),
     "GET /api/v1/channels": list([]),
@@ -217,13 +214,12 @@ async function navigate(
 }
 
 /* One id per screen, present only while that screen is the outlet: `#alert-q`
-   is the alert list's search box, `#case-status` the case list's status strip,
-   `#group-q` the group list's search box. The case list has no search box to
-   point at — `q` is one of the four filters `GET /api/v1/cases` refuses with a
-   400, because a free-text search over a case is a question about the ALERT. */
+   is the alert list's search box and `#case-status` the case list's status
+   strip. The case list has no search box to point at — `q` is one of the four
+   filters `GET /api/v1/cases` refuses with a 400, because a free-text search
+   over a case is a question about the ALERT. */
 const ALERTS = "alert-q";
 const CASES = "case-status";
-const GROUPS = "group-q";
 
 /* The door's email field: present only while `/login` is the whole page. */
 const LOGIN = "login-email";
@@ -320,67 +316,6 @@ describe("the shell is a layout route, not five wrappers", () => {
     // only looks at what is on screen when the dust settles. ONE connection,
     // opened by `/alerts`, is what says the pass-through cost nothing.
     expect(w.opened()).toBe(1);
-  });
-
-  /**
-   * ⛔ `/groups` IS A REAL SCREEN, NOT A REDIRECT TO `/cases`, AND THE TWO ARE NOT
-   * THE SAME OBJECT. An AlertGroup is Alertmanager's notification grouping — one
-   * batch, one chat thread — while a Case is ONE alert's firing episode and is
-   * what a human acknowledges. `internal/notification/service/view.go` mints
-   * `baseURL + "/groups/" + id` into every Slack card and webhook payload oto has
-   * ever sent, so this path is where a year of chat history points; bouncing it to
-   * the case queue would land an operator on a list, from a card that was about
-   * one specific batch.
-   */
-  it("answers /groups with the group screen rather than bouncing it to /cases", async () => {
-    const w = world();
-    const history = mount("/groups");
-
-    await until(() => expect(document.getElementById(GROUPS)).not.toBeNull());
-    // Still where the operator asked to be — no redirect, and no case list.
-    expect(history.get()).toBe("/groups");
-    expect(document.getElementById(CASES)).toBeNull();
-    expect(w.http.to("/api/v1/alert-groups").length).toBeGreaterThan(0);
-
-    expect(w.opened()).toBe(1);
-  });
-
-  /**
-   * ⛔ THE CARD'S SECOND BUTTON IS A SUB-PATH, AND IT HAS ALWAYS BEEN ONE.
-   * `view.go` builds Timeline as `links.group + "/timeline"`, so every card oto
-   * has posted carries `/groups/<id>/timeline` — and `/groups/:id` is a leaf, so
-   * without its own wildcard that link resolves to the not-found sentence. A Slack
-   * button that lands on "That page does not exist" is the same defect as one that
-   * 404s, arrived at from the other direction.
-   */
-  it("lands a deep link one segment past a group on the group itself", async () => {
-    const w = world();
-    const id = "0f1e2d3c-4b5a-4697-8899-aabbccddeeff";
-    const history = mount(`/groups/${id}/timeline`);
-
-    await until(() => expect(history.get()).toBe(`/groups/${id}`));
-    // The not-found sentence is what this route exists to keep off the screen.
-    expect(document.body.textContent ?? "").not.toContain("That page does not exist.");
-
-    expect(w.opened()).toBe(1);
-  });
-
-  /**
-   * ⛔ AND `/groups` IS NOT IN THE RAIL. It is plumbing an operator arrives at
-   * from a Slack card or from a case, never a destination the product offers —
-   * so a screen that is perfectly reachable must still be absent from the four
-   * rows that answer "where can I go".
-   */
-  it("offers no way to navigate to a group from the rail", async () => {
-    world();
-    mount("/alerts");
-
-    await until(() => expect(document.getElementById(ALERTS)).not.toBeNull());
-    expect(screen.queryByRole("link", { name: "Groups" })).toBeNull();
-    expect(
-      screen.queryByRole("link", { name: "Alert groups" }),
-      "grouping is plumbing; the rail must not offer it as a destination",
-    ).toBeNull();
   });
 
   it("takes the shell and the stream down on the way out to /login", async () => {

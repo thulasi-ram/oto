@@ -50,7 +50,7 @@ import (
 //
 // ⛔ IT PROVES NOTHING ABOUT RENDERING. Whether Slack's own client draws the card
 // legibly — text truncation, emoji resolution, mrkdwn interpretation, the colour
-// bar, what a broadcast's in-channel reference actually shows — is not a property
+// bar, whether a mention renders where oto put it — is not a property
 // of the request contract and cannot be derived from it. That residual needs a
 // workspace and is written up as a human checklist in docs/setup/slack.md.
 type SlackConformance struct {

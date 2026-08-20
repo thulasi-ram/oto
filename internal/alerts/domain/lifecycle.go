@@ -729,7 +729,6 @@ func Apply(o Case, cmd TransitionCommand) (TransitionResult, error) {
 		OrgID:     next.orgID,
 		AlertID:   next.alertID,
 		CaseID:    next.id,
-		GroupID:   next.groupID,
 		Type:      eventType,
 		At:        cmd.At,
 		Actor:     cmd.Actor,
@@ -1020,9 +1019,6 @@ type OpenCaseParams struct {
 	ID      uuid.UUID
 	OrgID   uuid.UUID
 	AlertID uuid.UUID
-	// GroupID is the AlertGroup generation this case joins, or uuid.Nil
-	// until grouping resolves it.
-	GroupID uuid.UUID
 	// Seq is prev+1, or 1 for the first episode.
 	Seq int
 
@@ -1071,7 +1067,6 @@ func OpenNewCase(p OpenCaseParams) (Case, []Event, error) {
 		ID:              p.ID,
 		OrgID:           p.OrgID,
 		AlertID:         p.AlertID,
-		GroupID:         p.GroupID,
 		Seq:             p.Seq,
 		State:           CaseOpen,
 		StartedAt:       p.At.RecordedAt(),
@@ -1101,7 +1096,6 @@ func OpenNewCase(p OpenCaseParams) (Case, []Event, error) {
 		OrgID:     o.orgID,
 		AlertID:   o.alertID,
 		CaseID:    o.id,
-		GroupID:   o.groupID,
 		Type:      EventCaseOpened,
 		At:        p.At,
 		Actor:     p.Actor,
@@ -1190,7 +1184,6 @@ func (o Case) Acknowledge(cmd AckCommand) (Case, []Event, error) {
 		OrgID:     next.orgID,
 		AlertID:   next.alertID,
 		CaseID:    next.id,
-		GroupID:   next.groupID,
 		Type:      EventCaseAcknowledged,
 		At:        cmd.At,
 		Actor:     cmd.Actor,
@@ -1260,7 +1253,6 @@ func (o Case) Unacknowledge(cmd AckCommand) (Case, []Event, error) {
 		OrgID:     next.orgID,
 		AlertID:   next.alertID,
 		CaseID:    next.id,
-		GroupID:   next.groupID,
 		Type:      EventCaseUnacknowledged,
 		At:        cmd.At,
 		Actor:     cmd.Actor,

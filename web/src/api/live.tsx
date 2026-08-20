@@ -70,16 +70,20 @@ export function LiveProvider(props: LiveProviderProps): JSX.Element {
         // queue on `/cases`.
         void queryClient.invalidateQueries({ queryKey: qk.cases.all() });
         void queryClient.invalidateQueries({ queryKey: qk.alerts.all() });
-        void queryClient.invalidateQueries({ queryKey: qk.groups.all() });
         break;
+      // ⛔ HANDLED, AND IT INVALIDATES NOTHING ON PURPOSE. The AlertGroup was
+      // deleted from oto (git-bug 7570090) and no screen holds one any more, so
+      // there is no cache entry left for this frame to refresh. The kind is
+      // still in the published `UiEventKind` enum, so it is named here rather
+      // than left to fall into `default:` — where "handled by doing nothing"
+      // and "this build has never heard of it" would look identical, which is
+      // the exact confusion `api/live.test.tsx` checks the enum against.
       case "group.upserted":
-        void queryClient.invalidateQueries({ queryKey: qk.groups.all() });
         break;
       case "event.appended":
         // The timeline is the differentiator; it must never lag its own stream.
         void queryClient.invalidateQueries({ queryKey: qk.cases.all() });
         void queryClient.invalidateQueries({ queryKey: qk.alerts.all() });
-        void queryClient.invalidateQueries({ queryKey: qk.groups.all() });
         void queryClient.invalidateQueries({ queryKey: qk.notifications.all() });
         break;
       case "delivery.updated":

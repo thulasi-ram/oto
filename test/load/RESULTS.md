@@ -18,6 +18,25 @@ workers and a conforming fake Slack.
 > nothing lost, nothing wedged — were never bought by damping and should land in
 > the same place.
 
+> ⛔⛔ **AND THE GROUP-SHAPED NUMBERS ARE NOW UNREPRODUCIBLE TOO** (git-bug
+> `7570090`, migration `00069`). `alert_groups` is dropped: **a conversation is a
+> Case**, and a Case belongs to exactly one Alert. So *rollups per group*,
+> *alerts in largest group*, *group rows*, *group member rows*, *max group state
+> version* and every *`broadcast_reply`* delivery describe a world that no longer
+> exists — the tables and the delivery mode are gone from the schema. The row
+> *`alert_groups` | 1, `alert_group_members` 500* in particular is the exact claim
+> the ruling reverses: five hundred alerts now open five hundred conversations,
+> five hundred threads and five hundred root cards.
+>
+> They are **left in place for the same reason the storm numbers are** — a
+> measurement can be dated but must not be overwritten with a guess. ⚠️ But note
+> what that costs: the "structural numbers this file exists for" named in the
+> paragraph above included *rollups per group* and *Slack calls per alert*, and
+> BOTH of those assertions have been deleted from `driver_test.go` rather than
+> retargeted, because the property they measured lost its subject. Until a ruling
+> fixes what noise level a per-Case model may produce, this file records numbers
+> that nothing gates.
+
 > ⛔ **NOTHING IN THIS FILE IS A CONTRACT.** Every duration here is a property of
 > the machine it was taken on, not of oto. The hard assertions live in
 > `assertBurstInvariants` and **not one of them reads a clock**. This file exists

@@ -18,33 +18,29 @@ import (
 // beginning.
 //
 // ⛔ THE KIND IS WHAT THE FACT IS ABOUT, NEVER WHERE IT IS DELIVERED.
-// `notifications.group_id` is the delivery target for the seventeen signal Reasons
-// and a thread is keyed by the AlertGroup generation whatever this says. `digest`
-// is the exception in both halves: it has no group (notifications_target_ck) and
-// its thread is keyed by the policy.
+//
+// ⛔ AND THE EXCEPTION THIS PARAGRAPH NAMED IS NOW THE RULE (git-bug `7570090`). It
+// used to say `notifications.group_id` was the delivery target for the seventeen
+// signal Reasons, that a thread was keyed by the AlertGroup generation whatever the
+// kind said, and that `digest` was "the exception in both halves". `alert_groups` is
+// deleted: every conversation is now keyed by what the fact is ABOUT — a Case or a
+// policy — so the two halves have converged and `digest` is no longer special.
 type SubjectKind string
 
-// SubjectAlertGroup is one AlertGroup GENERATION — a re-opened group is a new
-// generation and therefore a new subject.
-//
-// ⭐ IT KEEPS THE SPELLING `alert_group` while `enrichments.subject_kind` spells
-// the same altitude `group`; migration 00056 records why the two vocabularies
-// differ by one word. Rows already carry `alert_group` under `notif_subject_idx`
-// and `threads_subject_uniq`, and re-spelling a persisted enum value to match a
-// neighbouring table buys nothing and re-keys everything.
-//
-// The other two members are declared in reason.go, beside the Reason → SubjectKind
-// allocation that gives them meaning.
-const SubjectAlertGroup SubjectKind = "alert_group"
+// ⛔ `SubjectAlertGroup SubjectKind = "alert_group"` WAS HERE AND IS DELETED
+// (git-bug `7570090`). It named the `alert_groups` generation a fact was about, and
+// there is no such row. Every Reason that allocated it now allocates `SubjectCase`,
+// and the two that could only ever have meant a generation — `new_alerts` and
+// `some_resolved` — left the vocabulary with it: a Case is one alert's episode, so
+// "more of them started" and "some of them stopped" have no plurality to be about.
 
 // subjectKinds is the closed set, and it is the SPELLING half of the contract:
-// exactly the four values notifications_subjkind_ck and threads_subjkind_ck
-// admit. WHICH of them a given fact may claim is a separate question, answered by
+// exactly the THREE values notifications_subjkind_ck and threads_subjkind_ck admit
+// since `alert_group` was dropped (git-bug `7570090`); it was four. WHICH of them a given fact may claim is a separate question, answered by
 // `reasonSubjects` in reason.go.
 var subjectKinds = map[SubjectKind]struct{}{
-	SubjectAlert:      {},
-	SubjectCase:       {},
-	SubjectAlertGroup: {},
+	SubjectAlert: {},
+	SubjectCase:  {},
 	// `digest` (migration 00058) is admitted by both CHECKs, and it is the one kind
 	// whose two tables mean different things by `subject_id`: a NOTIFICATION's
 	// digest subject is (policy, window) and carries the policy id, while a
@@ -58,7 +54,8 @@ var subjectKinds = map[SubjectKind]struct{}{
 // ⚠️ IT USED TO BE `k == SubjectAlertGroup`, WHICH WENT FALSE THE MOMENT A
 // NOTIFICATION COULD SAY `case`. A membership test that names one member of a set
 // that has grown does not fail loudly — it rejects the new, honest values as
-// unknown, which is the shape of bug this whole change exists to remove.
+// unknown. ⭐ The set has now SHRUNK past the member that test named, which is the
+// other half of the same lesson: a closed set belongs in one place.
 func (k SubjectKind) Valid() bool {
 	_, ok := subjectKinds[k]
 	return ok

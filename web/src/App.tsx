@@ -1,4 +1,4 @@
-import { Navigate, Route, Router, useParams } from "@solidjs/router";
+import { Navigate, Route, Router } from "@solidjs/router";
 import { QueryClient, QueryClientProvider } from "@tanstack/solid-query";
 import { ErrorBoundary, lazy, onMount, type Component, type JSX } from "solid-js";
 
@@ -40,8 +40,6 @@ const AlertsRoute = lazy(() => import("~/routes/alerts"));
 const AlertDetailRoute = lazy(() => import("~/routes/alert-detail"));
 const CasesRoute = lazy(() => import("~/routes/cases"));
 const CaseDetailRoute = lazy(() => import("~/routes/case-detail"));
-const GroupsRoute = lazy(() => import("~/routes/groups"));
-const GroupDetailRoute = lazy(() => import("~/routes/group-detail"));
 const NotificationsRoute = lazy(() => import("~/routes/notifications"));
 const SettingsRoute = lazy(() => import("~/routes/settings"));
 const LoginRoute = lazy(() => import("~/routes/login"));
@@ -103,26 +101,6 @@ const Authenticated: Component<{ readonly children?: JSX.Element }> = (props) =>
   </RequireSession>
 );
 
-/**
- * `/groups/:id/<anything>` → `/groups/:id`, carrying the id across.
- *
- * ⛔ THE WILDCARD IS NOT TIDINESS, IT IS A DELIVERED LINK. A Slack card's
- * Timeline button is `links.group + "/timeline"`
- * (`internal/notification/service/view.go`), so every card oto has ever posted
- * carries `/groups/<id>/timeline` — a path a leaf route answers with the `*`
- * sentence rather than with the screen. The group's timeline *is* on the group
- * screen, so the sub-path lands there.
- *
- * A component rather than `<Navigate href={fn}>` because the target depends on a
- * route param, and it replaces the history entry rather than pushing one: an
- * operator who arrives from a Slack card and hits Back should land back in Slack,
- * not on a URL that only ever bounces them forward again.
- */
-const RedirectToGroup: Component = () => {
-  const params = useParams<{ readonly id: string }>();
-  return <Navigate href={`/groups/${params.id}`} />;
-};
-
 const NotFound: Component = () => (
   <div class="flex flex-1 flex-col items-center justify-center gap-2 p-8 text-center">
     <p class="text-title font-medium text-ink">That page does not exist.</p>
@@ -160,20 +138,6 @@ export const routes = (): JSX.Element => (
           acknowledges. `/cases/:id` is one of those episodes. */}
       <Route path="/cases" component={CasesRoute} />
       <Route path="/cases/:id" component={CaseDetailRoute} />
-      {/* ⛔ `/groups` IS A REAL DESTINATION AND MUST NOT BE A REDIRECT. An
-          AlertGroup is Alertmanager's notification grouping — the object that
-          owns one Slack thread — and it is NOT a case: a case is one firing of
-          ONE alert. Every card and webhook payload oto has ever sent carries
-          `/groups/<id>`, and `view.go` still mints exactly that, so this is where
-          a year of chat history points. It is deliberately absent from the rail
-          (see `AppShell.tsx`): reachable from a card or from a case, never a
-          place the product offers to take you. */}
-      <Route path="/groups" component={GroupsRoute} />
-      <Route path="/groups/:id" component={GroupDetailRoute} />
-      {/* The card's Timeline button is `links.group + "/timeline"`, so a deep
-          link one segment past a group has to land ON the group rather than on
-          the not-found sentence. See `RedirectToGroup`. */}
-      <Route path="/groups/:id/*" component={RedirectToGroup} />
       {/* Routing rules and the record of what they did (ADR 0034). `/settings`
           still answers `/settings/policies` and redirects it here, so links
           minted while policies lived there keep resolving.

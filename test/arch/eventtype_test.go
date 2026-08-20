@@ -118,7 +118,14 @@ func eventTypeExempt(pkg string) string {
 // `alert_events.type`, literal or parameter, spells BOTH forms. Nothing here can
 // prove it — a reviewer grepping `type = $` and `type = ANY(` can.
 var eventTypeSQLSites = map[string]string{
-	"internal/notification/repository": "groupTrailSQL: the 12 lifecycle types a card's state trail shows",
+	// ⛔ IT WAS `groupTrailSQL: the 12 lifecycle types`, AND THE 12 WAS ALREADY
+	// WRONG BEFORE THE RENAME. The literal held EIGHT facts in BOTH spellings
+	// (`case.*` and the pre-ADR-0036 `occurrence.*`) plus `group.opened` and
+	// `group.closed`, which is 18 strings, not 12. git-bug `7570090` renamed the
+	// const to `caseTrailSQL`, re-keyed it on `case_id` and dropped the two group
+	// values — an event about a group names `group_id`, so on this key they were
+	// two values that could not match a row — leaving 16.
+	"internal/notification/repository": "caseTrailSQL: the 8 state-trail facts a card shows, in both spellings — 16 literals",
 	"internal/alerts/repository":       "stateChangeCountsSQL: the 6 transitions `flap.score` counts",
 	"internal/stats/repository":        "rollupDaySQL: the same 6, aggregated per day for §G.3",
 }

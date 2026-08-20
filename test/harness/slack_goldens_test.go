@@ -160,16 +160,25 @@ func TestEveryBuilderCaptureIsSomethingBlockKitBuilderWillAccept(t *testing.T) {
 			// control character Go's encoder would have rewritten — a link, a
 			// `<!date^…>` token or a `<@U…>` mention.
 			//
-			// ⚠️ THIS IS THE PER-CARD FORM RESTORED. `bd0fb1d` weakened it to a
-			// corpus-wide assertion for one honest reason: it deleted the unacked
-			// reminder, whose body carried both a mention and an "open in oto" link,
-			// and its replacement `broadcast_refired` rendered
-			// `:repeat: *Re-fired* — case #N` with no control character at all. The
-			// choice then was to invent fixture content or drop the guarantee, and
-			// dropping it to corpus scope was the lesser harm. `68653ca` removed the
-			// premise instead: a broadcasting reply now carries a real link because a
-			// channel reader needs one, so every capture has a `<` again on its own
-			// merits and the stronger check costs nothing.
+			// ⚠️ THIS IS THE PER-CARD FORM, AND ITS JUSTIFICATION HAS BEEN CORRECTED
+			// TWICE — MOST RECENTLY BECAUSE IT WAS CREDITING A DELETED LINK.
+			//
+			// `bd0fb1d` weakened the check to a corpus-wide assertion for one honest
+			// reason: it deleted the unacked reminder, whose body carried both a mention
+			// and an "open in oto" link, and its replacement `broadcast_refired`
+			// rendered `:repeat: *Re-fired* — case #N` with no control character at all.
+			// `68653ca` then restored the per-card form and this comment credited its
+			// broadcast link with making that possible.
+			//
+			// ⛔ THAT CREDIT WAS WRONG, AND DELETING BROADCAST IS WHAT PROVED IT (git-bug
+			// 7570090). The link is gone, `broadcast_refired` is gone with it, and the
+			// per-card check STILL PASSES — because every surviving capture carries a
+			// control character on its own merits: `thread_reply_acked` has a `<@U…>`
+			// mention, and all four root cards get a `<!date^…>` token from `root.go` by
+			// construction. `broadcast_refired` was the ONE capture whose `<` came only
+			// from that link, so the honest reading is the reverse of what this comment
+			// used to say: the link did not enable the stronger check, the card that
+			// needed the link was the only obstacle to it, and both left together.
 			// ⚠️ IF YOU ARE HERE BECAUSE A CARD YOU ADDED TRIPPED THIS, READ THIS FIRST.
 			// The check is an implicit constraint on what a capture may contain, and
 			// that constraint is deliberate but it is not obvious. Every ROOT card
@@ -180,11 +189,13 @@ func TestEveryBuilderCaptureIsSomethingBlockKitBuilderWillAccept(t *testing.T) {
 			//
 			// There are exactly two honest ways out and inventing fixture content is
 			// NEITHER of them: either the card is missing an affordance it should have
-			// (which is what `68653ca` turned out to be — a broadcast with nothing to
-			// click), or it genuinely has no control character and the guarantee has to
-			// move back to corpus scope with the reason recorded, which is what
-			// `bd0fb1d` did and why it was defensible. Do not add a link to a card that
-			// should not have one just to make this line green.
+			// (which is what `68653ca` turned out to be — though the affordance it added
+			// was itself deleted with broadcast, git-bug 7570090, so a card is now
+			// missing an affordance only if a THREAD reader needs one), or it genuinely
+			// has no control character and the guarantee has to move back to corpus scope
+			// with the reason recorded, which is what `bd0fb1d` did and why it was
+			// defensible. Do not add a link to a card that should not have one just to
+			// make this line green.
 			if !bytes.Contains(c.Builder, []byte("<")) {
 				t.Error("this builder capture contains no mrkdwn control character, so " +
 					"the unicode-escape check above proves nothing for this card — see the " +
@@ -231,12 +242,23 @@ func TestEachCardStateCarriesItsOwnColourForAHumanToVerify(t *testing.T) {
 	}
 
 	// firing, acked, silenced and resolved are four different answers to "do I need
-	// to act?". The two firing-coloured cards (the root and the unacked reminder)
+	// to act?". The two amber cards (`root_update_acked` and `thread_reply_acked`)
 	// are the same answer, which is why they share one.
 	//
-	// ⛔ IT WAS FIVE UNTIL ADR 0042. `storm_notice` carried §H.2's `#7b1fa2`, and
-	// that colour is deleted from the palette along with the state — no group can
+	// ⛔ THE PARENTHETICAL USED TO SAY "the root and the unacked reminder" AND WAS
+	// ALREADY STALE: the reminder went with `bd0fb1d` and its firing-coloured slot
+	// passed to `broadcast_refired`, which has now gone too (git-bug 7570090). The
+	// firing colour is down to ONE card again.
+	//
+	// ⛔ IT WAS FIVE COLOURS UNTIL ADR 0042. `storm_notice` carried §H.2's `#7b1fa2`,
+	// and that colour is deleted from the palette along with the state — no group can
 	// enter storm mode, so no card can be purple.
+	//
+	// ⚠️⚠️ AND `len(byColour) < 4` NOW SITS EXACTLY ON ITS BOUNDARY. The corpus
+	// exercises `#a30200`, `#daa038` ×2, `#2eb886`, `#dddddd` — four colours, and the
+	// floor is four. This test is GREEN with zero margin, so deleting any further
+	// card turns it red. That is the intended signal and not a fragile test: a
+	// shrinking corpus should have to argue for itself.
 	for colour, names := range byColour {
 		if len(names) > 2 {
 			t.Errorf("%d cards share the colour %s (%v); the colour has stopped "+

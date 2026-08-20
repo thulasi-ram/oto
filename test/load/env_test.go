@@ -336,9 +336,14 @@ type wireBatch struct {
 
 // batchSpec names one Alertmanager notification to build.
 type batchSpec struct {
-	// Group is the value of the `alertname` group label, and therefore what
-	// decides the §C.4 group identity — one Group is one AlertGroup generation and
-	// one Slack thread.
+	// Group is the value of the `alertname` group label.
+	//
+	// ⛔ IT NO LONGER DECIDES A CONVERSATION (git-bug `7570090`). It used to be the
+	// §C.4 group identity — one Group was one AlertGroup generation and one Slack
+	// thread. `alert_groups` is dropped and a conversation is a Case, so this is now
+	// only the alertname every alert in the batch carries, and every one of those
+	// alerts opens its own conversation. The field keeps its name because it is
+	// still literally the Alertmanager GROUP LABEL on the wire.
 	Group string
 	// Wave distinguishes successive batches for one group, so each carries alerts
 	// oto has never seen. Repeating an alert set would recompute the SAME §C.5

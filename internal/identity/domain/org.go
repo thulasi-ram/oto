@@ -145,12 +145,16 @@ type Settings struct {
 	// the tenant and must not depend on `notification`.
 	DefaultVerbosity string
 
-	// BroadcastOnResolved is ADR 0020's ONE configurable broadcast. Default off:
-	// closure is welcome, and on a busy channel it doubles traffic for the least
-	// urgent fact oto has — nobody was ever woken because a resolve arrived
-	// quietly. Every other broadcasting transition is fixed by policy, because a
-	// broadcast cannot be un-sent and the set is a product decision, not a dial.
-	BroadcastOnResolved bool
+	// ⛔ `BroadcastOnResolved` WAS HERE AND IS DELETED (git-bug 7570090). It was
+	// ADR 0020's ONE configurable broadcast: a resolve could be echoed out of the
+	// thread into the channel, default off because closure is the least urgent fact
+	// oto has. Slack thread-broadcast is now removed outright — no `reply_broadcast`
+	// is sent for any transition — so the dial had nothing left to turn.
+	//
+	// ⚠️ IT WAS THE ONLY BOOLEAN SETTING oto had. If a boolean setting returns, the
+	// read-back path needs no clamp (a bool cannot be out of range) but it DOES need
+	// an `Origin` case, a `Clear` case and an `only` case — the integer keys get
+	// those from `intPtr` and a bool does not.
 }
 
 // The defaults of SPEC §D.1, restated as the values a brand-new org boots with.
@@ -229,8 +233,6 @@ const (
 	// a preference: it is the longest window that keeps one org inside ADR 0014's
 	// own scale envelope of 50–100M rows.
 	DefaultEventRetention = tuning.DefaultEventRetention
-	// DefaultBroadcastOnResolved is off (ADR 0020).
-	DefaultBroadcastOnResolved = false
 )
 
 // DefaultSettings is the tuning an org has until somebody changes it.
@@ -250,8 +252,7 @@ func DefaultSettings() Settings {
 		RawRetention:       DefaultRawRetention,
 		EventRetention:     DefaultEventRetention,
 
-		DefaultVerbosity:    DefaultChannelVerbosity,
-		BroadcastOnResolved: DefaultBroadcastOnResolved,
+		DefaultVerbosity: DefaultChannelVerbosity,
 	}
 }
 

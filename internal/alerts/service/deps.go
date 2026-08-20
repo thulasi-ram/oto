@@ -226,10 +226,21 @@ type DeliveryRollup struct {
 // rendered as `CreatedAt`, which made "this intent has never changed" and "this
 // intent changed a minute ago" indistinguishable on the wire.
 type NotificationSummary struct {
-	ID      uuid.UUID
-	GroupID uuid.UUID
-	AlertID *uuid.UUID
-	CaseID  *uuid.UUID
+	ID uuid.UUID
+	// ⛔ `GroupID uuid.UUID` WAS HERE AND IS DELETED (git-bug `7570090`). It was the
+	// intent's delivery target, and it was ALSO doing duty as the subject in the DTO
+	// mapper below — two questions on one field, which is the confusion the
+	// `(subject_kind, subject_id)` pair exists to end.
+	//
+	// ⭐ `SubjectKind`/`SubjectID` are carried explicitly now instead of being
+	// synthesised. The mapper used to hardcode `"alert_group"` and pass `GroupID`;
+	// a Case-shaped notification has a subject that varies (`alert` when a Reason is
+	// alert-scoped, `case` otherwise), so guessing it in the mapper would be wrong
+	// for every acked, refired or rule_changed intent.
+	SubjectKind string
+	SubjectID   uuid.UUID
+	AlertID     *uuid.UUID
+	CaseID      *uuid.UUID
 	// PolicyID is the notification_policy that routed this intent. It is nil when
 	// no policy matched — which is itself a fact worth showing, and is why
 	// SuppressedReason has a `no_policy` value.
@@ -264,17 +275,22 @@ type NotificationSummary struct {
 	DeliveriesPending int
 }
 
-// GroupVersionReader answers the current `state_version` of one AlertGroup
-// generation.
+// ⛔ `GroupVersionReader` WAS HERE AND IS DELETED (git-bug `7570090`). It answered
+// the current `state_version` of one `alert_groups` generation, and it was a PORT
+// for two reasons that both expired with the table: `alert_groups` belonged to
+// `grouping`, which `alerts` may not import, and the version was hashed into
+// `notifications.idempotency_key` (§C.7) so that a notify job enqueued against a
+// stale version could not mint a duplicate intent. There is no generation, no
+// version column to read, and `internal/grouping` no longer exists to implement it.
 //
-// It is a port because `alert_groups` belongs to `grouping`, and because
-// `notifications.idempotency_key` hashes the version (§C.7): a notify job
-// enqueued against the wrong version would mint a duplicate intent. When the
-// port is not wired the job carries version 0 and the notify worker resolves it
-// at evaluation time.
-type GroupVersionReader interface {
-	StateVersion(ctx context.Context, s db.TenantScope, groupID uuid.UUID) (int, error)
-}
+// ⚠️ THE GUARANTEE IT SERVED IS STILL OWED AND IS CURRENTLY UNMET, which is why
+// this note is longer than a deletion needs. A Case carries no monotonic version,
+// so every `enriched` evaluation for one Case now hashes IDENTICALLY forever — the
+// first amendment is minted and every later one collides on the unique index and
+// is swallowed as the mechanism working (§L.9). `enrichment/service.Loaded.StateVersion`
+// carries the full account with the numbers on it. Restoring this needs a version
+// on `alert_cases`, which is a migration; re-adding a port here would only move the
+// missing column somewhere it is harder to see.
 
 // Settings is the per-org tuning of the lifecycle machine (`orgs.settings`,
 // §D.1). Every value is a duration or a count the SPEC names; nothing here

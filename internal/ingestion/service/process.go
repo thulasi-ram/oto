@@ -218,7 +218,6 @@ func (s *Service) normalise(
 			// alerts from oto's statistics by naming one.
 			Synthetic:  batch.Mode.IsSynthetic(),
 			BatchID:    batch.ID,
-			SourceID:   batch.SourceID,
 			ClusterID:  src.ClusterID,
 			ClusterKey: src.ClusterKey,
 
@@ -246,21 +245,23 @@ func (s *Service) normalise(
 			ObservedAt: now,
 			SkewMS:     skew.Milliseconds(),
 
-			// Envelope-level PROVENANCE, carried unchanged so the orchestrator can
-			// record it on the AlertGroup generation (§G.4 step 4). Ingestion does not
-			// resolve the group and must not learn how.
+			// Envelope-level PROVENANCE. Only ONE of the three the Observation used to
+			// carry is still here.
+			//
+			// ⛔ `Receiver: env.Receiver` AND `SourceGroupKey: env.GroupKey` WERE HERE
+			// AND ARE DELETED WITH THE FIELDS THEY FED (git-bug `7570090`). Their sole
+			// consumer was the ingest orchestrator, which stamped them onto the
+			// `alert_groups` generation it resolved at §G.4 step 4; there is no
+			// generation and no step 4. Nothing is lost: `accept.go` has already
+			// written `receiver` and `group_key` onto the `ingest_batches` row from
+			// this same envelope, which is where a delivery's own account of itself
+			// belongs.
 			//
 			// ⛔ `groupLabels` IS NOT CARRIED AND MUST NOT BE. Since ADR 0038 the §C.4
 			// key is derived from the alert's own labels, and Alertmanager's grouping
 			// decides nothing about which thread this alert lands in. The raw envelope
 			// — groupLabels included — is already on disk in `ingest_batches.payload`,
 			// which is where a question about what upstream grouped by is answered.
-			//
-			// ⛔ SourceGroupKey is Alertmanager's raw `groupKey`. It is carried so it
-			// can be STORED VERBATIM for observability, and it is never parsed: it
-			// embeds the route path and does not survive an alertmanager.yml reload.
-			Receiver:           env.Receiver,
-			SourceGroupKey:     env.GroupKey,
 			NotificationReason: env.NotificationReason,
 		})
 	}

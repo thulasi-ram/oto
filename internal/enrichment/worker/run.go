@@ -41,8 +41,11 @@ type ScopeResolver interface {
 //     rather than recomputed, so a retry after a partial failure pays only for
 //     what actually failed.
 //   - The async pass's one coalesced notification is deduplicated downstream by
-//     notifications_idem_uniq on the group's state_version (SPEC §C.7), so a
-//     re-run at the same state version mints nothing new.
+//     notifications_idem_uniq on the Case and the state_version (SPEC §C.7), so a
+//     re-run at the same state version mints nothing new. ⚠️ The group used to
+//     supply that version and no longer exists (git-bug `7570090`); until the Case
+//     carries its own, the version is constant and this leg dedupes HARDER than
+//     described — see the ⛔⛔ on `service.Loaded.StateVersion`.
 //
 // It is therefore safe to re-run at any time, in any order, concurrently with
 // itself — which is the only assumption an at-least-once queue permits.

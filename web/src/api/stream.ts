@@ -40,7 +40,6 @@ export type ConnectionState =
 
 export type StreamResource =
   | "alerts"
-  | "groups"
   | "cases"
   | "events"
   | "deliveries"
@@ -50,7 +49,6 @@ export interface StreamInterest {
   /** Omit for everything. */
   readonly resources?: readonly StreamResource[];
   readonly alertId?: string;
-  readonly groupId?: string;
 }
 
 export type FrameHandler = (frame: StreamFrame) => void;
@@ -314,7 +312,6 @@ export class AlertStream {
         query: {
           resources: this.#interest.resources ? [...this.#interest.resources] : undefined,
           alert_id: this.#interest.alertId,
-          group_id: this.#interest.groupId,
         },
       });
 

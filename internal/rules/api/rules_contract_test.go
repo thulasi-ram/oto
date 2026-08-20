@@ -69,7 +69,6 @@ var (
 	ruleContractSourceID  = uuid.MustParse("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
 	ruleContractAlertID   = uuid.MustParse("0198f3c2-1111-7111-8111-111111111111")
 	ruleContractClusterID = uuid.MustParse("0198f3c2-2222-7222-8222-222222222222")
-	ruleContractGroupID   = uuid.MustParse("0198f3c2-3333-7333-8333-333333333333")
 
 	// The four episodes of the alert under test, oldest first: one bound to
 	// nothing at all (seq 1), one bound to an `unavailable` capture (seq 2), the
@@ -249,7 +248,6 @@ func ruleContractCase(t *testing.T, id uuid.UUID, seq int, snapID uuid.UUID) ale
 		ID:              id,
 		OrgID:           apitest.OrgID,
 		AlertID:         ruleContractAlertID,
-		GroupID:         ruleContractGroupID,
 		Seq:             seq,
 		State:           alertdomain.CaseOpen,
 		AckState:        alertdomain.AckStateUnacked,

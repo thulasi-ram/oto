@@ -1,7 +1,40 @@
 # 0020 — Broadcast the transitions that must be seen
 
-**Status:** Accepted · 2026-08-08 · **Amended five times — three by research, once by a live
-Slack workspace, once because a broadcast had no affordance at all** · ⛔ **Amendment 3 SUPERSEDED 2026-08-20: the unacked reminder and its mention
+**Status:** ⛔ **SUPERSEDED 2026-08-20 — oto no longer surfaces anything in a channel**
+(git-bug `7570090`, migration `00069`) · Accepted 2026-08-08 · Amended five times
+
+> ⛔⛔ **THE MECHANISM THIS ADR IS ABOUT IS DELETED.** `BroadcastPolicy`, `Warrants`,
+> `ModeBroadcastReply`, `CapBroadcast`, `MsgOptionBroadcast()` and the org setting
+> `broadcast_on_resolved` are all gone. oto posts roots and thread replies; nothing is
+> surfaced in the channel body.
+>
+> **WHY, AND IT IS NOT A REVERSAL OF THE ARGUMENT BELOW — THE SET EMPTIED ITSELF.** The
+> default set was four Reasons; Amendment 1 narrowed it to two; `bd0fb1d` deleted
+> `unacked_reminder`, the first of the two; ADR 0040 retired T8, so **nothing has produced
+> `refired` since**; and `all_resolved` was opt-in and default-off. So on shipped defaults
+> `Warrants` could already return true for nothing at all, and the one Reason that could
+> reach it lost its plurality when the owner ruled one Case per conversation. A mechanism
+> whose set is empty is not a quiet mechanism, it is dead code with a settings knob.
+>
+> ⭐ **RULE 4 SURVIVES AND IS THE MOST VALUABLE THING HERE.** "The top-level `text` must be
+> self-sufficient" was DERIVED from the in-channel reference carrying no blocks — a premise
+> Amendment 4 then half-refuted — but it is GROUNDED on something that never depended on
+> broadcasting at all: **that string is the push notification on a locked phone and the text
+> a screen reader announces.** Neither has ever rendered a colour bar or a button. Two live
+> tests still assert it, now against `ModeThreadReply`. Read this ADR for rule 4 even though
+> everything around it is dead.
+>
+> ⚠️ **AND ONE OWED OBSERVATION IS NOW PERMANENTLY RETIRED RATHER THAN ANSWERED.** git-bug
+> `2078a07` carried "does a section block's TEXT render in the in-channel `thread_broadcast`
+> copy?" — a premise Amendment 5 depended on and explicitly recorded as inferred, not seen.
+> There is no in-channel copy any more, so the question can never be settled. It is struck
+> from that ticket rather than left looking answerable.
+>
+> ⛔ **Amendments 1, 4 and 5 are HISTORY, not guidance.** Amendment 1's set, Amendment 4's
+> observations about the in-channel reference, and Amendment 5's ruling that a link is the
+> only affordance a broadcast can carry are all unreachable. Amendment 4's METHOD is still
+> worth reading — it is the record of a documented claim being checked against a live
+> workspace and half of it turning out false. · ⛔ **Amendment 3 SUPERSEDED 2026-08-20: the unacked reminder and its mention
 audience are REMOVED** (git-bug `bd0fb1d`) — see the callout below. See
 [Amendment 1](#amendment-1--the-set-narrows-to-two-and-the-storm-moves-to-the-channel),
 [Amendment 2](#amendment-2--severity_raised-is-unreachable-and-has-been-deleted) and

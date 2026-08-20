@@ -11,9 +11,40 @@ import (
 	"github.com/thulasiram/oto/internal/platform/db"
 )
 
-// DigestBucket is one AlertGroup generation's contribution to one window: how many
-// of its Cases OPENED inside it, plus the labels the policy's matchers are
-// evaluated against.
+// DigestBucket is one SIGNAL AXIS's contribution to one window: how many Cases
+// OPENED inside it, plus the labels the policy's matchers are evaluated against.
+//
+// ⛔ IT WAS ONE `alert_groups` GENERATION'S CONTRIBUTION (git-bug `7570090`,
+// migration `00069`). The generation is dropped, so the bucket needs a new unit, and
+// the unit is the ADR-0038 GROUP AXES — `alertname`, plus `namespace` when the alert
+// has one — read off `alerts` directly. That is not a substitute for the generation's
+// labels, it is the SAME LABELS FROM THEIR SOURCE: `alert_groups.group_labels` was
+// derived from exactly those two columns, which is why `foldDigest` reads the same
+// map today as it did yesterday and no matcher had to change.
+//
+// ⛔ `GroupID uuid.UUID`, `Title string` AND `Severity string` WERE HERE AND ARE ALL
+// THREE DELETED. Each was a column of the dropped table, and none has a successor
+// that is not a fabrication:
+//
+//   - `GroupID` named a generation row. There is no row and no id. A bucket is a
+//     derived axis pair, not an entity.
+//   - `Severity` was the generation's severity, computed by the grouping module over
+//     its members. A bucket spans many alerts with many severities and this package
+//     owns no ordering over them ('warning' sorts after 'critical', so `max()` is
+//     worse than nothing).
+//   - `Title` was the RENDERED group title. Nothing renders a bucket.
+//
+// ⚠️ AND THE DECIDING FACT IS THAT NO PRODUCTION CODE READ ANY OF THE THREE.
+// `foldDigest` reads `GroupLabels` and `Cases`; `emit` reads neither. Filling them
+// with `uuid.Nil` and `""` to keep a test compiling would be a projection reporting
+// values it did not read, which is the defect `internal/app/adapters.go` refuses by
+// name. The one caller is the `bucket()` helper in
+// `internal/notification/service/digest_tick_test.go`, which must drop three fields.
+//
+// ⚠️ `GroupLabels` KEEPS ITS NAME ON PURPOSE AND THE NAME IS NOW SLIGHTLY WRONG.
+// `notification/service.foldDigest` reads `b.GroupLabels` and that package is not
+// this one's to edit; renaming it to `Labels` is a two-file change and belongs with
+// the API-layer renames the ticket still owes. The map's CONTENTS are unchanged.
 //
 // ⭐ THE COUNT IS AGGREGATED IN SQL AND THE MATCHERS ARE APPLIED IN GO, AND THE
 // SPLIT IS FORCED RATHER THAN CHOSEN. A policy matcher may be `=~`, an
@@ -31,11 +62,8 @@ import (
 // the ticket's "one query over rows already stored", and it is what makes N policies
 // cost one query instead of N.
 type DigestBucket struct {
-	GroupID     uuid.UUID
 	GroupLabels map[string]string
-	Title       string
-	Severity    string
-	// Cases is how many episodes OPENED in the window for this generation.
+	// Cases is how many episodes OPENED in the window for this axis.
 	Cases int
 }
 
@@ -50,13 +78,28 @@ type DigestBucket struct {
 // A Case is one firing episode with a `started_at`, so "what happened in this
 // window" is exactly the episodes that opened inside it.
 //
-// ⛔ SYNTHETIC GENERATIONS ARE EXCLUDED, AND THAT IS A CORRECTNESS CLAUSE. A
-// delivery drill manufactures an Alert, a Case and a generation to prove the
-// delivery path works (ADR 0024); including them would put a button-press in an
-// operator's digest, and — because `drill.Dispose` deletes its rows while a digest
-// carries no `group_id` for the cascade to reach — would leave a digest asserting a
-// count of episodes that no longer exist. Filtering here means a digest never
-// reports on a drill, so there is nothing for disposal to have to clean up.
+// ⛔ SYNTHETIC SIGNAL IS EXCLUDED, AND THAT IS A CORRECTNESS CLAUSE. A delivery
+// drill manufactures an Alert and a Case to prove the delivery path works (ADR 0024);
+// including them would put a button-press in an operator's digest, and — because
+// `drill.Dispose` deletes its rows while a digest names no conversation for the
+// cascade to reach — would leave a digest asserting a count of episodes that no
+// longer exist. Filtering here means a digest never reports on a drill, so there is
+// nothing for disposal to have to clean up.
+//
+// ⚠️ THE MARK MOVED FROM `alert_groups.synthetic` TO `alerts.synthetic` AND THE TEST
+// IS THE SAME TEST. The drill manufactured BOTH marks together and disposal removed
+// both together; `alerts.synthetic` is the one that survives 00069, it carries its
+// own `alerts_synthetic_idx`, and `internal/stats/repository/rollup.go` already
+// spells the drill exclusion this way. This is not a weaker filter, it is the
+// surviving spelling of the same one.
+//
+// ⭐ AND THE GROUPLESS EPISODE COMES BACK INTO THE COUNT, WHICH IS A DELIBERATE
+// WIDENING. The old statement carried `o.group_id IS NOT NULL`, so an episode whose
+// §C.4 group key could not be computed was silently absent from every digest it
+// belonged in — a real firing that no summary ever mentioned. There is no group to
+// be missing now, so every non-synthetic Case that opened in the window is counted.
+// A digest may therefore report a LARGER number than the pre-migration code did for
+// the same window, and the larger number is the correct one.
 //
 // ⚠️ THE WINDOW IS HALF-OPEN, `[start, end)`, AND IT HAS TO BE. Adjacent windows
 // share a boundary instant; `>= start AND <= end` would count an episode that opened
@@ -64,25 +107,49 @@ type DigestBucket struct {
 // windowed count can make that no test with a random timestamp will ever catch.
 //
 // It rides `case_started_idx (org_id, started_at, id)` (migration 00053).
+//
+// ⭐ THE LABELS ARE BUILT, NOT READ, AND THE SHAPE IS COPIED FROM ADR 0038 EXACTLY.
+// `alertname` always; `namespace` ONLY when the alert has one. An absent namespace
+// must stay ABSENT rather than become the empty string, because Alertmanager's rule —
+// the rule `domain.Matcher` implements — treats a missing label as the empty string,
+// so `namespace != "x"` has to hold for an alert with no namespace. Emitting an
+// explicit empty value would change nothing for `=` and would still be a second
+// spelling of the same fact, which is how two matchers start disagreeing.
+//
+// ⚠️ THE BUCKET IS THE AXIS PAIR AND NOT THE ALERT, AND THE DIFFERENCE IS `$4`.
+// Every alert sharing an axis pair matches every matcher identically, so splitting
+// them into separate buckets would change no fold — but it WOULD multiply the row
+// count, and the row count is what `LIMIT $4` truncates. A truncated fold undercounts
+// (see `Buckets`), so a finer bucket makes the digest quietly wrong more often for no
+// gain. The axis pair is also the closest surviving thing to the old `group_key`,
+// which is what the generation was keyed by, so the bucket count stays in the range
+// the limit was chosen for.
+//
+// The tiebreak is `(alertname, namespace)` rather than an id because there is no id
+// any more, and an ORDER BY that is not total makes the truncated tail non-
+// deterministic — two ticks over the same window would fold different sets.
 const digestBucketsSQL = `
-SELECT g.id, g.group_labels, g.title, coalesce(g.severity,''), count(o.id)
+SELECT jsonb_strip_nulls(jsonb_build_object(
+           'alertname', a.alertname,
+           'namespace', a.namespace)),
+       count(o.id)
   FROM alert_cases o
-  JOIN alert_groups g ON g.id = o.group_id AND g.org_id = o.org_id
+  JOIN alerts a ON a.id = o.alert_id AND a.org_id = o.org_id
  WHERE o.org_id = $1
    AND o.started_at >= $2
    AND o.started_at <  $3
-   AND o.group_id IS NOT NULL
-   AND NOT g.synthetic
- GROUP BY g.id, g.group_labels, g.title, g.severity
- ORDER BY count(o.id) DESC, g.id ASC
+   AND NOT a.synthetic
+ GROUP BY a.alertname, a.namespace
+ ORDER BY count(o.id) DESC, a.alertname ASC, a.namespace ASC NULLS LAST
  LIMIT $4`
 
 // DigestRepository is the read model the digest tick folds.
 //
 // It is READ-ONLY and it owns no table. Both queries here are `SELECT`s over tables
 // the notification module already reads for its card snapshot (`alert_cases`,
-// `alert_groups`) plus its own `notifications`, so the digest introduces no new
-// cross-module write and no new owner.
+// `alerts` — which is where `alert_groups` went, git-bug `7570090`) plus its own
+// `notifications`, so the digest introduces no new cross-module write and no new
+// owner.
 type DigestRepository struct {
 	q db.Querier
 }
@@ -118,7 +185,7 @@ func (r *DigestRepository) Buckets(
 			b      DigestBucket
 			labels []byte
 		)
-		if err := rows.Scan(&b.GroupID, &labels, &b.Title, &b.Severity, &b.Cases); err != nil {
+		if err := rows.Scan(&labels, &b.Cases); err != nil {
 			return nil, mapErr(err, "notification_not_found", "scan a digest bucket")
 		}
 		// `group_labels` is JSONB, decoded the same way `snapshot.go` decodes it — a

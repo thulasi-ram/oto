@@ -42,9 +42,27 @@ type DrillDTO struct {
 
 	// The artefacts the drill created, for deep links. Null until the stage that
 	// produces each one has run.
+	//
+	// ⛔ `GroupID *uuid.UUID` TAGGED `json:"group_id"` WAS HERE AND IS DELETED (git-bug
+	// `7570090`). It was the deep link to `/groups/<id>`, and there is no such route
+	// and no such row; `CaseID` is the link that replaced it, which `2c26520` had
+	// already made the product's first destination.
+	//
+	// ⚠️ THE CONTRACT STILL HAS TO LOSE THE PROPERTY, AND NOT ONLY FOR TIDINESS.
+	// `DeliveryDrillDTO` lists `group_id` as an OPTIONAL property with no
+	// `additionalProperties: false`, so an ABSENT key is legal at RUNTIME and
+	// `drills_contract_test.go` is green — but gate G1 (`test/contract/dto_schema_test.go`)
+	// walks the Go struct against the schema and reports a declared property that no
+	// Go field builds, which is exactly what this now is. `DrillDestinationDTO` was
+	// the mirror image: `broadcast` was `required` under `additionalProperties: false`,
+	// so THERE the contract had to move first. Two different failure modes, one edit
+	// each, both in `api/openapi/openapi.yaml`.
+	//
+	// ⛔ `DrillStageName` OWES THE SAME DEBT. `TestContractEnumsMatchTheirDomainEnum`
+	// holds the enum and `AllStages()` to the same set in the same order, and `group`
+	// has left `AllStages()`, so the enum member has to go with it.
 	AlertID        *uuid.UUID `json:"alert_id"`
 	CaseID         *uuid.UUID `json:"case_id"`
-	GroupID        *uuid.UUID `json:"group_id"`
 	NotificationID *uuid.UUID `json:"notification_id"`
 	BatchID        *uuid.UUID `json:"batch_id"`
 
@@ -77,11 +95,23 @@ type DrillDestinationDTO struct {
 	Mode              string    `json:"mode"`
 	ThreadID          *string   `json:"thread_id"`
 	ProviderMessageID *string   `json:"provider_message_id"`
-	// Broadcast records whether this delivery went out as a channel-visible
-	// broadcast reply. On a drill it is expected to be false — a first
-	// notification posts a root — and it is reported anyway so an operator can see
-	// the decision was taken rather than skipped.
-	Broadcast  bool    `json:"broadcast"`
+	// ⛔ `Broadcast bool` TAGGED `json:"broadcast"` WAS HERE AND IS DELETED. It
+	// reported whether the delivery went out as a channel-visible broadcast reply,
+	// "anyway so an operator can see the decision was taken rather than skipped" — and
+	// there is no decision left: the thread broadcast mechanism is removed,
+	// `BroadcastPolicy.Warrants` had exactly one reachable Reason and the owner ruled
+	// it goes, so the flag could only ever have rendered false.
+	//
+	// ⚠️ THE CONTRACT MOVED FIRST AND THAT IS WHY THE FIELD COULD GO. `broadcast` was a
+	// `required` property of `DrillDestinationDTO` under `additionalProperties: false`,
+	// so for a while the published schema demanded a byte the domain no longer had a
+	// fact for. `api/openapi/openapi.yaml` has since dropped both the property and the
+	// `required` member; with `additionalProperties: false` still set, EMITTING it is
+	// now the violation, which `drills_contract_test.go` proves either way.
+	//
+	// ⭐ `mode` IS THE HONEST SUCCESSOR and it was always beside this. It carries the
+	// provider's own word for what oto did — `post_root`, `update_root`, `thread_reply`
+	// — instead of a derived boolean with one possible value.
 	Error      *string `json:"error"`
 	ErrorClass *string `json:"error_class"`
 }

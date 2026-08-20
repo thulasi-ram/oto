@@ -18,12 +18,33 @@ import (
 // only way to make that true is for the counts to be readable next to the alert
 // itself rather than buried in an operator dashboard.
 type Summary struct {
-	ID      uuid.UUID
-	GroupID uuid.UUID
-	AlertID *uuid.UUID
-	CaseID  *uuid.UUID
-	Reason  string
-	Status  string
+	ID uuid.UUID
+	// ⛔ `GroupID uuid.UUID` WAS HERE AND IS DELETED (git-bug `7570090`, migration
+	// `00069`), AND THE PAIR BELOW IS NOT ITS RENAME. `group_id` was the DELIVERY
+	// TARGET — which thread the card landed on — and it was being carried up to
+	// `internal/alerts/api/map.go`, where the mapper HARDCODED
+	// `SubjectKind: "alert_group"` and published the group id as the `subject_id`.
+	// Two different questions were riding on one field, which is precisely the
+	// confusion migration 00056's `(subject_kind, subject_id)` pair exists to end.
+	//
+	// So this is the SUBJECT, read from the columns that store it, and the mapper
+	// stops guessing. It matters for more than tidiness: `subjectOf`
+	// (notification/service/notify.go) writes `subject_kind = 'alert'` with the ALERT
+	// id for the four alert-scoped Reasons — `acked`, `unacked`, `refired`,
+	// `rule_changed` — and `'case'` for everything else. A mapper that hardcoded one
+	// kind was wrong for every row of the other, and no caller could tell.
+	//
+	// ⚠️ THE DELIVERY TARGET IS SIMPLY NOT IN THIS PROJECTION ANY MORE. It was not
+	// re-pointed at `conversation_id`, because no consumer of `Summary` ever asked
+	// where the card landed — `alerts/api` only ever used the field as a subject. If
+	// a reader ever needs the target, `(conversation_kind, conversation_id)` is the
+	// pair to add, and it is a different field, not this one renamed back.
+	SubjectKind string
+	SubjectID   uuid.UUID
+	AlertID     *uuid.UUID
+	CaseID      *uuid.UUID
+	Reason      string
+	Status      string
 	// SuppressedReason is oto's OWN vocabulary and never Alertmanager's four
 	// suppression reasons (§B.8.2).
 	SuppressedReason string
@@ -42,8 +63,17 @@ const DefaultHistoryLimit = 50
 // maxHistoryLimit bounds a caller that asks for too much.
 const maxHistoryLimit = 200
 
+// ⛔ `n.group_id` LEFT THIS SELECT LIST AND `n.subject_kind, n.subject_id` TOOK ITS
+// PLACE (git-bug `7570090`, migration `00069`). The reasoning is on `Summary` above,
+// because it is about what the field MEANS and not about which column exists.
+//
+// ⚠️ THE SELECT LIST WAS THE ONLY PLACE THE DROPPED COLUMN APPEARED. `group_id` was
+// never in the WHERE, the GROUP BY or the ORDER BY of this statement — the filter is
+// `n.alert_id`, the keyset is `(n.created_at, n.id)` — so there is no second, quieter
+// failure hiding behind the one the SELECT list makes obvious. Said out loud because
+// a dropped column in an ORDER BY fails exactly as hard and is much easier to miss.
 const listForAlertSQL = `
-SELECT n.id, n.group_id, n.alert_id, n.case_id, n.reason, n.status,
+SELECT n.id, n.subject_kind, n.subject_id, n.alert_id, n.case_id, n.reason, n.status,
        coalesce(n.suppressed_reason,''), n.state_version, n.created_at,
        count(d.id),
        count(d.id) FILTER (WHERE d.status IN ('sent','skipped')),
@@ -99,7 +129,7 @@ func (r *NotificationRepository) ListForAlert(
 	for rows.Next() {
 		var v Summary
 		if err := rows.Scan(
-			&v.ID, &v.GroupID, &v.AlertID, &v.CaseID, &v.Reason, &v.Status,
+			&v.ID, &v.SubjectKind, &v.SubjectID, &v.AlertID, &v.CaseID, &v.Reason, &v.Status,
 			&v.SuppressedReason, &v.StateVersion, &v.CreatedAt,
 			&v.DeliveriesTotal, &v.DeliveriesSent, &v.DeliveriesFailed, &v.DeliveriesDead,
 		); err != nil {

@@ -7,7 +7,7 @@
     "event_payload": {
       "generation": 1,
       "group_id": "019fe297-d84f-7599-b5b2-1f231749104a",
-      "reason": "new_alerts"
+      "reason": "repeat"
     }
   },
   "attachments": [
@@ -17,7 +17,7 @@
       "blocks": [
         {
           "type": "section",
-          "block_id": "oto_title_1420def742",
+          "block_id": "oto_title_2cc3967ce6",
           "text": {
             "type": "mrkdwn",
             "text": ":rotating_light: *<http://localhost:8080/groups/019fe297-d84f-7599-b5b2-1f231749104a|OtoSmokeTest>*  ·  `smoke-test`\n_AUTOMATED TEST from oto — please ignore. This is oto's end-to-end smoke test against a synthetic alert; no real service is affected._"
@@ -25,7 +25,7 @@
         },
         {
           "type": "section",
-          "block_id": "oto_body_1420def742",
+          "block_id": "oto_body_2cc3967ce6",
           "text": {
             "type": "mrkdwn",
             "text": "Synthetic test alert produced by oto's first live Slack verification run. Nothing is wrong. The card you are looking at is the thing under test."
@@ -33,7 +33,7 @@
         },
         {
           "type": "section",
-          "block_id": "oto_fields_1420def742",
+          "block_id": "oto_fields_2cc3967ce6",
           "fields": [
             {
               "type": "mrkdwn",
@@ -67,7 +67,7 @@
         },
         {
           "type": "section",
-          "block_id": "oto_members_1420def742",
+          "block_id": "oto_members_2cc3967ce6",
           "text": {
             "type": "mrkdwn",
             "text": "*Affected instances*\n• `oto-smoke-b2`\n• `oto-smoke-a1`\n• `oto-smoke-c3`"
@@ -75,7 +75,7 @@
         },
         {
           "type": "context",
-          "block_id": "oto_rule_1420def742",
+          "block_id": "oto_rule_2cc3967ce6",
           "elements": [
             {
               "type": "mrkdwn",
@@ -85,7 +85,7 @@
         },
         {
           "type": "actions",
-          "block_id": "oto_actions_1420def742",
+          "block_id": "oto_actions_2cc3967ce6",
           "elements": [
             {
               "type": "button",
@@ -168,11 +168,11 @@
         },
         {
           "type": "context",
-          "block_id": "oto_footer_1420def742",
+          "block_id": "oto_footer_2cc3967ce6",
           "elements": [
             {
               "type": "mrkdwn",
-              "text": "oto  ·  `gk_4vbuj1c49jbpf`  ·  receiver `oto-smoke`  ·  _new alerts added_  ·  oto first saw it <!date^1786126629^{time}|18:17 UTC> (21m later)  ·  updated <!date^1786125910^{time}|18:05 UTC>"
+              "text": "oto  ·  `gk_4vbuj1c49jbpf`  ·  receiver `oto-smoke`  ·  _still firing_  ·  oto first saw it <!date^1786126629^{time}|18:17 UTC> (21m later)  ·  updated <!date^1786125910^{time}|18:05 UTC>"
             }
           ]
         }

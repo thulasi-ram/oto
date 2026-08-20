@@ -37,7 +37,7 @@ export interface RenderOptions {
    * for every screen whose input arrives as a query string. A screen calling
    * `useParams()` needs the real pattern — `"/cases/:id"` — because a wildcard
    * route hands it an empty params object and the screen then requests
-   * `/api/v1/alert-groups/undefined`, which is a passing test of nothing.
+   * `/api/v1/cases/undefined`, which is a passing test of nothing.
    */
   readonly routePath?: string;
 }

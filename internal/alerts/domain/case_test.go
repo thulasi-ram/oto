@@ -17,7 +17,6 @@ func validCaseParams() CaseParams {
 		ID:             caseID,
 		OrgID:          orgA,
 		AlertID:        alertID,
-		GroupID:        groupIDFix,
 		Seq:            1,
 		State:          CaseOpen,
 		StartedAt:      t0,
@@ -61,7 +60,6 @@ func TestNewCase_RequiredFields(t *testing.T) {
 		assert.Equal(t, caseID, o.ID())
 		assert.Equal(t, orgA, o.OrgID())
 		assert.Equal(t, alertID, o.AlertID())
-		assert.Equal(t, groupIDFix, o.GroupID())
 		assert.Equal(t, 1, o.Seq())
 		assert.Equal(t, CaseOpen, o.State())
 		assert.Equal(t, StateFiring, o.AlertState(),
@@ -365,22 +363,24 @@ func TestCase_Duration(t *testing.T) {
 		"a closed episode ignores the asOf reading entirely")
 }
 
-func TestCase_WithGroupAndRuleSnapshot(t *testing.T) {
-	o := caseIn(t, StateFiring, func(p *CaseParams) { p.GroupID = uuid.Nil })
-	assert.Equal(t, uuid.Nil, o.GroupID())
-
-	bound, err := o.WithGroup(groupIDFix)
-	require.NoError(t, err)
-	assert.Equal(t, groupIDFix, bound.GroupID())
-	assert.Equal(t, uuid.Nil, o.GroupID(), "the receiver is not mutated")
-
-	_, err = o.WithGroup(uuid.Nil)
-	requireKind(t, err, errs.KindValidation, "required")
+// ⛔ THIS WAS `TestCase_WithGroupAndRuleSnapshot` AND ITS GROUP HALF IS DELETED
+// (git-bug `7570090`). That half proved three things about `WithGroup`: that a Case
+// could be built unbound, that binding returned a new Case carrying the generation
+// id, and that binding to `uuid.Nil` was REFUSED. All three were statements about a
+// late binding the ingest orchestrator performed, and both the method and the field
+// it set are gone — a Case IS the conversation and joins nothing.
+//
+// ⭐ WHAT THE HALF THAT REMAINS PROVES IS THE PART THAT WAS NEVER ABOUT THE GROUP:
+// `With*` binders do not mutate their receiver, and they refuse a nil id rather
+// than storing one. `WithRuleSnapshot` is the surviving binder and it carries both
+// claims on its own, which is why deleting the group half costs no coverage.
+func TestCase_WithRuleSnapshot(t *testing.T) {
+	o := caseIn(t, StateFiring)
 
 	withRule, err := o.WithRuleSnapshot(snapshotFix)
 	require.NoError(t, err)
 	assert.Equal(t, snapshotFix, withRule.RuleSnapshotID())
-	assert.Equal(t, uuid.Nil, o.RuleSnapshotID())
+	assert.Equal(t, uuid.Nil, o.RuleSnapshotID(), "the receiver is not mutated")
 
 	_, err = o.WithRuleSnapshot(uuid.Nil)
 	requireKind(t, err, errs.KindValidation, "required")

@@ -37,8 +37,12 @@ type Case struct {
 	id      uuid.UUID
 	orgID   uuid.UUID
 	alertID uuid.UUID
-	groupID uuid.UUID
-	seq     int
+	// ⛔ `groupID uuid.UUID` WAS HERE AND IS DELETED (git-bug `7570090`). A Case IS
+	// the conversation now, so it joins no container; `alert_cases.group_id` is
+	// dropped by 00069 and `repository/case.go` stopped supplying a value before
+	// this field went, which is why every rehydrated Case had been answering
+	// `uuid.Nil` in the meantime.
+	seq int
 
 	state             CaseState
 	suppressionReason SuppressionReason
@@ -119,9 +123,6 @@ type CaseParams struct {
 	ID      uuid.UUID
 	OrgID   uuid.UUID
 	AlertID uuid.UUID
-	// GroupID is the AlertGroup generation this case belongs to, or
-	// uuid.Nil before it has been bound.
-	GroupID uuid.UUID
 	// Seq is the 1-based episode number within the Alert.
 	Seq int
 
@@ -206,7 +207,6 @@ func NewCase(p CaseParams) (Case, error) {
 		id:                p.ID,
 		orgID:             p.OrgID,
 		alertID:           p.AlertID,
-		groupID:           p.GroupID,
 		seq:               p.Seq,
 		state:             p.State,
 		suppressionReason: p.SuppressionReason,
@@ -355,8 +355,14 @@ func (o Case) OrgID() uuid.UUID { return o.orgID }
 // AlertID is the Alert this episode belongs to.
 func (o Case) AlertID() uuid.UUID { return o.alertID }
 
-// GroupID is the AlertGroup generation this case joined, or uuid.Nil.
-func (o Case) GroupID() uuid.UUID { return o.groupID }
+// ⛔ `GroupID() uuid.UUID` WAS AN ACCESSOR HERE AND IS DELETED (git-bug `7570090`).
+// `repository/case.go` recorded the end state this completes: with the column
+// dropped there was no value to supply, so the accessor answered `uuid.Nil` for
+// every Case ever rehydrated and its three readers — `alerts/api/map.go`, the event
+// payload in `alerts/service/service.go`, and `alerts/service/lifecycle.go` — were
+// each copying a zero into a field that meant "no group" and "unknown group"
+// indistinguishably. A reader that cannot tell those apart is why the accessor goes
+// rather than being left to answer nil politely.
 
 // Seq is the 1-based episode number within the Alert.
 func (o Case) Seq() int { return o.seq }
@@ -565,14 +571,13 @@ func (o Case) Duration(asOf time.Time) time.Duration {
 	return asOf.Sub(o.startedAt)
 }
 
-// WithGroup binds the case to an AlertGroup generation.
-func (o Case) WithGroup(groupID uuid.UUID) (Case, error) {
-	if err := requireID("group_id", groupID); err != nil {
-		return Case{}, err
-	}
-	o.groupID = groupID
-	return o, nil
-}
+// ⛔ `WithGroup(groupID uuid.UUID)` WAS HERE AND IS DELETED (git-bug `7570090`). It
+// bound a Case to an `alert_groups` generation and refused `uuid.Nil`, which is the
+// tell that it was never optional: a group id was a REQUIRED late binding, applied
+// by the ingest orchestrator between the case opening and the state machine. There
+// is no generation to bind and no orchestrator to bind it. `WithRuleSnapshot` below
+// is the sibling that survives, because a rule snapshot is a fact about the alert
+// rather than a container it was filed into.
 
 // WithRuleSnapshot binds the RuleSnapshot captured at fire time (R6).
 func (o Case) WithRuleSnapshot(snapshotID uuid.UUID) (Case, error) {

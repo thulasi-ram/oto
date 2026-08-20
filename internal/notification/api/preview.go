@@ -64,7 +64,7 @@ func (rt *Router) previewNotificationPolicy(w http.ResponseWriter, r *http.Reque
 		httpx.WriteProblem(w, r, err)
 		return
 	}
-	groupID, err := rt.resolveSubject(r.Context(), scope, dto)
+	caseID, err := rt.resolveSubject(r.Context(), scope, dto)
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
@@ -73,7 +73,25 @@ func (rt *Router) previewNotificationPolicy(w http.ResponseWriter, r *http.Reque
 	// ONE read serves both halves: the labels the matcher runs against and the
 	// view the renderer turns into a payload. Reading them separately would let
 	// the preview show a card built from labels other than the ones it matched on.
-	view, viewErr := rt.buildView(r.Context(), scope, groupID, dto, reason)
+	view, viewErr := rt.buildView(r.Context(), scope, caseID, dto, reason)
+
+	// ⛔⛔ A SUBJECT THAT DOES NOT EXIST IN THIS TENANT IS A 404, NOT A WARNING, and
+	// restoring that is a bug fix rather than a nicety (git-bug `7570090`).
+	//
+	// `SubjectResolver` used to do this as a SIDE EFFECT nobody wrote down: resolving
+	// `alert_id`/`case_id` to a generation was a SCOPED read, so a subject from
+	// another org — or one that never existed — failed there and the caller got
+	// `case_not_found`. Deleting the port because its stated purpose was gone deleted
+	// that check with it, and the preview began answering **200** with empty labels
+	// and a matcher run against nothing. `openapi.yaml` still declares the 404.
+	//
+	// ⭐ THE LESSON, WHICH IS THE SECOND TIME TONIGHT: a port's stated purpose is not
+	// necessarily its whole purpose. This one was a tenancy check wearing a resolver's
+	// name, and nothing in its signature said so.
+	if viewErr != nil && errs.IsKind(viewErr, errs.KindNotFound) {
+		httpx.WriteProblem(w, r, viewErr)
+		return
+	}
 
 	labels := map[string]string{}
 	if view != nil {
@@ -127,46 +145,31 @@ func previewReason(raw string) (domain.Reason, error) {
 	return r, nil
 }
 
-// resolveSubject turns exactly one of alert_id / case_id / group_id into
-// the group generation whose card would carry the fact.
+// resolveSubject names the Case the preview renders against.
 //
-// Routing is about the GROUP: the thing being routed is the group's card, and
-// routing two members of one group to two different channels would split one
-// conversation across two rooms.
+// ⛔ IT USED TO TURN ONE OF THREE IDS INTO A GROUP GENERATION, and its comment said
+// "routing is about the GROUP … routing two members of one group to two different
+// channels would split one conversation across two rooms". A conversation now holds
+// exactly ONE Case (git-bug `7570090`), so there are no members to split and the
+// subject and the conversation are the same thing.
+//
+// ⭐ It also no longer needs a port. `SubjectResolver` existed to answer "which
+// generation is this alert in", and the caller now supplies the answer directly.
 func (rt *Router) resolveSubject(
-	ctx context.Context, scope db.TenantScope, dto PolicyPreviewRequest,
+	_ context.Context, _ db.TenantScope, dto PolicyPreviewRequest,
 ) (uuid.UUID, error) {
-	supplied := 0
-	for _, p := range []*uuid.UUID{dto.AlertID, dto.CaseID, dto.GroupID} {
-		if p != nil && *p != uuid.Nil {
-			supplied++
-		}
-	}
-	if supplied != 1 {
+	// ⛔ IT USED TO ACCEPT EXACTLY ONE OF THREE — `alert_id`, `case_id`, `group_id` —
+	// and now takes only `case_id` (git-bug `7570090`). One required field needs no
+	// arity check, which is the whole benefit: the endpoint can no longer be asked a
+	// question with two answers.
+	if dto.CaseID == nil || *dto.CaseID == uuid.Nil {
 		return uuid.Nil, errs.Validation("validation_failed", "1 field failed validation.",
 			errs.Violation{
-				Field: "group_id", Code: "required",
-				Message: "supply exactly one of alert_id, case_id or group_id",
+				Field: "case_id", Code: "required",
+				Message: "a preview is rendered against one Case, which is the conversation",
 			})
 	}
-
-	if dto.GroupID != nil && *dto.GroupID != uuid.Nil {
-		return *dto.GroupID, nil
-	}
-	if rt.subjects == nil {
-		// Refusing is honest. Previewing against the wrong subject would produce a
-		// confidently wrong answer, which is the one thing this endpoint must
-		// never do.
-		return uuid.Nil, errs.Validation("validation_failed", "1 field failed validation.",
-			errs.Violation{
-				Field: "group_id", Code: "required",
-				Message: "this deployment can only preview by group_id",
-			})
-	}
-	if dto.AlertID != nil {
-		return rt.subjects.GroupIDForAlert(ctx, scope, *dto.AlertID)
-	}
-	return rt.subjects.GroupIDForCase(ctx, scope, *dto.CaseID)
+	return *dto.CaseID, nil
 }
 
 // buildView projects the subject into the renderer's read model.
@@ -175,8 +178,8 @@ func (rt *Router) resolveSubject(
 // only to name the subject and the reason. Nothing here writes it, which is why a
 // preview can be run against production as often as an operator likes.
 func (rt *Router) buildView(
-	ctx context.Context, scope db.TenantScope, groupID uuid.UUID,
-	dto PolicyPreviewRequest, reason domain.Reason,
+	ctx context.Context, scope db.TenantScope, caseID uuid.UUID,
+	_ PolicyPreviewRequest, reason domain.Reason,
 ) (*service.NotificationView, error) {
 	if rt.views == nil {
 		return nil, errs.Unavailable("preview_view_unavailable",
@@ -185,16 +188,18 @@ func (rt *Router) buildView(
 	return rt.views.Build(ctx, scope, service.ViewRequest{
 		Notification: domain.Notification{
 			OrgID:       scope.OrgID(),
-			SubjectKind: domain.SubjectAlertGroup,
-			SubjectID:   groupID,
-			GroupID:     groupID,
+			SubjectKind: domain.SubjectCase,
+			SubjectID:   caseID,
 			// A preview is never inserted, but it is RENDERED, and the renderer asks
 			// which conversation the fact lands in. Naming it here keeps the preview
 			// the same shape as the real thing rather than a special case that drifts.
-			ConversationKind: domain.ConversationAlertGroup,
-			ConversationID:   groupID,
-			AlertID:          dto.AlertID,
-			CaseID:           dto.CaseID,
+			//
+			// ⭐ AND THE SUBJECT AND THE CONVERSATION ARE NOW THE SAME ID, which is the
+			// whole of `7570090` in two lines: a conversation holds exactly one Case, so
+			// "what is this about" and "where does it land" stopped being two questions.
+			ConversationKind: domain.ConversationCase,
+			ConversationID:   caseID,
+			CaseID:           &caseID,
 			Reason:           reason,
 		},
 	})

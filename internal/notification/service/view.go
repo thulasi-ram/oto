@@ -34,7 +34,6 @@ const DefaultMaxInstances = 10
 type ViewService struct {
 	snapshots SnapshotSource
 	baseURL   string
-	maxAlerts int
 	clk       clock.Clock
 }
 
@@ -43,9 +42,23 @@ type ViewConfig struct {
 	Snapshots SnapshotSource
 	// BaseURL is oto's public URL, used for every deep link on the card.
 	BaseURL string
-	// MaxInstances caps the inline member list. Zero means DefaultMaxInstances.
-	MaxInstances int
-	Clock        clock.Clock
+	// ⛔ `MaxInstances int` WAS HERE AND IS DELETED (git-bug `7570090`). It capped
+	// the inline member list — the number of instances a card shows before it says
+	// "and N more" — by capping the SNAPSHOT the card is built from, and it is the
+	// dead half of a value that has a live half elsewhere.
+	//
+	// ⭐ THE CAP ITSELF IS NOT GONE AND IS NOT THIS FIELD. `RenderOptions.MaxInstances`
+	// still bounds what `channels/render/slack`'s member block and
+	// `webhookjson`'s alert list actually print, fed from `dispatch`'s own copy —
+	// that is where a card's "and N more" comes from and always was. What went is the
+	// SECOND cap, the one that trimmed the read model before the renderer ever saw
+	// it: a Case has exactly one Alert, so the list this bounded is at most one row
+	// and no reader passes it to a `LIMIT` any more.
+	//
+	// ⛔ IT WAS NEVER WIRED EITHER, which is why deleting it changes nothing at
+	// runtime: `container.go` has never set it, so this view builder has been using
+	// `DefaultMaxInstances` on every deployment oto has ever had.
+	Clock clock.Clock
 }
 
 // NewViewService builds the view service.
@@ -56,11 +69,7 @@ func NewViewService(cfg ViewConfig) (*ViewService, error) {
 	v := &ViewService{
 		snapshots: cfg.Snapshots,
 		baseURL:   strings.TrimRight(cfg.BaseURL, "/"),
-		maxAlerts: cfg.MaxInstances,
 		clk:       cfg.Clock,
-	}
-	if v.maxAlerts <= 0 {
-		v.maxAlerts = DefaultMaxInstances
 	}
 	if v.clk == nil {
 		v.clk = clock.New()
@@ -89,7 +98,7 @@ func (v *ViewService) Build(
 
 	// ⛔ A DIGEST READS NOTHING, AND IT CANNOT. The snapshot is keyed by a group
 	// generation and a digest has none (migration 00058) — `Snapshot` with the nil
-	// UUID would come back `group_not_found`, the delivery would retry twelve times
+	// UUID would come back `case_not_found`, the delivery would retry twelve times
 	// and dead-letter, and the operator would see a policy that silently never
 	// digested. There is also nothing for it to read: the window is CLOSED, so the
 	// count the digest asserts is frozen on the row (`DigestCount`), which is exactly
@@ -98,11 +107,13 @@ func (v *ViewService) Build(
 		return v.digest(n), nil
 	}
 
+	// ⛔ IT PASSED `GroupID: n.GroupID` PLUS AN OPTIONAL `CaseID` (git-bug
+	// `7570090`). The Case is the subject now, and `ConversationID` is where a
+	// non-digest notification's Case id lives — `mint` writes the pair, so reading it
+	// back here is reading what was stored rather than re-deriving it.
 	snap, err := v.snapshots.Snapshot(ctx, scope, domain.SnapshotQuery{
-		GroupID:   n.GroupID,
-		AlertID:   n.AlertID,
-		CaseID:    n.CaseID,
-		MaxAlerts: v.maxAlerts,
+		CaseID:  n.ConversationID,
+		AlertID: n.AlertID,
 		// The Reason travels because it is what names the timeline entry that
 		// caused this card: without it the read model can say what the world looks
 		// like but not who moved it.
@@ -365,9 +376,15 @@ func previousState(reason domain.Reason, snap domain.Snapshot) *PreviousState {
 		firing = &PreviousState{State: "firing", AckState: "acked"}
 	}
 
+	// ⛔ `some_resolved` WAS IN THE FIRST ARM AND `new_alerts` IN THE LAST, AND BOTH
+	// REASONS ARE DELETED (git-bug `7570090`). They asserted a plurality and a
+	// conversation holds one Case. Neither removal changes a rendered card: a resolve
+	// arrives as `all_resolved`, which is still in the first arm and still draws
+	// `~Firing~ → Resolved`, and `new_alerts` sat with `fired` in the nil arm because a
+	// member joining changed no STATE — the card was firing before and after.
 	switch reason {
 	case domain.ReasonAcked, domain.ReasonSuppressed, domain.ReasonExpired,
-		domain.ReasonSomeResolved, domain.ReasonAllResolved:
+		domain.ReasonAllResolved:
 		if reason == domain.ReasonAcked {
 			// The transition being announced IS the ack, so the state before it
 			// cannot have been acked whatever the current count says.
@@ -380,10 +397,17 @@ func previousState(reason domain.Reason, snap domain.Snapshot) *PreviousState {
 	case domain.ReasonUnsuppressed:
 		return &PreviousState{State: "suppressed"}
 	case domain.ReasonRefired:
-		// The thread said resolved. That is exactly what makes a re-fire worth
-		// broadcasting (ADR 0020), and it is what the strikethrough should say.
+		// The thread said resolved, and the strikethrough is what says so.
+		//
+		// ⛔ THE ARGUMENT USED TO END "which is exactly what makes a re-fire worth
+		// BROADCASTING (ADR 0020)", and thread-broadcast is removed from oto entirely
+		// (git-bug `7570090`, and see the ⛔⭐ block in `domain.PlanFor`). ⭐ THE
+		// OBSERVATION SURVIVES ITS CONSEQUENCE AND MOVES HERE: a thread whose last word
+		// was "resolved" is a thread people stopped following, so a re-fire arriving into
+		// it is easy to miss. Rendering the previous state is now the ONLY thing that
+		// marks it — which raises the stakes on this line rather than lowering them.
 		return &PreviousState{State: "resolved"}
-	case domain.ReasonFired, domain.ReasonNewAlerts, domain.ReasonRepeat,
+	case domain.ReasonFired, domain.ReasonRepeat,
 		domain.ReasonSnoozed, domain.ReasonUnsnoozed, domain.ReasonEnriched,
 		domain.ReasonRuleChanged, domain.ReasonComment:
 		return nil
@@ -524,13 +548,19 @@ func ruleChangeView(c domain.RuleChangeFacts) *RuleChangeView {
 func (v *ViewService) links(snap domain.Snapshot) Links {
 	var l Links
 	if v.baseURL != "" {
-		// ⛔ `/groups/`, AND NOT `/cases/`. A card is about an ALERTGROUP: the
-		// group is what owns this Slack thread, and `snap.Group.ID` is an
-		// `alert_groups` id, so the only screen this link can honestly open is the
-		// group's. A Case is one alert's firing episode and has its own id and its
-		// own screen; minting `/cases/<group id>` sent an operator to a detail page
-		// addressed by an id that names a different table.
-		l.Group = v.baseURL + "/groups/" + snap.Group.ID.String()
+		// ⛔⛔ `/cases/`, AND THE OLD RULE HAS INVERTED (git-bug `7570090`). It read:
+		// "`/groups/`, AND NOT `/cases/`. A card is about an ALERTGROUP … minting
+		// `/cases/<group id>` sent an operator to a detail page addressed by an id
+		// that names a different table."
+		//
+		// ⭐ THE RULE WAS ALWAYS "the id must name the table the screen reads", and it
+		// is the ID THAT MOVED, not the rule. `snap.Group.ID` is a CASE id now — the
+		// snapshot is taken by `SnapshotQuery.CaseID` and a conversation holds exactly
+		// one Case — so `/groups/` would be the defect this comment was written to
+		// prevent, pointing the other way. `/cases/` is also where the product already
+		// sends people: `web/src/App.tsx` redirects `/` there, and the `/groups`
+		// screens are deleted.
+		l.Group = v.baseURL + "/cases/" + snap.Group.ID.String()
 		l.Timeline = l.Group + "/timeline"
 		if snap.Focus != nil {
 			l.Alert = v.baseURL + "/alerts/" + snap.Focus.ID.String()
@@ -595,18 +625,29 @@ func (v *ViewService) links(snap domain.Snapshot) Links {
 // `value` carries an OPAQUE ID ONLY (S8). Never a payload, never trusted: state
 // is looked up in oto's own database when the click comes back.
 func (v *ViewService) actions(snap domain.Snapshot) []Action {
-	groupID := snap.Group.ID.String()
+	// ⛔⛔ THIS VALUE WAS A GROUP ID AND IS NOW A CASE ID (git-bug `7570090`), and it
+	// is the one field in this file where getting it wrong is SILENT. The action ids
+	// (`oto.ack` / `oto.unack`) and the shape are unchanged — `value` is still one
+	// opaque uuid, still never trusted, still looked up in oto's own database when
+	// the click comes back (S8). What changed is which table that lookup reads:
+	// `channels/service`'s ack port is Case-shaped now, so a group uuid here would
+	// resolve to nothing and every Acknowledge button in every channel would fail.
+	//
+	// ⭐ It fails HONESTLY rather than silently — the port answers a missing Case with
+	// a refusal the user sees — which is why this is a correctness bug and not a data
+	// one. But it would be a correctness bug on every card at once.
+	caseID := snap.Group.ID.String()
 	acked := snap.Case != nil && snap.Case.AckState == "acked"
 
 	actions := make([]Action, 0, 4)
 	if acked {
 		actions = append(actions, Action{
-			ID: "oto.unack", Label: "Un-acknowledge", Value: groupID,
+			ID: "oto.unack", Label: "Un-acknowledge", Value: caseID,
 		})
 	} else {
 		// Exactly ONE primary button, always (S10).
 		actions = append(actions, Action{
-			ID: "oto.ack", Label: "Acknowledge", Style: "primary", Value: groupID,
+			ID: "oto.ack", Label: "Acknowledge", Style: "primary", Value: caseID,
 		})
 	}
 

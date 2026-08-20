@@ -24,11 +24,12 @@ type AlertStateCountsDTO struct {
 	Flapping   int32 `json:"flapping"`
 }
 
-// GroupCountsDTO is the group half of the roll-up.
-type GroupCountsDTO struct {
-	Open   int32 `json:"open"`
-	Closed int32 `json:"closed"`
-}
+// ⛔ `GroupCountsDTO` WAS THE GROUP HALF OF THE ROLL-UP AND IS DELETED (git-bug
+// `7570090`, migration `00069`), together with `StatsOverviewDTO.groups`, which
+// left `openapi.yaml`'s required list in the same ticket. `alert_groups` is
+// dropped and a Case is the conversation, so the two counts named a container
+// that no longer exists. `domain.GroupCounts` carries the rest of the reasoning,
+// including why this is a deletion and not a rename to a case half.
 
 // DeliveryCountsDTO is the delivery-health half. A non-zero `dead` is a product
 // signal, not a footnote.
@@ -70,7 +71,6 @@ type WindowDTO struct {
 // It deliberately contains no per-person data of any kind.
 type StatsOverviewDTO struct {
 	Alerts      AlertStateCountsDTO `json:"alerts"`
-	Groups      GroupCountsDTO      `json:"groups"`
 	Deliveries  DeliveryCountsDTO   `json:"deliveries"`
 	Sources     SourceCountsDTO     `json:"sources"`
 	Channels    *ChannelCountsDTO   `json:"channels,omitempty"`
@@ -133,10 +133,6 @@ func overviewDTO(res service.OverviewResult) StatsOverviewDTO {
 			Acked:      int32(o.Alerts.Acked),
 			Unacked:    int32(o.Alerts.Unacked),
 			Flapping:   int32(o.Alerts.Flapping),
-		},
-		Groups: GroupCountsDTO{
-			Open:   int32(o.Groups.Open),
-			Closed: int32(o.Groups.Closed),
 		},
 		Deliveries: DeliveryCountsDTO{
 			Sent:      int32(o.Deliveries.Sent),

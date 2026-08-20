@@ -398,7 +398,6 @@ type env struct {
 
 	caseID  uuid.UUID
 	alertID uuid.UUID
-	groupID uuid.UUID
 	orgID   uuid.UUID
 }
 
@@ -419,7 +418,6 @@ func newEnv(t *testing.T, tune func(*service.Options), enrichers ...domain.Enric
 		clk:      clock.NewFake(baseTime),
 		caseID:   id.New(),
 		alertID:  id.New(),
-		groupID:  id.New(),
 		orgID:    id.New(),
 	}
 	e.scope, err = db.NewTenantScope(e.orgID)
@@ -443,7 +441,7 @@ func newEnv(t *testing.T, tune func(*service.Options), enrichers ...domain.Enric
 			},
 		},
 		AlertID:      e.alertID,
-		GroupID:      e.groupID,
+		CaseID:       e.caseID,
 		StateVersion: 7,
 	}}
 

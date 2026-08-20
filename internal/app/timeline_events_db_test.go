@@ -72,9 +72,8 @@ func newTimelineRig(t *testing.T) *timelineRig {
 	org := h.Org()
 	cluster := h.Cluster(org)
 	source := h.Source(org, cluster)
-	group := h.Group(org, source, cluster)
 	alert := h.Alert(org, cluster)
-	ac := h.Case(alert, group)
+	ac := h.Case(alert)
 
 	r := &timelineRig{
 		h: h,
@@ -258,7 +257,7 @@ func recoveredRule(expr string, forSeconds float64) rulesdomain.Recovery {
 }
 
 // stubSubjects is `enrichment/service.SubjectLoader`. The real one is
-// `subjectLoader` in adapters.go, which needs the alerts, grouping and sources
+// `subjectLoader` in adapters.go, which needs the alerts and sources
 // services; what these tests are about is what the pipeline NARRATES, and the
 // subject only has to be well-formed for that.
 type stubSubjects struct {
@@ -284,6 +283,16 @@ func (s stubSubjects) LoadSubject(
 			},
 		},
 		AlertID: s.alertID,
+		// ⛔ IT MUST BE SET, AND IT USED TO BE ALLOWED NOT TO BE. The field was
+		// `GroupID` — "the generation carrying it, or uuid.Nil when the case is not
+		// in an open group" — so a stub that left it zero was modelling a legal
+		// state. git-bug `7570090` renamed it to `CaseID`, and a zero CaseID is not
+		// a legal state at all: `narrate` writes the timeline row with a NULL
+		// `case_id` and a dedupe key of `enrich:00000000-0000-0000-0000-000000000000:…`,
+		// which every read in this file filters straight back out. The real loader
+		// (`subjectLoader` in adapters.go) fills it from `ac.ID()`, so a double that
+		// does not is a double that agrees with nothing.
+		CaseID: caseID,
 	}, nil
 }
 

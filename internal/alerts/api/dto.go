@@ -125,10 +125,19 @@ type RuleSnapshotRef struct {
 // ⛔ THERE IS NO `reopen_count` AND NO `reopen_of`. A Case is strictly terminal:
 // a re-fire opens the next `seq`, unacknowledged, and the episode it succeeded is
 // the row at `seq - 1`.
+//
+// ⛔ AND THERE IS NO `group_id`. `GroupID *uuid.UUID` tagged `json:"group_id"` was
+// here and is DELETED (git-bug `7570090`). It was "the AlertGroup generation this
+// episode joined", and since the group was deleted nothing has populated it — the
+// mapper's `GroupID: idPtr(o.GroupID())` went with the grouping wiring, so every
+// CaseDTO oto has served on this branch carried `"group_id": null`. The member is
+// OPTIONAL in `openapi.yaml` (`CaseDTO.required` never listed it), so dropping the
+// key is not a contract break; the web app already stopped reading it and deleted
+// its `group_id` filter on cases in the same stage. A null nobody can ever fill is
+// worse than an absent key: it invites a client to write the join.
 type CaseDTO struct {
 	ID                uuid.UUID        `json:"id"`
 	AlertID           uuid.UUID        `json:"alert_id"`
-	GroupID           *uuid.UUID       `json:"group_id"`
 	Seq               int32            `json:"seq"`
 	State             string           `json:"state"`
 	SuppressionReason *string          `json:"suppression_reason"`
@@ -287,7 +296,6 @@ type NotificationDTO struct {
 	ID               uuid.UUID           `json:"id"`
 	SubjectKind      string              `json:"subject_kind"`
 	SubjectID        uuid.UUID           `json:"subject_id"`
-	GroupID          *uuid.UUID          `json:"group_id"`
 	AlertID          *uuid.UUID          `json:"alert_id"`
 	CaseID           *uuid.UUID          `json:"case_id"`
 	PolicyID         *uuid.UUID          `json:"policy_id"`

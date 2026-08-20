@@ -817,255 +817,6 @@ export interface paths {
         patch: operations["updateCasePolicy"];
         trace?: never;
     };
-    "/api/v1/alert-groups": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * List notification-group generations
-         * @description **The default UI landing view.** A group is one generation of one machine-derived grouping of
-         *     alerts, and it is the unit humans actually respond to: forty pods crash-looping is one thing
-         *     happening, not forty.
-         *
-         *     Because a group's identity is derived from the alert's own labels —
-         *     `(org, cluster, alertname, namespace-or-∅)` — rather than from Alertmanager's route-derived
-         *     `groupKey`, editing `alertmanager.yml` — adding a route, changing `group_by` — does not orphan an
-         *     open thread. The group keeps its key and the same conversation continues.
-         *
-         *     **Every filter below is applied by the database before the page limit, and `sort` is applied to
-         *     the query.** That is worth saying out loud because it has not always been true: a filter
-         *     evaluated after pagination is not a filter but a truncation, and it returns a short page plus a
-         *     cursor that has already stepped past rows it never examined.
-         *
-         *     **This is not "the alert list, grouped."** A group here is one generation of one *Alertmanager
-         *     notification group* and it owns a chat thread. For an aggregate view over the alert list, use
-         *     `GET /api/v1/alerts/rollups`.
-         */
-        get: operations["listAlertGroups"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/alert-groups/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get one group generation with its roll-up counts
-         * @description One generation with counts by state and severity, a bounded preview of member alerts, the chat
-         *     threads narrating it, and a delivery roll-up.
-         */
-        get: operations["getAlertGroup"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/alert-groups/{id}/alerts": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * List a group's member alerts
-         * @description The alerts whose cases belong to this group generation, newest first.
-         */
-        get: operations["listAlertGroupAlerts"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/alert-groups/{id}/timeline": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * The merged, ordered lifecycle timeline for a group
-         * @description **The signature view.** Every event from every member alert, every case, every notification
-         *     and every delivery, merged into one continuous ordered list: opened → notified → delivered →
-         *     enriched → rule-changed → acked → re-fired → resolved.
-         *
-         *     Each row carries its actor, the upstream timestamp it claims, and oto's own. Ordering is by
-         *     oto's clock, so the list is stable even when an upstream clock is skewed by minutes — the skew
-         *     is measured and badged rather than silently corrected.
-         */
-        get: operations["getAlertGroupTimeline"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/alert-groups/{id}/ack": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Acknowledge every open member case
-         * @description Acknowledge the whole group in one action — the realistic response to a storm, where acking
-         *     forty alerts individually is not a workflow anyone will follow.
-         *
-         *     Every open member case gets the same acknowledgement, each appending its own
-         *     `case.acknowledged` event, and the chat card updates in place. Member cases that
-         *     have already ended are skipped rather than failing the request; a group with **no** open members
-         *     at all is a `412`.
-         */
-        post: operations["ackAlertGroup"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/alert-groups/{id}/unack": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Withdraw the acknowledgement from every open member case
-         * @description The exact inverse of the group ack, and a fan-out of the same per-alert primitive. Where the
-         *     ack means "every member carries a receipt", this means **no member carries one**: every open
-         *     member case is returned to `unacked`, each appending its own `case.unacknowledged` event with
-         *     `reason: manual` — distinguishing a deliberate withdrawal from the automatic unack that happens
-         *     when a new case opens.
-         *
-         *     A member that is not currently acknowledged is skipped rather than failing the request — the
-         *     same rule the group ack follows for members that are already acked, and for the same reason:
-         *     refusing the other thirty-nine because one had already been withdrawn would make the button
-         *     unusable in exactly the storm it exists for. Member cases that have already ended are skipped
-         *     too; a group with **no** open members at all is a `412`.
-         *
-         *     Because the group is `acked` in `GET /alert-groups?ack=` only while *every* member carries a
-         *     receipt, a group that completes this call can no longer match `ack=acked`.
-         *
-         *     The withdrawal note does **not** go back onto the case — `ack_note` describes the
-         *     acknowledgement being removed and is cleared by the transition — it goes onto each member's
-         *     timeline, in the `case.unacknowledged` event payload.
-         */
-        post: operations["unackAlertGroup"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/alert-groups/{id}/comments": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Add a human note to a group's timeline
-         * @description Append an immutable `comment.added` event to the group timeline and mirror it into the group's
-         *     chat thread. The comment fans out onto every currently-joined member's timeline; the `201` body
-         *     is the event that was written, returned by the write itself rather than read back afterwards.
-         *
-         *     A group with no currently-joined member is a `412`: there is no signal to annotate, and the
-         *     timeline records facts about signals.
-         */
-        post: operations["commentOnAlertGroup"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/alert-groups/{id}/snooze": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Snooze every currently-joined member alert
-         * @description **A fan-out of the per-alert snooze, not a new primitive.** One `alert_snoozes` row is created
-         *     per **currently-joined** member alert, with the same window, the same attribution and the same
-         *     bounds.
-         *
-         *     > ### ⛔ A snooze is never predictive
-         *     >
-         *     > Alerts that join this group **after** the request are **not** snoozed. A group-level mute that
-         *     > covered future members would silence alerts nobody has ever seen, which is the difference
-         *     > between a quiet button and a blindfold.
-         *
-         *     Every member stays firing, stays whatever severity it was, and stays in the default alert list.
-         *     The group card shows the snooze as a separate field; its colour and status still follow the
-         *     members' actual state.
-         *
-         *     A group with no currently-joined member is a `412`. A member that cannot be snoozed is skipped
-         *     rather than failing the request, for the same reason the group ack skips ended cases.
-         */
-        post: operations["snoozeAlertGroup"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/alert-groups/{id}/unsnooze": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * End the snooze on every currently-joined member alert
-         * @description Wake the group: each currently-joined member's active snooze is closed with
-         *     `ended_reason: manual`. A member that is not snoozed is skipped rather than failing the request —
-         *     refusing the other thirty-nine because one had already woken would make the button unusable in
-         *     exactly the situation it exists for.
-         */
-        post: operations["unsnoozeAlertGroup"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/rule-snapshots": {
         parameters: {
             query?: never;
@@ -2118,9 +1869,8 @@ export interface paths {
         };
         /**
          * The org's tuning, each value with its origin
-         * @description The knobs that decide how loudly oto talks: `refire_grace`, the flap thresholds, the fallback
-         *     channel verbosity and the one configurable broadcast. (An unacked-reminder default was in this
-         *     list and is deleted — migration `00068`, git-bug `bd0fb1d`: oto sends nothing unprompted.)
+         * @description The knobs that decide how loudly oto talks: `refire_grace`, the flap thresholds and the fallback
+         *     channel verbosity. (An unacked-reminder default was in this list and is deleted — migration `00068`, git-bug `bd0fb1d`: oto sends nothing unprompted.)
          *
          *     **It returns three things, and all three are the point.**
          *
@@ -2651,7 +2401,7 @@ export interface components {
          * @example fired
          * @enum {string}
          */
-        NotificationReason: "fired" | "new_alerts" | "some_resolved" | "all_resolved" | "repeat" | "suppressed" | "unsuppressed" | "expired" | "refired" | "acked" | "unacked" | "snoozed" | "unsnoozed" | "enriched" | "rule_changed" | "comment" | "digest";
+        NotificationReason: "fired" | "all_resolved" | "repeat" | "suppressed" | "unsuppressed" | "expired" | "refired" | "acked" | "unacked" | "snoozed" | "unsnoozed" | "enriched" | "rule_changed" | "comment" | "digest";
         /**
          * @example delivered
          * @enum {string}
@@ -2694,7 +2444,7 @@ export interface components {
          * @example update_root
          * @enum {string}
          */
-        DeliveryMode: "post_root" | "update_root" | "thread_reply" | "broadcast_reply";
+        DeliveryMode: "post_root" | "update_root" | "thread_reply";
         /**
          * @example sent
          * @enum {string}
@@ -2727,9 +2477,14 @@ export interface components {
          *
          *     - `all` — every reply type.
          *     - `status_changes` *(default)* — ack, unack, suppressed, unsuppressed, expired, refired,
-         *       new_alerts, all_resolved, rule_changed, comment.
-         *     - `firing_and_resolved` — new_alerts, all_resolved, expired, rule_changed.
-         *     - `firing_only` — new_alerts, rule_changed.
+         *       all_resolved, rule_changed, comment.
+         *     - `firing_and_resolved` — all_resolved, expired, rule_changed.
+         *     - `firing_only` — rule_changed.
+         *
+         *     `new_alerts` and `some_resolved` were in these levels and are gone (git-bug `7570090`).
+         *     Both asserted a PLURALITY — "more of them started", "some of them stopped" — and a
+         *     conversation now holds exactly one Case, which is one alert's firing episode, so neither
+         *     has anything left to be about.
          *
          *     `storm` used to be present at **every** level including the quietest, on the argument that a
          *     channel which asked for less has not asked to be lied to about oto withholding things. oto
@@ -3655,147 +3410,6 @@ export interface components {
             pending: number;
             last_error_class?: components["schemas"]["DeliveryErrorClass"];
             last_sent_at?: components["schemas"]["Timestamp"] | null;
-        };
-        /**
-         * @description One **generation of one machine-derived grouping of alerts**, keyed by
-         *     `(org, cluster, alertname, namespace-or-∅)` from the alert's own labels — never from
-         *     Alertmanager's grouping, and not from any configurable oto-side grouping rule (ADR 0038). It
-         *     owns exactly one chat thread, and its `group_key` is unaffected by route-config edits so an
-         *     open thread is never orphaned by an `alertmanager.yml` reload.
-         *
-         *     `group_labels` carries oto's own split axes, which is what every notification matcher is fed.
-         *     `receiver` and `source_group_key` are **provenance only** and are part of no identity.
-         */
-        GroupDTO: {
-            id: components["schemas"]["Uuid"];
-            group_key: components["schemas"]["GroupKey"];
-            /**
-             * Format: int32
-             * @description Increments when a closed group re-opens. **One generation owns exactly one chat thread**, so
-             *     a new generation is what produces a new root message.
-             * @example 2
-             */
-            generation: number;
-            source_id: components["schemas"]["Uuid"];
-            cluster_key: components["schemas"]["ClusterKey"];
-            /**
-             * @description Alertmanager's own `groupKey`, stored verbatim **for observability only**. It embeds the
-             *     route path and changes whenever `alertmanager.yml` is reloaded, so it is opaque here and
-             *     **must never be parsed**. Display it; do not key anything on it. Since ADR 0038 it is
-             *     **provenance only** and an input to nothing at all.
-             * @example {}/{severity="critical"}:{alertname="HighErrorRate", cluster="prod-eu"}
-             */
-            source_group_key?: string | null;
-            /**
-             * @description The Alertmanager receiver that first delivered into this generation, empty for a
-             *     reconciler-sourced one. **Provenance only** — since ADR 0038 it is no part of `group_key`,
-             *     so two receivers fed by `continue: true` now share one group rather than opening two.
-             * @example oto-webhook
-             */
-            receiver: string;
-            group_labels: components["schemas"]["LabelMap"];
-            /** @example HighErrorRate · prod-eu */
-            title: string;
-            state: components["schemas"]["GroupState"];
-            /**
-             * @description The maximum severity across live members.
-             * @example critical
-             */
-            severity?: string | null;
-            /**
-             * Format: int32
-             * @description Increments on every material group change. It is part of the notification idempotency key,
-             *     which is how "all_resolved at state_version 7" can exist exactly once.
-             * @example 7
-             */
-            state_version: number;
-            /** Format: int32 */
-            firing_count: number;
-            /** Format: int32 */
-            suppressed_count: number;
-            /** Format: int32 */
-            resolved_count: number;
-            /** Format: int32 */
-            expired_count: number;
-            /** Format: int32 */
-            total_count: number;
-            /**
-             * Format: int32
-             * @description Never exceeds `total_count`.
-             */
-            acked_count: number;
-            /**
-             * Format: int32
-             * @description How many **currently-joined member alerts** oto is holding its tongue about right now.
-             *
-             *     > ### ⛔ There is no group-level snooze, and this is not one
-             *     >
-             *     > `POST /alert-groups/{id}/snooze` is a **fan-out** of the per-alert primitive: it writes
-             *     > one snooze per currently-joined member and nothing at all onto the group. This count is
-             *     > the only place that fan-out's result is visible — without it the button could be pressed
-             *     > and never seen to have worked.
-             *
-             *     **Read it against `total_count`, not as a boolean.** "One of forty is muted" and "all
-             *     forty are" are different facts, and the group is wholly quiet only when the two are equal.
-             *     Alerts that join *after* the fan-out are not snoozed — a snooze is never predictive — so
-             *     this number falls behind `total_count` on its own as a storm grows, and that is correct.
-             *
-             *     It is computed at read time rather than stored, because whether a snooze is active is a
-             *     question about the clock: snoozes expire on their own, and a stored count would keep
-             *     claiming members were muted after they had woken.
-             * @example 3
-             */
-            snoozed_count: number;
-            /**
-             * @description When the **last** currently-snoozed member wakes — the instant after which nothing in this
-             *     generation is muted. Null when `snoozed_count` is zero.
-             *
-             *     It is the latest and not the earliest wake-up because the question a group header answers
-             *     is *"when does this stop being quiet"*, and the group is not done being quiet until its
-             *     last snoozed member resumes. Partial quiet before then is visible as
-             *     `snoozed_count < total_count`, which is why both are carried.
-             *
-             *     **Neither field changes how the group renders.** Colour, severity and the state counts
-             *     follow the members' `state`; a snoozed generation is still firing and is still listed.
-             */
-            snoozed_until?: components["schemas"]["Timestamp"] | null;
-            /**
-             * @description Alertmanager's raw wire `notification_reason` as last seen — for example
-             *     `repeat interval elapsed`. Empty on Alertmanager older than 0.32.0, where oto falls back to
-             *     diffing fingerprint sets.
-             * @example new alerts added
-             */
-            last_notification_reason?: string | null;
-            first_seen_at: components["schemas"]["Timestamp"];
-            last_activity_at: components["schemas"]["Timestamp"];
-            /** @description Non-null **if and only if** `state == "closed"`. */
-            closed_at?: components["schemas"]["Timestamp"] | null;
-        };
-        /**
-         * @description One group generation with its roll-up counts and member preview.
-         *
-         *     > There is no `threads` array. It was declared here, rendered by the UI's group screen, and
-         *     > emitted by nothing — no `ChannelThreadDTO` existed on the server at all, so the Threads
-         *     > panel was permanently in its empty state and a group that WAS being narrated in Slack
-         *     > looked exactly like one that was not. `delivery_summary` answers the question that panel
-         *     > was reaching for — did this generation's fan-out land — from data the group module can
-         *     > actually see.
-         */
-        GroupDetailDTO: components["schemas"]["GroupDTO"] & {
-            source?: components["schemas"]["SourceRefDTO"] | null;
-            /**
-             * @description Member count by severity value, for the roll-up bar.
-             * @example {
-             *       "critical": 4,
-             *       "warning": 2
-             *     }
-             */
-            severity_counts: {
-                [key: string]: number;
-            };
-            /** @description A bounded preview of member alerts. Use `/alert-groups/{id}/alerts` for the full list. */
-            top_alerts: components["schemas"]["AlertRefDTO"][];
-            delivery_summary: components["schemas"]["DeliverySummaryDTO"];
         };
         /** @description A compact group reference. */
         GroupRefDTO: {
@@ -4865,25 +4479,15 @@ export interface components {
              *       had. `subject_id` is an `alerts` row.
              *     - `case` — ONE FIRING EPISODE. `subject_id` is an `alert_cases` row. An acknowledgement is
              *       here, because ack lives on the firing rather than on the identity.
-             *     - `alert_group` — one GENERATION of a group. `subject_id` is an `alert_groups` row.
              *     - `digest` — a WINDOW OVER A NAMESPACE, which is not an object at all. `subject_id` is the
-             *       `notification_policies` row that asked, and `group_id` is `null`.
+             *       `notification_policies` row that asked.
              *
              *     It has always been part of the idempotency pre-image, which is why the vocabulary could grow
              *     (00056, then 00058) without re-keying anything.
              * @enum {string}
              */
-            subject_kind: "alert" | "case" | "alert_group" | "digest";
+            subject_kind: "alert" | "case" | "digest";
             subject_id: components["schemas"]["Uuid"];
-            /**
-             * @description THE DELIVERY TARGET — which AlertGroup generation's thread this fact lands on — and NOT the
-             *     subject. Present for every `subject_kind` except `digest`: a fact that could name a
-             *     destination is never allowed to omit one (`notifications_target_ck`).
-             *
-             *     It is `null` for a digest, which spans many generations and therefore has no single thread to
-             *     land in; a digest opens its own conversation, keyed by its policy, with one reply per window.
-             */
-            group_id: components["schemas"]["Uuid"] | null;
             /**
              * @description Set when the fact is about one specific alert. Always set for `acked`, `unacked`, `refired`
              *     and `rule_changed`.
@@ -5173,12 +4777,6 @@ export interface components {
                 /** Format: int32 */
                 flapping: number;
             };
-            groups: {
-                /** Format: int32 */
-                open: number;
-                /** Format: int32 */
-                closed: number;
-            };
             deliveries: {
                 /** Format: int32 */
                 sent: number;
@@ -5433,33 +5031,6 @@ export interface components {
              */
             event_retention_months: number;
             default_verbosity: components["schemas"]["Verbosity"];
-            /**
-             * @description Whether `all_resolved` is **broadcast** into the channel rather than posted quietly in the
-             *     thread (ADR 0020). Default **off**.
-             *
-             *     It is the only broadcast that is configurable, and today it is the only broadcast oto can
-             *     send at all. `unacked_reminder` was fixed by policy and is deleted (git-bug `bd0fb1d`).
-             *     `refired` is still fixed by policy and still in the Reason vocabulary, but nothing produces
-             *     it: since ADR 0040 a re-fire opens a new case with its own root message instead of replying
-             *     into a thread people stopped following. A broadcast is fixed rather than configurable when
-             *     the quiet form of the fact would be genuinely invisible, and it is fixed because
-             *     **a broadcast cannot be un-sent**: Slack documents nothing that removes a channel reference
-             *     once made. The bar is
-             *
-             *     `storm` is **not** in that list, and there is no longer a storm to be in it: storm damping is
-             *     removed entirely. A storm is many alerts, so one broadcast per storming group was the flood
-             *     the damping existed to prevent — and the damping itself withheld notifications, which §B.6
-             *     refuses. Migration `00060` deletes the Reason as well; nothing renders one and nothing
-             *     mints one.
-             *     *"would an on-call engineer be angry to have missed this?"*, not *"is this interesting?"*, and
-             *     a channel that learns to scroll past oto's broadcasts has lost the only mechanism oto has for
-             *     genuine urgency.
-             *
-             *     Closure is genuinely welcome on a quiet channel. On a busy one it doubles traffic for the
-             *     least urgent fact oto has — nobody was ever woken because a resolve arrived quietly.
-             * @default false
-             */
-            broadcast_on_resolved: boolean;
         };
         /** @description A human principal. Password hashes and token material never appear in any response. */
         UserDTO: {
@@ -5835,7 +5406,7 @@ export interface components {
          *     told — so a stage that stops writing its row is a stage the drill notices.
          * @enum {string}
          */
-        DrillStageName: "accept" | "process" | "identity" | "case" | "group" | "rule_snapshot" | "policy" | "thread" | "ordering" | "delivery";
+        DrillStageName: "accept" | "process" | "identity" | "case" | "rule_snapshot" | "policy" | "thread" | "ordering" | "delivery";
         /**
          * @description `skipped` is not a failure and never sets `failed_stage`. Only `rule_snapshot` uses it: a
          *     drill's alert matches no Prometheus rule, because oto did not write one in anybody's cluster,
@@ -5873,12 +5444,6 @@ export interface components {
             /** @description The Slack thread root `ts`. A string, never a float. */
             thread_id?: string | null;
             provider_message_id?: string | null;
-            /**
-             * @description Whether this delivery went out as a channel-visible broadcast reply rather than a thread
-             *     reply. On a drill it is expected to be `false` — a first notification posts a root — and it
-             *     is reported anyway so an operator can see the decision was taken rather than skipped.
-             */
-            broadcast: boolean;
             error?: string | null;
             error_class?: components["schemas"]["DeliveryErrorClass"];
         };
@@ -5910,7 +5475,6 @@ export interface components {
             /** @description The synthetic Alert, once identity resolved. Fetch it with `?synthetic=true`. */
             alert_id?: components["schemas"]["Uuid"] | null;
             case_id?: components["schemas"]["Uuid"] | null;
-            group_id?: components["schemas"]["Uuid"] | null;
             notification_id?: components["schemas"]["Uuid"] | null;
             batch_id?: components["schemas"]["Uuid"] | null;
             /**
@@ -6227,17 +5791,15 @@ export interface components {
             digest_floor?: number | null;
         };
         /**
-         * @description Describe the fact to dry-run. Supply exactly one subject — `alert_id`, `case_id` or
-         *     `group_id` — plus the `reason` to simulate; omitting `reason` defaults to `fired`. Supplying an
+         * @description Describe the fact to dry-run. Supply the subject — `case_id` — plus the `reason` to simulate;
+         *     omitting `reason` defaults to `fired`. Supplying an
          *     inline `policy` evaluates that unsaved draft **in addition to** the stored policies, which is
          *     what lets the settings form answer "who would this reach?" before anything is saved.
          *
          *     This endpoint never sends anything.
          */
         PolicyPreviewRequest: {
-            alert_id?: components["schemas"]["Uuid"];
             case_id?: components["schemas"]["Uuid"];
-            group_id?: components["schemas"]["Uuid"];
             reason?: components["schemas"]["NotificationReason"];
             policy?: components["schemas"]["CreatePolicyRequest"];
         };
@@ -6357,15 +5919,6 @@ export interface components {
         RuleSnapshotListResponse: {
             data: components["schemas"]["RuleSnapshotDTO"][];
             page: components["schemas"]["PageInfo"];
-            meta: components["schemas"]["Meta"];
-        };
-        GroupListResponse: {
-            data: components["schemas"]["GroupDTO"][];
-            page: components["schemas"]["PageInfo"];
-            meta: components["schemas"]["Meta"];
-        };
-        GroupDetailResponse: {
-            data: components["schemas"]["GroupDetailDTO"];
             meta: components["schemas"]["Meta"];
         };
         SourceListResponse: {
@@ -6573,8 +6126,8 @@ export interface components {
             };
             shadowed: components["schemas"]["OrgSettingsPatchDTO"];
             /**
-             * @description Per integer settings key, the range the server will accept. Keys that are not integers
-             *     (`default_verbosity`, `broadcast_on_resolved`) are absent; their legal values are their own
+             * @description Per integer settings key, the range the server will accept. The one key that is not an
+             *     integer, `default_verbosity`, is absent; its legal values are its own
              *     schema's. The bounds apply to a declarative value too: configuration is authoritative about
              *     *which* value is in force, not about which values are legal.
              */
@@ -6612,7 +6165,6 @@ export interface components {
             /** Format: int32 */
             event_retention_months?: number;
             default_verbosity?: components["schemas"]["Verbosity"];
-            broadcast_on_resolved?: boolean;
         };
         OrgSettingsViewResponse: {
             data: components["schemas"]["OrgSettingsViewDTO"];
@@ -6641,11 +6193,6 @@ export interface components {
             /** Format: int32 */
             event_retention_months?: number;
             default_verbosity?: components["schemas"]["Verbosity"];
-            /**
-             * @description Broadcast `all_resolved` into the channel (ADR 0020). Default off, and the **only**
-             *     configurable broadcast — a broadcast cannot be un-sent.
-             */
-            broadcast_on_resolved?: boolean;
             /**
              * @description Settings keys to return to oto's shipped default. After a reset the key's origin reports
              *     `default` again. An unknown key is rejected with 422, never ignored.
@@ -8784,665 +8331,6 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             413: components["responses"]["PayloadTooLarge"];
-            415: components["responses"]["UnsupportedMediaType"];
-            422: components["responses"]["UnprocessableContent"];
-            429: components["responses"]["RateLimited"];
-            500: components["responses"]["InternalError"];
-            503: components["responses"]["ServiceUnavailable"];
-        };
-    };
-    listAlertGroups: {
-        parameters: {
-            query?: {
-                /** @description Comma-separated group states. */
-                state?: components["schemas"]["GroupState"][];
-                /** @description Comma-separated severities, matched against the group's maximum member severity. */
-                severity?: string[];
-                /** @description Comma-separated cluster keys. */
-                cluster?: components["schemas"]["ClusterKey"][];
-                /** @description Restrict to groups originating from one source. */
-                source_id?: components["schemas"]["Uuid"];
-                /**
-                 * @description Restrict to one Alertmanager receiver name. This filters on recorded **provenance** — the
-                 *     receiver that first delivered into the generation — not on group identity, which since
-                 *     ADR 0038 is derived from the alert's own labels.
-                 */
-                receiver?: string;
-                /** @description `unacked` returns groups with at least one unacknowledged member; `acked` returns fully acknowledged groups. */
-                ack?: components["schemas"]["AckState"];
-                /** @description Lower bound on `last_activity_at`. */
-                since?: components["schemas"]["Timestamp"];
-                /** @description Free-text search over the group title and its group labels. */
-                q?: string;
-                /** @description Restricted to indexed, total orderings for the same keyset reason as the alert list. */
-                sort?: "-last_activity_at" | "-first_seen_at";
-                /** @description Maximum items to return in one page. */
-                limit?: components["parameters"]["LimitParam"];
-                /**
-                 * @description Opaque keyset cursor, taken verbatim from `page.next_cursor` of the previous response. A cursor
-                 *     minted under a different filter set is rejected with `400 cursor_filter_mismatch` — reset
-                 *     pagination when the user changes a filter.
-                 */
-                cursor?: components["parameters"]["CursorParam"];
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description A page of group generations. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GroupListResponse"];
-                };
-            };
-            400: components["responses"]["BadRequest"];
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-            422: components["responses"]["UnprocessableContent"];
-            429: components["responses"]["RateLimited"];
-            500: components["responses"]["InternalError"];
-            503: components["responses"]["ServiceUnavailable"];
-        };
-    };
-    getAlertGroup: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Resource identifier (UUIDv7). */
-                id: components["parameters"]["IdParam"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description The group. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GroupDetailResponse"];
-                };
-            };
-            400: components["responses"]["BadRequest"];
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-            404: components["responses"]["NotFound"];
-            429: components["responses"]["RateLimited"];
-            500: components["responses"]["InternalError"];
-            503: components["responses"]["ServiceUnavailable"];
-        };
-    };
-    listAlertGroupAlerts: {
-        parameters: {
-            query?: {
-                /** @description Maximum items to return in one page. */
-                limit?: components["parameters"]["LimitParam"];
-                /**
-                 * @description Opaque keyset cursor, taken verbatim from `page.next_cursor` of the previous response. A cursor
-                 *     minted under a different filter set is rejected with `400 cursor_filter_mismatch` — reset
-                 *     pagination when the user changes a filter.
-                 */
-                cursor?: components["parameters"]["CursorParam"];
-            };
-            header?: never;
-            path: {
-                /** @description Resource identifier (UUIDv7). */
-                id: components["parameters"]["IdParam"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description A page of member alerts. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AlertListResponse"];
-                };
-            };
-            400: components["responses"]["BadRequest"];
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-            404: components["responses"]["NotFound"];
-            429: components["responses"]["RateLimited"];
-            500: components["responses"]["InternalError"];
-            503: components["responses"]["ServiceUnavailable"];
-        };
-    };
-    getAlertGroupTimeline: {
-        parameters: {
-            query?: {
-                /** @description Comma-separated event types to include. Omit for all. */
-                type?: components["schemas"]["AlertEventType"][];
-                /** @description Lower bound on `recorded_at`. */
-                since?: components["schemas"]["Timestamp"];
-                /** @description Upper bound on `recorded_at`. */
-                until?: components["schemas"]["Timestamp"];
-                order?: "asc" | "desc";
-                /** @description Maximum items to return in one page. */
-                limit?: components["parameters"]["LimitParam"];
-                /**
-                 * @description Opaque keyset cursor, taken verbatim from `page.next_cursor` of the previous response. A cursor
-                 *     minted under a different filter set is rejected with `400 cursor_filter_mismatch` — reset
-                 *     pagination when the user changes a filter.
-                 */
-                cursor?: components["parameters"]["CursorParam"];
-            };
-            header?: never;
-            path: {
-                /** @description Resource identifier (UUIDv7). */
-                id: components["parameters"]["IdParam"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description A page of merged timeline events. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AlertEventListResponse"];
-                };
-            };
-            400: components["responses"]["BadRequest"];
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-            404: components["responses"]["NotFound"];
-            422: components["responses"]["UnprocessableContent"];
-            429: components["responses"]["RateLimited"];
-            500: components["responses"]["InternalError"];
-            503: components["responses"]["ServiceUnavailable"];
-        };
-    };
-    ackAlertGroup: {
-        parameters: {
-            query?: never;
-            header?: {
-                /**
-                 * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
-                 *     body within the retention window returns the original result rather than acting twice; replaying
-                 *     it with a *different* body is a `409`.
-                 *
-                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
-                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
-                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
-                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
-                 *     forgotten and re-sending it acts again.
-                 *
-                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
-                 *     the operationId**, so one member's key never refuses another's request and one key can be used
-                 *     once per endpoint.
-                 *
-                 *     ### The carve-out: endpoints whose response carries a secret
-                 *
-                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
-                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
-                 *     the original result" is impossible to honour honestly here: the original result of a create or a
-                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
-                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
-                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
-                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
-                 *     response that may never have arrived.
-                 *
-                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
-                 *     what it created, and the secret cannot be produced again. A caller that never received it
-                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
-                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
-                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
-                 *     send no key at all.
-                 *
-                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
-                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
-                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
-                 *
-                 *     The problem body names an `id`, and only when the first call created something. **It never
-                 *     contains a secret, and never a token prefix.**
-                 *
-                 *     ### The second carve-out: endpoints that are idempotent by state machine
-                 *
-                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
-                 *     a key, because the state after N calls equals the state after one. They are therefore **not**
-                 *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
-                 *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
-                 *     `delivery_not_dead` — rather than a replay of the original response.
-                 *
-                 *     **Treat those four codes as success-equivalent when you are retrying the same key.** They mean
-                 *     "the thing you asked for is already true", which is what a replayed `200` would have told you.
-                 *
-                 *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
-                 *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
-                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
-                 *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
-                 *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
-                 */
-                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
-            };
-            path: {
-                /** @description Resource identifier (UUIDv7). */
-                id: components["parameters"]["IdParam"];
-            };
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": components["schemas"]["AckRequest"];
-            };
-        };
-        responses: {
-            /** @description The updated group. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GroupDetailResponse"];
-                };
-            };
-            400: components["responses"]["BadRequest"];
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-            404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
-            412: components["responses"]["PreconditionFailed"];
-            415: components["responses"]["UnsupportedMediaType"];
-            422: components["responses"]["UnprocessableContent"];
-            429: components["responses"]["RateLimited"];
-            500: components["responses"]["InternalError"];
-            503: components["responses"]["ServiceUnavailable"];
-        };
-    };
-    unackAlertGroup: {
-        parameters: {
-            query?: never;
-            header?: {
-                /**
-                 * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
-                 *     body within the retention window returns the original result rather than acting twice; replaying
-                 *     it with a *different* body is a `409`.
-                 *
-                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
-                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
-                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
-                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
-                 *     forgotten and re-sending it acts again.
-                 *
-                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
-                 *     the operationId**, so one member's key never refuses another's request and one key can be used
-                 *     once per endpoint.
-                 *
-                 *     ### The carve-out: endpoints whose response carries a secret
-                 *
-                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
-                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
-                 *     the original result" is impossible to honour honestly here: the original result of a create or a
-                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
-                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
-                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
-                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
-                 *     response that may never have arrived.
-                 *
-                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
-                 *     what it created, and the secret cannot be produced again. A caller that never received it
-                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
-                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
-                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
-                 *     send no key at all.
-                 *
-                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
-                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
-                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
-                 *
-                 *     The problem body names an `id`, and only when the first call created something. **It never
-                 *     contains a secret, and never a token prefix.**
-                 *
-                 *     ### The second carve-out: endpoints that are idempotent by state machine
-                 *
-                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
-                 *     a key, because the state after N calls equals the state after one. They are therefore **not**
-                 *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
-                 *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
-                 *     `delivery_not_dead` — rather than a replay of the original response.
-                 *
-                 *     **Treat those four codes as success-equivalent when you are retrying the same key.** They mean
-                 *     "the thing you asked for is already true", which is what a replayed `200` would have told you.
-                 *
-                 *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
-                 *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
-                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
-                 *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
-                 *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
-                 */
-                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
-            };
-            path: {
-                /** @description Resource identifier (UUIDv7). */
-                id: components["parameters"]["IdParam"];
-            };
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": components["schemas"]["UnackRequest"];
-            };
-        };
-        responses: {
-            /** @description The updated group. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GroupDetailResponse"];
-                };
-            };
-            400: components["responses"]["BadRequest"];
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-            404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
-            412: components["responses"]["PreconditionFailed"];
-            415: components["responses"]["UnsupportedMediaType"];
-            422: components["responses"]["UnprocessableContent"];
-            429: components["responses"]["RateLimited"];
-            500: components["responses"]["InternalError"];
-            503: components["responses"]["ServiceUnavailable"];
-        };
-    };
-    commentOnAlertGroup: {
-        parameters: {
-            query?: never;
-            header?: {
-                /**
-                 * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
-                 *     body within the retention window returns the original result rather than acting twice; replaying
-                 *     it with a *different* body is a `409`.
-                 *
-                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
-                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
-                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
-                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
-                 *     forgotten and re-sending it acts again.
-                 *
-                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
-                 *     the operationId**, so one member's key never refuses another's request and one key can be used
-                 *     once per endpoint.
-                 *
-                 *     ### The carve-out: endpoints whose response carries a secret
-                 *
-                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
-                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
-                 *     the original result" is impossible to honour honestly here: the original result of a create or a
-                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
-                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
-                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
-                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
-                 *     response that may never have arrived.
-                 *
-                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
-                 *     what it created, and the secret cannot be produced again. A caller that never received it
-                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
-                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
-                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
-                 *     send no key at all.
-                 *
-                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
-                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
-                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
-                 *
-                 *     The problem body names an `id`, and only when the first call created something. **It never
-                 *     contains a secret, and never a token prefix.**
-                 *
-                 *     ### The second carve-out: endpoints that are idempotent by state machine
-                 *
-                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
-                 *     a key, because the state after N calls equals the state after one. They are therefore **not**
-                 *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
-                 *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
-                 *     `delivery_not_dead` — rather than a replay of the original response.
-                 *
-                 *     **Treat those four codes as success-equivalent when you are retrying the same key.** They mean
-                 *     "the thing you asked for is already true", which is what a replayed `200` would have told you.
-                 *
-                 *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
-                 *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
-                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
-                 *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
-                 *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
-                 */
-                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
-            };
-            path: {
-                /** @description Resource identifier (UUIDv7). */
-                id: components["parameters"]["IdParam"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CommentRequest"];
-            };
-        };
-        responses: {
-            /** @description The appended event. */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AlertEventResponse"];
-                };
-            };
-            400: components["responses"]["BadRequest"];
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-            404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
-            412: components["responses"]["PreconditionFailed"];
-            413: components["responses"]["PayloadTooLarge"];
-            415: components["responses"]["UnsupportedMediaType"];
-            422: components["responses"]["UnprocessableContent"];
-            429: components["responses"]["RateLimited"];
-            500: components["responses"]["InternalError"];
-            503: components["responses"]["ServiceUnavailable"];
-        };
-    };
-    snoozeAlertGroup: {
-        parameters: {
-            query?: never;
-            header?: {
-                /**
-                 * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
-                 *     body within the retention window returns the original result rather than acting twice; replaying
-                 *     it with a *different* body is a `409`.
-                 *
-                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
-                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
-                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
-                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
-                 *     forgotten and re-sending it acts again.
-                 *
-                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
-                 *     the operationId**, so one member's key never refuses another's request and one key can be used
-                 *     once per endpoint.
-                 *
-                 *     ### The carve-out: endpoints whose response carries a secret
-                 *
-                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
-                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
-                 *     the original result" is impossible to honour honestly here: the original result of a create or a
-                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
-                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
-                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
-                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
-                 *     response that may never have arrived.
-                 *
-                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
-                 *     what it created, and the secret cannot be produced again. A caller that never received it
-                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
-                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
-                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
-                 *     send no key at all.
-                 *
-                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
-                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
-                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
-                 *
-                 *     The problem body names an `id`, and only when the first call created something. **It never
-                 *     contains a secret, and never a token prefix.**
-                 *
-                 *     ### The second carve-out: endpoints that are idempotent by state machine
-                 *
-                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
-                 *     a key, because the state after N calls equals the state after one. They are therefore **not**
-                 *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
-                 *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
-                 *     `delivery_not_dead` — rather than a replay of the original response.
-                 *
-                 *     **Treat those four codes as success-equivalent when you are retrying the same key.** They mean
-                 *     "the thing you asked for is already true", which is what a replayed `200` would have told you.
-                 *
-                 *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
-                 *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
-                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
-                 *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
-                 *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
-                 */
-                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
-            };
-            path: {
-                /** @description Resource identifier (UUIDv7). */
-                id: components["parameters"]["IdParam"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SnoozeRequest"];
-            };
-        };
-        responses: {
-            /** @description The updated group. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GroupDetailResponse"];
-                };
-            };
-            400: components["responses"]["BadRequest"];
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-            404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
-            412: components["responses"]["PreconditionFailed"];
-            415: components["responses"]["UnsupportedMediaType"];
-            422: components["responses"]["UnprocessableContent"];
-            429: components["responses"]["RateLimited"];
-            500: components["responses"]["InternalError"];
-            503: components["responses"]["ServiceUnavailable"];
-        };
-    };
-    unsnoozeAlertGroup: {
-        parameters: {
-            query?: never;
-            header?: {
-                /**
-                 * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
-                 *     body within the retention window returns the original result rather than acting twice; replaying
-                 *     it with a *different* body is a `409`.
-                 *
-                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
-                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
-                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
-                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
-                 *     forgotten and re-sending it acts again.
-                 *
-                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
-                 *     the operationId**, so one member's key never refuses another's request and one key can be used
-                 *     once per endpoint.
-                 *
-                 *     ### The carve-out: endpoints whose response carries a secret
-                 *
-                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
-                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
-                 *     the original result" is impossible to honour honestly here: the original result of a create or a
-                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
-                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
-                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
-                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
-                 *     response that may never have arrived.
-                 *
-                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
-                 *     what it created, and the secret cannot be produced again. A caller that never received it
-                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
-                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
-                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
-                 *     send no key at all.
-                 *
-                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
-                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
-                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
-                 *
-                 *     The problem body names an `id`, and only when the first call created something. **It never
-                 *     contains a secret, and never a token prefix.**
-                 *
-                 *     ### The second carve-out: endpoints that are idempotent by state machine
-                 *
-                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
-                 *     a key, because the state after N calls equals the state after one. They are therefore **not**
-                 *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
-                 *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
-                 *     `delivery_not_dead` — rather than a replay of the original response.
-                 *
-                 *     **Treat those four codes as success-equivalent when you are retrying the same key.** They mean
-                 *     "the thing you asked for is already true", which is what a replayed `200` would have told you.
-                 *
-                 *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
-                 *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
-                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
-                 *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
-                 *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
-                 */
-                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
-            };
-            path: {
-                /** @description Resource identifier (UUIDv7). */
-                id: components["parameters"]["IdParam"];
-            };
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": components["schemas"]["UnsnoozeRequest"];
-            };
-        };
-        responses: {
-            /** @description The updated group. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GroupDetailResponse"];
-                };
-            };
-            400: components["responses"]["BadRequest"];
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-            404: components["responses"]["NotFound"];
-            412: components["responses"]["PreconditionFailed"];
             415: components["responses"]["UnsupportedMediaType"];
             422: components["responses"]["UnprocessableContent"];
             429: components["responses"]["RateLimited"];

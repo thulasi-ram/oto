@@ -330,9 +330,11 @@ export const TuningSection: Component = () => {
     (view.data?.shadowed as Readonly<Record<string, unknown>> | undefined)?.[key];
 
   const servedText = (key: KnobKey): string => {
+    // ⛔ A `kind === "boolean"` BRANCH WAS HERE, RENDERING `true`/`false` FOR
+    // `broadcast_on_resolved`. Both went (git-bug 7570090): no knob is boolean any
+    // more, so every served value is a number or a verbosity string, and this no
+    // longer needs to know which knob it is looking at.
     const raw = served(key);
-    const knob = KNOBS[key];
-    if (knob.kind === "boolean") return raw === true ? "true" : "false";
     return raw === undefined || raw === null ? "" : String(raw);
   };
 
@@ -358,7 +360,9 @@ export const TuningSection: Component = () => {
       if (trimmed === "" || !/^-?\d+$/.test(trimmed)) return undefined;
       return Number.parseInt(trimmed, 10);
     }
-    if (knob.kind === "boolean") return raw === "true";
+    // ⛔ `if (knob.kind === "boolean") return raw === "true";` WAS HERE (git-bug
+    // 7570090). With no boolean knob left, the only non-numeric knob is the
+    // verbosity, whose control already hands back the enum value verbatim.
     return raw;
   };
 
@@ -1335,8 +1339,11 @@ const Note: Component<{ readonly kind: "warn" | "quiet"; readonly children: JSX.
  */
 function shadowedText(knob: KnobCopy, raw: unknown): string {
   if (typeof raw === "number") return readValue(knob.kind, raw);
-  if (typeof raw === "boolean") return raw ? "on" : "off";
-  if (Array.isArray(raw)) return JSON.stringify(raw);
+  // ⛔ A `boolean` ARM ("on"/"off") AND AN `Array.isArray` ARM WERE HERE AND BOTH
+  // ARE UNREACHABLE. `OrgSettingsPatchDTO` publishes eight integers and
+  // `default_verbosity` and nothing else: the boolean was `broadcast_on_resolved`
+  // (git-bug 7570090) and the array was `unacked_reminder_mention_list` (git-bug
+  // bd0fb1d). `String(raw)` is the honest funnel for what is left.
   return String(raw);
 }
 
@@ -1484,23 +1491,18 @@ const KnobRow: Component<{ readonly knob: KnobCopy; readonly ctl: Ctl }> = (prop
             number instead of two.
           */}
           <div class={FIELD}>
-          <Switch>
-            <Match when={props.knob.kind === "boolean"}>
-              <div class={CHECK_ROW}>
-                <Checkbox
-                  id={id()}
-                  checked={ctl().text(key()) === "true"}
-                  disabled={ctl().resetQueued(key()) || ctl().managed(key())}
-                  onChange={(next) => ctl().setText(key(), next ? "true" : "false")}
-                />
-                <label for={`${id()}-input`} class={CHECK_LABEL}>
-                  {ctl().text(key()) === "true"
-                    ? "On — the resolve is broadcast into the channel"
-                    : "Off — the resolve stays in the thread"}
-                </label>
-              </div>
-            </Match>
+          {/* ⛔ A `kind === "boolean"` MATCH WAS THE FIRST ARM HERE AND IS DELETED
+              (git-bug 7570090). It was a `Checkbox` whose two labels read "On —
+              the resolve is broadcast into the channel" / "Off — the resolve stays
+              in the thread": copy written for `broadcast_on_resolved` and for
+              nothing else. Slack thread-broadcast is removed, the knob is gone and
+              `KnobKind` no longer has `"boolean"`, so this arm could never match.
 
+              ⚠️ IT IS DELETED RATHER THAN GENERALISED. A checkbox left behind for
+              "some future boolean knob" would ship with a label about resolves, and
+              a control that describes the wrong setting is how an operator changes
+              something they did not mean to. */}
+          <Switch>
             <Match when={props.knob.kind === "verbosity"}>
               <KnobSelect
                 id={id()}

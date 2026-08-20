@@ -58,11 +58,16 @@ type Deps struct {
 	Claims Claims
 
 	// Optional cross-module ports.
+	//
+	// ⛔ `GroupVersions GroupVersionReader` WAS HERE AND IS DELETED WITH THE PORT
+	// (git-bug `7570090`). Nothing had implemented it since `internal/grouping` was
+	// removed, so the container left it nil and `Service.groupVersions` was a nil
+	// interface no method ever reached. See the deleted port's note in `deps.go` for
+	// the §C.7 idempotency guarantee it served and why that guarantee is now unmet.
 	Enqueuer      db.Enqueuer
 	Stream        StreamAppender
 	Health        SourceHealth
 	Settings      SettingsReader
-	GroupVersions GroupVersionReader
 	Enrichments   EnrichmentReader
 	Notifications NotificationReader
 
@@ -99,7 +104,6 @@ type Service struct {
 	stream        StreamAppender
 	health        SourceHealth
 	settings      SettingsReader
-	groupVersions GroupVersionReader
 	enrichments   EnrichmentReader
 	notifications NotificationReader
 
@@ -149,7 +153,6 @@ func New(d Deps) (*Service, error) {
 		stream:        d.Stream,
 		health:        d.Health,
 		settings:      d.Settings,
-		groupVersions: d.GroupVersions,
 		enrichments:   d.Enrichments,
 		notifications: d.Notifications,
 		clock:         clk,
@@ -373,10 +376,13 @@ func encodeFramePayload(payload map[string]any) ([]byte, error) {
 // than at each call site so that the §C.7 inputs — group, reason, state version —
 // are never partially filled.
 type notifyRequest struct {
-	groupID uuid.UUID
+	// ⛔ `groupID uuid.UUID` WAS HERE AND IS DELETED, and `caseID` stopped being
+	// optional (git-bug `7570090`). A conversation holds exactly one Case, so the
+	// Case is what an evaluation is about; `alertID` stays a pointer because it is
+	// the FOCUS — which alert inside the episode a fact names.
+	caseID  uuid.UUID
 	reason  string
 	alertID *uuid.UUID
-	caseID  *uuid.UUID
 	actor   string
 }
 
@@ -406,34 +412,40 @@ type notifyRequest struct {
 // off, the card still goes out, without the rule, at the budget's edge. Silence
 // is never the degradation.
 func (s *Service) enqueueNotify(
-	ctx context.Context, scope db.TenantScope, reqs []notifyRequest,
+	ctx context.Context, _ db.TenantScope, reqs []notifyRequest,
 	awaitingEnrichment map[uuid.UUID]struct{},
 ) (int, error) {
 	if s.enqueuer == nil || len(reqs) == 0 {
 		return 0, nil
 	}
 
-	versions := map[uuid.UUID]int{}
+	// ⛔ THE PER-GROUP STATE-VERSION CACHE WAS HERE AND IS DELETED (git-bug
+	// `7570090`). It memoised `groupStateVersion` per group id across a batch,
+	// because one batch could carry many facts about ONE generation and each would
+	// otherwise re-read the same row. A conversation is a Case and a Case is one
+	// alert's episode, so a batch carries at most one fact per Case and the cache
+	// could never hit.
+	//
+	// ⚠️ AND THE VERSION IT CACHED IS NOW A CONSTANT, WHICH IS A REAL GAP, NOT A
+	// SIMPLIFICATION. `alert_groups.state_version` was what pinned a late enrichment
+	// to the state it was minted against (§C.7) so an amended card could not resend an
+	// older one. The Case has no such column yet. Until it does, every evaluation is
+	// version 1 and that pin is not being enforced — recorded here rather than left to
+	// be discovered from a duplicate card.
 	out := make([]db.JobRequest, 0, len(reqs))
 	for _, r := range reqs {
-		if r.groupID == uuid.Nil || r.reason == "" {
+		if r.caseID == uuid.Nil || r.reason == "" {
 			continue
 		}
-		v, ok := versions[r.groupID]
-		if !ok {
-			v = s.groupStateVersion(ctx, scope, r.groupID)
-			versions[r.groupID] = v
-		}
 		req := db.JobRequest{Args: jobs.NotifyEvaluateArgs{
-			GroupID:      r.groupID,
-			Reason:       r.reason,
-			StateVersion: v,
-			AlertID:      r.alertID,
 			CaseID:       r.caseID,
+			Reason:       r.reason,
+			StateVersion: 1,
+			AlertID:      r.alertID,
 			Actor:        r.actor,
 		}}
-		if r.reason == reasonFired && r.caseID != nil {
-			if _, waiting := awaitingEnrichment[*r.caseID]; waiting {
+		if r.reason == reasonFired {
+			if _, waiting := awaitingEnrichment[r.caseID]; waiting {
 				req.Opts = append(req.Opts,
 					db.WithScheduledAt(s.Now().Add(jobs.PreNotificationBudget)))
 			}
@@ -448,19 +460,6 @@ func (s *Service) enqueueNotify(
 			"could not queue notification evaluation")
 	}
 	return len(out), nil
-}
-
-func (s *Service) groupStateVersion(ctx context.Context, scope db.TenantScope, groupID uuid.UUID) int {
-	if s.groupVersions == nil {
-		return 0
-	}
-	v, err := s.groupVersions.StateVersion(ctx, scope, groupID)
-	if err != nil {
-		s.log.WarnContext(ctx, "alerts: could not read group state version",
-			"group_id", groupID, "error", err)
-		return 0
-	}
-	return v
 }
 
 // enqueueEnrich queues the inline enrichment pass for a freshly opened episode.
@@ -491,7 +490,7 @@ func (s *Service) enqueueEnrich(ctx context.Context, caseIDs []uuid.UUID) (int, 
 // migration to notifications_reason_ck.
 const (
 	reasonFired        = "fired"
-	reasonSomeResolved = "some_resolved"
+	reasonAllResolved  = "all_resolved"
 	reasonSuppressed   = "suppressed"
 	reasonUnsuppressed = "unsuppressed"
 	reasonExpired      = "expired"
@@ -505,9 +504,17 @@ const (
 
 // reasonFor maps a §B.3 transition onto the §H.6 Reason it justifies.
 //
-// T5 maps to `some_resolved` and never to `all_resolved`: whether a group is
-// wholly resolved is a fact about the GROUP's membership, which this module does
-// not read. The notify worker, which does, upgrades it.
+// ⛔ T5 USED TO MAP TO `some_resolved` AND NEVER TO `all_resolved` (git-bug
+// `7570090`). The reason was real and is now void: "whether a group is wholly
+// resolved is a fact about the GROUP's membership, which this module does not read.
+// The notify worker, which does, upgrades it."
+//
+// ⭐ THERE IS NOTHING LEFT TO UPGRADE FROM. A conversation holds exactly one Case and
+// a Case is one Alert's episode, so when T5 fires the resolution IS whole — the
+// two-step existed only to defer a membership question to the one module that could
+// answer it, and there is no membership. `some_resolved` left the vocabulary with it
+// (it asserted a plurality), and `notification/service.evaluate` no longer calls
+// `ReconcileWithWire` because that call was the upgrade.
 func reasonFor(id domain.TransitionID) string {
 	switch id {
 	case domain.TransitionT1, domain.TransitionT7:
@@ -517,7 +524,7 @@ func reasonFor(id domain.TransitionID) string {
 	case domain.TransitionT4:
 		return reasonUnsuppressed
 	case domain.TransitionT5:
-		return reasonSomeResolved
+		return reasonAllResolved
 	case domain.TransitionT6:
 		return reasonExpired
 	default:

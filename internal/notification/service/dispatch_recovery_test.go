@@ -51,7 +51,7 @@ func TestReRootedCardSaysItIsContinued(t *testing.T) {
 	// Pass 1 kills the thread pointer and re-enqueues.
 	require.NoError(t, h.dispatcher.Dispatch(ctx, h.fx.scope, second[0].ID))
 	th, err := h.threads.Ensure(ctx, h.fx.scope, h.fx.channel.ID,
-		domain.SubjectAlertGroup, h.fx.groupID, time.Now().UTC())
+		domain.SubjectCase, h.fx.caseID, time.Now().UTC())
 	require.NoError(t, err)
 	require.Equal(t, domain.ThreadDead, th.State)
 	require.Equal(t, domain.DeadEditWindowClosed, th.DeadReason)
@@ -100,16 +100,16 @@ func TestMarkSentReportsALostClaim(t *testing.T) {
 	threads := repository.NewThreadRepository(fx.pool)
 
 	th, err := threads.Ensure(ctx, fx.scope, fx.channel.ID,
-		domain.SubjectAlertGroup, fx.groupID, now)
+		domain.SubjectCase, fx.caseID, now)
 	require.NoError(t, err)
 
 	notificationID := uuid.New()
 	_, err = fx.pool.Exec(ctx, `
 		INSERT INTO notifications
-		  (id, org_id, subject_kind, subject_id, group_id, conversation_kind, conversation_id, reason, policy_id,
+		  (id, org_id, subject_kind, subject_id, case_id, conversation_kind, conversation_id, reason, policy_id,
 		   state_version, idempotency_key, status, created_at, updated_at)
-		VALUES ($1,$2,'alert_group',$3,$3,'alert_group',$3,'fired',$4,1,$5,'dispatched',$6,$6)`,
-		notificationID, fx.orgID, fx.groupID, fx.policyID, idemKey("c"), now)
+		VALUES ($1,$2,'case',$3,$3,'case',$3,'fired',$4,1,$5,'dispatched',$6,$6)`,
+		notificationID, fx.orgID, fx.caseID, fx.policyID, idemKey("c"), now)
 	require.NoError(t, err)
 
 	d, madeNew, err := deliveries.Create(ctx, fx.scope, repository.NewDelivery{

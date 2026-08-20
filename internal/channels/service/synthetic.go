@@ -120,8 +120,14 @@ func SyntheticView(inst domain.Instance, now time.Time, baseURL string) *domain.
 // exercises the interactive path's payload size and layout too.
 //
 // Every button's `value` is an OPAQUE ID and never a payload (§H.8). These ones
-// name a group that does not exist, which is exactly right: an interaction from a
+// name a CASE that does not exist, which is exactly right: an interaction from a
 // test card resolves to nothing and is acknowledged as a no-op.
+//
+// ⛔ IT USED TO SAY "a group that does not exist" (git-bug 7570090). AlertGroups
+// are gone and `oto.ack` now carries a Case id — see `service.Cases` — so the
+// sentence had to move even though the bytes did not. A synthetic id that names
+// nothing in either vocabulary is the one value that is safe here whatever the
+// button's subject is.
 func syntheticActions(inst domain.Instance) []domain.Action {
 	if inst.Capabilities&domain.CapInteractive == 0 {
 		return nil

@@ -33,7 +33,6 @@ import (
 type syntheticFixture struct {
 	realAlert      uuid.UUID
 	syntheticAlert uuid.UUID
-	syntheticGroup uuid.UUID
 	drillLabel     string
 	// day is the instant every seeded row is stamped with, and the UTC day the
 	// hygiene rollup is asked to recompute.
@@ -50,13 +49,12 @@ type syntheticFixture struct {
 	day time.Time
 }
 
-func seedSynthetic(t *testing.T, e *env, orgID uuid.UUID, clusterID, sourceID uuid.UUID) syntheticFixture {
+func seedSynthetic(t *testing.T, e *env, orgID uuid.UUID, clusterID, _ uuid.UUID) syntheticFixture {
 	t.Helper()
 
 	f := syntheticFixture{
 		realAlert:      uuid.New(),
 		syntheticAlert: uuid.New(),
-		syntheticGroup: uuid.New(),
 		drillLabel:     uuid.NewString(),
 		day:            time.Now().UTC().Add(-time.Hour),
 	}
@@ -89,28 +87,21 @@ VALUES ($1, $2, $3, 1, 'open', $4, $4, $4, 'unacked')`,
 		}
 	}
 
-	if _, err := e.pool.Exec(e.ctx, `
-INSERT INTO alert_groups (id, org_id, source_id, cluster_id, group_key, generation, receiver,
-                          group_labels, title, state, first_seen_at, last_activity_at, synthetic)
-VALUES ($1, $2, $3, $4, $5, 1, 'oto-delivery-drill', '{}'::jsonb, 'drill', 'open', $6, $6, true)`,
-		f.syntheticGroup, orgID, sourceID, clusterID, groupKeyFor(f.syntheticGroup), f.day,
-	); err != nil {
-		t.Fatalf("seed group: %v", err)
-	}
-
-	// Membership is the episode's own `group_id` since 00051, so the drill's
-	// episodes are pointed at the generation rather than listed in a second table.
-	if _, err := e.pool.Exec(e.ctx, `
-UPDATE alert_cases SET group_id = $1 WHERE org_id = $2 AND alert_id = $3`,
-		f.syntheticGroup, orgID, f.syntheticAlert); err != nil {
-		t.Fatalf("seed membership: %v", err)
-	}
+	// ⛔ THE SYNTHETIC GROUP AND ITS MEMBERSHIP UPDATE WERE SEEDED HERE AND ARE GONE
+	// (git-bug `7570090`, migration `00069`): `alert_groups` is dropped and so is
+	// `alert_cases.group_id`, so there is no generation to open and no membership to
+	// point at one. The synthetic ALERT and its Case above carry the whole fixture now.
+	//
+	// ⭐ AND THE PROVENANCE MARK IS NOT WEAKENED BY LOSING THE SECOND COPY.
+	// `alert_groups.synthetic` was a DENORMALISATION — `00039`'s own header calls
+	// `alerts.synthetic` the source of truth and says the copy existed to avoid "a
+	// nested loop through `alert_group_members`", a table `00051` dropped. So the
+	// justification for the copy had already evaporated; this only removes the copy.
 
 	return f
 }
 
 func alertKeyFor(id uuid.UUID) string { return "ak_" + base32ish(id) }
-func groupKeyFor(id uuid.UUID) string { return "gk_" + base32ish(id) }
 
 // base32ish renders 26 characters from the `[0-9a-v]` alphabet the DDL's
 // `alerts_key_ck` regex demands. It is not the real §C.2 hash and does not need
@@ -163,22 +154,32 @@ func TestSyntheticAlertsAreExcludedFromTheHygieneRollup(t *testing.T) {
 	}
 }
 
-// ⭐ THE DASHBOARD. Three separate CTEs had to learn about synthetics, because
-// each counts a different table: `alerts`, `alert_groups` and
-// `notification_deliveries`.
+// ⭐ THE DASHBOARD. It was THREE separate CTEs that had to learn about synthetics,
+// one per table counted — `alerts`, `alert_groups` and `notification_deliveries`.
+// ⛔ It is TWO since `alert_groups` was dropped (git-bug `7570090`), and the delivery
+// CTE's exclusion changed shape with it: it used to reach the provenance mark through
+// `notification -> group.synthetic` and now reaches `alerts.synthetic` directly. This
+// test is the one that proves the new path still excludes, so it matters MORE than it
+// did — a wrong predicate here changes dashboard numbers with nothing else noticing.
 func TestSyntheticAlertsAreExcludedFromTheDashboardOverview(t *testing.T) {
 	e := newEnv(t)
 	boot, cluster, source := bootstrapSource(t, e, "drill-overview")
 	seedSynthetic(t, e, boot.OrgID, cluster, source)
 
+	// ⛔ `data.groups.open` WAS READ HERE AND IS DELETED (git-bug `7570090`).
+	// `StatsOverviewDTO.groups` left the contract with `alert_groups`, so the key is
+	// simply absent — and an absent key decodes to the zero value, which means the
+	// old `want 0` assertion would have gone on PASSING for ever while proving
+	// nothing at all. A vacuous assertion is worse than none: it reads like
+	// coverage.
 	var out struct {
 		Data struct {
 			Alerts struct {
 				Firing int `json:"firing"`
 			} `json:"alerts"`
-			Groups struct {
-				Open int `json:"open"`
-			} `json:"groups"`
+			Deliveries struct {
+				Sent int `json:"sent"`
+			} `json:"deliveries"`
 		} `json:"data"`
 	}
 	e.do(t, http.MethodGet, "/api/v1/stats/overview", boot.Token, nil, http.StatusOK, &out)
@@ -187,9 +188,15 @@ func TestSyntheticAlertsAreExcludedFromTheDashboardOverview(t *testing.T) {
 		t.Errorf("firing = %d, want 1 — the dashboard is counting a delivery drill as a firing alert",
 			out.Data.Alerts.Firing)
 	}
-	if out.Data.Groups.Open != 0 {
-		t.Errorf("open groups = %d, want 0 — the dashboard is counting a drill's generation",
-			out.Data.Groups.Open)
+	// The delivery CTE is the half whose exclusion CHANGED SHAPE: it used to reach
+	// the provenance mark through `notification -> group.synthetic` and now reaches
+	// `alerts.synthetic` directly. The drill seeds no deliveries, so a predicate
+	// that stopped excluding would have to invent one to break this — but a
+	// predicate that started excluding EVERYTHING breaks it too, which is the half
+	// the group-shaped assertion used to carry.
+	if out.Data.Deliveries.Sent != 0 {
+		t.Errorf("sent deliveries = %d, want 0 — the dashboard is counting a drill's fan-out",
+			out.Data.Deliveries.Sent)
 	}
 }
 
@@ -269,8 +276,14 @@ func TestStartingADrillAnswers202WithEveryStage(t *testing.T) {
 	e.do(t, http.MethodPost, "/api/v1/drills", boot.Token,
 		map[string]any{"source_id": source.String()}, http.StatusAccepted, &started)
 
-	if len(started.Data.Stages) != 10 {
-		t.Fatalf("got %d stages, want the full chain of 10", len(started.Data.Stages))
+	// ⛔ IT WAS TEN AND THE `group` STAGE IS THE ONE THAT WENT (git-bug `7570090`).
+	// It reported §C.4 — "an AlertGroup generation was resolved and the alert joined
+	// it" — and there is no generation to resolve, so `AllStages()` is nine. The
+	// number is asserted rather than derived from `AllStages()` on purpose: this
+	// test is about what a CLIENT is sent over HTTP, and reading the enum the server
+	// renders from would agree with the server however wrong both were.
+	if len(started.Data.Stages) != 9 {
+		t.Fatalf("got %d stages, want the full chain of 9", len(started.Data.Stages))
 	}
 	if started.Data.Stages[0].Name != "accept" || started.Data.Stages[0].Status != "passed" {
 		t.Fatalf("accept = %+v, want passed: the batch is durably on disk before the 202",

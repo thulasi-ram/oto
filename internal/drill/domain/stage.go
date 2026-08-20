@@ -26,12 +26,35 @@ const (
 	// StageIdentity is §C.2: the label set became an Alert, with an alert_key.
 	// Evidence: `alerts`.
 	StageIdentity StageName = "identity"
-	// StageCase is §B.3 T1: a firing episode opened. Evidence:
-	// `alert_cases`.
+	// StageCase is §B.3 T1: a firing episode opened. Evidence: `alert_cases`.
+	//
+	// ⭐ IT IS ALSO THE CONVERSATION, WHICH IS WHAT THE GROUP STAGE USED TO PROVE
+	// (git-bug `7570090`). A Case is what the thread belongs to and what every
+	// stage after `policy` is addressed by, so "the drill reached an object that
+	// owns a thread" is asserted here rather than one stage later.
 	StageCase StageName = "case"
-	// StageGroup is §C.4: an AlertGroup generation was resolved and the alert
-	// joined it. Evidence: `alert_groups`, `alert_cases.group_id`.
-	StageGroup StageName = "group"
+	// ⛔ `StageGroup StageName = "group"` WAS HERE AND IS DELETED (git-bug
+	// `7570090`). It was §C.4 — "an AlertGroup generation was resolved and the alert
+	// joined it", evidenced by `alert_groups` and `alert_cases.group_id` — and both
+	// of those are dropped from the schema, so the stage had no row left to look at
+	// and a stage that cannot look is not a stage a drill may report.
+	//
+	// ⭐ WHAT IT PROVED IS STILL PROVED, BY TWO STAGES THAT ALREADY EXISTED. Its
+	// real assertion was never "a generation exists" — it was "the alert reached the
+	// object that owns the thread the card will land in". `StageCase` now asserts
+	// that object exists and `StageThread` asserts the conversation opened on it, so
+	// the chain still breaks at a nameable link when the join between them fails.
+	//
+	// ⚠️ ONE THING IT PROVED IS GENUINELY GONE, and pretending otherwise would be
+	// the dishonest fix: `alert_groups.synthetic`. The group stage failed loudly
+	// when the provenance mark reached the alert but not its generation. There is no
+	// second row to mark any more — `alerts.synthetic` is the whole mark, and
+	// `StageIdentity` still fails loudly when it is missing.
+	//
+	// The `group` member of `DrillStageName` in `api/openapi/openapi.yaml` has been
+	// removed too, so the contract and `AllStages()` agree — which
+	// `TestContractEnumsMatchTheirDomainEnum` demands as set AND order parity.
+
 	// StageRuleSnapshot is ADR 0009: what the rule said at fire time. Evidence:
 	// `alert_cases.rule_snapshot_id`.
 	//
@@ -63,7 +86,7 @@ const (
 // as much as what broke.
 func AllStages() []StageName {
 	return []StageName{
-		StageAccept, StageProcess, StageIdentity, StageCase, StageGroup,
+		StageAccept, StageProcess, StageIdentity, StageCase,
 		StageRuleSnapshot, StagePolicy, StageThread, StageOrdering, StageDelivery,
 	}
 }
@@ -94,9 +117,9 @@ type Stage struct {
 	// string, which can carry a request URL and therefore a token.
 	Detail string
 	// Facts are the small, typed pieces of evidence the UI shows beside the
-	// stage: an alert_key, a group generation, a Slack ts, a policy name. Keys
-	// are stable and snake_case; values are strings because this is a display
-	// surface, not a second API.
+	// stage: an alert_key, a case seq, a Slack ts, a policy name. Keys are stable
+	// and snake_case; values are strings because this is a display surface, not a
+	// second API.
 	Facts map[string]string
 }
 

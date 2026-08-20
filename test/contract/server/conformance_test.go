@@ -119,10 +119,29 @@ func TestTheRunningServerMatchesTheContract(t *testing.T) {
 // minimumSuccessfulOperations is the floor described above, and it is the number
 // the table actually reaches, not a comfortable margin below it. It is a
 // RATCHET: raise it when the gate drives more of the API for real, never lower
-// it. The nine that do not reach 2xx each carry their reason in the probe's
+// it. The ones that do not reach 2xx each carry their reason in the probe's
 // `why` — a fixture with no rule provenance, a drill that cannot finish in a
 // container that works no jobs, a Slack callback nobody signed.
-const minimumSuccessfulOperations = 80
+//
+// ⛔⛔ IT WAS 80 AND IS NOW 77, AND THAT IS THE ONE MOVE THE COMMENT ABOVE FORBIDS,
+// SO HERE IS THE ARITHMETIC RATHER THAN AN ASSURANCE. git-bug `7570090` DELETED NINE
+// OPERATIONS — the whole `/api/v1/alert-groups*` surface — so the DENOMINATOR fell
+// from 94 to 85. The floor is an absolute count, so a smaller API lowers it by
+// construction without the gate having weakened at all.
+//
+//	before   >= 80 of 94 reached 2xx   =>  at most 14 structurally unprobeable
+//	after       77 of 85 reached 2xx   =>           8 structurally unprobeable
+//
+// The unprobeable set SHRANK from at most fourteen to eight, so proportionally this
+// gate drives MORE of the API than it did. And if every one of the nine deleted
+// operations had been reaching 2xx, the mechanical expectation now would be 71; the
+// table reaches 77, six better.
+//
+// ⚠️ THE RATCHET RULE STILL STANDS AND IS NOT SUSPENDED BY THIS. 77 is again the
+// number the table actually reaches. Raise it when the gate drives more; lower it
+// ONLY with this shape of arithmetic showing the API itself got smaller, never
+// because probes started failing.
+const minimumSuccessfulOperations = 77
 
 /* -------------------------------------------------------------------------- */
 /* The three assertions                                                       */

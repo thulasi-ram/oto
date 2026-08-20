@@ -33,8 +33,8 @@ func TestIdempotencyKeyPreImageIsLengthPrefixed(t *testing.T) {
 	var want []byte
 	want = append(want, 0x00, 0x00, 0x00, 0x10) // len(org_id_bytes) == 16
 	want = append(want, idemOrg[:]...)
-	want = append(want, 0x00, 0x00, 0x00, byte(len(domain.SubjectAlertGroup)))
-	want = append(want, domain.SubjectAlertGroup...)
+	want = append(want, 0x00, 0x00, 0x00, byte(len(domain.SubjectCase)))
+	want = append(want, domain.SubjectCase...)
 	want = append(want, 0x00, 0x00, 0x00, 0x10) // len(subject_id_bytes) == 16
 	want = append(want, idemSubject[:]...)
 	want = append(want, 0x00, 0x00, 0x00, byte(len(domain.ReasonAllResolved)))
@@ -43,7 +43,7 @@ func TestIdempotencyKeyPreImageIsLengthPrefixed(t *testing.T) {
 	sum := sha256.Sum256(want)
 
 	assert.Equal(t, hex.EncodeToString(sum[:]),
-		domain.IdempotencyKey(idemOrg, domain.SubjectAlertGroup, idemSubject, domain.ReasonAllResolved, 7),
+		domain.IdempotencyKey(idemOrg, domain.SubjectCase, idemSubject, domain.ReasonAllResolved, 7),
 		"the §C.7 pre-image is uint32be(len(x))||x per field, with itoa(state_version) raw")
 }
 
@@ -60,7 +60,7 @@ func TestIdempotencyKeyPreImageIsLengthPrefixed(t *testing.T) {
 func TestIdempotencyKeyAgreesWithTheKernel(t *testing.T) {
 	t.Parallel()
 
-	for _, kind := range []domain.SubjectKind{domain.SubjectAlertGroup, "case", ""} {
+	for _, kind := range []domain.SubjectKind{domain.SubjectCase, domain.SubjectAlert, domain.SubjectDigest, ""} {
 		for _, reason := range []domain.Reason{
 			domain.ReasonAllResolved, domain.ReasonFired, "", "a", "ab",
 		} {
@@ -119,12 +119,12 @@ func TestIdempotencyKeyIsInjective(t *testing.T) {
 func TestIdempotencyKeyEveryInputParticipates(t *testing.T) {
 	t.Parallel()
 
-	base := domain.IdempotencyKey(idemOrg, domain.SubjectAlertGroup, idemSubject, domain.ReasonAllResolved, 7)
+	base := domain.IdempotencyKey(idemOrg, domain.SubjectCase, idemSubject, domain.ReasonAllResolved, 7)
 	require.True(t, domain.ValidIdempotencyKey(base))
 
-	assert.NotEqual(t, base, domain.IdempotencyKey(idemOther, domain.SubjectAlertGroup, idemSubject, domain.ReasonAllResolved, 7))
-	assert.NotEqual(t, base, domain.IdempotencyKey(idemOrg, "case", idemSubject, domain.ReasonAllResolved, 7))
-	assert.NotEqual(t, base, domain.IdempotencyKey(idemOrg, domain.SubjectAlertGroup, idemOther, domain.ReasonAllResolved, 7))
-	assert.NotEqual(t, base, domain.IdempotencyKey(idemOrg, domain.SubjectAlertGroup, idemSubject, domain.ReasonFired, 7))
-	assert.NotEqual(t, base, domain.IdempotencyKey(idemOrg, domain.SubjectAlertGroup, idemSubject, domain.ReasonAllResolved, 8))
+	assert.NotEqual(t, base, domain.IdempotencyKey(idemOther, domain.SubjectCase, idemSubject, domain.ReasonAllResolved, 7))
+	assert.NotEqual(t, base, domain.IdempotencyKey(idemOrg, domain.SubjectAlert, idemSubject, domain.ReasonAllResolved, 7))
+	assert.NotEqual(t, base, domain.IdempotencyKey(idemOrg, domain.SubjectCase, idemOther, domain.ReasonAllResolved, 7))
+	assert.NotEqual(t, base, domain.IdempotencyKey(idemOrg, domain.SubjectCase, idemSubject, domain.ReasonFired, 7))
+	assert.NotEqual(t, base, domain.IdempotencyKey(idemOrg, domain.SubjectCase, idemSubject, domain.ReasonAllResolved, 8))
 }

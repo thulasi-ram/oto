@@ -977,7 +977,7 @@ func (s *DispatchService) settle(
 	if err != nil {
 		return err
 	}
-	if err := s.events.AppendDeliveryOutcome(ctx, scope, d, n.GroupID, n.AlertID, detail, now); err != nil {
+	if err := s.events.AppendDeliveryOutcome(ctx, scope, d, n.AlertID, n.CaseID, detail, now); err != nil {
 		return err
 	}
 

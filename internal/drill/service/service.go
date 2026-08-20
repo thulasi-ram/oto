@@ -197,7 +197,13 @@ func (s *Service) List(
 // ⭐⭐ A SETTLED DRILL RETURNS ITS FROZEN BYTES AND NEVER RECOMPUTES. That is what
 // lets disposal delete the evidence while the answer survives — and it also means
 // two operators reading the same drill an hour apart read the same verdict, which
-// a recomputed one could not promise once a group closed or a thread froze.
+// a recomputed one could not promise once the Case resolved or the thread went dead.
+//
+// ⚠️ THAT CLAUSE USED TO SAY "once a group closed or a thread FROZE", and both halves
+// aged out: generations are gone (git-bug `7570090`) and a thread is never frozen
+// (migration 00066). The reason is unchanged and is why the sentence is re-pointed
+// rather than cut — the live rows a verdict is computed from keep moving, so freezing
+// is what makes the answer stable.
 func (s *Service) resolve(
 	ctx context.Context, scope db.TenantScope, d domain.Drill,
 ) (domain.Drill, domain.Result, error) {
@@ -221,7 +227,6 @@ func (s *Service) resolve(
 	}
 	d.AlertID = firstNonNil(d.AlertID, arts.Alert.ID)
 	d.CaseID = firstNonNil(d.CaseID, arts.Case.ID)
-	d.GroupID = firstNonNil(d.GroupID, arts.Group.ID)
 	d.NotificationID = firstNonNil(d.NotificationID, arts.Notification.ID)
 
 	if res.Status.Terminal() {

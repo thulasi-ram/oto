@@ -119,9 +119,6 @@ func (c *Container) mountDomains(g chi.Router) {
 	if c.routers.alerts != nil {
 		c.routers.alerts.Mount(g)
 	}
-	if c.routers.grouping != nil {
-		c.routers.grouping.Mount(g)
-	}
 	if c.routers.rules != nil {
 		c.routers.rules.Mount(g)
 	}

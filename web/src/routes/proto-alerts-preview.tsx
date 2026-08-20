@@ -36,7 +36,6 @@ import {
   type JSX,
   type ParentComponent,
 } from "solid-js";
-import { A } from "@solidjs/router";
 import { QueryClient, QueryClientProvider } from "@tanstack/solid-query";
 
 import { clustersQuery, labelNamesQuery } from "~/api/queries";
@@ -477,17 +476,6 @@ const DetailHeader: Component = () => (
           >
             Open the query in Prometheus ↗
           </a>
-        )}
-      </Show>
-      <Show when={PREVIEW_DETAIL.group}>
-        {(group) => (
-          <A
-            href={`/groups/${group().id}`}
-            class="text-meta text-ink-muted underline decoration-line-strong underline-offset-2 hover:text-ink"
-            title="The notification group this alert's current firing was batched into. Alertmanager decided the batching; oto mirrors it."
-          >
-            Notified in: {group().title} ↗
-          </A>
         )}
       </Show>
       <Show when={PREVIEW_DETAIL.source}>

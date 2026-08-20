@@ -137,7 +137,6 @@ type Handlers struct {
 	SlackInteraction   Handler[SlackInteractionArgs]
 
 	CaseReap     Handler[CaseReapArgs]
-	GroupClose   Handler[GroupCloseArgs]
 	NotifyDigest Handler[NotifyDigestArgs]
 
 	PartitionsManage Handler[PartitionsManageArgs]
@@ -214,10 +213,11 @@ func RegisterAll(r *Registry, h Handlers) error {
 			return Register(r, Spec{Queue: QueueLifecycle, PayloadVersion: 1, Timeout: 2 * time.Minute},
 				orStub(h.CaseReap, KindCaseReap))
 		},
-		func() error {
-			return Register(r, Spec{Queue: QueueLifecycle, PayloadVersion: 1, Timeout: 2 * time.Minute},
-				orStub(h.GroupClose, KindGroupClose))
-		},
+		// ⛔ `group.close` WAS REGISTERED HERE AND IS DELETED (git-bug `7570090`). It
+		// swept open generations idle past `group_close_delay_s` and closed them, which
+		// is what made the next fire post a brand-new Slack root. A conversation is a
+		// Case now: it ends when the Case ends, so there is no idle generation to
+		// close and no periodic sweep to run.
 		func() error {
 			// Two minutes, like every other per-tenant lifecycle sweep, and per TENANT
 			// for the same reason: the fan-out tick does a page read and one batch
@@ -292,9 +292,6 @@ func AddDefaultPeriodic(r *Registry, clk clock.Clock) {
 
 	add(time.Minute, KindCaseReap, func() (river.JobArgs, *river.InsertOpts) {
 		return CaseReapArgs{}, nil
-	})
-	add(time.Minute, KindGroupClose, func() (river.JobArgs, *river.InsertOpts) {
-		return GroupCloseArgs{}, nil
 	})
 	// The digest tick. Once a minute is not the window — the window is arithmetic on
 	// the clock, aligned to the UTC day (`notification/domain.Digest.WindowStart`) —

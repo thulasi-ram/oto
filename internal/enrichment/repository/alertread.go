@@ -140,20 +140,35 @@ func (r *AlertReadModel) AlertHistory(
 
 // relatedAlertsSQL finds the alerts that were firing nearby.
 //
-// The three relations are evaluated in ONE pass with a CASE, and the CASE is
-// ORDERED: same_group beats same_alertname beats same_namespace. That ordering
-// is a claim about signal strength, not an implementation convenience — group
-// membership is Alertmanager's own routing decision, and the label relations
-// are oto's inference. Each alert therefore appears under its STRONGEST
-// relation and never twice.
+// The relations are evaluated in ONE pass with a CASE, and the CASE is ORDERED:
+// same_alertname beats same_namespace. That ordering is a claim about signal
+// strength, not an implementation convenience — the same rule firing twice says
+// more than two unrelated rules sharing a namespace. Each alert therefore appears
+// under its STRONGEST relation and never twice.
+//
+// ⛔ THE `subject` CTE AND THE `same_group` ARM ARE DELETED (git-bug `7570090`).
+// The CTE was `SELECT group_id FROM alert_cases WHERE org_id = $1 AND id = $2` and
+// the arm read `o.group_id IS NOT NULL AND o.group_id = (SELECT group_id FROM
+// subject) THEN 'same_group'`, ranked ABOVE both survivors because group membership
+// was Alertmanager's own routing decision while the label relations are oto's
+// inference. 00069 drops `alert_cases.group_id`, so this is a forced deletion and
+// not a preference: left in place the statement raises a 42703 on every execution
+// and the enricher fails wholesale, taking the two working relations with it.
+//
+// ⚠️ THE PLACEHOLDERS ARE RENUMBERED AND HAD TO BE — LEAVING THE GAP DOES NOT
+// COMPILE, WHICH IS WORTH KNOWING BEFORE SOMEBODY "TIDIES" IT BACK. The case id
+// was `$2` and the CTE was its only reader, so dropping the CTE left a bound
+// parameter that no expression mentions. Postgres cannot infer a type for such a
+// parameter and refuses the statement outright with
+// `42P18: could not determine data type of parameter $2` — at PREPARE time, on
+// every call, before a single row is considered. Every placeholder after it
+// therefore shifts down by one, and `relatedalerts.Query` loses its `CaseID`
+// field: nothing else in this statement ever read it.
 //
 // DISTINCT ON collapses an alert that has several episodes in the window down
 // to its newest, so a flapping neighbour contributes one line rather than forty.
 const relatedAlertsSQL = `
-WITH subject AS (
-  SELECT group_id FROM alert_cases WHERE org_id = $1 AND id = $2
-),
-candidates AS (
+WITH candidates AS (
   SELECT o.id           AS case_id,
          o.alert_id     AS alert_id,
          -- ADR 0040: alert_cases.state is open | closed, so the four-word reading
@@ -176,10 +191,8 @@ candidates AS (
          a.namespace    AS namespace,
          a.service      AS service,
          CASE
-           WHEN o.group_id IS NOT NULL
-                AND o.group_id = (SELECT group_id FROM subject) THEN 'same_group'
-           WHEN $5 <> ''  AND a.alertname = $5                  THEN 'same_alertname'
-           WHEN $6 <> ''  AND a.namespace = $6                  THEN 'same_namespace'
+           WHEN $4 <> ''  AND a.alertname = $4 THEN 'same_alertname'
+           WHEN $5 <> ''  AND a.namespace = $5 THEN 'same_namespace'
          END AS relation
     FROM alert_cases o
     JOIN alerts a ON a.id = o.alert_id AND a.org_id = o.org_id
@@ -188,9 +201,9 @@ candidates AS (
      -- manufactured it to prove the notification path works, and offering it as
      -- context during a real incident would be actively misleading.
      AND NOT a.synthetic
-     AND o.alert_id <> $3
-     AND o.started_at >= $4
-     AND o.started_at <  $7
+     AND o.alert_id <> $2
+     AND o.started_at >= $3
+     AND o.started_at <  $6
 ),
 deduped AS (
   SELECT DISTINCT ON (alert_id) *
@@ -207,7 +220,7 @@ ranked AS (
 SELECT relation, alert_id, alert_key, alertname, severity, namespace, service,
        state, case_id, started_at, total
   FROM ranked
- WHERE rn <= $8
+ WHERE rn <= $7
  ORDER BY relation, started_at DESC`
 
 // RelatedAlerts returns what else was firing around this case.
@@ -220,7 +233,7 @@ func (r *AlertReadModel) RelatedAlerts(
 	}
 
 	rows, err := r.db(ctx).Query(ctx, relatedAlertsSQL,
-		s.OrgID(), q.CaseID, q.AlertID,
+		s.OrgID(), q.AlertID,
 		q.From.UTC(), q.AlertName, q.Namespace, q.To.UTC(), limit)
 	if err != nil {
 		return nil, nil, mapErr(err, CodeQueryFailed, "could not read the related alerts")

@@ -288,7 +288,7 @@ func foldDigest(p domain.Policy, rows []repository.DigestBucket) (count, groups 
 //     lists `digest` would silently steal every digest in the tenant.
 //   - THE SNAPSHOT. `Evaluate` reads one group generation to decide §H.6 and to
 //     render. A digest has no generation; the snapshot query would be
-//     `WHERE g.id = <nil uuid>` and would fail as `group_not_found`.
+//     `WHERE ac.id = <nil uuid>` and would fail as `case_not_found`.
 //   - SNOOZE. A snooze is keyed by `alert_key` (§B.8.4) and suppresses every Reason
 //     for that key. A digest names no alert, and "every member snoozed" is not a
 //     question a namespace over a window has an answer to.

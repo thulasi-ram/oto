@@ -73,9 +73,12 @@ type OrgSettingsDTO struct {
 
 	// DefaultVerbosity is the fallback for a Channel that names no verbosity.
 	DefaultVerbosity string `json:"default_verbosity"`
-	// BroadcastOnResolved is ADR 0020's one configurable broadcast, default off.
-	BroadcastOnResolved bool `json:"broadcast_on_resolved"`
 
+	// ⛔ `broadcast_on_resolved` WAS HERE AND IS DELETED (git-bug 7570090), off the
+	// wire as well as out of the struct — it is gone from `OrgSettingsDTO`'s
+	// `required` list in `openapi.yaml`, so a client that still reads it fails to
+	// compile rather than reading `false` and believing oto asked.
+	//
 	// ⛔ FOUR REMINDER FIELDS WERE HERE AND ARE DELETED (git-bug bd0fb1d):
 	// `unacked_reminder_after_s` and the three `unacked_reminder_mention*`. The
 	// owner withdrew the reminder and ruled the mention goes with it.

@@ -22,7 +22,6 @@ import (
 	drillapi "github.com/thulasiram/oto/internal/drill/api"
 	drilldomain "github.com/thulasiram/oto/internal/drill/domain"
 	enrichmentapi "github.com/thulasiram/oto/internal/enrichment/api"
-	groupingapi "github.com/thulasiram/oto/internal/grouping/api"
 	identityapi "github.com/thulasiram/oto/internal/identity/api"
 	ingestionapi "github.com/thulasiram/oto/internal/ingestion/api"
 	notificationapi "github.com/thulasiram/oto/internal/notification/api"
@@ -115,18 +114,9 @@ var bindings = []binding{
 	{"alerts", "LabelValueDTO", alertsapi.LabelValueDTO{}},
 
 	// ----------------------------------------------------------- grouping
-	{"grouping", "GroupDTO", groupingapi.GroupDTO{}},
-	{"grouping", "GroupDetailDTO", groupingapi.GroupDetailDTO{}},
-	{"grouping", "AlertDTO", groupingapi.AlertDTO{}},
-	{"grouping", "AlertRefDTO", groupingapi.AlertRefDTO{}},
-	{"grouping", "AlertEventDTO", groupingapi.AlertEventDTO{}},
-	{"grouping", "DeliverySummaryDTO", groupingapi.DeliverySummaryDTO{}},
-	{"grouping", "SnoozeDTO", groupingapi.SnoozeDTO{}},
-	{"grouping", "AckRequest", groupingapi.AckRequest{}},
-	{"grouping", "UnackRequest", groupingapi.UnackRequest{}},
-	{"grouping", "CommentRequest", groupingapi.CommentRequest{}},
-	{"grouping", "SnoozeRequest", groupingapi.SnoozeRequest{}},
-	{"grouping", "UnsnoozeRequest", groupingapi.UnsnoozeRequest{}},
+	// ⛔ TWELVE `grouping` DTOs WERE HERE AND ARE DELETED (git-bug `7570090`). The
+	// module is gone and so are the nine `/api/v1/alert-groups*` operations they
+	// served, so gate G1 has nothing left to reflect for it.
 
 	// ------------------------------------------------------------ sources
 	{"sources", "ClusterDTO", sourcesapi.ClusterDTO{}},
@@ -236,13 +226,16 @@ var bindings = []binding{
 // TestQueryParamsMatchContract. Membership here is verified: an entry that
 // queryBindings does not cover is a failure.
 var queryObjects = map[string]bool{
-	"alerts.ListAlertsQuery":     true,
-	"alerts.ListRollupsQuery":    true,
-	"alerts.ListCasesQuery":      true,
-	"alerts.TimelineQuery":       true,
-	"alerts.LabelQuery":          true,
-	"grouping.ListGroupsQuery":   true,
-	"grouping.TimelineQuery":     true,
+	"alerts.ListAlertsQuery":  true,
+	"alerts.ListRollupsQuery": true,
+	"alerts.ListCasesQuery":   true,
+	"alerts.TimelineQuery":    true,
+	"alerts.LabelQuery":       true,
+	// ⛔ `grouping.ListGroupsQuery` AND `grouping.TimelineQuery` WERE HERE AND ARE
+	// DELETED (git-bug `7570090`). The `grouping` package went with `alert_groups`,
+	// and membership here is verified in both directions — a name no package
+	// declares any more is a stale exemption, which is the hole this map exists to
+	// refuse.
 	"silences.ListSilencesQuery": true,
 	"rules.ListSnapshotsQuery":   true,
 	"rules.HistoryQuery":         true,
@@ -267,7 +260,6 @@ var nestedOnly = map[string]string{
 	"rules.RuleKeyDTO":                    "inlined in the rules snapshot schemas",
 	"sources.HealthWarningDTO":            "inlined in SourceHealthDTO.warnings[]",
 	"stats.AlertStateCountsDTO":           "inlined in StatsOverviewDTO.alerts",
-	"stats.GroupCountsDTO":                "inlined in StatsOverviewDTO.groups",
 	"stats.DeliveryCountsDTO":             "inlined in StatsOverviewDTO.deliveries",
 	"stats.SourceCountsDTO":               "inlined in StatsOverviewDTO.sources",
 	"stats.ChannelCountsDTO":              "inlined in StatsOverviewDTO.channels",
@@ -297,18 +289,16 @@ var unbuiltProperties = map[string]string{
 	"alerts.AlertDetailDTO.group":                 "GroupRefDTO expansion never built",
 	"alerts.CaseDetailDTO.group":                  "GroupRefDTO expansion never built",
 	"alerts.CaseDetailDTO.rule":                   "rule expansion never built",
-	"grouping.GroupDetailDTO.source":              "SourceRefDTO expansion never built",
 	"silences.SilenceDetailDTO.source":            "SourceRefDTO expansion never built",
 	"notification.NotificationDetailDTO.alert":    "AlertRefDTO expansion never built",
 	"notification.NotificationDetailDTO.group":    "GroupRefDTO expansion never built",
 	"notification.DeliveryDetailDTO.notification": "NotificationDTO expansion never built",
 
-	// `listAlertGroupAlerts` serves the same `AlertDTO` schema from its own,
-	// shorter Go struct. These three are `include=`-gated on the alerts list and
-	// that endpoint has no `include=`, so their absence is correct there.
-	"grouping.AlertDTO.current_case": "listAlertGroupAlerts has no include= parameter",
-	"grouping.AlertDTO.enrichments":  "listAlertGroupAlerts has no include= parameter",
-	"grouping.AlertDTO.rule":         "listAlertGroupAlerts has no include= parameter",
+	// ⛔ FOUR `grouping` EXEMPTIONS WERE HERE AND ARE DELETED (git-bug `7570090`):
+	// `GroupDetailDTO.source` and the three `include=`-gated properties of
+	// `listAlertGroupAlerts`' own shorter `AlertDTO`. The module is gone, so the
+	// walk no longer reaches any of them and the loop at the bottom of
+	// `driftG1` would report each as the stale exemption it had become.
 }
 
 // unenforceableRequired lists REQUEST properties the contract marks `required`
@@ -979,8 +969,8 @@ var queryBindings = []queryBinding{
 	{pkg: "alerts", opIDs: []string{"listAlertEvents", "listCaseEvents"},
 		v: alertsapi.TimelineQuery{}},
 	{pkg: "alerts", opIDs: []string{"listLabelNames"}, v: alertsapi.LabelQuery{}},
-	{pkg: "grouping", opIDs: []string{"listAlertGroups"}, v: groupingapi.ListGroupsQuery{}},
-	{pkg: "grouping", opIDs: []string{"getAlertGroupTimeline"}, v: groupingapi.TimelineQuery{}},
+	// ⛔ `listAlertGroups` and `getAlertGroupTimeline` query structs deleted with the
+	// module and its operations (git-bug `7570090`).
 	{pkg: "silences", opIDs: []string{"listSilences"}, v: silencesapi.ListSilencesQuery{}},
 	{pkg: "rules", opIDs: []string{"listRuleSnapshots"}, v: rulesapi.ListSnapshotsQuery{}},
 	{pkg: "rules", opIDs: []string{"getAlertRuleHistory"}, v: rulesapi.HistoryQuery{}},

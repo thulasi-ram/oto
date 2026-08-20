@@ -38,7 +38,6 @@ export type AnnotationMap = S["AnnotationMap"];
 
 export type State = S["State"];
 export type AckState = S["AckState"];
-export type GroupState = S["GroupState"];
 export type SuppressionReason = S["SuppressionReason"];
 export type ResolveReason = S["ResolveReason"];
 export type ActorKind = S["ActorKind"];
@@ -71,7 +70,7 @@ export type MatcherOp = S["MatcherOp"];
 export type Alert = S["AlertDTO"];
 export type AlertDetail = S["AlertDetailDTO"];
 export type AlertRef = S["AlertRefDTO"];
-/** One server-side roll-up bucket. **Not** an AlertGroup — it has no row and no thread. */
+/** One server-side roll-up bucket. It has no row of its own and no timeline. */
 export type AlertRollup = S["AlertRollupDTO"];
 export type Snooze = S["SnoozeDTO"];
 /**
@@ -98,9 +97,6 @@ export type AlertEvent = S["AlertEventDTO"];
 export type Enrichment = S["EnrichmentDTO"];
 export type EnrichmentSummary = S["EnrichmentSummaryDTO"];
 export type DeliverySummary = S["DeliverySummaryDTO"];
-export type Group = S["GroupDTO"];
-export type GroupDetail = S["GroupDetailDTO"];
-export type GroupRef = S["GroupRefDTO"];
 export type RuleSnapshot = S["RuleSnapshotDTO"];
 export type RuleChange = S["RuleChangeDTO"];
 /**
@@ -241,7 +237,6 @@ export type StreamFrame = S["StreamFrame"];
 export type UiEventKind = S["UiEventKind"];
 export type AlertUpsertedData = S["AlertUpsertedData"];
 export type CaseUpsertedData = S["CaseUpsertedData"];
-export type GroupUpsertedData = S["GroupUpsertedData"];
 export type EventAppendedData = S["EventAppendedData"];
 export type DeliveryUpdatedData = S["DeliveryUpdatedData"];
 export type SourceHealthData = S["SourceHealthData"];
@@ -266,7 +261,6 @@ export type RollupAxis = AlertRollupQuery["group_by"];
 export type RuleSnapshotQuery = NonNullable<
   operations["listRuleSnapshots"]["parameters"]["query"]
 >;
-export type GroupListQuery = NonNullable<operations["listAlertGroups"]["parameters"]["query"]>;
 export type TimelineQuery = NonNullable<operations["listAlertEvents"]["parameters"]["query"]>;
 export type NotificationListQuery = NonNullable<
   operations["listNotifications"]["parameters"]["query"]

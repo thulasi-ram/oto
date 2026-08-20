@@ -37,8 +37,21 @@ const (
 	CapRichLayout
 	// CapInteractive means buttons that call back into oto.
 	CapInteractive
-	// CapBroadcast means a thread reply can be surfaced in-channel.
-	CapBroadcast
+	// ⛔ `CapBroadcast` WAS HERE AND IS DELETED (git-bug 7570090). It meant "a
+	// thread reply can be surfaced in-channel", and oto no longer surfaces
+	// anything in a channel: `BroadcastPolicy.Warrants` returned true for exactly
+	// `refired` — which ADR 0040 left with no producer — and `all_resolved`, which
+	// was opt-in and default-off. A capability that nothing can ever ask for is a
+	// negotiation nobody runs, so the mechanism was deleted rather than disabled.
+	//
+	// ⛔⛔ THE BLANK IS LOAD-BEARING AND MUST NOT BE TIDIED AWAY. These positions
+	// are a STORED WIRE CONTRACT: `channels.capabilities` is a BIGINT holding this
+	// exact bitmask for every configured channel
+	// (`db/migrations/00011_notification.sql:56`, `channels_caps_ck` at `:75`).
+	// Closing the gap would move `CapDedupeKey` from 32 down to 16 and silently
+	// re-label every row already in the database — a data corruption with no error
+	// message. Bit 4 is RETIRED, not freed: the next capability takes 64.
+	_
 	// CapDedupeKey means the provider does its own dedupe.
 	CapDedupeKey
 )
@@ -142,24 +155,31 @@ const (
 	// v1 keys every thread by the AlertGroup generation. Replies are the exception,
 	// not the rule.
 	ModeThreadReply Mode = "thread_reply"
-	// ModeBroadcastReply surfaces a thread reply in-channel (ADR 0020). It is for
-	// the transitions an on-call engineer would be angry to have missed, and it is
-	// IRREVERSIBLE: Slack documents nothing that un-broadcasts.
+	// ⛔ `ModeBroadcastReply` WAS HERE AND IS DELETED IN FULL (git-bug 7570090).
+	// It surfaced a thread reply in-channel with Slack's `reply_broadcast` (ADR
+	// 0020), and it is gone with the mechanism: `BroadcastPolicy.Warrants` returned
+	// true for `refired` alone — which ADR 0040 retired T8 and left with no producer
+	// — and for `all_resolved`, which was opt-in and off by default. oto therefore
+	// broadcast nothing out of the box and had no way to be asked to, so the owner
+	// ruled the mechanism removed rather than disabled.
 	//
-	// ⛔ NEVER AN ESCALATION, AND THE REASON IS NOW STRONGER THAN IT WAS. This used
-	// to say "oto has one reminder stage and it reminds a CHANNEL (§G.9.1)". oto has
-	// ZERO reminder stages: the one stage was withdrawn (git-bug `bd0fb1d`) and oto
-	// sends nothing unprompted. A broadcast is therefore never oto chasing anybody —
-	// it is one transition surfacing once, on the same trigger as every other
-	// delivery. `escalation` remains a banned word (CONTEXT.md) with no replacement.
-	ModeBroadcastReply Mode = "broadcast_reply"
+	// ⭐ WHAT THE MODE ARGUED THAT STILL HOLDS. Broadcast was NEVER AN ESCALATION —
+	// oto has zero reminder stages (git-bug `bd0fb1d`) and sends nothing unprompted
+	// — and `escalation` remains a banned word (CONTEXT.md) with no replacement.
+	// That is now a property of the whole surface rather than of one mode: every
+	// delivery oto makes lands in a thread, on the same trigger as every other.
+	//
+	// ⛔ THE VALUE IS NOT RETIRED, IT IS DELETED. `deliveries_mode_ck` in migration
+	// 00011 still admits `'broadcast_reply'`; a new migration drops it from the
+	// constraint and strips it from existing rows by hand, the way 00060 and 00067
+	// did. Nothing may write it in the meantime.
 )
 
 // DeliverRequest is one delivery attempt on one Channel.
 type DeliverRequest struct {
 	Message    RenderedMessage
 	Mode       Mode
-	ReplyTo    *MessageRef // required for thread_reply / broadcast_reply
+	ReplyTo    *MessageRef // required for thread_reply
 	Target     *MessageRef // required for update_root
 	DeliveryID uuid.UUID
 	DedupeKey  string // used only if CapDedupeKey

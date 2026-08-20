@@ -185,7 +185,7 @@ func NewEnrichment(p EnrichmentParams) (Enrichment, error) {
 			"an enrichment must name its subject")
 	case !validSubjectKind(p.SubjectKind):
 		return Enrichment{}, errs.New(errs.KindValidation, "enrichment_bad_subject_kind",
-			"subject_kind must be alert, case or group")
+			"subject_kind must be alert or case")
 	case !ValidEnricherName(p.Enricher):
 		return Enrichment{}, errs.Newf(errs.KindValidation, "enrichment_bad_enricher_name",
 			"enricher %q must match ^[a-z][a-z0-9]*(\\.[a-z][a-z0-9]*)+$", p.Enricher)
@@ -245,7 +245,7 @@ func (e Enrichment) ID() string { return e.id }
 // OrgID is the tenant this result belongs to.
 func (e Enrichment) OrgID() string { return e.orgID }
 
-// SubjectKind is what was enriched: alert, case or group.
+// SubjectKind is what was enriched: alert or case.
 func (e Enrichment) SubjectKind() string { return e.subjectKind }
 
 // SubjectID is the subject row id. It is polymorphic, so SubjectKind names the
@@ -324,13 +324,39 @@ const (
 	// SubjectCase is one firing episode. This is the v1 default: an
 	// enrichment is a fact about a FIRE, not about an identity.
 	SubjectCase = "case"
-	// SubjectGroup is a notification group generation.
-	SubjectGroup = "group"
+
+	// ⛔ `SubjectGroup = "group"` WAS HERE AND IS DELETED (git-bug `7570090`).
+	// It named an AlertGroup generation, and a conversation now holds exactly one
+	// Case, so there is no generation left for an enrichment to be about. It was
+	// already the deadest of the three: NOTHING outside this block and the switch
+	// below ever read it — no enricher set it, no repository wrote it, no adapter
+	// produced it — so the value was declarable but never reachable, and deleting
+	// it removes a vocabulary entry rather than a behaviour.
+	//
+	// ⚠️ IT IS A THIRD SPELLING AND NOT THE WORD THE NOTIFICATION SIDE RETIRED.
+	// `notifications.subject_kind` and `channel_threads.subject_kind` spelled it
+	// `alert_group`; `enrichments.subject_kind` has spelled it `group` since 00010
+	// and still did after 00052 widened the set. A reader chasing this retirement
+	// across the schema meets two different strings for one idea, which is why it
+	// is said here rather than assumed.
+	//
+	// ⚠️ AND `enrichments_subjkind_ck` STILL ADMITS `'group'` AS THIS LANDS.
+	// 00069 left that narrowing out deliberately — its own header says so — because
+	// a CHECK that refuses a value the validator still accepts is the wrong half to
+	// ship first. This change is the other half, and the constraint owes:
+	//
+	//	ALTER TABLE enrichments DROP CONSTRAINT enrichments_subjkind_ck;
+	//	ALTER TABLE enrichments ADD  CONSTRAINT enrichments_subjkind_ck
+	//	  CHECK (subject_kind IN ('alert','case'));
+	//
+	// Until it lands the schema is merely WIDER than the domain, which is the safe
+	// direction to be wrong in: nothing can write `'group'` because nothing can
+	// construct it, so no row can exist for the narrowing to then refuse.
 )
 
 func validSubjectKind(k string) bool {
 	switch k {
-	case SubjectAlert, SubjectCase, SubjectGroup:
+	case SubjectAlert, SubjectCase:
 		return true
 	default:
 		return false

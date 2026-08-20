@@ -134,7 +134,7 @@ type ChannelStore interface {
 type EventSink interface {
 	AppendNotificationCreated(ctx context.Context, s db.TenantScope, n domain.Notification, destinations int, at time.Time) error
 	AppendNotificationSuppressed(ctx context.Context, s db.TenantScope, n domain.Notification, also []domain.SuppressedReason, at time.Time) error
-	AppendDeliveryOutcome(ctx context.Context, s db.TenantScope, d domain.Delivery, groupID uuid.UUID, alertID *uuid.UUID, detail string, at time.Time) error
+	AppendDeliveryOutcome(ctx context.Context, s db.TenantScope, d domain.Delivery, alertID, caseID *uuid.UUID, detail string, at time.Time) error
 }
 
 // ⛔ `ReminderStore` WAS HERE AND IS DELETED, along with `PolicyStore`'s

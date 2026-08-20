@@ -164,13 +164,20 @@ func (r *EventRepository) Append(ctx context.Context, s db.TenantScope, e Event)
 // and reports whether there is any subject at all. False means this fact belongs on
 // no signal's timeline — see the block above.
 func subjectOfEvent(n domain.Notification) (*uuid.UUID, bool) {
-	if n.GroupID != uuid.Nil {
-		groupID := n.GroupID
-		return &groupID, true
-	}
-	// A groupless notification may still name an alert or a case: `notifications_
-	// target_ck` only exempts a digest, and `alert_id` / `case_id` are enough for
-	// `ev_subject_ck`.
+	// ⛔ IT USED TO RETURN THE GROUP ID AS THE EVENT'S SUBJECT, and it now returns
+	// nil ALWAYS (git-bug `7570090`): `notifications.group_id` is gone, so no
+	// notification can name a group and nothing new writes `alert_events.group_id`.
+	//
+	// ⭐ THE COLUMN AND ITS CHECK STAY — this is the `00051`/`00054` bargain,
+	// READABLE BUT UNWRITABLE. `alert_events` is append-only history on a
+	// thirteen-month retention and its stored group ids are real facts about what
+	// happened, so `ev_subject_ck` must keep admitting `group_id` or existing rows
+	// stop validating. What changed is only that oto no longer produces one.
+	//
+	// The surviving question is the one the block above is about: does this fact
+	// belong on any signal's timeline at all? An alert id or a case id is enough for
+	// `ev_subject_ck`; with neither, appending would write an event no reader can
+	// reach.
 	return nil, n.AlertID != nil || n.CaseID != nil
 }
 
@@ -245,7 +252,7 @@ func (r *EventRepository) AppendNotificationSuppressed(
 // thread of forty updates read like forty messages.
 func (r *EventRepository) AppendDeliveryOutcome(
 	ctx context.Context, s db.TenantScope,
-	d domain.Delivery, groupID uuid.UUID, alertID *uuid.UUID, detail string, at time.Time,
+	d domain.Delivery, alertID, caseID *uuid.UUID, detail string, at time.Time,
 ) error {
 	var (
 		kind    kernel.EventType
@@ -274,23 +281,29 @@ func (r *EventRepository) AppendDeliveryOutcome(
 		return nil
 	}
 
-	// A DIGEST DELIVERY HAS NO SIGNAL TO NARRATE. `groupID` is the zero UUID for a
-	// digest (its `notifications.group_id` is NULL) and `alertID` is nil, so there is
-	// no subject `ev_subject_ck` would accept and no timeline a reader would find it
-	// on. The delivery's own row carries the status, the attempts and the error class,
-	// which is where the digest path looks. See the block above `subjectOfEvent`.
-	var group *uuid.UUID
-	if groupID != uuid.Nil {
-		g := groupID
-		group = &g
-	} else if alertID == nil {
+	// A DIGEST DELIVERY HAS NO SIGNAL TO NARRATE. The old guard read
+	// "`groupID != uuid.Nil` … else if `alertID == nil` return nil", and `group_id`
+	// was NOT NULL for every signal Reason, so in practice ONLY a digest was refused.
+	//
+	// ⛔⛔ DROPPING THE `groupID` PARAMETER SILENTLY NARROWED THIS TO `alertID == nil`,
+	// AND A COMMENT HERE CLAIMED THAT WAS "unchanged behaviour". IT WAS NOT. `AlertID`
+	// is OPTIONAL — only the four `AlertScoped()` Reasons require it — so every
+	// Case-scoped delivery (`acked`, `enriched`, `comment`, `all_resolved` with no
+	// focus) stopped writing ANY `delivery.*` event. The whole delivery timeline
+	// vanished for them, provably: after a successful root post and a failed amend,
+	// `count(*) WHERE type LIKE 'delivery.%'` was ZERO.
+	//
+	// ⭐ THE HONEST GUARD IS "NAMES NO SUBJECT AT ALL", which is what the original
+	// meant and what `ev_subject_ck` actually demands: an alert id OR a case id. A
+	// digest names neither and is still the only thing refused.
+	if alertID == nil && caseID == nil {
 		return nil
 	}
 
 	return r.Append(ctx, s, Event{
 		Type:    kind,
 		AlertID: alertID,
-		GroupID: group,
+		CaseID:  caseID,
 		Summary: summary,
 		Payload: map[string]any{
 			"delivery_id": d.ID,

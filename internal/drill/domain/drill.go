@@ -27,7 +27,7 @@ const Deadline = 90 * time.Second
 // `retention.prune` deletes them.
 //
 // ⭐ WHY NOT IMMEDIATELY. An operator who ran a drill, read the result and then
-// wanted to click through to the alert row, the group timeline or the delivery
+// wanted to click through to the alert row, the Case timeline or the delivery
 // record would find nothing. A day is long enough for that and short enough that
 // nobody's alert list ever has a drill in it — which it would not anyway, since
 // every list excludes them.
@@ -57,9 +57,18 @@ type Drill struct {
 
 	BatchID uuid.UUID
 	// The disposal manifest, filled in as stages discover each artefact.
+	//
+	// ⛔ `GroupID uuid.UUID` WAS HERE AND IS DELETED (git-bug `7570090`). It named the
+	// `alert_groups` row disposal had to delete and the subject the thread was keyed
+	// by, and there is no such row. `CaseID` carries both jobs now: it is the
+	// conversation, so it is what the thread and the notifications are addressed by,
+	// and it needs no delete of its own because the `alerts` delete CASCADEs to it.
+	//
+	// ⚠️ `delivery_drills.group_id` STILL EXISTS AND NOTHING READS OR WRITES IT. It
+	// has no FK (00039), so dropping `alert_groups` leaves it holding stale uuids
+	// rather than failing; the column is another agent's migration to drop.
 	AlertID        uuid.UUID
 	CaseID         uuid.UUID
-	GroupID        uuid.UUID
 	NotificationID uuid.UUID
 
 	// Outcome is the frozen staged result, present exactly when the drill has

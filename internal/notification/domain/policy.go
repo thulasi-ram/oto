@@ -46,11 +46,17 @@ const (
 	// only number that described what could actually be stored.
 	//
 	// Migration 00046 closed that — the CHECK now refuses a repeated element, and
-	// Validate below refuses one too — so an array of DISTINCT values drawn from a
-	// closed 18-value vocabulary cannot reach 19, and a ceiling of 32 would be a
-	// number no row could ever test. All three layers now say 18 and all three say
+	// Validate below refuses one too — so an array of DISTINCT values drawn from the
+	// closed vocabulary cannot exceed its size, and a ceiling of 32 would be a number
+	// no row could ever test. All three layers say the same number and all three say
 	// set, which is what CONTEXT.md §5b asks of a bound.
-	MaxPolicyReasons = 17
+	//
+	// ⛔ IT WAS 17 AND IS NOW 15 (git-bug `7570090`, migration `00069`, which narrows
+	// `policies_reasons_ck` to match). `new_alerts` and `some_resolved` left the
+	// vocabulary: both assert a plurality and a conversation holds one Case. The
+	// ceiling tracks the vocabulary BY CONSTRUCTION, so it moves whenever the
+	// vocabulary does — which is the whole reason all three layers must agree.
+	MaxPolicyReasons = 15
 	// MaxPolicyChannels is policies_chan_ck.
 	MaxPolicyChannels = 16
 	// MinPolicyPriority and MaxPolicyPriority are policies_prio_ck. LOWER IS

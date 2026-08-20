@@ -20,8 +20,12 @@ type caseRow struct {
 	id      uuid.UUID
 	orgID   uuid.UUID
 	alertID uuid.UUID
-	groupID *uuid.UUID
-	seq     int32
+	// ⛔ `groupID *uuid.UUID` WAS HERE AND IS DELETED (git-bug `7570090`, migration
+	// `00069`). It was `alert_cases.group_id`, which since 00051 WAS the membership —
+	// one column per episode instead of an `alert_group_members` row saying the same
+	// thing. The table it pointed at is dropped, so the membership is not re-derived
+	// from somewhere else; there is nothing left to be a member OF.
+	seq int32
 
 	state             string
 	suppressionReason *string
@@ -54,8 +58,13 @@ type caseRow struct {
 	observedSkewMS int64
 }
 
+// ⛔ `"group_id"` LEFT THIS LIST (git-bug `7570090`, migration `00069`), AND THE LIST
+// IS WHY IT COULD LEAVE SAFELY. `caseColumnList`, `scanDest` and every `RETURNING`
+// share one ordering, so a column is removed in two places rather than in every
+// statement that reads a Case — which is the mistake that compiles and then scans
+// `seq` into `state`. 26 columns now, not 27.
 var caseColumnList = []string{
-	"id", "org_id", "alert_id", "group_id", "seq", "state", "suppression_reason", "suppressed_by",
+	"id", "org_id", "alert_id", "seq", "state", "suppression_reason", "suppressed_by",
 	"started_at", "ended_at", "last_observed_at", "source_starts_at", "source_ends_at",
 	"source_updated_at", "resolve_reason",
 	"resolve_pending_at", "resolve_pending_end_at", "state_version",
@@ -67,7 +76,7 @@ var caseColumns = strings.Join(caseColumnList, ", ")
 
 func (r *caseRow) scanDest() []any {
 	return []any{
-		&r.id, &r.orgID, &r.alertID, &r.groupID, &r.seq, &r.state, &r.suppressionReason,
+		&r.id, &r.orgID, &r.alertID, &r.seq, &r.state, &r.suppressionReason,
 		&r.suppressedBy, &r.startedAt, &r.endedAt, &r.lastObservedAt, &r.sourceStartsAt,
 		&r.sourceEndsAt, &r.sourceUpdatedAt, &r.resolveReason,
 		&r.resolvePendingAt, &r.resolvePendingEndAt,
@@ -115,10 +124,19 @@ func (r *caseRow) toDomain() (domain.Case, error) {
 	}
 
 	o, err := domain.NewCase(domain.CaseParams{
-		ID:                r.id,
-		OrgID:             r.orgID,
-		AlertID:           r.alertID,
-		GroupID:           idOrNil(r.groupID),
+		ID:      r.id,
+		OrgID:   r.orgID,
+		AlertID: r.alertID,
+		// ⛔ `GroupID: idOrNil(r.groupID)` WAS HERE AND IS DELETED (git-bug `7570090`).
+		//
+		// ⚠️ `domain.CaseParams.GroupID` AND `domain.Case.GroupID()` STILL EXIST AND
+		// NOW ANSWER `uuid.Nil` FOR EVERY CASE EVER REHYDRATED. That is not a hidden
+		// consequence of this line, it is the only possible one: the column is dropped,
+		// so there is no value to supply and every reader of `GroupID()` —
+		// `alerts/api/map.go`, `alerts/service/service.go`'s event payload,
+		// `alerts/service/lifecycle.go` — sees the zero. Deleting the domain field is
+		// the right end state and it is not in this package; recorded here so the zero
+		// is read as "the entity is gone" rather than as a rehydration bug.
 		Seq:               int(r.seq),
 		State:             state,
 		SuppressionReason: sup,
@@ -170,16 +188,31 @@ func (r *CaseRepository) db(ctx context.Context) db.Querier { return db.FromCont
 
 // ------------------------------------------------------------------- open
 
+// ⛔⛔ `group_id` LEFT THE COLUMN LIST **AND** `$4` LEFT THE SELECT LIST, AND THE
+// SECOND HALF IS THE ONE THAT COULD HAVE CORRUPTED DATA (git-bug `7570090`,
+// migration `00069`). An INSERT is the one shape where a dropped column is not
+// automatically a loud 42703: remove the name and forget the value and the fourteen
+// remaining values slide left by one, so `seq` is written into `state`, `started_at`
+// into `seq`, and Postgres reports a type error at best and a CHECK violation at
+// worst — but if the shifted types HAD lined up it would have written a wrong row and
+// said nothing. The column count and the value count are 14 and 14; they are PREPAREd
+// against a migrated container rather than counted by eye.
+//
+// The trailing placeholders are renumbered because `$4` is gone: what were `$5`…`$11`
+// are now `$4`…`$10`, and `OpenCase` drops `in.GroupID` from its argument list. A
+// bound-but-unreferenced `$11` would be a 42P18 at PREPARE, which is why the arity is
+// verified and not assumed.
+//
 // The alert_id is re-proven to belong to the caller's org rather than trusted.
 // alert_cases.org_id is denormalised, so writing a scope's org_id beside
 // another org's alert_id would create a row that every org-scoped read agrees is
 // ours — which is the shape a cross-tenant leak takes.
 var openCaseSQL = `
 INSERT INTO alert_cases (
-    id, org_id, alert_id, group_id, seq, state, started_at, ended_at, last_observed_at,
+    id, org_id, alert_id, seq, state, started_at, ended_at, last_observed_at,
     source_starts_at, source_ends_at, source_updated_at, value, observed_skew_ms,
     ack_state)
-SELECT $1, a.org_id, a.id, $4, $5, 'open', $6, NULL, $6, $7, $8, $9, $10, $11, 'unacked'
+SELECT $1, a.org_id, a.id, $4, 'open', $5, NULL, $5, $6, $7, $8, $9, $10, 'unacked'
   FROM alerts a
  WHERE a.org_id = $2 AND a.id = $3
 RETURNING ` + caseColumns
@@ -214,7 +247,7 @@ func (r *CaseRepository) OpenCase(
 
 	var row caseRow
 	err := r.db(ctx).QueryRow(ctx, openCaseSQL,
-		in.ID, s.OrgID(), in.AlertID, in.GroupID, in.Seq, in.StartedAt.UTC(),
+		in.ID, s.OrgID(), in.AlertID, in.Seq, in.StartedAt.UTC(),
 		in.SourceStartsAt.UTC(), in.SourceEndsAt, in.SourceUpdatedAt,
 		in.Value, in.SkewMS,
 	).Scan(row.scanDest()...)
@@ -415,12 +448,36 @@ func (r *CaseRepository) ListByAlert(
 // listCasesHead is everything before the two spliced dimensions. The keyset, the
 // ordering and the `alerts` reach are all in listCasesTail; only the predicates
 // whose SHAPE the planner has to see are assembled between them.
+//
+// ⛔ THE GROUP FACET IS DELETED AND EVERY PLACEHOLDER AFTER IT RENUMBERED (git-bug
+// `7570090`, migration `00069`). It read
+// `AND ($3::uuid[] IS NULL OR group_id = ANY($3))` over `alert_cases.group_id`,
+// which is dropped, and it is the ONE dimension here with no successor: a
+// notification's group filter could be re-pointed at `conversation_id` because a
+// delivery target still exists, but a CASE has no conversation column to be filtered
+// by — the Case IS the conversation. There is nothing to ask.
+//
+// ⚠️ RENUMBERING WAS FORCED, NOT CHOSEN, and it is the dangerous half of this edit.
+// Leaving `$3` bound but unreferenced is a 42P18 at PREPARE — pgx sends twelve
+// parameters for a statement that names eleven — so the trailing nine placeholders in
+// `listCasesTail` all shift down by one, and `ListCases` drops one argument. A
+// mistake here does not fail loudly: it silently binds `since` where `synthetic`
+// belongs. This statement is PREPAREd against a migrated container to prove the
+// arity, which the Go compiler cannot do for a spliced string.
+//
+// ⛔ AND THE FILTER SHORT-CIRCUITS IN GO RATHER THAN SIMPLY VANISHING. `ListCases`
+// returns an EMPTY page when a caller still supplies `f.GroupIDs`. Deleting the
+// predicate alone would make `?group_id=…` return the whole org's case list — a
+// SILENT WIDENING of a filtered read, which is a far worse failure than an error
+// because nothing reports it. Empty is the truthful answer: no Case belongs to any
+// group any more, so nothing matches. The `?group_id=` parameter and
+// `domain.CaseFilter.GroupIDs` still need removing one layer up; neither is in this
+// package.
 var listCasesHead = `
 SELECT ` + caseColumns + `
   FROM alert_cases
  WHERE org_id = $1
-   AND ($3::uuid[] IS NULL OR group_id = ANY($3))
-   AND ($4::timestamptz IS NULL OR started_at >= $4)`
+   AND ($3::timestamptz IS NULL OR started_at >= $3)`
 
 // The three spellings of the state facet — the ONE liveness axis this endpoint
 // has since ADR 0040 collapsed `?open=` into `?state=`.
@@ -513,14 +570,14 @@ var listCasesTail = `
                  FROM alerts a
                 WHERE a.id = alert_cases.alert_id
                   AND a.org_id = alert_cases.org_id
-                  AND a.synthetic = $5
-                  AND ($6::text[] IS NULL OR a.severity    = ANY($6))
-                  AND ($7::text[] IS NULL OR a.namespace   = ANY($7))
-                  AND ($8::text[] IS NULL OR a.cluster_key = ANY($8))
-                  AND ($9::text[] IS NULL OR a.alertname   = ANY($9)))
-   AND ($10::timestamptz IS NULL OR (started_at, id) < ($10, $11))
+                  AND a.synthetic = $4
+                  AND ($5::text[] IS NULL OR a.severity    = ANY($5))
+                  AND ($6::text[] IS NULL OR a.namespace   = ANY($6))
+                  AND ($7::text[] IS NULL OR a.cluster_key = ANY($7))
+                  AND ($8::text[] IS NULL OR a.alertname   = ANY($8)))
+   AND ($9::timestamptz IS NULL OR (started_at, id) < ($9, $10))
  ORDER BY started_at DESC, id DESC
- LIMIT $12`
+ LIMIT $11`
 
 // ListCases is `GET /api/v1/cases` (§E.3b): the ORG-WIDE episode list, newest
 // first, keyset-paginated over `(started_at DESC, id DESC)`.
@@ -537,10 +594,15 @@ var listCasesTail = `
 //     case_ack_idx `(org_id, ack_state, started_at DESC, id DESC) WHERE ended_at
 //     IS NULL`. It carries both equalities, the partial predicate and the whole
 //     sort key, so LIMIT stops the scan and no Sort node appears.
-//   - `?state=open&group_id=…` rides case_group_live_idx `(org_id, group_id,
-//     started_at DESC, id DESC) WHERE ended_at IS NULL`.
+//   - ⛔ `?state=open&group_id=…` RODE case_group_live_idx `(org_id, group_id,
+//     started_at DESC, id DESC) WHERE ended_at IS NULL`, AND BOTH THE QUERY AND THE
+//     INDEX ARE GONE (git-bug `7570090`, migration `00069` drops
+//     `case_group_live_idx` and `case_group_idx` by name along with the column they
+//     led with). Nothing replaces the access path because nothing replaces the
+//     question.
 //   - Everything else falls to case_started_idx `(org_id, started_at, id)`, read
-//     backwards for the DESC order.
+//     backwards for the DESC order — which, with the group facet gone, is now the
+//     path for every page that is not the unacked queue.
 //
 // ⚠️ AND `?state=closed` REACHES NONE OF THE PARTIAL ONES, WHICH IS CORRECT
 // RATHER THAN A GAP: `ended_at IS NOT NULL` is the complement of both partial
@@ -554,6 +616,19 @@ func (r *CaseRepository) ListCases(
 		return nil, db.Cursor{}, err
 	}
 	limit := db.ClampLimit(p.Limit)
+
+	// ⛔ A GROUP FACET NOW SELECTS NOTHING, LOUDLY IN THE DATA AND SILENTLY IN THE
+	// HTTP STATUS (git-bug `7570090`). See `listCasesHead`: the predicate is gone
+	// because `alert_cases.group_id` is gone, and simply dropping it would have turned
+	// `?group_id=…` into "every case in the org". An empty page is the honest answer —
+	// no Case is a member of anything any more — and it is the same answer the
+	// notification audit gives for the same query, where the id no longer resolves.
+	// It is NOT a 400: the parameter is still in the contract, and rejecting a request
+	// the published schema accepts is the API layer's decision to make, not this
+	// repository's.
+	if len(f.GroupIDs) > 0 {
+		return nil, db.Cursor{Hash: p.Cursor.Hash}, nil
+	}
 
 	// Both values is no constraint at all, and so is neither: the column has
 	// exactly two, so a filter naming both selects every row and spelling it out
@@ -594,7 +669,7 @@ func (r *CaseRepository) ListCases(
 	}
 
 	rows, err := r.db(ctx).Query(ctx, listCasesHead+ack+state+listCasesTail,
-		s.OrgID(), nilIfNoRows(acks), nilIfNoIDs(f.GroupIDs), since,
+		s.OrgID(), nilIfNoRows(acks), since,
 		synthetic, nilIfNoRows(f.Severities), nilIfNoRows(f.Namespaces),
 		nilIfNoRows(f.ClusterKeys), nilIfNoRows(f.AlertNames),
 		cursorAt, cursorID, limit+1)
@@ -619,14 +694,6 @@ func (r *CaseRepository) ListCases(
 // is what lets one static statement carry every optional dimension: `= ANY('{}')`
 // matches nothing, while `$n IS NULL OR …` short-circuits the predicate away.
 func nilIfNoRows(in []string) []string {
-	if len(in) == 0 {
-		return nil
-	}
-	return in
-}
-
-// nilIfNoIDs is nilIfNoRows for the one uuid-typed dimension.
-func nilIfNoIDs(in []uuid.UUID) []uuid.UUID {
 	if len(in) == 0 {
 		return nil
 	}
@@ -1081,22 +1148,63 @@ func (r *CaseRepository) CloseDueCandidates(
 	return collectCases(rows, n)
 }
 
-// caseSourcesSQL reads the episode's own `group_id`, which IS its
-// membership since migration 00051 — one primary-key lookup per id instead of a
-// join table that could name two generations for one episode.
+// caseSourcesSQL walks case → alert → cluster → source, because the direct edge is
+// gone.
+//
+// ⛔⛔ IT READ `JOIN alert_groups g ON g.id = o.group_id` FOR `g.source_id`, AND
+// **BOTH** THE TABLE AND THE COLUMN ARE DROPPED (git-bug `7570090`, migration
+// `00069`). `alert_groups.source_id` was the ONLY direct edge from a Case to an
+// `alert_sources` row — `internal/notification/repository/snapshot_ack_test.go` says
+// so in as many words while turning the Silence deep link off for the same reason.
+//
+// ⛔ DELETING THIS READ WOULD HAVE STOPPED THE REAPER, WHICH IS WHY IT IS
+// RE-ATTRIBUTED INSTEAD. A case absent from the result is read by
+// `alerts/service.resolveSources` as "cannot prove the source is healthy", and the
+// §B.4 guard then HOLDS it. An always-empty map is therefore not a degraded answer:
+// it is a permanent stall in which nothing is ever expired, announced only by an
+// INFO log nobody reads. That is the silently-zeroed-metric failure in its most
+// expensive form.
+//
+// ⭐ THE SURVIVING PATH IS THE CLUSTER, AND IT IS DELIBERATELY REFUSED WHEN IT IS
+// AMBIGUOUS. `alerts.cluster_id` and `alert_sources.cluster_id` both name
+// `clusters.id`, but `alert_sources_cluster_idx (org_id, cluster_id) WHERE deleted_at
+// IS NULL` is NOT unique — a cluster may be fed by several sources — so "the source
+// of this case" only has an answer when the cluster has exactly ONE live source. The
+// `count(*) OVER ()` window is that test, and a cluster with two live sources yields
+// NO row for its cases.
+//
+// ⚠️ WHICH IS THE SAFE DIRECTION AND THE ONLY DEFENSIBLE ONE. Picking any of several
+// sources would let the reaper expire an episode on the health of a source that never
+// carried it, which is precisely the mistake §B.4 exists to prevent; refusing leaves
+// those cases held, exactly as they are held today when the port is unwired. A
+// single-source cluster — the ordinary install — keeps the guard it had.
+//
+// ⚠️ AND THIS IS A JUDGEMENT, NOT A RESTORATION. The old answer was the source that
+// actually delivered the alert; this one is the source that must have, given the
+// cluster. They agree whenever the cluster has one source and the old answer is
+// simply unavailable otherwise. If `alert_cases` ever carries a source of its own
+// — which is what the snapshot note is waiting for — this should become that column.
 const caseSourcesSQL = `
-SELECT o.id, g.source_id
+SELECT o.id, s.source_id
   FROM alert_cases o
-  JOIN alert_groups g ON g.id = o.group_id
+  JOIN alerts al ON al.id = o.alert_id AND al.org_id = o.org_id
+  JOIN (SELECT id AS source_id, cluster_id, org_id,
+               count(*) OVER (PARTITION BY org_id, cluster_id) AS live_in_cluster
+          FROM alert_sources
+         WHERE deleted_at IS NULL) s
+    ON s.cluster_id = al.cluster_id AND s.org_id = al.org_id
+   AND s.live_in_cluster = 1
  WHERE o.org_id = $1 AND o.id = ANY($2)`
 
-// SourceIDs resolves which AlertSource each case came from, by way of the
-// AlertGroup generation it joined.
+// SourceIDs resolves which AlertSource each case came from, by way of the cluster
+// its Alert belongs to.
 //
 // It exists for the §B.4 reaper guard, which must load `source_health` for the
 // owning source before it may expire anything. A case with no resolvable
 // source is ABSENT from the result, and the caller must read that as "cannot
-// prove the source is healthy" and HOLD it.
+// prove the source is healthy" and HOLD it. Since git-bug `7570090` that absence
+// covers one more shape than it used to: a case whose cluster has no live source, or
+// more than one. See `caseSourcesSQL` for why refusing beats guessing.
 func (r *CaseRepository) SourceIDs(
 	ctx context.Context, s db.TenantScope, caseIDs []uuid.UUID,
 ) (map[uuid.UUID]uuid.UUID, error) {

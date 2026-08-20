@@ -242,7 +242,11 @@ func plan() []probe {
 		},
 		{
 			method: http.MethodPost, tmpl: "/api/v1/notification-policies/preview",
-			body:   map[string]any{"group_id": "{{group}}", "reason": "fired"},
+			// ⭐ THE SUBJECT IS THE CASE (git-bug `7570090`). It was `group_id` until
+			// `alert_groups` was dropped; `PolicyPreviewRequest` is
+			// `additionalProperties: false`, so the old key is now a 400 and this
+			// probe would be asserting about a rejection rather than a dry run.
+			body:   map[string]any{"case_id": "{{case}}", "reason": "fired"},
 			header: idempotency("preview"),
 			want:   http.StatusOK,
 		},
@@ -446,53 +450,19 @@ func plan() []probe {
 		},
 
 		/* -------------------------------------------------------- alert groups */
-		{method: http.MethodGet, tmpl: "/api/v1/alert-groups", want: http.StatusOK},
-		{
-			method: http.MethodGet, tmpl: "/api/v1/alert-groups/{id}", url: "/api/v1/alert-groups/{{group}}",
-			want: http.StatusOK,
-		},
-		{
-			method: http.MethodGet, tmpl: "/api/v1/alert-groups/{id}", url: "/api/v1/alert-groups/{{stranger}}",
-			want: http.StatusNotFound,
-		},
-		{
-			method: http.MethodGet, tmpl: "/api/v1/alert-groups/{id}/alerts", url: "/api/v1/alert-groups/{{group}}/alerts",
-			want: http.StatusOK,
-		},
-		{
-			method: http.MethodGet, tmpl: "/api/v1/alert-groups/{id}/timeline", url: "/api/v1/alert-groups/{{group}}/timeline",
-			want: http.StatusOK,
-		},
-		{
-			method: http.MethodPost, tmpl: "/api/v1/alert-groups/{id}/ack", url: "/api/v1/alert-groups/{{group}}/ack",
-			body: map[string]any{"note": "on it"}, header: idempotency("group-ack"),
-			want: http.StatusOK,
-		},
-		// ⭐ ORDER MATTERS: this runs AFTER the ack above, so the generation has a
-		// receipt to take back and the withdrawal is a 200 rather than the 412 a
-		// never-acked group would earn. The ack surface moved onto the Case detail
-		// and a case you can ack but never un-ack is a trap, which is why this verb
-		// exists at all.
-		{
-			method: http.MethodPost, tmpl: "/api/v1/alert-groups/{id}/unack", url: "/api/v1/alert-groups/{{group}}/unack",
-			body: map[string]any{"note": "handing back"}, header: idempotency("group-unack"),
-			want: http.StatusOK,
-		},
-		{
-			method: http.MethodPost, tmpl: "/api/v1/alert-groups/{id}/comments", url: "/api/v1/alert-groups/{{group}}/comments",
-			body: map[string]any{"body": "group note"}, header: idempotency("group-comment"),
-			want: http.StatusCreated,
-		},
-		{
-			method: http.MethodPost, tmpl: "/api/v1/alert-groups/{id}/snooze", url: "/api/v1/alert-groups/{{group}}/snooze",
-			body: map[string]any{"duration_seconds": 1800},
-			want: http.StatusOK,
-		},
-		{
-			method: http.MethodPost, tmpl: "/api/v1/alert-groups/{id}/unsnooze", url: "/api/v1/alert-groups/{{group}}/unsnooze",
-			body: map[string]any{},
-			want: http.StatusOK,
-		},
+		// ⛔ TEN PROBES WERE HERE AND ALL TEN ARE DELETED (git-bug `7570090`).
+		// `/api/v1/alert-groups`, `/{id}`, `/{id}/alerts`, `/{id}/timeline` and the
+		// six verbs (`ack`, `unack`, `comments`, `snooze`, `unsnooze`) left the
+		// contract with the entity they addressed: `alert_groups` is dropped and a
+		// conversation holds exactly one Case. They are DELETED rather than
+		// retargeted at `/api/v1/cases/...`, because the Case surface has its own
+		// probes in the case section above — retargeting would have duplicated them
+		// under a heading naming a thing that no longer exists.
+		//
+		// ⚠️ The gate below is a TOTALITY check over the contract's paths, so a
+		// probe left here for a removed path fails as an unknown template, and a
+		// path added back without a probe fails as an uncovered one. Neither is a
+		// thing this comment can drift out of agreement with.
 
 		/* ------------------------------------------------------ rule snapshots */
 		{

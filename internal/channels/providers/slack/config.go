@@ -56,10 +56,15 @@ type Config struct {
 	// It existed, was schema-validated, was rendered into the settings form — and
 	// was NEVER READ: the registry builds one shared renderer and nothing ever
 	// called the option that would have carried this list into it. An operator
-	// could set it and nothing could ever happen. The unacked-reminder audience is
-	// now ONE org-level setting (`unacked_reminder_mention`, ADR 0020), resolved
-	// once, gated on severity, and rendered into the top-level `text` where a
-	// broadcast can actually carry it.
+	// could set it and nothing could ever happen.
+	//
+	// ⛔ AND THE REPLACEMENT THIS COMMENT NAMED IS ALSO GONE. It said the audience is
+	// "now ONE org-level setting (`unacked_reminder_mention`, ADR 0020) … rendered
+	// into the top-level `text` where a broadcast can actually carry it". The
+	// reminder went with git-bug `bd0fb1d`, the mention with it, and broadcast itself
+	// with git-bug 7570090. What survives is the RULE this field broke: a
+	// schema-validated setting nothing reads is worse than a missing feature,
+	// because an operator can configure it and be sure they did.
 	// LinkNames asks Slack to find and link USER GROUPS in the message text.
 	//
 	// ⚠️ IT NO LONGER DOES WHAT THIS COMMENT USED TO SAY. The description was
