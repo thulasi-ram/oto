@@ -106,6 +106,16 @@
               "type": "button",
               "text": {
                 "type": "plain_text",
+                "text": ":bell: Unsnooze",
+                "emoji": true
+              },
+              "action_id": "oto.unsnooze",
+              "value": "019fe297-d84f-7599-b5b2-1f23174910a1"
+            },
+            {
+              "type": "button",
+              "text": {
+                "type": "plain_text",
                 "text": "Runbook",
                 "emoji": true
               },

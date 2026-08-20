@@ -1,11 +1,66 @@
 ---
 title: 0020 — Broadcast the transitions that must be seen
 ---
-**Status:** Accepted · 2026-08-08 · **Amended four times — three by research, once by a live
-Slack workspace** — see
+**Status:** ⛔ **SUPERSEDED 2026-08-20 — oto no longer surfaces anything in a channel**
+(git-bug `7570090`, migration `00069`) · Accepted 2026-08-08 · Amended five times
+
+> ⛔⛔ **THE MECHANISM THIS ADR IS ABOUT IS DELETED.** `BroadcastPolicy`, `Warrants`,
+> `ModeBroadcastReply`, `CapBroadcast`, `MsgOptionBroadcast()` and the org setting
+> `broadcast_on_resolved` are all gone. oto posts roots and thread replies; nothing is
+> surfaced in the channel body.
+>
+> **WHY, AND IT IS NOT A REVERSAL OF THE ARGUMENT BELOW — THE SET EMPTIED ITSELF.** The
+> default set was four Reasons; Amendment 1 narrowed it to two; `bd0fb1d` deleted
+> `unacked_reminder`, the first of the two; ADR 0040 retired T8, so **nothing has produced
+> `refired` since**; and `all_resolved` was opt-in and default-off. So on shipped defaults
+> `Warrants` could already return true for nothing at all, and the one Reason that could
+> reach it lost its plurality when the owner ruled one Case per conversation. A mechanism
+> whose set is empty is not a quiet mechanism, it is dead code with a settings knob.
+>
+> ⭐ **RULE 4 SURVIVES AND IS THE MOST VALUABLE THING HERE.** "The top-level `text` must be
+> self-sufficient" was DERIVED from the in-channel reference carrying no blocks — a premise
+> Amendment 4 then half-refuted — but it is GROUNDED on something that never depended on
+> broadcasting at all: **that string is the push notification on a locked phone and the text
+> a screen reader announces.** Neither has ever rendered a colour bar or a button. Two live
+> tests still assert it, now against `ModeThreadReply`. Read this ADR for rule 4 even though
+> everything around it is dead.
+>
+> ⚠️ **AND ONE OWED OBSERVATION IS NOW PERMANENTLY RETIRED RATHER THAN ANSWERED.** git-bug
+> `2078a07` carried "does a section block's TEXT render in the in-channel `thread_broadcast`
+> copy?" — a premise Amendment 5 depended on and explicitly recorded as inferred, not seen.
+> There is no in-channel copy any more, so the question can never be settled. It is struck
+> from that ticket rather than left looking answerable.
+>
+> ⛔ **Amendments 1, 4 and 5 are HISTORY, not guidance.** Amendment 1's set, Amendment 4's
+> observations about the in-channel reference, and Amendment 5's ruling that a link is the
+> only affordance a broadcast can carry are all unreachable. Amendment 4's METHOD is still
+> worth reading — it is the record of a documented claim being checked against a live
+> workspace and half of it turning out false. · ⛔ **Amendment 3 SUPERSEDED 2026-08-20: the unacked reminder and its mention
+audience are REMOVED** (git-bug `bd0fb1d`) — see the callout below. See
 [Amendment 1](#amendment-1--the-set-narrows-to-two-and-the-storm-moves-to-the-channel),
 [Amendment 2](#amendment-2--severity_raised-is-unreachable-and-has-been-deleted) and
-[Amendment 4](#amendment-4--the-stripping-premise-did-not-survive-the-first-live-workspace)
+[Amendment 4](#amendment-4--the-stripping-premise-did-not-survive-the-first-live-workspace) and
+[Amendment 5](#amendment-5--a-link-is-not-a-button-and-it-is-the-only-affordance-a-broadcast-can-carry)
+
+> ⛔ **AMENDMENT 3 IS SUPERSEDED — THE UNACKED REMINDER IS GONE (2026-08-20, git-bug `bd0fb1d`,
+> migrations `00067`/`00068`).** The owner withdrew it: oto sends nothing unprompted. The mention
+> audience went with it, because a mention was never a property of Slack delivery in general — it
+> was the audience half of that one fact and had no other producer.
+>
+> ⭐ **This TIGHTENS the boundary this ADR was written to defend.** Amendment 3 permitted individual
+> `<@U…>` mentions on the argument that *addressing* a known audience is not *resolving* who is
+> responsible. That argument held, and it is now moot: with no mention surface at all there is
+> nowhere left for oto to name a responder (§4.8, H-1, FR-1).
+>
+> ⚠️ **And it was never verified.** Amendment 3 shipped on the strength of Slack's documentation
+> alone; `2078a07` records that the `@`-mention path was **never once observed working** against a
+> real workspace, and Amendment 4 immediately below is the standing proof that Slack's documentation
+> can be half wrong. The step that would have tested it — `slack-live-verification.md` step 8 — was
+> never run and is deleted with the feature. So this question closes by removal, not by evidence.
+>
+> **What survives unchanged:** the two binding rules — the top-level `text` must be self-sufficient,
+> and no broadcast may depend on a button. Both were always independent of who was mentioned.
+> `refired` is now the only reason that always broadcasts.
 
 > ⚠️ **Read Amendment 4 before relying on anything below about the in-channel copy being
 > "stripped".** Slack's documentation says the `thread_broadcast` reference cannot carry attachments
@@ -161,8 +216,15 @@ because a resolve arrived quietly. Default off, one switch to turn on.
 
    > ⛔ **SUPERSEDED BY AMENDMENT 4, IN HALF.** The colour bar *does* render. Rule 5 is now 5a
    > (colour is a progressive enhancement, kept, never the only carrier of a fact) and 5b (no
-   > broadcast may depend on a button — still unverified, and binding either way). The conclusion —
-   > *must not depend on either* — is unchanged.
+   > broadcast may depend on a button — ⭐ **CONFIRMED by observation**, not merely cautious). The
+   > conclusion — *must not depend on either* — is unchanged.
+   >
+   > ⚠️ **THIS CALLOUT USED TO SAY 5b WAS "still unverified", AND THAT WAS WRONG — it contradicted
+   > Amendment 4's own text 360 lines below it** (`5b. … ⭐ CONFIRMED, not merely cautious`, and the
+   > evidence table's *"cannot contain message buttons — ⭐ TRUE"*). What Amendment 4 leaves unknown
+   > is **client parity**, not buttons. Corrected 2026-08-20 (git-bug `68653ca`) after a reader
+   > trusted this summary, never reached the body, and reproduced the inversion in a code comment.
+   > A summary that disagrees with the thing it summarises is worse than no summary.
 
 ### One recorded escape hatch
 
@@ -547,12 +609,25 @@ mirror image of the mistake this amendment exists to correct.
 
 ### What does not change
 
-- The broadcast set (Amendment 1): `unacked_reminder` and `refired`, plus configurable
-  `all_resolved`.
-- The mention placement (Amendment 3). The mention stays in the top-level `text`. Its justification
-  shifts from *"a block is not present in the channel copy"* to *"the top-level text is the only
-  position that reaches a push notification"* — which was always the stronger half of the argument.
-- Constraints 1–3, and the one-way-door property of broadcasting.
+> ⛔ **TWO OF THESE THREE BULLETS ARE NO LONGER TRUE — corrected 2026-08-20 (git-bug `bd0fb1d`,
+> marked here by `68653ca`).** They were written on 2026-08-14, before the reminder was withdrawn,
+> and they are the LAST unmarked description of it in this file: its top-of-page callout, Amendment
+> 3's own heading and rule 5b were all updated and this section was missed. It was found by a red
+> team attacking the completeness of that sweep, which is the only reason it is marked at all.
+
+- ~~The broadcast set (Amendment 1): `unacked_reminder` and `refired`, plus configurable
+  `all_resolved`.~~ ⛔ `unacked_reminder` is DELETED. The set is `refired` — which nothing
+  produces, ADR 0040 having retired T8 — plus configurable `all_resolved`, so
+  `broadcast_on_resolved` is the only broadcast oto can currently send.
+- ~~The mention placement (Amendment 3). The mention stays in the top-level `text`.~~ ⛔ There is
+  no mention. Amendment 3 is superseded in full and oto has no mention surface anywhere.
+  ⭐ **Its justification is worth keeping even so, because Amendment 5 had to answer the same
+  question and answered it DIFFERENTLY.** The surviving half of the argument was *"the top-level
+  text is the only position that reaches a push notification"* — true of a mention, whose entire
+  value is the notification. A LINK's value is being clickable, and rule 4 binds that string to be
+  a self-sufficient sentence, so the link went in the body instead. Same position, opposite answer,
+  for a reason that is a property of the affordance rather than of the surface.
+- Constraints 1–3, and the one-way-door property of broadcasting. **This one stands unchanged.**
 
 ---
 
@@ -572,3 +647,79 @@ from a product review, from a database and finally from production, and the part
 argument that survived are stronger for having been attacked. Amendment 4 is the
 most instructive of the four, because the documentation was simply wrong and the rule it produced
 was right anyway — for a reason nobody had written down until they were forced to.
+
+
+## Amendment 5 — a link is not a button, and it is the only affordance a broadcast can carry
+
+**2026-08-20 · git-bug `68653ca` · extends rule 5b.**
+
+⛔ This line first read *"Nothing in Amendments 1-4 is reversed"*, and that was wrong: **Amendment 3
+is reversed in full** — the page's own top callout has said so since `bd0fb1d`, and Amendment 4's
+"What does not change" section restates the reversed claim, which is what made the sentence
+self-contradicting the moment it was written. Amendments 1, 2 and 4 stand; Amendment 1's SET has
+narrowed. Caught by a red team, not by me.
+
+Rule 5 said a broadcasting reply *"carries no colour and no buttons, and must not depend on
+either"*, and named the call to action: *open the thread*. That was the whole of it, and it left
+oto's channel-visible messages with **no affordance whatsoever**. The checked-in capture was the
+proof rather than the reading: `test/fixtures/slack/broadcast_refired.blockkit.json` rendered
+
+	:repeat: *Re-fired* — case #1
+
+with no `<url|label>`, no `<!date^…>` token, not one mrkdwn control character. A reader in the
+channel — who by definition is **not** following the thread, because that is what broadcasting is
+for — saw that and had nowhere to click.
+
+**The ruling: a broadcasting reply's body carries a mrkdwn link back to oto.** Not a button.
+
+⭐ **Amendment 4's confirmed half is what makes this the ONLY option, not merely the safest one.**
+5b is not a caution, it is an observation: the in-channel copy shows **no buttons at all**, seen
+side by side with a root card in the same channel showing all of them. So oto cannot put an
+Acknowledge, a Snooze or any other action in front of a channel reader, ever. A mrkdwn link is not
+a button and is not an interactive element — it is text that happens to be addressable — which is
+precisely why it is the one affordance left.
+
+**Why the body and not the top-level `text`.** Rule 4 binds that string to be a self-sufficient
+SENTENCE, and it is also the push notification on a locked phone and what a screen reader
+announces. A URL is not a sentence and a locked phone cannot follow one. The repo already held the
+guard rail: `TestABroadcastTopLevelTextCarriesSeverityAndDuration` asserts
+`!strings.Contains(text, "<http")` on exactly that string — *"the broadcast sentence leans on a
+link to be intelligible"*. And the Block Kit Builder capture is `{"blocks": […]}`, the attachment's
+block list lifted out of the payload, so the top-level `text` is not in it at all; a link placed
+there would leave the broadcast capture with no control character and the per-card escaping
+guarantee in `test/harness/slack_goldens_test.go` could not have been restored.
+
+**It is keyed on the MODE, not on the Reason.** `if o.Mode == domain.ModeBroadcastReply`. Same
+reasoning `replyText` uses for its facts clause: a rule that holds only for the Reasons that happen
+to broadcast today breaks the first time the broadcast set changes. `all_resolved` had the identical
+gap and one line closes both.
+
+### ⚠️ The premise this rests on is INFERRED, and saying so is part of the ruling
+
+Amendment 4 is explicit that *"`blocks` being present in the stored attachment (data point 2) is
+storage, not rendering"*. Its three data points establish that the attachment is returned by the
+API, that the **colour bar** renders, and that the **buttons** do not. **None of them observes that
+a section block's TEXT renders in the in-channel copy.** So "a link in the body reaches a channel
+reader" is an inference, not an observation.
+
+It is a strong inference — if blocks did not render, the in-channel copy would be a sentence and a
+colour bar and nothing else, and the person who looked at it would have said so rather than
+carefully distinguishing buttons from colour. It is not a certainty, and Amendment 4 exists
+precisely because this ADR once built on a documented claim nobody had checked.
+
+**So it is recorded as an observation owed, not assumed away:** git-bug `2078a07` — the standing
+ticket for Slack behaviour oto has never seen — now carries *"does a section block's text render in
+the in-channel `thread_broadcast` copy?"* alongside its other four. If the answer is no, the link
+moves to the top-level `text` and `TestABroadcastTopLevelTextCarriesSeverityAndDuration` is the
+test that has to be amended to allow it — which is one edit, named here so the next person does not
+have to find it.
+
+### ⚠️ And it reaches less than it appears to
+
+`refired` — the Reason `68653ca` is named for — **has no producer.** Every occurrence outside tests
+is vocabulary, classification or rendering; ADR 0040 retired T8 and every re-fire now opens a new
+episode. `internal/notification/domain/broadcast.go:71` says so itself: *"⛔ RETAINED FOR HISTORY;
+NOTHING PRODUCES IT."* With `broadcast_on_resolved` default-off, **oto broadcasts nothing out of
+the box today.** The set in `BroadcastPolicy.Warrants` is one unproducible Reason and one opt-in
+Reason, so this amendment is as much about what the next broadcasting Reason inherits as about
+anything oto currently sends.

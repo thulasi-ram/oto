@@ -575,17 +575,19 @@ config:
 # values file with a line that quietly does nothing is worse.
 #
 # Keys are the ones on docs/setup/tuning.md, e.g.
-#   refire_grace_s, resolve_grace_s, group_close_delay_s,
-#   raw_retention_days, event_retention_months,
+#   resolve_grace_s, raw_retention_days, event_retention_months,
 #   default_verbosity, broadcast_on_resolved
 #   (the five unacked_reminder_* keys were here and are gone — git-bug bd0fb1d;
 #   a config still naming one is refused with unknown_key)
+#   (refire_grace_s and group_close_delay_s were here and are gone the same way —
+#   git-bug 7287b28: a conversation is a Case, so there is no idle generation to
+#   close, and the re-fire grace was a setting nothing read)
 # -----------------------------------------------------------------------------
 
 tuning: {}
 # tuning:
-#   refire_grace_s: 900
-#   group_close_delay_s: 1200
+#   resolve_grace_s: 900
+#   raw_retention_days: 45
 #
 # ⛔ flap_threshold, flap_window_s and flap_digest_interval_s are still ACCEPTED —
 # so a values file that sets them keeps booting — but flap detection is RETIRED

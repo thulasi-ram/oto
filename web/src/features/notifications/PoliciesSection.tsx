@@ -877,13 +877,16 @@ const ChannelPicker: Component<{
  * silence before it happens. With the exhaustive type, the next reason the
  * server publishes is a build failure instead.
  *
- * ⛔ SIX VALUES, AND THE TWO THAT LEFT WERE THE ONLY TWO THAT WERE OTO'S OWN
+ * ⛔ SEVEN VALUES, AND THE TWO THAT LEFT WERE THE ONLY TWO THAT WERE OTO'S OWN
  * OPINION ABOUT A SIGNAL. `storm` and `flapping` are gone from
  * `notifications_suppmap_ck` (migration `00059`, ADR 0042), which narrowed with
  * NO backfill and therefore FAILS on a database that ever recorded either — so
- * there is no stored row left for this map to explain. What the six have in
+ * there is no stored row left for this map to explain. What the seven have in
  * common is the argument: two mean there was nowhere to send, two are a human
- * asking for less, one is the world's rate limit, one is that nothing changed.
+ * asking for less, two are a policy's own ceiling and floor over a window, one is
+ * that nothing changed. `below_threshold` (migration `00073`) is the floor, and it
+ * is admissible where `flapping` was not because its threshold is a column an
+ * operator wrote rather than a constant compiled into oto.
  */
 const SUPPRESSED_REASON: Record<NonNullable<NotificationSuppressedReason>, string> = {
   no_policy: "no policy matched",
@@ -891,6 +894,9 @@ const SUPPRESSED_REASON: Record<NonNullable<NotificationSuppressedReason>, strin
   // act, and therefore the most useful thing to say about a silence.
   snoozed: "someone is holding oto's notifications for this alert until a fixed time",
   throttled: "the throttle is already spent",
+  // The same two policy fields as the throttle, read as a floor: not "too many
+  // already" but "not enough yet".
+  below_threshold: "the policy's count condition has not been met yet",
   verbosity: "the channel's verbosity does not carry this",
   channel_disabled: "the channel is disabled",
   duplicate_render: "the message would be identical to the last one",

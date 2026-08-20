@@ -17,8 +17,13 @@ func strp(v string) *string { return &v }
 // `broadcast_on_resolved` was the only boolean field on `SettingsPatch`.
 
 // TestBoundsAreEnforcedServerSide is the property the settings UI must not be
-// trusted with. The request that sets `refire_grace_s` to 0 arrives from `curl`
+// trusted with. The request that sets `resolve_grace_s` to 0 arrives from `curl`
 // long before it arrives from a form.
+//
+// ⛔ THE THREE `refire_grace_s` CASES THAT LED THIS TABLE ARE DELETED WITH THE KEY
+// (git-bug 7287b28). They exercised the three shapes of refusal — zero, below the
+// floor, above the ceiling — and `resolve_grace_s` exercises all three, so the
+// coverage moved rather than went.
 func TestBoundsAreEnforcedServerSide(t *testing.T) {
 	t.Parallel()
 
@@ -28,24 +33,25 @@ func TestBoundsAreEnforcedServerSide(t *testing.T) {
 		field string
 	}{
 		{
-			// The headline refusal: zero is a Slack thread per transition.
-			name:  "refire_grace of zero",
-			patch: domain.SettingsPatch{RefireGraceS: intp(0)},
-			field: "refire_grace_s",
+			// The headline refusal: at zero the reaper expires a case the instant
+			// Prometheus stops refreshing its `EndsAt` lease.
+			name:  "resolve_grace of zero",
+			patch: domain.SettingsPatch{ResolveGraceS: intp(0)},
+			field: "resolve_grace_s",
 		},
 		{
-			// Below a minute the window is shorter than any useful group_interval,
-			// so it is unreachable and every re-fire opens a new root message.
-			name:  "refire_grace below the floor",
-			patch: domain.SettingsPatch{RefireGraceS: intp(30)},
-			field: "refire_grace_s",
+			// Below a minute the window is shorter than the lease Prometheus
+			// refreshes, so one missed scrape looks like an expiry.
+			name:  "resolve_grace below the floor",
+			patch: domain.SettingsPatch{ResolveGraceS: intp(30)},
+			field: "resolve_grace_s",
 		},
 		{
-			// Two incidents a day apart would merge into one case, and the
-			// history would lie about how many times this happened.
-			name:  "refire_grace above the ceiling",
-			patch: domain.SettingsPatch{RefireGraceS: intp(90000)},
-			field: "refire_grace_s",
+			// Beyond a day a resolved case stays open long enough that the history
+			// lies about when it ended.
+			name:  "resolve_grace above the ceiling",
+			patch: domain.SettingsPatch{ResolveGraceS: intp(90000)},
+			field: "resolve_grace_s",
 		},
 		{
 			// Below 3 a single rolling deploy is mislabelled as flapping.
@@ -105,9 +111,7 @@ func TestInRangeWritesAreAccepted(t *testing.T) {
 	t.Parallel()
 
 	worked := domain.SettingsPatch{
-		RefireGraceS:        intp(900),
 		ResolveGraceS:       intp(300),
-		GroupCloseDelayS:    intp(300),
 		FlapThreshold:       intp(5),
 		FlapWindowS:         intp(10800),
 		FlapDigestIntervalS: intp(900),
@@ -139,12 +143,12 @@ func TestOriginDistinguishesAnOverrideFromTheDefault(t *testing.T) {
 	// report `org`. It is a different fact — that value will not follow oto's
 	// default when oto's default moves — and collapsing the two is the whole
 	// failure this reporting exists to prevent.
-	shipped := int(domain.DefaultRefireGrace / time.Second)
-	same := domain.SettingsPatch{RefireGraceS: intp(shipped)}
-	if got := same.Origin(domain.KeyRefireGrace); got != domain.OriginOrg {
+	shipped := int(domain.DefaultResolveGrace / time.Second)
+	same := domain.SettingsPatch{ResolveGraceS: intp(shipped)}
+	if got := same.Origin(domain.KeyResolveGrace); got != domain.OriginOrg {
 		t.Fatalf("writing the default value reports origin %q; it is still an override", got)
 	}
-	if v, origin, ok := same.EffectiveInt(domain.KeyRefireGrace); !ok || v != shipped || origin != domain.OriginOrg {
+	if v, origin, ok := same.EffectiveInt(domain.KeyResolveGrace); !ok || v != shipped || origin != domain.OriginOrg {
 		t.Fatalf("effective (%d, %q, %v), want (%d, org, true)", v, origin, ok, shipped)
 	}
 
@@ -163,17 +167,17 @@ func TestOriginDistinguishesAnOverrideFromTheDefault(t *testing.T) {
 func TestClearReturnsAKeyToTheDefault(t *testing.T) {
 	t.Parallel()
 
-	p := domain.SettingsPatch{RefireGraceS: intp(900), DefaultVerbosity: strp("all")}
-	if p.Origin(domain.KeyRefireGrace) != domain.OriginOrg {
+	p := domain.SettingsPatch{ResolveGraceS: intp(900), DefaultVerbosity: strp("all")}
+	if p.Origin(domain.KeyResolveGrace) != domain.OriginOrg {
 		t.Fatal("setup: the override did not register")
 	}
 
-	p = p.Clear(domain.KeyRefireGrace)
-	if got := p.Origin(domain.KeyRefireGrace); got != domain.OriginDefault {
+	p = p.Clear(domain.KeyResolveGrace)
+	if got := p.Origin(domain.KeyResolveGrace); got != domain.OriginDefault {
 		t.Fatalf("after clear, origin %q, want default", got)
 	}
-	if got := p.Settings().RefireGrace; got != domain.DefaultRefireGrace {
-		t.Fatalf("after clear, effective %v, want the shipped default %v", got, domain.DefaultRefireGrace)
+	if got := p.Settings().ResolveGrace; got != domain.DefaultResolveGrace {
+		t.Fatalf("after clear, effective %v, want the shipped default %v", got, domain.DefaultResolveGrace)
 	}
 	// Clearing one key must not disturb another. ⚠️ THE SECOND KEY IS DELIBERATELY A
 	// NON-INTEGER ONE: `Clear` reaches the integer keys through `intPtr` and the rest
@@ -181,21 +185,21 @@ func TestClearReturnsAKeyToTheDefault(t *testing.T) {
 	// This was `broadcast_on_resolved` until git-bug 7570090 deleted it, and
 	// `default_verbosity` is now the only non-integer key there is.
 	if p.Origin(domain.KeyDefaultVerbosity) != domain.OriginOrg {
-		t.Fatal("clearing refire_grace also cleared default_verbosity")
+		t.Fatal("clearing resolve_grace also cleared default_verbosity")
 	}
 }
 
 // TestMergeLeavesOmittedKeysAlone. A settings API where an omitted key silently
-// reverted to the default would revert nine settings every time somebody changed
+// reverted to the default would revert seven settings every time somebody changed
 // one.
 func TestMergeLeavesOmittedKeysAlone(t *testing.T) {
 	t.Parallel()
 
-	stored := domain.SettingsPatch{RefireGraceS: intp(900), FlapThreshold: intp(4)}
+	stored := domain.SettingsPatch{ResolveGraceS: intp(900), FlapThreshold: intp(4)}
 	merged := stored.Merge(domain.SettingsPatch{FlapThreshold: intp(6)})
 
-	if merged.RefireGraceS == nil || *merged.RefireGraceS != 900 {
-		t.Fatalf("an omitted key was reverted: refire_grace_s = %v", merged.RefireGraceS)
+	if merged.ResolveGraceS == nil || *merged.ResolveGraceS != 900 {
+		t.Fatalf("an omitted key was reverted: resolve_grace_s = %v", merged.ResolveGraceS)
 	}
 	if merged.FlapThreshold == nil || *merged.FlapThreshold != 6 {
 		t.Fatalf("the written key did not take: flap_threshold = %v", merged.FlapThreshold)
@@ -211,14 +215,14 @@ func TestOutOfRangeStoredValuesAreClampedNotRejected(t *testing.T) {
 	t.Parallel()
 
 	legacy := domain.SettingsPatch{
-		RefireGraceS:  intp(0),       // would be a Slack thread per transition
+		ResolveGraceS: intp(0),       // one missed scrape would look like an expiry
 		FlapThreshold: intp(1),       // below the floor: one deploy reads as flapping
 		FlapWindowS:   intp(9999999), // beyond a day
 	}
 	s := legacy.Settings()
 
-	if s.RefireGrace < 60*time.Second {
-		t.Fatalf("refire_grace clamped to %v, want at least the floor", s.RefireGrace)
+	if s.ResolveGrace < 60*time.Second {
+		t.Fatalf("resolve_grace clamped to %v, want at least the floor", s.ResolveGrace)
 	}
 	if s.FlapThreshold < 3 {
 		t.Fatalf("flap_threshold clamped to %d, want at least the floor", s.FlapThreshold)
@@ -228,7 +232,7 @@ func TestOutOfRangeStoredValuesAreClampedNotRejected(t *testing.T) {
 	}
 	// The origin still reports `org`: the value WAS written by the org, and
 	// clamping does not change who wrote it.
-	if legacy.Origin(domain.KeyRefireGrace) != domain.OriginOrg {
+	if legacy.Origin(domain.KeyResolveGrace) != domain.OriginOrg {
 		t.Fatal("clamping erased the origin")
 	}
 }

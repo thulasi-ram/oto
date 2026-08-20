@@ -49,6 +49,33 @@ var subjectKinds = map[SubjectKind]struct{}{
 	SubjectDigest: {},
 }
 
+// allSubjectKinds is the same closed set as an ORDERED slice, and the two
+// declarations are separate for the reason `allReasons` and `reasonSubjects` are:
+// this one is the ORDER a published vocabulary is rendered in, that one is the
+// membership test. `TestTheSubjectKindOrderIsTheSubjectKindSet` binds them, so a
+// fourth kind added to one and not the other fails a test rather than producing a
+// contract enum that is missing a value the column admits.
+//
+// ⭐ THE ORDER IS THE ORDER THE KINDS ARRIVED IN — alert and case at migration
+// 00056, digest at 00058 — which is the same convention `allReasons` follows
+// ("migration 00018 declares it, 00058 appends to it"). Re-sorting a published
+// enum is a contract change for nothing.
+var allSubjectKinds = []SubjectKind{SubjectAlert, SubjectCase, SubjectDigest}
+
+// AllSubjectKinds returns the closed SubjectKind vocabulary in declaration order.
+// The slice is freshly built so a caller cannot mutate the vocabulary.
+//
+// It exists because a policy's subject-kind binding (`SubjectBinding` in
+// policy.go, migration `00072`) is a SET OVER THIS VOCABULARY and has to validate
+// against it in Go — the same division `toReasons` makes for `reasons`, and for the
+// same reason: a duplicated list at the API boundary is the second copy that
+// drifts.
+func AllSubjectKinds() []SubjectKind {
+	out := make([]SubjectKind, len(allSubjectKinds))
+	copy(out, allSubjectKinds)
+	return out
+}
+
 // Valid reports whether k is in the closed set.
 //
 // ⚠️ IT USED TO BE `k == SubjectAlertGroup`, WHICH WENT FALSE THE MOMENT A

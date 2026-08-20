@@ -104,7 +104,7 @@ export const NotificationReasonSchema = v.picklist(["fired", "all_resolved", "re
 
 export const NotificationStatusSchema = v.picklist(["pending", "dispatched", "partial", "delivered", "failed", "suppressed"]);
 
-export const NotificationSuppressedReasonSchema = v.nullable(v.picklist(["channel_disabled", "no_policy", "snoozed", "throttled", "verbosity", "duplicate_render"]));
+export const NotificationSuppressedReasonSchema = v.nullable(v.picklist(["channel_disabled", "no_policy", "snoozed", "throttled", "below_threshold", "verbosity", "duplicate_render"]));
 
 export const DeliveryModeSchema = v.picklist(["post_root", "update_root", "thread_reply"]);
 
@@ -1362,6 +1362,23 @@ export const PolicyDTOSchema = v.looseObject({
     v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
   ),
   "throttle": v.exactOptional(v.nullable(ThrottleDTOSchema)),
+  "subject_kinds": v.pipe(
+    v.array(v.picklist(["alert", "case", "digest"])),
+    v.maxLength(3),
+    v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
+  ),
+  "count_min": v.exactOptional(v.nullable(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(2),
+    v.maxValue(10000),
+  ))),
+  "count_window_seconds": v.exactOptional(v.nullable(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(60),
+    v.maxValue(86400),
+  ))),
   "digest_window_seconds": v.exactOptional(v.nullable(v.pipe(
     v.number(),
     v.integer(),
@@ -1800,19 +1817,7 @@ export const AlertQualityDTOSchema = v.looseObject({
 });
 
 export const OrgSettingsDTOSchema = v.looseObject({
-  "refire_grace_s": v.pipe(
-    v.number(),
-    v.integer(),
-    v.minValue(600),
-    v.maxValue(86400),
-  ),
   "resolve_grace_s": v.pipe(
-    v.number(),
-    v.integer(),
-    v.minValue(60),
-    v.maxValue(86400),
-  ),
-  "group_close_delay_s": v.pipe(
     v.number(),
     v.integer(),
     v.minValue(60),
@@ -2485,6 +2490,23 @@ export const CreatePolicyRequestSchema = v.strictObject({
     v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
   ),
   "throttle": v.exactOptional(ThrottleDTOSchema),
+  "subject_kinds": v.exactOptional(v.pipe(
+    v.array(v.picklist(["alert", "case", "digest"])),
+    v.maxLength(3),
+    v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
+  )),
+  "count_min": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(2),
+    v.maxValue(10000),
+  )),
+  "count_window_seconds": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(60),
+    v.maxValue(86400),
+  )),
   "digest_window_seconds": v.exactOptional(v.pipe(
     v.number(),
     v.integer(),
@@ -2541,6 +2563,23 @@ export const UpdatePolicyRequestSchema = v.pipe(
       v.integer(),
       v.minValue(1),
       v.maxValue(10000),
+    ))),
+    "subject_kinds": v.exactOptional(v.pipe(
+      v.array(v.picklist(["alert", "case", "digest"])),
+      v.maxLength(3),
+      v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
+    )),
+    "count_min": v.exactOptional(v.nullable(v.pipe(
+      v.number(),
+      v.integer(),
+      v.minValue(2),
+      v.maxValue(10000),
+    ))),
+    "count_window_seconds": v.exactOptional(v.nullable(v.pipe(
+      v.number(),
+      v.integer(),
+      v.minValue(60),
+      v.maxValue(86400),
     ))),
   }),
   v.check((value) => Object.keys(value).length >= 1, "at least 1 property required"),
@@ -2868,15 +2907,7 @@ export const SettingBoundDTOSchema = v.looseObject({
 export const SettingOriginSchema = v.picklist(["default", "org", "config"]);
 
 export const OrgSettingsPatchDTOSchema = v.looseObject({
-  "refire_grace_s": v.exactOptional(v.pipe(
-    v.number(),
-    v.integer(),
-  )),
   "resolve_grace_s": v.exactOptional(v.pipe(
-    v.number(),
-    v.integer(),
-  )),
-  "group_close_delay_s": v.exactOptional(v.pipe(
     v.number(),
     v.integer(),
   )),
@@ -2920,19 +2951,7 @@ export const OrgSettingsViewResponseSchema = v.looseObject({
 });
 
 export const UpdateOrgSettingsRequestSchema = v.strictObject({
-  "refire_grace_s": v.exactOptional(v.pipe(
-    v.number(),
-    v.integer(),
-    v.minValue(600),
-    v.maxValue(86400),
-  )),
   "resolve_grace_s": v.exactOptional(v.pipe(
-    v.number(),
-    v.integer(),
-    v.minValue(60),
-    v.maxValue(86400),
-  )),
-  "group_close_delay_s": v.exactOptional(v.pipe(
     v.number(),
     v.integer(),
     v.minValue(60),

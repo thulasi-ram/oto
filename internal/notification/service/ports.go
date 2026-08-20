@@ -44,25 +44,65 @@ type PolicyStore interface {
 	ListWithDigest(ctx context.Context, s db.TenantScope) ([]domain.Policy, error)
 }
 
-// DigestStore is the read model the digest tick folds: what happened in a window,
-// and which window this policy last covered.
+// DigestStore is what the digest tick reads and the little it remembers: the
+// episodes in a span, how far each policy has been examined, and which episodes each
+// policy has already accounted for.
 //
-// ⭐ IT IS TWO READS AND NO WRITE, WHICH IS THE POINT OF TICK EVALUATION. The
+// ⭐ EVALUATION IS STILL TICK-DRIVEN, WHICH IS STILL THE COST ARGUMENT. The
 // alternative — evaluating a digest event-driven, as each case opens — needs durable
 // per-window counters and per-policy timers, and every one of them is a row that can
-// disagree with the facts it is counting. Here the count is a query over rows that
-// are already stored, and the cursor is `max(digest_window_start)` over the digests
-// themselves, so the only state the tick keeps is state a digest was actually sent
-// for.
+// disagree with the facts it is counting. Here the content is a query over rows that
+// are already stored, and the floor is free because the count is already in hand.
+//
+// ⛔ IT WAS "TWO READS AND NO WRITE", AND THAT SENTENCE WAS THE STATEMENT OF THREE
+// BUGS RATHER THAN A VIRTUE (git-bug `893cee4`, `342e071`, `a8a4010`; migration
+// `00070`). The cursor was `max(digest_window_start)` over the digests themselves, so
+// the only state that could exist was state a digest had actually been sent for — and
+// three separate failures follow from exactly that:
+//
+//   - A WINDOW EXAMINED AND FOUND QUIET writes no row, so it is indistinguishable
+//     from a window never examined and the cursor cannot advance past it. A policy
+//     over a namespace nobody had paged about for a week re-derived the same owed
+//     span every tick, ran six aggregate queries, and logged a data-loss warning
+//     about a backlog nothing was ever owed. Coverage and "a digest was sent" are now
+//     two facts (`CoveredTo`/`AdvanceCoverage`).
+//   - A WINDOW START IS NOT AN INSTANT. It only means a span in combination with the
+//     window LENGTH in force when it was sent, which nothing stored, so narrowing
+//     `digest_window_s` re-tiled a span an earlier digest had already summarised and
+//     reported every episode in it a second time. The cursor is now the instant
+//     coverage reached.
+//   - A CASE WHOSE TRANSACTION COMMITS AFTER THE TICK HAS READ ITS WINDOW is counted
+//     by no window at all, because `started_at` is oto's clock read BEFORE the write
+//     and no later window's predicate reaches back. A digest now reads a
+//     `domain.DigestLookback` tail as well as its window and subtracts what it has
+//     already accounted for (`Marked`/`Mark`), so a straggler lands in the next
+//     digest instead of falling below a frozen cursor.
+//
+// The write this buys is small and it is this module's own: a per-policy cursor row
+// and one narrow row per (policy, Case) with a bounded retention. It is emphatically
+// not a durable per-window counter — nothing here counts anything.
 type DigestStore interface {
-	// Buckets aggregates ONE window ONCE per tenant, per generation, so that N
-	// digest policies fold the same rows instead of running N window queries. The
-	// window is half-open, [start, end), so a boundary instant is counted once.
-	Buckets(ctx context.Context, s db.TenantScope, start, end time.Time, limit int) ([]repository.DigestBucket, error)
-	// LastWindow is the "last window covered" cursor, or the zero time for a policy
-	// that has never digested — which means "cover one window", never "cover
-	// everything since the policy was created".
-	LastWindow(ctx context.Context, s db.TenantScope, policyID uuid.UUID) (time.Time, error)
+	// Cases lists ONE span's episodes ONCE per tenant, so that N digest policies fold
+	// the same rows instead of running N queries. The span is half-open, [from, to),
+	// so a boundary instant belongs to exactly one window.
+	Cases(ctx context.Context, s db.TenantScope, from, to time.Time, limit int) ([]repository.DigestCase, error)
+	// CoveredTo is the INSTANT this policy has been examined up to, or the zero time
+	// for a policy that has never been examined — which means "cover one window",
+	// never "cover everything since the policy was created".
+	CoveredTo(ctx context.Context, s db.TenantScope, policyID uuid.UUID) (time.Time, error)
+	// AdvanceCoverage moves that instant forward, monotonically. It is called for
+	// every window the tick EXAMINED, whatever the examination decided.
+	AdvanceCoverage(ctx context.Context, s db.TenantScope, policyID uuid.UUID, reached, now time.Time) error
+	// Marked is the set of Cases in [from, to) this policy has already accounted for
+	// — reported in a digest, or examined in a window that did not clear its floor.
+	// It is what the lookback subtracts.
+	Marked(ctx context.Context, s db.TenantScope, policyID uuid.UUID, from, to time.Time) (map[uuid.UUID]struct{}, error)
+	// Mark accounts for a set of Cases. `reportedIn` is the digest that reported
+	// them, or nil when the window did not clear the floor. Write-once.
+	Mark(ctx context.Context, s db.TenantScope, policyID uuid.UUID, reportedIn *uuid.UUID, cases []repository.DigestCase, now time.Time) error
+	// PruneMarks is the retention sweep that keeps the dedupe state proportional to
+	// RECENT activity rather than to all of history.
+	PruneMarks(ctx context.Context, s db.TenantScope, before time.Time) (int64, error)
 }
 
 // NotificationStore persists intents.
@@ -74,6 +114,19 @@ type NotificationStore interface {
 	// since migration 00056 a subject predicate no longer matches every row, and
 	// the throttle has to count everything that landed on the thread.
 	CountRecent(ctx context.Context, s db.TenantScope, groupID uuid.UUID, since time.Time) (int, error)
+	// CountRecentSubjects is the count condition's numerator and is deliberately
+	// NOT `CountRecent` with different arguments: it counts DISTINCT SUBJECTS of
+	// the one kind the policy binds, it is scoped to the POLICY rather than to the
+	// conversation, and it INCLUDES suppressed rows. Each of the three differences
+	// is the opposite of the throttle's and each is forced — see
+	// `countPolicySubjectsSQL`. `excluding` is the subject of the fact being
+	// evaluated, which has no row yet and which the caller adds back as one.
+	//
+	// ⚠️ THE WINDOW IS CLOSED AT BOTH ENDS, `[since, until]`, AND `until` IS NOT
+	// `now`. It is the snapshot instant of the fact being evaluated, so a retried
+	// evaluation counts the same rows the first attempt would have — a floor that
+	// widened on every retry would clear itself by being retried.
+	CountRecentSubjects(ctx context.Context, s db.TenantScope, policyID uuid.UUID, kind domain.SubjectKind, excluding uuid.UUID, since, until time.Time) (int, error)
 	ExistsForReason(ctx context.Context, s db.TenantScope, kind domain.SubjectKind, subjectID uuid.UUID, r domain.Reason) (bool, error)
 }
 

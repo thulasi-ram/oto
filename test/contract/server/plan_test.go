@@ -59,7 +59,7 @@ func plan() []probe {
 		// 401 is a boundary this gate would otherwise never notice.
 		{
 			method: http.MethodPatch, tmpl: "/api/v1/org/settings", auth: authSession,
-			body: map[string]any{"refire_grace_s": 1800},
+			body: map[string]any{"resolve_grace_s": 1800},
 			want: http.StatusOK,
 		},
 		{method: http.MethodGet, tmpl: "/api/v1/api-tokens", auth: authSession, want: http.StatusOK},

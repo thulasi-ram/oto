@@ -45,6 +45,17 @@ const (
 	ElementButton = "button"
 	// ElementOverflow is the "…" menu that keeps the action row to four elements.
 	ElementOverflow = "overflow"
+	// ElementStaticSelect is a labelled dropdown with a fixed option list.
+	//
+	// ⭐ IT IS NOT A SECOND OVERFLOW, AND THAT IS THE ENTIRE REASON IT EXISTS
+	// (§B.8.3). A snooze has to offer five durations, and the card already spends
+	// its one "…" on the links menu — which is documented as links-only, "every
+	// entry is a place to look, never a thing to change", and is already at Slack's
+	// five-option ceiling. A second bare "…" beside the first would have put two
+	// visually IDENTICAL menus in one row, one of which silently changes oto's
+	// behaviour. A static select carries its own `placeholder`, so the row still
+	// says what each control does without being opened.
+	ElementStaticSelect = "static_select"
 )
 
 // Payload is the chat.postMessage / chat.update body oto renders.
@@ -108,19 +119,31 @@ type Text struct {
 	Emoji bool   `json:"emoji,omitempty"`
 }
 
-// Action is a button or an overflow menu inside an actions block.
+// Action is a button, an overflow menu or a static select inside an actions block.
 type Action struct {
-	Type     string           `json:"type"`
-	Text     *Text            `json:"text,omitempty"`
-	ActionID string           `json:"action_id,omitempty"`
-	URL      string           `json:"url,omitempty"`
-	Value    string           `json:"value,omitempty"`
-	Style    string           `json:"style,omitempty"`
-	Options  []OverflowOption `json:"options,omitempty"`
+	Type string `json:"type"`
+	Text *Text  `json:"text,omitempty"`
+	// Placeholder is the static select's own label — the text the control shows
+	// before anything is chosen. A button has none and an overflow has none; both
+	// leave it nil and the tag drops it.
+	Placeholder *Text            `json:"placeholder,omitempty"`
+	ActionID    string           `json:"action_id,omitempty"`
+	URL         string           `json:"url,omitempty"`
+	Value       string           `json:"value,omitempty"`
+	Style       string           `json:"style,omitempty"`
+	Options     []OverflowOption `json:"options,omitempty"`
 }
 
-// OverflowOption is one entry in an overflow menu. Every option, url-bearing or not,
-// still delivers an interaction payload oto must ack with a 200 (S9).
+// OverflowOption is one entry in an overflow menu OR in a static select. Every
+// option, url-bearing or not, still delivers an interaction payload oto must ack
+// with a 200 (S9).
+//
+// ⭐ ONE TYPE SERVES BOTH BECAUSE SLACK HAS ONE OPTION OBJECT. `text`, `value` and
+// `url` are the same three fields with the same three limits wherever an option
+// appears; `url` is simply never set on a select's options, because a select is a
+// choice oto acts on rather than a place to send the reader. The name is kept
+// rather than widened to `Option` so that the goldens and the V9/V11 messages that
+// already say "overflow option" keep meaning what they say.
 type OverflowOption struct {
 	Text  Text   `json:"text"`
 	URL   string `json:"url,omitempty"`

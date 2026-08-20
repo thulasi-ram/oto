@@ -122,6 +122,20 @@ tells the thing that pages.**
 
 ## Amendment — 2026-08-08: individual `@`-mentions on `mention_on_reminder` are permitted
 
+> ⛔ **SUPERSEDED IN FULL — 2026-08-20, git-bug `bd0fb1d`. THE SUBJECT OF THIS AMENDMENT NO LONGER
+> EXISTS.** The owner withdrew the unacked reminder outright and ruled that the mention goes with it:
+> *"when we are dropping the entire reminder flow whats the point of mention_on_reminder"*. There is
+> no `mention_on_reminder` key, no mention audience, and no mention surface anywhere in oto —
+> `internal/channels/providers/slack/config.go:55` says *"⛔ THERE IS NO `mention_on_reminder` HERE,
+> AND ITS REMOVAL IS A BUG FIX"*, and SPEC §L.5.1's schema no longer declares it. Read the section
+> below as history.
+>
+> ⭐ **AND IT TIGHTENS THIS ADR RATHER THAN LOOSENING IT.** §5's original delta ruling REFUSED
+> individual mentions on H-1 grounds — oto must not name a responder. The amendment overruled that.
+> The withdrawal restores the stricter position by removing the surface entirely, so H-1 is now
+> satisfied by construction rather than by argument. The five numbered guarantees below all still
+> hold; four of them hold vacuously.
+
 **This amends the §5 delta ruling above. The product owner overruled it. The code is correct as
 shipped; this section exists because the ADR was the stale half of the disagreement.**
 
@@ -164,8 +178,10 @@ these limits, and they are what keep it from becoming the thing it was feared to
 5. **Nothing is stored about the mentioned person.** No `mentioned_at`, no ack attribution derived from
    the mention, no per-person counter anywhere. R8 is unchanged and unchangeable.
 
-**What did not change.** `escalation` is still a banned word. `unacked_reminder_after_s` is still a
-scalar and still one stage. `notification_policies.channel_ids` still references `channels` and nothing
+**What did not change.** `escalation` is still a banned word — and now with no replacement term at
+all, since the reminder it was reshaped into was withdrawn too. ~~`unacked_reminder_after_s` is still
+a scalar and still one stage.~~ ⛔ There is no `unacked_reminder_after_s`: migration `00068` deleted
+it and there are ZERO stages, not one (git-bug `bd0fb1d`). `notification_policies.channel_ids` still references `channels` and nothing
 else. Multi-stage escalation is still refused, and this amendment is the argument for why it can be:
 letting a team mention the two people who actually care removes the pressure that would otherwise be
 spent arguing for a ladder.

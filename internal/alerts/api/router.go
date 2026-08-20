@@ -175,9 +175,16 @@ func (rt *Router) Register(r chi.Router) {
 		// ⭐ THE TWO HUMAN VERBS THAT ARE FACTS ABOUT AN EPISODE. `ack_state`,
 		// `acked_by`, `acked_at` and `ack_note` are columns of `alert_cases` and
 		// of nothing else (00049), so the route that writes them is addressed by
-		// the case. `POST /alert-groups/{id}/ack` survives beside this one and is
-		// not a duplicate: it is a FAN-OUT that resolves each member's open case
-		// and acks each of those.
+		// the case.
+		//
+		// ⛔ `POST /alert-groups/{id}/ack` STOOD BESIDE THIS ONE AND IS DELETED
+		// (git-bug `7570090`). It was not a duplicate but a FAN-OUT — it resolved
+		// each member's open case and acked each of those — and it existed only
+		// because a chat thread was a GENERATION rather than an episode. A
+		// conversation now holds exactly one Case, so that fan-out would fan out
+		// over one thing; the Slack Acknowledge button reaches
+		// `slackCaseActions.AcknowledgeCase`, which is this same service method
+		// addressed by case id. This is the only ack route there is.
 		r.Post("/ack", rt.ackCase)
 		r.Post("/unack", rt.unackCase)
 	})

@@ -72,7 +72,7 @@ func TestOrgSettingsWriteSurvivesAnAppClockAheadOfTheDatabase(t *testing.T) {
 	// `internal_error/orgs_time_ck`, a 500 — because the row's `created_at` came
 	// from a clock an hour ahead of the one this statement wrote `updated_at`
 	// from.
-	org, err := repo.UpdateSettings(h.Ctx, scope, domain.SettingsPatch{RefireGraceS: intPtr(900)})
+	org, err := repo.UpdateSettings(h.Ctx, scope, domain.SettingsPatch{ResolveGraceS: intPtr(900)})
 	require.NoError(t, err,
 		"a settings write soon after bootstrap must not depend on Postgres agreeing with the app about the time")
 
@@ -82,7 +82,7 @@ func TestOrgSettingsWriteSurvivesAnAppClockAheadOfTheDatabase(t *testing.T) {
 		"updated_at must come from the injected clock; the database's now() is an hour behind it")
 	require.False(t, org.UpdatedAt.Before(org.CreatedAt),
 		"orgs_time_ck, restated in Go so the failure names the invariant")
-	require.Equal(t, 900, *org.Overrides.RefireGraceS, "the write itself still happened")
+	require.Equal(t, 900, *org.Overrides.ResolveGraceS, "the write itself still happened")
 }
 
 // TestOrgSettingsSurvivesAPodBehindTheOneThatBootstrapped is the half the clock

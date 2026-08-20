@@ -30,8 +30,33 @@ type Envelope struct {
 	Continued   bool      `json:"continued,omitempty"`
 	DeliveredAt time.Time `json:"delivered_at"`
 
-	Org    Org     `json:"org"`
-	Group  Group   `json:"group"`
+	Org Org `json:"org"`
+	// Group is a POINTER so that a digest can decline to assert one.
+	//
+	// ⛔ THE KEY IS NOT MOVED, RENAMED OR DROPPED, WHICH IS WHAT §H.10 FREEZES. Every
+	// envelope that has a group still carries `group` with exactly the same members in
+	// exactly the same order — a non-nil pointer marshals identically to the value it
+	// replaced, and the three checked-in fixtures are byte-for-byte unchanged. What
+	// changed is the ONE class of envelope that never had a group: a digest.
+	//
+	// ⭐ AND FOR THAT CLASS THE VALUE WAS A FABRICATION, NOT A FIELD. A digest view is
+	// built by `notification/service.ViewService.digest`, which carries no group at all
+	// (git-bug `78388fb`), so a zero `GroupView` mapped to `state: ""`, every count at
+	// `0`, and `first_seen_at`/`last_activity_at` at `0001-01-01T00:00:00Z` — an object
+	// that reads as a real, empty, ancient group to any consumer that does not know a
+	// digest when it sees one. `total_count: 0` on a message asserting three new cases
+	// is a positive false statement, and CONTEXT.md §3's rule against those does not
+	// stop at the Slack renderer. An absent key a consumer must branch on is a smaller
+	// claim than a present object that is wrong.
+	Group *Group `json:"group,omitempty"`
+	// Digest is the periodic summary's facts, and it is non-nil on exactly the
+	// envelopes where `Group` is nil. The two are alternatives, never companions: a
+	// consumer reads `digest` to know this message summarises a WINDOW rather than
+	// reporting a fact about a signal, and every Case-shaped key below is absent on one.
+	Digest *Digest `json:"digest,omitempty"`
+	// Alerts is `[]` and never `null` on a digest: a digest names no signal, and an
+	// empty list is the truthful rendering of "nothing here to enumerate". The key has
+	// no `omitempty` under v1 and does not get one.
 	Alerts []Alert `json:"alerts"`
 	Focus  *Alert  `json:"focus,omitempty"`
 	// The key is `occurrence`, and the Go name is Case, ON PURPOSE. This envelope is
@@ -81,6 +106,50 @@ type Group struct {
 	// never parsed: it is unescaped, unbounded, and changes on every
 	// alertmanager.yml reload (C3). A consumer must not key on it either.
 	SourceGroupKey string `json:"source_group_key,omitempty"`
+}
+
+// Digest is one closed window summarised: a count and the span it was counted over.
+//
+// ⚠️⚠️ THE SPAN IS HALF-OPEN — `[covered_from, covered_to)` — AND A CONSUMER THAT
+// TREATS IT AS CLOSED WILL DOUBLE-COUNT ONE CASE PER WINDOW. `covered_to` is the
+// EXCLUSIVE end: it is enforced as such by `notifications_digcover_ck`
+// (`covered_from <= window_start < covered_to`), it is named "the EXCLUSIVE end" by
+// `digest_covered_to`'s own column comment, and the Slack card therefore prints it as
+// "Up to" and never "To". The same convention is asserted here rather than re-decided,
+// because two channels describing one stored pair two different ways is worse than
+// either convention would have been alone. Consecutive digests from one policy ABUT;
+// they do not overlap, and the Case that opened at exactly `covered_to` is in the next
+// one.
+//
+// ⛔ THE THREE SPAN FIELDS ARE PRESENT OR ABSENT TOGETHER, AND ABSENT IS A REAL
+// ANSWER. They are `nil` on a digest written before migration 00070, which did not
+// store the span. Filling them in is not available: the only inference is the window
+// start plus the policy's window AS IT IS TODAY, and an operator who has since
+// narrowed `digest_window_s` would be told every digest oto ever sent covered a span
+// none of them did (git-bug `342e071`). A consumer that sees `count` without a span
+// knows the count and does not know the window, which is exactly what oto knows.
+type Digest struct {
+	// Count is how many Cases OPENED inside the span, read off the stored row rather
+	// than recomputed — the window is closed, so there is no newer truth, and
+	// `alert_cases` is reapable, so a recomputed count would shrink as episodes aged
+	// out (migration 00058). It is at least 1 on anything oto sends
+	// (`notifications_digest_ck`), so it is never a zero dressed up as news.
+	Count int `json:"count"`
+	// CoveredFrom is the INCLUSIVE start, at or before the window's own start: it
+	// reaches back for Cases whose transaction committed too late for the previous
+	// window's read, so the honest sentence is "since the last digest, plus
+	// stragglers".
+	CoveredFrom *time.Time `json:"covered_from,omitempty"`
+	// CoveredTo is the EXCLUSIVE end. See the half-open warning above.
+	CoveredTo *time.Time `json:"covered_to,omitempty"`
+	// SpanSeconds is `covered_to - covered_from`, emitted beside the two ends for the
+	// same reason `Case.duration_seconds` is emitted beside `started_at`/`ended_at`:
+	// this envelope's convention is that a consumer never has to do date arithmetic to
+	// get a length. It is SUBTRACTED FROM THE TWO ENDS AND NEVER READ FROM A POLICY,
+	// which is the whole point of storing both — the length cannot be falsified by a
+	// later edit to the policy's window, and it is usually LONGER than that window
+	// because of the straggler lookback above.
+	SpanSeconds *float64 `json:"span_seconds,omitempty"`
 }
 
 // Alert is one Alert as a consumer sees it.

@@ -77,9 +77,12 @@ LIMIT 1`
 //
 // A key last seen more than domain.DedupTTL ago does NOT suppress: the same alert
 // set arriving again after the replay window is the same alert set FIRING again,
-// and the whole point of `refire_grace` being at least twice this wide — its
-// bound floor is `2 × DedupTTL`, and it now DEFAULTS to four times it (ADR 0026)
-// — is that oto's state machine gets to decide which of those it is.
+// and the point of the window being a TRANSPORT window rather than a product one
+// is that oto's state machine, not this table, gets to decide which of those it
+// is. ⛔ THIS SENTENCE USED TO ARGUE FROM `refire_grace` — whose bound floor was
+// `2 × DedupTTL` — and that setting is deleted (git-bug 7287b28). The reason
+// stands on its own without it: `DedupTTL` recognises a re-delivery, and every
+// question about the same problem coming BACK belongs one layer up.
 func (r *DedupRepository) Claim(
 	ctx context.Context, sourceID uuid.UUID, dedupKey string, batchID uuid.UUID, at time.Time,
 ) (domain.DedupHit, error) {

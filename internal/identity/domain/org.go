@@ -95,24 +95,18 @@ func (o Org) Shadowed() SettingsPatch {
 // The values are stored as seconds in JSONB and are typed as durations here, so
 // that no caller has to remember which unit a particular key was written in.
 type Settings struct {
-	// RefireGrace is the window a re-fire is treated as "the same problem coming
-	// back" in.
-	//
-	// ⚠️ IT NO LONGER DECIDES A TRANSITION (ADR 0040). It used to pick T8 over T7 —
-	// a re-fire inside the window reopened the closed episode and kept its
-	// acknowledgement — and a Case is strictly terminal now, so every re-fire opens
-	// the next `seq` unacked. The setting is retained because `GroupCloseDelay` is
-	// pinned at or above it and `MinRefireGraceSeconds` derives the ingest replay
-	// floor from it; whether it should be renamed or removed is undecided, and
-	// removing a settings key is a contract change of its own.
-	RefireGrace time.Duration
+	// ⛔⛔ `RefireGrace` AND `GroupCloseDelay` WERE HERE AND BOTH ARE DELETED
+	// (git-bug 7287b28). The field comment on `RefireGrace` used to end *"whether
+	// it should be renamed or removed is undecided"*; the owner decided on
+	// 2026-08-19, and the answer is removed. `GroupCloseDelay` measured how long
+	// an idle `alert_groups` GENERATION stayed open, and there are no generations
+	// — a conversation is a Case. Neither number had a reader outside this
+	// package's own CRUD. See the tombstone in `platform/tuning/defaults.go` for
+	// the whole chain.
+
 	// ResolveGrace is how long past `source_ends_at` the reaper waits before an
 	// case may expire (§B.4).
 	ResolveGrace time.Duration
-	// GroupCloseDelay is how long an idle generation is held open before closing.
-	// A closed generation is never rejoined: the next observation opens N+1, and a
-	// new generation is a new thread.
-	GroupCloseDelay time.Duration
 
 	// FlapThreshold is the transition count above which an Alert is MARKED
 	// flapping. Marking is the whole point: flapping is a VISIBLE state, never
@@ -184,7 +178,7 @@ type Settings struct {
 // are identity's alone, and moving them down would drag domain types into
 // platform and invert the direction the split exists to protect.
 //
-// ⭐ THE FOUR TIMING DEFAULTS ARE DERIVED FROM A MEASURED CORPUS, NOT CHOSEN
+// ⭐ THE TIMING DEFAULTS ARE DERIVED FROM A MEASURED CORPUS, NOT CHOSEN
 // (ADR 0026). The two numbers everything hangs off are:
 //
 //   - `group_interval: 5m` — Alertmanager's own `dispatch.DefaultRouteOpts`, and
@@ -199,17 +193,20 @@ type Settings struct {
 // docs/setup/tuning.md, and RECOMPUTED by `defaults_derivation_test.go` so a
 // default cannot drift away from the arithmetic that produced it.
 const (
-	// DefaultRefireGrace is the default width of that window. Since ADR 0040 no
-	// transition consults it; see the field comment on Settings.RefireGrace.
-	DefaultRefireGrace = tuning.DefaultRefireGrace
+	// ⛔⛔ `DefaultRefireGrace` AND `DefaultGroupCloseDelay` WERE HERE AND BOTH ARE
+	// DELETED WITH THEIR KEYS AND THEIR FIELDS (git-bug 7287b28). `platform/tuning`
+	// no longer declares either, so there is no one home left to name: a shipped
+	// default for a setting an install cannot hold is a number nothing can apply,
+	// the same argument that removed the three storm defaults below.
+	//
+	// ⚠️ THE PAIR IS ALSO THE REASON THIS BLOCK'S HEADER NO LONGER SAYS "FOUR
+	// TIMING DEFAULTS". ADR 0026 derived four from the corpus; two of the four
+	// described mechanisms ADR 0040 and git-bug 7570090 then deleted, so what the
+	// derivation still governs is `resolve_grace` and the flap window.
+
 	// DefaultResolveGrace is how long past `source_ends_at` the reaper waits
 	// before a case may expire (§B.4).
 	DefaultResolveGrace = tuning.DefaultResolveGrace
-	// DefaultGroupCloseDelay is pinned EQUAL to DefaultRefireGrace, and the
-	// equality is the whole point rather than a coincidence: a generation that
-	// closes first hands a re-fire oto classified as "the same problem coming
-	// back" a brand-new Slack root anyway. See the derivation in platform/tuning.
-	DefaultGroupCloseDelay = tuning.DefaultGroupCloseDelay
 	// DefaultFlapThreshold is the transition count above which an Alert is marked
 	// flapping — a VISIBLE state, never silent suppression (§B.6).
 	DefaultFlapThreshold = tuning.DefaultFlapThreshold
@@ -243,9 +240,7 @@ const (
 // (CONTEXT.md §6).
 func DefaultSettings() Settings {
 	return Settings{
-		RefireGrace:        DefaultRefireGrace,
 		ResolveGrace:       DefaultResolveGrace,
-		GroupCloseDelay:    DefaultGroupCloseDelay,
 		FlapThreshold:      DefaultFlapThreshold,
 		FlapWindow:         DefaultFlapWindow,
 		FlapDigestInterval: DefaultFlapDigestInterval,
@@ -264,14 +259,8 @@ func DefaultSettings() Settings {
 // never touched the settings screen.
 func (s Settings) Normalise() Settings {
 	d := DefaultSettings()
-	if s.RefireGrace <= 0 {
-		s.RefireGrace = d.RefireGrace
-	}
 	if s.ResolveGrace <= 0 {
 		s.ResolveGrace = d.ResolveGrace
-	}
-	if s.GroupCloseDelay <= 0 {
-		s.GroupCloseDelay = d.GroupCloseDelay
 	}
 	if s.FlapThreshold <= 0 {
 		s.FlapThreshold = d.FlapThreshold

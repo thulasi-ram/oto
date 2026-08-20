@@ -350,6 +350,14 @@ func suppressionDetail(reason string) string {
 	// `default` below is the honest answer for anything this switch has never heard of.
 	case "throttled":
 		return "the throttle for this destination is engaged, so this notification was suppressed."
+	// The throttle's dual, and the one arm here that explains a silence which is
+	// expected rather than surprising: a count condition is unmet for most of its
+	// own window by design. The sentence therefore says WHICH WAY the number has to
+	// move, because "not met" alone reads like a fault.
+	case "below_threshold":
+		return "a policy matched, but its count condition is not met yet: fewer subjects of the " +
+			"kind it binds have been seen inside count_window_s than count_min asks for. Lower " +
+			"count_min, widen the window, or clear the condition to send on the first fact."
 	case "verbosity":
 		return "a policy matched, but every destination's verbosity setting says this fact is not " +
 			"worth a message."

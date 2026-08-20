@@ -72,9 +72,7 @@ type OrgSettingsViewDTO struct {
 // tuning, and a complete tuning cannot express "this org set two keys and nothing
 // else".
 type OrgSettingsPatchDTO struct {
-	RefireGraceS        *int `json:"refire_grace_s,omitempty"`
 	ResolveGraceS       *int `json:"resolve_grace_s,omitempty"`
-	GroupCloseDelayS    *int `json:"group_close_delay_s,omitempty"`
 	FlapThreshold       *int `json:"flap_threshold,omitempty"`
 	FlapWindowS         *int `json:"flap_window_s,omitempty"`
 	FlapDigestIntervalS *int `json:"flap_digest_interval_s,omitempty"`
@@ -82,6 +80,12 @@ type OrgSettingsPatchDTO struct {
 	EventRetentionMonth *int `json:"event_retention_months,omitempty"`
 
 	DefaultVerbosity *string `json:"default_verbosity,omitempty"`
+
+	// ⛔⛔ `refire_grace_s` AND `group_close_delay_s` WERE THE FIRST AND THIRD
+	// FIELDS AND BOTH ARE DELETED (git-bug 7287b28). An override of a key that
+	// decides nothing is the worst thing this type can hold: `Shadowed` would
+	// faithfully report *"you have an override of 900s and configuration is forcing
+	// 600s"* about a number no code path reads.
 }
 
 // toOrgSettingsPatchDTO renders what an org wrote, field for field. It defaults
@@ -89,9 +93,7 @@ type OrgSettingsPatchDTO struct {
 // type is which keys are set.
 func toOrgSettingsPatchDTO(p domain.SettingsPatch) OrgSettingsPatchDTO {
 	return OrgSettingsPatchDTO{
-		RefireGraceS:        p.RefireGraceS,
 		ResolveGraceS:       p.ResolveGraceS,
-		GroupCloseDelayS:    p.GroupCloseDelayS,
 		FlapThreshold:       p.FlapThreshold,
 		FlapWindowS:         p.FlapWindowS,
 		FlapDigestIntervalS: p.FlapDigestIntervalS,
@@ -116,7 +118,7 @@ type SettingBoundDTO struct {
 //
 // ⚠️ EVERY FIELD IS A POINTER AND OMISSION MEANS "LEAVE IT ALONE". A settings
 // API where an omitted key silently reverts to the default is an API that reverts
-// nine settings every time somebody changes one. Returning a key to oto's default
+// seven settings every time somebody changes one. Returning a key to oto's default
 // is done by NAMING it in `reset`, which is explicit and cannot happen by
 // accident.
 //
@@ -125,9 +127,7 @@ type SettingBoundDTO struct {
 // would be a second copy that could disagree, and R9 wants three copies that
 // agree — the domain table, the OpenAPI schema and the DDL — not four.
 type UpdateOrgSettingsRequest struct {
-	RefireGraceS        *int `json:"refire_grace_s,omitempty"`
 	ResolveGraceS       *int `json:"resolve_grace_s,omitempty"`
-	GroupCloseDelayS    *int `json:"group_close_delay_s,omitempty"`
 	FlapThreshold       *int `json:"flap_threshold,omitempty"`
 	FlapWindowS         *int `json:"flap_window_s,omitempty"`
 	FlapDigestIntervalS *int `json:"flap_digest_interval_s,omitempty"`
@@ -137,6 +137,13 @@ type UpdateOrgSettingsRequest struct {
 	// DefaultVerbosity is the fallback for a Channel that names no verbosity.
 	DefaultVerbosity *string `json:"default_verbosity,omitempty"`
 
+	// ⛔⛔ `refire_grace_s` AND `group_close_delay_s` WERE HERE AND BOTH ARE DELETED
+	// (git-bug 7287b28). ⚠️ THIS SCHEMA IS `additionalProperties: false`, so a
+	// PATCH still naming either is now a 400 rather than a stored number nothing
+	// reads — which is the behaviour to want for the same reason the broadcast key
+	// wanted it: an operator who believes they tightened a grace window must not be
+	// told it worked.
+	//
 	// ⛔ `broadcast_on_resolved` WAS HERE AND IS DELETED (git-bug 7570090). It was
 	// the write half of ADR 0020's one configurable broadcast. ⚠️ THE REQUEST
 	// SCHEMA IS `additionalProperties: false`, so a PATCH still naming the key is
@@ -160,9 +167,7 @@ type UpdateOrgSettingsRequest struct {
 // is silently dropped is a reset the operator believes happened and did not.
 func (r UpdateOrgSettingsRequest) toDomain() (domain.SettingsPatch, []domain.SettingKey, error) {
 	patch := domain.SettingsPatch{
-		RefireGraceS:        r.RefireGraceS,
 		ResolveGraceS:       r.ResolveGraceS,
-		GroupCloseDelayS:    r.GroupCloseDelayS,
 		FlapThreshold:       r.FlapThreshold,
 		FlapWindowS:         r.FlapWindowS,
 		FlapDigestIntervalS: r.FlapDigestIntervalS,
@@ -252,8 +257,8 @@ func (rt *Router) getOrgSettings(w http.ResponseWriter, r *http.Request) {
 //
 // ⛔ THE BOUNDS ARE THE SERVER'S, NOT THE FORM'S. The service validates the
 // MERGED state, so a write cannot slip a value past by relying on a key it did
-// not send, and a `refire_grace_s` of 0 is refused here whatever the UI would
-// have allowed — that value is a Slack thread per transition.
+// not send, and a `resolve_grace_s` of 0 is refused here whatever the UI would
+// have allowed — that value lets one missed scrape expire a live case.
 //
 // ⛔ A KEY THE DEPLOYMENT'S CONFIGURATION MANAGES IS REFUSED WITH 409, and the
 // problem's violations name the config key that owns it. Accepting the write

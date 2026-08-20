@@ -31,7 +31,7 @@ accident report — and it is trusted precisely *because* it does none of those 
 
 > ### FR-1, the Flight Recorder Test
 > Complete this sentence about the row your feature writes: **"This row is a fact about ______."**
-> - A **signal** — Alert, AlertCase, AlertGroup, RuleSnapshot, Notification, Delivery,
+> - A **signal** — Alert, AlertCase, RuleSnapshot, Notification, Delivery,
 >   AlertSource, or an aggregate over those → **IN**.
 > - A **person, team, rota, responsibility, response effort, ticket, or customer-facing
 >   statement** → **OUT**.
@@ -57,7 +57,7 @@ them; they have different expiry dates.
 | Door | Clause |
 |---|---|
 | **No person-reference column on a signal row.** No `assigned_to`, `owner_id`, `watchers`, `incident_id`, `ticket_id`, `sla_due_at`. `acked_by` is past-tense attribution and is the **only** exception. | SPEC §D.4.0 |
-| **One reminder stage, forever.** `unacked_reminder_after_s` is a scalar; it must never become an array, a ladder, or acquire a target other than the policy's `channel_ids`. | SPEC §G.9.1 |
+| **No unprompted reminder, at all.** The one reminder stage was withdrawn (git-bug `bd0fb1d`); oto sends nothing nobody asked for. This SUPERSEDES "one stage, forever" and is strictly stronger — there is no first stage for a second to follow. Re-adding any unprompted reminder needs an ADR arguing against FR-1 by name. `escalation` remains a banned word. | SPEC §G.9.1 |
 | **No human writes a signal's `state`.** There is no `POST /alerts/{id}/resolve`, ever — nor close, merge, dismiss, reopen. `ack_state` is the only state axis a human may write. | SPEC §E.1.1 |
 | **`notification_policies` routes to destinations, never to people.** No `user_ids`, `schedule_id`, `time_of_day`. | SPEC §D.8 |
 
@@ -81,22 +81,45 @@ Permanently out of scope, with hand-offs: SPEC §I.1.1.
 | Term | Means |
 |---|---|
 | **Alert** | The **identity of a label set** within `(org, cluster)`. Created on first sight, survives resolution forever. oto's answer to Sentry's *Issue*. |
-| **AlertCase** | One **contiguous firing episode** of an Alert, `(alert_id, seq)`. What you ack; whose FIRING DURATION is measured. Never "MTTR" — banned (§A.1). |
+| **AlertCase** | One **contiguous firing episode** of an Alert, `(alert_id, seq)`. What you ack; whose FIRING DURATION is measured. Never "MTTR" — banned (§A.1). **Strictly terminal**: `open → closed`, once. A re-fire opens the next `seq`, never revives this one (ADR 0040). |
 | **AlertEvent** | One **immutable thing that happened at one instant**. The timeline. Append-only. |
-| **AlertGroup** | One **generation of one Alertmanager notification group**, from `(source, receiver, groupLabels)`. **Owns exactly one Slack thread.** |
 | **RuleSnapshot** | A content-addressed capture of a Prometheus alerting rule at a point in time. The differentiator. |
 | **AlertSource** | One configured Alertmanager (+ optional Prometheus). HA replicas share a Cluster. |
 | **Cluster** | Identity/failure domain. `cluster_key` participates in alert identity. |
 | **Channel** | A **configured destination instance** ("Slack workspace T123, #sre-alerts"). Not a channel *type*. |
 | **Notification** | The channel-agnostic **intent** to communicate one fact. Idempotent. |
 | **NotificationDelivery** | **One materialisation** of a Notification on one Channel. Owns retry state and provider ids. |
-| **ChannelThread** | The binding of an AlertGroup to `(slack_channel_id, root_ts)`. |
+| **Conversation** | What a `channel_threads` row is *about*, as the pair `(conversation_kind, conversation_id)`: a **Case** or a **digest**. A conversation holds exactly **one Case** — a new Case always means a new thread — and a digest's conversation is keyed by the **policy** that asked for it, one per policy per channel. It is what **decides which facts share a message**, and that decision now belongs to the `notification` layer rather than to a stored grouping row (git-bug `7570090`, migration `00069`). It is **not** a `correlation` (deferred, and it would need a stated algorithm) and **not** an incident (permanently out). |
+| **ChannelThread** | The binding of a **Conversation** to `(slack_channel_id, root_ts)`. |
 | **Enrichment** | One typed, provenanced result from one named, versioned `Enricher`. |
 | **Silence** | A **read-only mirror** of an Alertmanager silence. |
 
 **Ambiguity bans:** unqualified `event`; `issue`; "notification" meaning a Slack message (that is a
 Delivery); "group" meaning a UI grouping (that is a *view*); "alert" meaning a case or a
 Slack message.
+
+⛔ **`AlertGroup` IS A RETIRED NOUN AND MUST NOT COME BACK** (git-bug `7570090`, migration `00069`).
+It named one *generation of a notification grouping*, keyed by `(org, cluster, alertname,
+namespace-or-∅)` from the alert's own labels (ADR 0038), and its glossary row said what it was for in
+the same breath as it named the object: it *"decides which facts share a message"* and *"owns exactly
+one Slack thread"*. Deciding which facts share a message is the definition of a **notification
+policy**, and the row held no fact an operator supplied and none upstream sent — it held a decision
+oto made, identically for every org forever. `alert_groups` is deleted, `alert_cases.group_id` with
+it, and **the conversation is the Case**. Three consequences worth stating because each is a place
+the noun tries to return: the axes above are no longer any entity's identity (see SPEC §C.4);
+`alert_group` is gone from the `subject_kind` and `conversation_kind` vocabularies, and a value
+still spelling it is **REJECTED, not canonicalised** — `ConversationKind.SubjectKind()`
+(`internal/notification/domain/notification.go`) is total over the two kinds that exist and returns
+the **empty** `SubjectKind` for anything else, which `threads_subjkind_ck` refuses at the write. That
+is a loud failure rather than a thread silently opened under the wrong key, and it is what the tests
+assert: rejection, not a quiet rewrite into `case`. ⛔ **Do not add a canonicalising arm.** Mapping
+the old spelling onto `case` would be widening the kind to mean "generation or case", which is the one
+thing the retired constant's own comment warned against — a generation could hold many Cases and a
+conversation may not, so the cardinality changed with the spelling. Migration `00069` answered the old
+spelling by **narrowing the CHECKs** (`threads_subjkind_ck`, `notifications_subjkind_ck`,
+`notifications_convkind_ck`), not by giving the decoder an arm. And the plurality Reasons
+`new_alerts` and `some_resolved`
+left with it, because arithmetic over a set of one has no answer to give.
 
 **Scope bans** — these MUST NOT appear in a Go identifier, a table or column name, a JSON field, an
 API path or UI copy. AC-49 greps for them in CI:
@@ -105,14 +128,25 @@ API path or UI copy. AC-49 greps for them in CI:
 `owner_id` · `responder` · `triage` · `postmortem` · `war room` · `SLA` · `MTTA` · `MTTR` ·
 `severity override` · `close` (of an alert) · `merge` · `dismiss` · `watcher`/`subscriber`
 
-Say **firing duration**, not MTTR. Say **unacked reminder**, not escalation. Say **correlation**,
-not incidents.
+Say **firing duration**, not MTTR. Say **correlation**, not incidents. ⛔ `escalation` has no
+replacement term and this line used to offer one: it said "say **unacked reminder**", and the one
+reminder stage `escalation` had been reshaped into was itself withdrawn (git-bug `bd0fb1d`) — see
+the **No unprompted reminder, at all** row above. The word stays banned with nothing to say
+instead, which is the point: there is no oto concept in that shape.
 
 ### The four states and THREE orthogonal axes
 
 `firing` · `suppressed` · `resolved` · `expired`, plus **two orthogonal axes**:
 `ack_state` (`unacked`|`acked`) and **snooze** (§B.8). An acked alert is still firing. **A snoozed
 alert is still firing and must still be rendered as firing** — colouring it calm would be a lie.
+
+**The four words are the ALERT's.** They live on `alerts.state`. `alert_cases.state` holds
+`open | closed` and nothing else (ADR 0040): an episode's only fact about itself is whether it is
+still running. The four-way reading of a Case is derived and total — open + no `suppression_reason` is
+`firing`, open + one is `suppressed`, closed + `resolve_reason='upstream'` is `resolved`, closed +
+`'timeout'` is `expired`. Say **an episode is open or closed**, and **an alert is firing, suppressed,
+resolved or expired**; the two vocabularies are not interchangeable and swapping them is how the
+column acquired four values in the first place.
 
 **Snooze** suppresses *oto's own notifications* for one `alert_key` until T. It is stored only in
 oto (`alert_snoozes`), auto-expires (5 min…30 days, never indefinite), is attributed and visible,
@@ -129,6 +163,12 @@ Rules you must not get wrong:
   the webhook, so only the reconciler can **enter** `suppressed` (T3). But **either the reconciler
   or ingest can leave it** (T4): a webhook arrival is *positive proof* of non-suppression, because a
   suppressed alert would never have been sent. The asymmetry is deliberate.
+- **A closed case never reopens.** A re-fire always opens the next `seq`, **unacknowledged**, whatever
+  the clock says (T7; there is no T8 — ADR 0040). An acknowledgement is a receipt for *one* firing, and
+  the second firing is not the one that was signed for. `refire_grace` used to decide it and is now
+  **deleted outright** — the setting, its bounds, its derived default and its two API surfaces
+  (git-bug `7287b28`, migration `00071`). ADR 0040 removed the transition; the knob outlived it by a
+  release, validating a number nothing read.
 - **`ended_at` is clamped to `started_at`.** A backward-skewed upstream clock must never abort an
   ingest transaction. Clamp, flag `clamped: true`, measure the skew — never reject.
 - **Losing sight of an alert is not the alert resolving.** The reaper is *blocked* while
@@ -145,7 +185,6 @@ Rules you must not get wrong:
 | `sources` | CORE | Alertmanager/Prometheus registry, credentials, health; owns the AM v2 + Prom v1 clients. |
 | `ingestion` | CORE | Durably accept raw batches and normalise them to Observations. Nothing else — and **not** the reconciler: SPEC §I.2's tree draws `ingestion/worker/reconcile_source`, but it is implemented in `sources` (`internal/sources/service/reconcile.go`, which says so), because every collaborator it needs is owned there. |
 | `alerts` | CORE | Identity/dedup, the case state machine, the append-only timeline. The heart. |
-| `grouping` | CORE | Durable groups, generations, membership, storm detection. |
 | `rules` | CORE | Fetch, content-address, version and diff rule definitions at fire time. |
 | `enrichment` | CORE | The `Enricher` port, the budgeted pipeline, caching, provenanced results. |
 | `notification` | CORE | Policy matching, idempotent intents, fan-out, thread ordering, throttle/damping. |
@@ -153,7 +192,8 @@ Rules you must not get wrong:
 | `streaming` | CORE | `ui_events`, LISTEN/NOTIFY bridge, SSE hub with resume. |
 | `silences` | PERIPHERAL | Read-only mirror of AM silences. **No write path.** |
 | `stats` | PERIPHERAL | Alert-hygiene accounting. **Never per-person.** |
-| `drill` | PERIPHERAL | Synthetic end-to-end delivery drills. It imports **no** other module: it reaches six of them — `alerts`, `grouping`, `ingestion`, `notification`, `channels`, `rules` — by writing their table names into SQL (`alerts`, `alert_cases`, `alert_events`, `alert_groups`, `ingest_batches`, `ingest_rejections`, `notifications`, `notification_deliveries`, `notification_policies`, `channels`, `channel_threads`, `rule_snapshots`). Those twelve, plus its own `delivery_drills`, are DECLARED in `test/arch/sqltables_test.go` with their owner and how far the drill may go against each. The reads stay SQL on purpose — a port satisfied by the owning module's service would have the drill ask the code under test whether the code under test worked. |
+| `drill` | PERIPHERAL | Synthetic end-to-end delivery drills. It imports **no** other module: it reaches five of them — `alerts`, `ingestion`, `notification`, `channels`, `rules` — by writing their table names into SQL (`alerts`, `alert_cases`, `alert_events`, `ingest_batches`, `ingest_rejections`, `notifications`, `notification_deliveries`, `notification_policies`, `channels`, `channel_threads`, `rule_snapshots`). Those eleven, plus its own `delivery_drills`, are DECLARED in `test/arch/sqltables_test.go` with their owner and how far the drill may go against each. The reads stay SQL on purpose — a port satisfied by the owning module's service would have the drill ask the code under test whether the code under test worked. |
+| ⛔ `grouping` | **DELETED** | It owned durable groups, generations, derived membership and group lifecycle — 20 non-test files, 5 243 LOC — and it is gone (git-bug `7570090`, migration `00069`). ⭐ The measurement is the lesson: deleting it produced **four** build errors, all in `internal/app`. `notification` never imported it and `alerts` carried only a `uuid`. **The module coupling was thin and the concept coupling was broad**, which is why the change touched 187 files and almost none of them were the module. The conversation is now the Case (see the glossary), so nothing replaced it. |
 | `app` | WIRING | The composition root. Constructs every concrete, satisfies every port, registers the workers and routes. THE one place allowed to know every module, and deliberately outside every cross-domain rule. Not a domain. |
 | `correlation` (was `incidents`), `k8scontext`, `changefeed`, `views`, `audit` (config changes only), `authz`, extra channel providers, anything AI | DEFERRED-POST-V1 | Do not build. Do not stub beyond the ports that already exist. |
 | `incidents`, `oncall`, assignment, multi-stage escalation, paging, status pages, postmortems, SLA/MTTA, manual resolve/merge/close, watchers | **PERMANENTLY OUT** | There is no version of oto containing these. Adding one needs an ADR arguing **against FR-1 by name**. See SPEC §I.1.1 for the hand-offs. |
@@ -167,27 +207,44 @@ direction in one place and wrong about being enforced nearly everywhere. They ar
 **1. Compile-time imports — the real DAG, and the only edges anything checks.**
 
 ```
-enrichment ──► rules ──► alerts ◄── grouping
+enrichment ──► rules ──► alerts
                           ▲   ▲
               silences ───┘   └─── sources
 ```
 
-⛔ **`alerts` imports no other module.** Everything it needs from `grouping`, `enrichment`,
-`notification` and `streaming` is a port it declares itself in `alerts/service/deps.go`. This is
+⛔ **`alerts` imports no other module.** Everything it needs from `enrichment`, `notification`
+and `streaming` is a port it declares itself in `alerts/service/deps.go`. This is
 what lets oto run with notifications entirely disabled — which is how the first correctness tests
 run — and it is why `alerts` is the sink of this graph, not its source.
 
-⚠️ **`alerts ──► grouping` was drawn here for a long time and it is BACKWARDS.**
-`grouping/service` and `grouping/api` import `alerts/service`; `alerts` imports neither. The one
-thing that knows both is `internal/app/adapters.go`'s `alertObserver` — *"THE INGEST
-ORCHESTRATOR: the one place that may know both `alerts` and `grouping`"* — and it lives in the
-composition root exactly so that neither module has to name the other. A contributor who trusted
-the old arrow would have written the import that this arrangement exists to prevent.
+⛔ **`alerts ◄── grouping` WAS DRAWN HERE AND BOTH THE ARROW AND ITS MODULE ARE GONE**, and the
+paragraph it carried is kept because the lesson outlived the edge. It read: *"`alerts ──► grouping`
+was drawn here for a long time and it is BACKWARDS — `grouping/service` and `grouping/api` import
+`alerts/service`; `alerts` imports neither. A contributor who trusted the old arrow would have
+written the import that this arrangement exists to prevent."* A drawn edge pointing the wrong way is
+worse than no edge, because it reads as permission.
+
+⚠️ **A COMMENT THAT DESCRIBES DELETED MACHINERY IN THE PRESENT TENSE IS A DEFECT, AND THIS IS THE
+STANDING INSTRUCTION RATHER THAN A LIST.** `internal/app/adapters.go`'s `alertObserver` was the worst
+case — it called itself *"the one place that may know both `alerts` and `grouping`"* and described
+resolving an `alert_groups` generation as something it does — and it is now written in the past tense.
+That is the shape to copy: say what the seam **used to do**, name what deleted it (git-bug `7570090`,
+migration `00069`), and keep the argument for the seam when the argument outlived the work. There is
+no `grouping` to know and no group to resolve, so a present-tense sentence about either is simply
+false.
+
+⛔ **DO NOT READ THAT AS "THE LAST ONE IS FIXED", AND NO COUNT IS RECORDED HERE ON PURPOSE.**
+`7570090` deleted an entity that was named in prose across the tree, so present-tense references to
+`grouping`, `alert_groups`, a group id, a member set or an `/alert-groups/*` route survive in every
+file nobody has re-read yet. They are found by **reading**, not by `grep` — the same words are correct
+in a past-tense sentence — and a number written down here would be stale the moment somebody fixes one
+more site, which is how "the last one" got written in the first place. Fix what you find, in the file
+you are already in.
 
 Two cross-module imports are **not** module dependencies and are drawn nowhere above:
 
 - **RULE K** — every module may import `alerts/domain`, the shared domain kernel (§5.2b).
-  `ingestion`, `grouping`, `rules`, `silences`, `sources` and `notification` all do.
+  `ingestion`, `rules`, `silences`, `sources` and `notification` all do.
 - **RULE V** — `notification` may import `channels/domain`, because §F.2 has
   `notification/service` **build** `channels/domain.NotificationView` and hand it to a `Renderer`
   whose concrete it never names. `channels/service` is injected.
@@ -197,11 +254,10 @@ No import exists in either direction, and nothing enforces the arrow:
 
 | Consumer declares | Satisfied from | Wired at |
 |---|---|---|
-| `ingestion/service.AlertObserver` | `alerts` **and** `grouping` | `app.alertObserver` (adapters.go) |
+| `ingestion/service.AlertObserver` | `alerts` | `app.alertObserver` (adapters.go) |
 | `alerts/service.EnrichmentReader` | `enrichment` | container.go |
 | `alerts/service.NotificationReader` | `notification` | container.go |
-| `alerts/service.GroupVersionReader` | `grouping` | container.go |
-| `alerts`/`grouping` `service.StreamAppender` | `streaming` | adapters.go |
+| `alerts/service.StreamAppender` | `streaming` | adapters.go |
 | `notification/service.ChannelRegistry` | `channels` | container.go |
 | `rules/service.RuleLookup` | `sources/service.ResolveRule` | adapters.go |
 | `silences/service.SilenceSource`, `silences/api.SourceBaseURLs` | `sources` | `app/silencesource.go` |
@@ -211,10 +267,10 @@ producer never names the consumer, so there is nothing to enforce at all:
 
 | Producer | Kind | Handled by |
 |---|---|---|
-| `alerts`, `grouping`, `enrichment` | `notify.evaluate` | `notification` |
+| `alerts`, `ingestion`, `enrichment` | `notify.evaluate` | `notification` |
 | `alerts`, `enrichment` | `enrich.run` | `enrichment` |
 
-**4. Table names in SQL — no Go edge whatsoever.** `drill` reads six other modules' tables by
+**4. Table names in SQL — no Go edge whatsoever.** `drill` reads five other modules' tables by
 name (see its row above); `notification/repository/snapshot.go` joins `alert_sources` to learn a
 source's kind so it can decide whether an Alertmanager silence URL is one oto can vouch for.
 No compiler, no depguard rule and no import graph can see either one — `test/arch/arch_test.go`
@@ -226,8 +282,7 @@ permitted access: a fourteenth table fails CI the way a new import does, a decla
 names any more fails as stale, a SELECT that grows into a DELETE fails even though the table was
 already declared, and a table its owner renames fails on the OWNER's side rather than at runtime on
 the drill path. It also holds `dispose.go`'s two stated invariants — every DELETE scoped by an id
-and not merely by `org_id` and a predicate, and `AND synthetic` still on `alerts` and
-`alert_groups` — which were argued in a comment on a file nothing in the build system knew was
+and not merely by `org_id` and a predicate, and `AND synthetic` still on `alerts` — which were argued in a comment on a file nothing in the build system knew was
 special.
 
 ⚠️ `notification`'s `alert_sources` join and `stats`' ten borrowed tables are **not** declared
@@ -285,8 +340,8 @@ internal/<domain>/
 2c. **`internal/platform/tuning` is the ONE home of the shipped §D.1 tuning defaults.** It is
    constants and nothing else — no types, no behaviour, no import but `time`. `identity/domain`
    still OWNS the tenant's tuning (the keys, the bounds, the provenance, the `Settings` struct);
-   what moved is only the shipped NUMBER, because `alerts/domain`, `grouping/domain`,
-   `alerts/service` and `platform/config` all need it and rule 4 forbids every one of them
+   what moved is only the shipped NUMBER, because `alerts/domain`, `alerts/service` and
+   `platform/config` all need it and rule 4 forbids every one of them
    importing identity. They used to keep copies with a ⚠️ comment each, ADR 0026 moved three
    defaults at once and two copies were missed, and the miss is silent — a stale fallback is what
    an org gets when its settings row fails to load. Every declaration outside this package is now
@@ -396,7 +451,7 @@ text. Tokens and **measured** contrast ratios: SPEC §M.4–M.5.
 - Real Postgres via `testcontainers-go`. Mocked DBs lie about SQL semantics.
 - Renderers are pure functions with checked-in `testdata/*.golden.json` + a CI Block Kit validator.
 - Real upstream payloads live in `test/fixtures/` and are replayed deterministically.
-- **Write `test/load/storm_test.go` (a 5 000-alert batch) before the feature that handles it.**
+- **Write `test/load/burst_test.go` (a 5 000-alert batch) before the feature that handles it.**
 
 **Ingest path — the rules that must never be broken**
 - 202 on accept. **503 + `Retry-After` for anything transient. NEVER 429. NEVER 4xx.**
@@ -420,8 +475,10 @@ text. Tokens and **measured** contrast ratios: SPEC §M.4–M.5.
 - **oto never reads Slack back.** Our DB is the memory of Slack.
 
 **Product and ethics (requirements, not aspirations)**
-- **Default to quiet.** Grouping, flap damping, storm collapse ON by default; snooze is the manual
-  sibling. All of them are **visible UI states**, never silent suppression — silence destroys trust.
+- **Default to quiet, but never silent.** Grouping and flap damping ON by default; snooze is the
+  manual sibling. All of them are **visible UI states**, never silent suppression — silence destroys
+  trust. ⛔ Storm collapse was removed for failing exactly that test (ADR 0042): oto never decides
+  a real firing was not worth mentioning.
 - **Never claim resolved when we mean expired.**
 - **Delivery failure must be visible per alert.** oto's silence must never be indistinguishable from
   "no alert".
@@ -444,7 +501,6 @@ text. Tokens and **measured** contrast ratios: SPEC §M.4–M.5.
 | Migrations | SPEC §D in full, §C for the key formats |
 | `ingestion` | SPEC §C.5, §G.1–G.4, §G.8; ADRs 0006, 0007 |
 | `alerts` | SPEC §A, §B, §C.2–C.3, §C.8, §D.4; ADRs 0003, 0004 |
-| `grouping` | SPEC §C.4, §B.6, §D.5; ADR 0005 |
 | `rules` | SPEC §C.6, §D.6, §F.4; ADR 0009 |
 | `notification` + `channels` | SPEC §F.1–F.2, §G.5–G.7, §H in full; ADRs 0008, 0023 |
 | `streaming` | SPEC §E.4, §D.10; ADR 0010 |

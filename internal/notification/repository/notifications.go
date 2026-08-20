@@ -42,21 +42,30 @@ type notificationRow struct {
 	suppressedReason  *string
 	digestWindowStart *time.Time
 	digestCount       *int
+	// The SPAN (migration 00070). Nullable, and nullable for good: a digest written
+	// before that migration does not know its own length, and the only way to invent
+	// one is to multiply the stored start by the policy's window as it is today —
+	// which is the inference these two columns exist to retire.
+	digestCoveredFrom *time.Time
+	digestCoveredTo   *time.Time
 	createdAt         time.Time
 	updatedAt         time.Time
 }
 
-// scanInto is the ONE argument list for `notificationColumns`. Four queries in this
-// file read the same seventeen columns, and the two new ones would otherwise have to
-// be added to four hand-written Scan lists in the right position — a mistake that
-// compiles and fails at run time on whichever path has no test.
+// scanInto is the ONE argument list for `notificationColumns`. Five queries across
+// this package read the same twenty columns, and the two migration 00070 added would
+// otherwise have to be inserted into five hand-written Scan lists in the right
+// position — a mistake that compiles and fails at run time on whichever path has no
+// test.
 func (r *notificationRow) scanInto() []any {
 	return []any{
 		&r.id, &r.orgID, &r.subjectKind, &r.subjectID,
 		&r.conversationKind, &r.conversationID,
 		&r.alertID, &r.caseID, &r.reason, &r.policyID,
 		&r.stateVersion, &r.idempotencyKey, &r.status, &r.suppressedReason,
-		&r.digestWindowStart, &r.digestCount, &r.createdAt, &r.updatedAt,
+		&r.digestWindowStart, &r.digestCount,
+		&r.digestCoveredFrom, &r.digestCoveredTo,
+		&r.createdAt, &r.updatedAt,
 	}
 }
 
@@ -77,6 +86,8 @@ func (r notificationRow) toDomain() domain.Notification {
 		Status:            domain.Status(r.status),
 		DigestWindowStart: r.digestWindowStart,
 		DigestCount:       r.digestCount,
+		DigestCoveredFrom: r.digestCoveredFrom,
+		DigestCoveredTo:   r.digestCoveredTo,
 		CreatedAt:         r.createdAt,
 		UpdatedAt:         r.updatedAt,
 	}
@@ -105,12 +116,21 @@ func (r *NotificationRepository) db(ctx context.Context) db.Querier { return db.
 
 // ⛔ `group_id` LEFT THIS LIST (git-bug `7570090`, migration `00069`). The delivery
 // target is the pair `(conversation_kind, conversation_id)`, which is what replaced it
-// — 18 columns now, not 19.
+// — 18 columns then, not 19.
+//
+// ⭐ AND `digest_covered_from` / `digest_covered_to` JOINED IT (git-bug `342e071`,
+// migration `00070`), so it is 20. They are the SPAN the digest covered, which
+// `digest_window_start` could never state on its own: a start is only a span in
+// combination with the window length that was in force when it was sent, and no
+// column held the length. Every reader that wanted a span had to multiply the start
+// by the policy's CURRENT `digest_window_s`, which is the inference that re-reported
+// a whole hour as six ten-minute digests the first time somebody narrowed a window.
 const notificationColumns = `
   id, org_id, subject_kind, subject_id, conversation_kind, conversation_id,
   alert_id, case_id,
   reason, policy_id, state_version, idempotency_key, status, suppressed_reason,
-  digest_window_start, digest_count, created_at, updated_at`
+  digest_window_start, digest_count, digest_covered_from, digest_covered_to,
+  created_at, updated_at`
 
 // ⚠️ THE ARBITER STAYS `(org_id, idempotency_key)` EVEN THOUGH A DIGEST HAS A
 // SECOND UNIQUE INDEX. `notif_digest_uniq (org_id, policy_id, digest_window_start)
@@ -128,8 +148,9 @@ INSERT INTO notifications (
   id, org_id, subject_kind, subject_id, conversation_kind, conversation_id,
   alert_id, case_id,
   reason, policy_id, state_version, idempotency_key, status, suppressed_reason,
-  digest_window_start, digest_count, created_at, updated_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$17)
+  digest_window_start, digest_count, digest_covered_from, digest_covered_to,
+  created_at, updated_at)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$19)
 ON CONFLICT (org_id, idempotency_key) DO NOTHING
 RETURNING` + notificationColumns
 
@@ -168,7 +189,8 @@ func (r *NotificationRepository) Insert(
 		string(n.ConversationKind), n.ConversationID,
 		n.AlertID, n.CaseID, string(n.Reason), n.PolicyID, n.StateVersion,
 		n.IdempotencyKey, string(n.Status), suppressed,
-		n.DigestWindowStart, n.DigestCount, n.CreatedAt,
+		n.DigestWindowStart, n.DigestCount,
+		n.DigestCoveredFrom, n.DigestCoveredTo, n.CreatedAt,
 	).Scan(row.scanInto()...)
 	switch {
 	case err == nil:
@@ -293,6 +315,96 @@ func (r *NotificationRepository) CountRecent(
 	err := r.db(ctx).QueryRow(ctx, countRecentSQL, s.OrgID(), conversationID, since).Scan(&n)
 	if err != nil {
 		return 0, mapErr(err, "notification_not_found", "count recent notifications")
+	}
+	return n, nil
+}
+
+// ⭐⭐ THE FLOOR'S NUMERATOR COUNTS SUBJECTS AND THE THROTTLE'S COUNTS ROWS, AND
+// THE ASYMMETRY IS THE WHOLE POINT OF `subject_kinds` (migration `00072`,
+// `policies_count_subject_ck`). A throttle asks "how much has oto already SAID into
+// this thread", so its numerator is messages. A count condition asks "how many of
+// these have HAPPENED", and it answers in CASES: `digest_floor` counts Cases because
+// 00058 chose Cases in a comment, `subject_kinds` is that choice becoming a column,
+// and `policies_count_case_ck` is the column being pinned to the one value the
+// arithmetic below is honest for. So this count is `count(DISTINCT subject_id)` over
+// that kind: five re-fires of one episode are one thing that happened five times, not
+// five things, and `count(*)` here would clear a threshold of five on a single Case
+// that was acked, enriched, expired and refired.
+//
+// ⛔ AND `subject_kind = 'alert'` IS UNREACHABLE HERE FOR A REASON THIS QUERY MAKES
+// PLAIN. An alert-subject row's `subject_id` is the alert IDENTITY, one value across
+// every firing, so `count(DISTINCT subject_id)` for one policy bound to `alert` counts
+// OTHER alerts and never the re-firing in front of it — the permanent mute
+// `policies_count_case_ck` now refuses at the door.
+//
+// ⭐ SUPPRESSED ROWS ARE COUNTED, WHICH IS THE OPPOSITE OF `countRecentSQL` AND IS
+// FORCED RATHER THAN CHOSEN. The throttle excludes them so a cap cannot count its
+// own suppressions and become a permanent mute. Read the same exclusion into a
+// FLOOR and the failure is the same one from the other side: every fact below the
+// threshold is suppressed BY the threshold, so an excluded-suppressions numerator
+// would sit at zero forever and the policy would never speak at all — the
+// permanent mute again, arrived at by symmetry. A suppressed row is oto's record
+// that the fact HAPPENED, which is exactly the question this count asks; whether
+// oto spoke about it is a different question and belongs to the throttle.
+//
+// ⚠️ AND IT IS SCOPED TO ONE POLICY, NOT TO THE CONVERSATION, BECAUSE THE
+// CONVERSATION IS USUALLY THE THING BEING COUNTED. "PodRestart opened 5 Cases in
+// an hour" (git-bug `7570090`) is five Cases and therefore five conversations, so a
+// per-conversation numerator would read 1 on each of them and the condition could
+// never be met by the facts it exists to describe. `policy_id` is what makes the
+// count "a policy's floor on its own recent history" (`domain.CountOverWindow`),
+// and it is NOT NULL on every row a routed evaluation writes — including the ones
+// this very floor suppressed, which is what lets the count climb.
+//
+// ⚠️ THE SUBJECT BEING EVALUATED IS EXCLUDED HERE AND ADDED BACK IN GO. It has no
+// row yet — the gate runs before `Insert` — and it may equally have several rows
+// already from earlier facts about the same episode. `<> $4` makes those two cases
+// one case, so the caller's `+ 1` is exact rather than approximately right: the
+// counted set is "distinct other subjects in the window, plus this one". That is
+// also what makes `MinCountThreshold = 2` honest — a threshold of 1 is cleared by
+// every fact unconditionally, which is why the column refuses it.
+//
+// ⚠️ THE WINDOW IS CLOSED AT BOTH ENDS, AND THE UPPER BOUND IS NOT DECORATION. It
+// used to be `created_at >= $5` alone, which is `[TakenAt - W, ∞)` — while this
+// comment and `domain.CountOverWindow` both promise `[TakenAt - W, TakenAt]`. The
+// evaluator's `TakenAt` is the SNAPSHOT instant, not `now`, so on a retried
+// `notify.evaluate` (or any queue lag at all) every row written between the snapshot
+// and the retry was counted: a floor that admits more facts each time it is retried
+// clears itself by being retried, and two attempts at the same fact could reach two
+// different verdicts. Both ends now come from the snapshot, so the numerator is a
+// function of the fact rather than of when the worker got round to it.
+//
+// It rides `notif_policy_idx (org_id, policy_id, created_at DESC)` (migration
+// 00073): two equalities and a bounded range on `created_at`, so the window stops
+// the scan instead of the org's day being read and filtered.
+const countPolicySubjectsSQL = `
+SELECT count(DISTINCT subject_id)
+  FROM notifications
+ WHERE org_id = $1
+   AND policy_id = $2
+   AND subject_kind = $3
+   AND subject_id <> $4
+   AND created_at >= $5
+   AND created_at <= $6`
+
+// CountRecentSubjects is the count condition's numerator: how many DISTINCT
+// subjects of one kind this policy has recorded a fact about inside the sliding
+// window, not counting `excluding`.
+//
+// `excluding` is the subject of the fact being evaluated, which the caller adds
+// back as one — see countPolicySubjectsSQL for why the arithmetic is split that
+// way, and `domain.CountOverWindow` for the window's `[TakenAt - W, TakenAt]` shape.
+// `since` and `until` are BOTH derived from the snapshot instant, which is what makes
+// a retry count what the first attempt counted.
+func (r *NotificationRepository) CountRecentSubjects(
+	ctx context.Context, s db.TenantScope, policyID uuid.UUID,
+	kind domain.SubjectKind, excluding uuid.UUID, since, until time.Time,
+) (int, error) {
+	var n int
+	err := r.db(ctx).QueryRow(ctx, countPolicySubjectsSQL,
+		s.OrgID(), policyID, string(kind), excluding, since, until).Scan(&n)
+	if err != nil {
+		return 0, mapErr(err, "notification_not_found", "count recent notification subjects")
 	}
 	return n, nil
 }

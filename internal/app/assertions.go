@@ -103,6 +103,14 @@ var (
 	_ channelsservice.Cases              = slackCaseActions{}
 	_ channelsservice.SlackConversations = slackConversations{}
 
+	// ⭐ THE SNOOZE MENU'S SEAM, AND IT NEEDS THIS LINE MORE THAN ITS NEIGHBOURS DO.
+	// `InteractionOptions.Snoozes` is OPTIONAL — a nil one answers a press with an
+	// honest ephemeral instead of crashing — so a drift that made this adapter stop
+	// satisfying the port would not fail the build at the injection site, and every
+	// Snooze menu in every workspace would quietly go back to "not in this
+	// deployment yet". The compile-time proof is the only thing that would say so.
+	_ channelsservice.Snoozes = slackSnoozeActions{}
+
 	// --- sources: both halves of the module are the SERVICE ------------------
 	//
 	// ⭐ THE WRITE SIDE USED TO BE THE REPOSITORY HERE (ticket 0869f21), which is

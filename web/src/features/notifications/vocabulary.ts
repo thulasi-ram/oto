@@ -78,21 +78,33 @@ export const SUPPRESSED_REASON: Record<NonNullable<NotificationSuppressedReason>
   snoozed:
     "a person asked oto to hold its notifications for this alert until a fixed time — the alert itself kept firing",
   throttled: "the per-subject throttle was already spent",
+  // The throttle's dual, and ranked directly below it: `count_min` over
+  // `count_window_seconds` is a FLOOR, so this is not "too many already" but "not
+  // enough yet". The number is the operator's, which is what separates it from the
+  // deleted `flapping` damper — see the note below.
+  below_threshold:
+    "the policy is waiting for its count condition — fewer of these have happened inside the window than it asks for",
   verbosity: "the channel's verbosity setting does not carry this kind of update",
   channel_disabled: "every matching channel is disabled",
   duplicate_render: "the message would have been byte-identical to the one already posted",
 };
 
 /*
- * ⛔ THE SIX ARE THE WHOLE LIST, AND WHAT THEY HAVE IN COMMON IS THE ARGUMENT.
+ * ⛔ THE SEVEN ARE THE WHOLE LIST, AND WHAT THEY HAVE IN COMMON IS THE ARGUMENT.
  * `channel_disabled` and `no_policy` mean there was nowhere to send; `snoozed`
- * and `verbosity` are a human asking for less; `throttled` is the world's rate
- * limit; `duplicate_render` is that nothing changed. Not one of them is oto's own
+ * and `verbosity` are a human asking for less; `throttled` and `below_threshold`
+ * are a policy's own ceiling and floor over a window;
+ * `duplicate_render` is that nothing changed. Not one of them is oto's own
  * opinion that a real firing was not worth mentioning — and the two that were,
  * `storm` and `flapping`, are gone. Migration `00059` narrowed
- * `notifications_suppmap_ck` to these six with NO backfill, so it FAILS on a
+ * `notifications_suppmap_ck` to six with NO backfill, so it FAILS on a
  * database that ever recorded either rather than rewriting the reason into one
  * that never applied: there is no stored row left for this map to have to explain.
+ * ⚠️ `below_threshold` (migration `00073`) is the seventh and it is the ONE that
+ * has to be argued rather than listed, because its silence has the same shape as
+ * `flapping`'s. The difference is the author of the number: `flapping` compared
+ * against constants compiled into oto, and this compares against `count_min` on a
+ * policy an operator wrote and can clear.
  * `REASON_LABEL` above lost its `storm` entry on the same terms one cut later
  * (migration `00060`), so the two maps now say the same thing about the dampers
  * rather than disagreeing on purpose.

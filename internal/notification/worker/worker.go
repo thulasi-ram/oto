@@ -74,13 +74,17 @@ func New(cfg Config) (*Workers, error) {
 // "not implemented", so the queue, the retries and the metrics were all live
 // before this code existed — which is what made the seam worth having.
 //
-// The tenant list and the queue arrive as arguments because the digest tick is this
-// module's one per-tenant periodic: both halves of its fan-out belong to
-// internal/app — the same live-org pager and outbox every other per-tenant
-// periodic is handed — and this module must never enumerate tenants for itself.
+// The tenant list and the queue arrive as arguments because this module's two
+// per-tenant periodics — the digest tick and the digest detector — need them: both
+// halves of each fan-out belong to internal/app — the same live-org pager and outbox
+// every other per-tenant periodic is handed — and this module must never enumerate
+// tenants for itself.
 //
 // ⛔ IT WAS TWO PERIODICS UNTIL git-bug bd0fb1d. `notify.unacked_reminder` was the
-// other one, and the owner withdrew it: oto sends nothing unprompted.
+// other one, and the owner withdrew it: oto sends nothing unprompted. It is two again
+// for an unrelated reason — `notify.digest.reconcile` (git-bug `893cee4`) — and the
+// second one SENDS NOTHING, which is what makes adding it compatible with that
+// withdrawal rather than a way around it.
 func (w *Workers) Register(h *jobs.Handlers, orgs jobs.Tenants, enq db.Enqueuer) {
 	if h == nil {
 		return
@@ -88,6 +92,7 @@ func (w *Workers) Register(h *jobs.Handlers, orgs jobs.Tenants, enq db.Enqueuer)
 	h.NotifyEvaluate = w.NotifyEvaluate
 	h.DeliverDispatch = w.DeliverDispatch
 	h.NotifyDigest = w.NotifyDigest(orgs, enq)
+	h.NotifyDigestReconcile = w.NotifyDigestReconcile(orgs, enq)
 }
 
 // NotifyEvaluate is the `notify.evaluate` handler.
@@ -220,6 +225,65 @@ func (w *Workers) NotifyDigest(
 					w.log.InfoContext(ctx, "notification: sent digests",
 						slog.String("org_id", scope.OrgID().String()), slog.Int("count", sent))
 				}
+				return nil
+			})
+	}
+}
+
+// NotifyDigestReconcile builds the `notify.digest.reconcile` handler over the same
+// two shapes of jobs.TenantFanOut as the tick above: a payload naming no org is the
+// fan-out and only ENQUEUES, and a payload naming an org is ONE tenant's detection
+// pass with the kind's whole execution timeout to itself.
+//
+// ⛔ IT DETECTS AND IT MUST NEVER DELIVER, which is the binding rule
+// `service.ReconcileOrg` opens with and which this handler is the last place able to
+// break. There is nothing here that sends: the whole output of a pass is a
+// `DigestGap`, and what this function does with it is log. A handler that "repaired"
+// a gap would post back-dated digests about spans nobody is looking at any more —
+// the outage amplifier `MaxDigestBackfill` exists to prevent — and would destroy the
+// evidence that there was ever a gap at all.
+//
+// ⭐ THE INTERESTING RUN IS THE SERVICE'S TO REPORT, NOT THIS HANDLER'S. `ReconcileOrg`
+// already writes one WARN per affected policy and one tenant-wide WARN carrying
+// `unreported_episodes`, and a healthy install produces neither; the debug line below
+// is the fan-out's own accounting and nothing more. Repeating the gap at INFO here is
+// specifically the shape `893cee4` cost — a line every tick on a healthy install,
+// under which the one occurrence that mattered was invisible.
+//
+// ⛔ IT REPORTS `Truncated` AND DOES NOT PAGE. Every count in a truncated pass is a
+// LOWER BOUND, and that is the honest answer: the number is already telling somebody
+// to go and look, and paging a whole day in to refine it would make the detector the
+// most expensive query in oto.
+func (w *Workers) NotifyDigestReconcile(
+	orgs jobs.Tenants, enq db.Enqueuer,
+) jobs.Handler[jobs.NotifyDigestReconcileArgs] {
+	return func(ctx context.Context, job *jobs.Job[jobs.NotifyDigestReconcileArgs]) error {
+		if job.Args.IsFanOut() {
+			out, err := jobs.FanOutTenants(ctx, jobs.KindNotifyDigestReconcile, enq, orgs, w.log,
+				job.Args.After, func(f jobs.TenantFanOut) db.JobArgs {
+					return jobs.NotifyDigestReconcileArgs{TenantFanOut: f}
+				})
+			if err != nil {
+				return err
+			}
+			if out.Enqueued > 0 {
+				w.log.DebugContext(ctx, "notification: digest reconciliation fan-out",
+					slog.Int("enqueued", out.Enqueued))
+			}
+			return nil
+		}
+
+		return jobs.ForTenant(ctx, jobs.KindNotifyDigestReconcile, orgs, job.Args.OrgID,
+			func(ctx context.Context, scope db.TenantScope) error {
+				gap, err := w.digests.ReconcileOrg(ctx, scope)
+				if err != nil {
+					return classify(err)
+				}
+				w.log.DebugContext(ctx, "notification: digest reconciliation ran",
+					slog.String("org_id", scope.OrgID().String()),
+					slog.Int("unreported_episodes", gap.Episodes),
+					slog.Int64("marks_pruned", gap.Pruned),
+					slog.Bool("truncated", gap.Truncated))
 				return nil
 			})
 	}

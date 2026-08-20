@@ -19,7 +19,7 @@ configuration you already have.
 >   `config`), the **config key** behind any `config` origin, any **shadowed** override, and the
 >   **bounds** the server will accept, with the reason for each.
 > - `PATCH /api/v1/org/settings` writes them. It is a partial write — an omitted key is left alone —
->   and `"reset": ["refire_grace_s"]` returns a key to oto's default.
+>   and `"reset": ["resolve_grace_s"]` returns a key to oto's default.
 >
 > **The bounds below are enforced server-side, not by the form**, and they are checked against the
 > merged state. A change takes effect on the **next evaluation**: nothing caches these numbers, so
@@ -47,10 +47,9 @@ Every key on this page can be set either way. In a config file:
 
 ```yaml
 tuning:
-  refire_grace_s: 1500
-  group_close_delay_s: 900
+  resolve_grace_s: 420
+  raw_retention_days: 60
   default_verbosity: firing_only
-  broadcast_on_resolved: true
 ```
 
 or as environment variables — the key, upper-cased, behind `OTO_TUNING_`:
@@ -68,7 +67,7 @@ actually in force.
 **What you get, and what you give up:**
 
 - `GET /api/v1/org/settings` reports the key's origin as **`config`** and names the exact key in
-  `config_keys` — `OTO_TUNING_REFIRE_GRACE_S` or `tuning.refire_grace_s`. A "managed by configuration"
+  `config_keys` — `OTO_TUNING_RESOLVE_GRACE_S` or `tuning.resolve_grace_s`. A "managed by configuration"
   badge with no key beside it would just be a wall; this is where you go to change it.
 - **`PATCH` on that key is refused with `409`**, and the problem names the config key. It is not accepted
   and quietly reverted, because that is precisely the mystery this exists to end.
@@ -77,7 +76,7 @@ actually in force.
   under `shadowed`. Delete the config key and the `900` takes effect again — nothing was destroyed on
   your behalf, and nothing is hidden.
 - **The bounds still apply.** Configuration is authoritative about *which* value is in force, not about
-  which values are legal: `refire_grace_s: 0` is refused from a values file exactly as it is from `curl`.
+  which values are legal: `resolve_grace_s: 0` is refused from a values file exactly as it is from `curl`.
 - **A bad key fails the boot**, with the config key named. An unknown key, an unparseable value or one
   outside its bound stops the process rather than starting a pod whose values file contains a line that
   silently does nothing.
@@ -197,8 +196,9 @@ And one number from your **rules**, not your Alertmanager config:
 ```
 
 `for:` is the dwell time before Prometheus considers the rule firing. **It is the hard floor on how
-fast an alert can possibly oscillate**, and it is what makes both `group_close_delay` (with the
-`refire_grace` it is pinned to) and the case retention window W either meaningful or dead code. If your rules use `for:` durations that vary from `0s` to
+fast an alert can possibly oscillate**, and it is what makes the case retention window W either
+meaningful or dead code. (It used to bound two more settings, `group_close_delay` and the
+`refire_grace` it was pinned to; ⛔ both are deleted — see below.) If your rules use `for:` durations that vary from `0s` to
 `1h`, no single global value is correct for all of them; tune for the rules that actually misbehave.
 
 ---
@@ -265,195 +265,58 @@ place to read a number — several alerts take `for:` from a config variable —
 
 ---
 
-## `refire_grace` — default **1200s (20 minutes)**, accepted range **600–86400**
+## ⛔ `refire_grace` and `group_close_delay` are DELETED — there is nothing here to tune
 
-> ⚠️ **This setting no longer decides anything about a case.**
-> [ADR 0040](../adr/0040-a-case-is-open-or-closed-and-never-reopened.md) made an AlertCase strictly
-> terminal: **every** re-fire opens the next episode, unacknowledged, whatever the clock says. The
-> setting survives for two reasons and no others — `group_close_delay` ships pinned at or above it,
-> guarded by `TestGroupCloseDelayDoesNotDefeatTheRefireGrace`, and this setting's own floor of 600s is
-> twice the 5-minute §C.5 ingest replay window (`MinRefireGraceSeconds = 2 × DedupTTL`, derived from
-> that window rather than chosen). ADR 0040 §6 decided the rest: the key stays, under its own name, in
-> `orgs.settings`, with its bounds unchanged, and renaming, re-homing and removal are all refused —
-> deleting a settings key is a contract change of its own (SPEC §D.1), and the question this setting
-> used to answer, *how long a gap a re-fire may leave before it counts as a separate episode*, belongs
-> at case formation rather than at the lifecycle boundary. Read this section as *the number
-> `group_close_delay` is tied to*; `group_close_delay` is what still has an effect you can see.
->
-> **This default was also 600s and that was wrong.** Against the corpus above, a 10-minute value was
-> unreachable for 76 % of real rules — see *The arithmetic against real numbers*, below. It moved to
-> 1200s in [ADR 0026](../adr/0026-tuning-defaults-derived-from-a-real-rule-corpus.md), and
-> `group_close_delay` moved with it, because on its own the change would have bought nothing. The
-> arithmetic that produced 1200s is unchanged and still binding — it now reaches the number that
-> matters through the pin rather than directly.
+> **Both keys are gone from `orgs.settings`, from the settings screen, from the values file and from
+> the API** (git-bug `7287b28`, migration `00071`). A values file that still sets either is not
+> rejected — `encoding/json` drops an unknown key on read — but nothing anywhere reads it. If you are
+> here because a runbook or an older copy of this page told you to tune one of them, the answer is
+> that the behaviour they described no longer exists.
 
-**What happens on a re-fire, now.** An alert resolves, then the same `alert_key` fires again:
+**What happened, in the order it happened.**
 
-- **A NEW AlertCase opens**, at `seq + 1`, **`unacked`**. Always. The closed episode is untouched, its
-  acknowledgement does not carry over, and your alert history counts both firings, because they were
-  both firings. *An acknowledgement is a receipt for one firing, and the second firing is not the one
-  that was signed for.*
-- **Whether Slack gets a new root message is decided entirely by `group_close_delay`.** If the
-  AlertGroup generation is still open, the new case joins it: `chat.update` on the existing card, in
-  the existing thread. If the generation has closed, the next observation opens generation N+1 with a
-  **brand-new root card and a brand-new thread.**
+1. [ADR 0040](../adr/0040-a-case-is-open-or-closed-and-never-reopened.md) made an AlertCase strictly
+   terminal: **every** re-fire opens the next episode, unacknowledged, whatever the clock says. That
+   removed transition T8 — the edge `refire_grace` selected — so the setting stopped deciding
+   anything about a case.
+2. It survived one more release on the strength of a *pin*: `group_close_delay` shipped at or above
+   it, so `refire_grace` was said to be "the number `group_close_delay` is tied to". ⚠️ **The pin was
+   never enforced.** It was two independent `1200s` literals with a comment insisting the equality
+   was the whole point, and the only check compared the two DEFAULTS — so two operator-written
+   values could contradict each other freely.
+3. `group_close_delay` timed the close of an `alert_groups` **generation**, and git-bug `7570090`
+   (migration `00069`) deleted `alert_groups` outright: the conversation is now the **Case**. With no
+   generation to close, the delay had no job, and with the delay gone the pin had nothing to pin.
 
-So the knob that decides how many Slack threads a recurring problem generates is
-**`group_close_delay`** — and since `group_close_delay` is pinned at or above `refire_grace`, setting
-this one too low still fragments your threads. That is the failure mode to worry about, and the reason
-is arithmetic, not taste:
+⭐ **AND THE DELETION CHANGES NOTHING YOU CAN SEE IN SLACK, WHICH IS THE STRONGEST ARGUMENT THAT NO
+REPLACEMENT IS OWED.** oto's own tuning defaults had already written it down: *"every re-fire opened a
+new episode, a new generation and a new Slack root card, **with a setting on the screen that looked
+like it should have stopped it**."* A card per re-fire was already the shipped behaviour. The thing a
+replacement knob would have had to preserve was never working.
 
-> **If this window is shorter than `group_interval`, every single re-fire opens a new Slack thread.**
+**What this means for you, practically.**
 
-Alertmanager will not tell oto that a group changed sooner than `group_interval` after the last
-notification. So the resolve notification and the subsequent re-fire notification are separated by *at
-least* `group_interval` on the wire. If the window is 2 minutes and `group_interval` is 5 minutes, it
-has always expired by the time oto is even capable of hearing about the re-fire — and since
-`group_close_delay` is pinned to it, the generation has always closed by then too. Every re-fire opens
-a new generation and posts a new root card, and you get exactly the wall of near-identical Slack
-messages oto exists to prevent, from a setting that looks like it should have prevented it.
+- **A re-fire is always a new Slack root card.** There is no window in which it folds into the
+  previous thread, and no number that changes that. A conversation holds exactly one Case.
+- **`resolve_grace_s` is the only remaining lifecycle clock you tune** — how long oto waits after it
+  stops hearing about an alert before calling it `expired`. See *The rest of the org settings*.
+- ⚠️ **500 firing alerts open 500 threads.** The one mechanism that collapses many alerts into one
+  message is the **digest** — a per-policy window with a floor, configured on the notification policy
+  rather than on the org, and **opt-in**. If your channel volume was previously absorbed by group
+  generations, the digest is where to look, and this is a known open question rather than a settled
+  design (SPEC §B.5).
 
-**Too long → a thread that outlives its subject.** Two genuinely separate incidents six hours apart
-join one AlertGroup generation, share one Slack thread, and a thread from this morning grows a reply
-about this evening's outage. ⭐ **Your history no longer lies about this, and that is ADR 0040's
-doing**: both firings are their own case, with their own duration, `seq` apart. The cost of too long
-is now confined to the notification surface — which message a fact lands on — and never reaches the
-record.
-
-### The arithmetic against real numbers
-
-**The clock does not start when oto hears about the resolve. It starts when *Prometheus* stopped
-considering the rule to be firing.** T5 sets the case's `ended_at` from the upstream `EndsAt`, not
-from the observation time — deliberately, because that is when the problem actually ended. Everything
-below follows from that one fact, and it is what the old default missed. (`group_close_delay`'s own
-clock starts later, at the group's last *activity*; §*`group_close_delay` must be at least
-`refire_grace`* below is why equal is safe rather than racy.)
-
-For the same alert to fire again, its condition must hold continuously for the rule's `for:` all over
-again, starting no earlier than `ended_at`. Alertmanager then batches the resulting notification. So:
-
-```
-earliest re-fire oto can OBSERVE  =  ended_at + for                       (best case)
-typical                           =  ended_at + for + group_interval      (a full batching delay)
-```
-
-Run that against the two tables above — `group_interval: 5m`, and the corpus's `for:` distribution:
-
-| Rule `for:` | share of corpus | earliest observable re-fire | typical | reachable at **600s**? | at **1200s**? |
-|---|---|---|---|---|---|
-| *none* / `0s` | 7.1 % | ~0 | `5m` | ✅ | ✅ |
-| `1m`–`3m` | 3.9 % | 1–3m | 6–8m | ✅ | ✅ |
-| `5m` | 12.9 % | `5m` | `10m` | ⚠️ exactly on the boundary | ✅ |
-| **`10m`** | **18.1 %** | `10m` | `15m` | ❌ **only in the best case** | ✅ |
-| **`15m`** *(mode)* | **44.5 %** | `15m` | `20m` | ❌ **never** | ⚠️ on the boundary |
-| `20m`+ | 13.4 % | ≥20m | ≥25m | ❌ | ❌ |
-
-**Cumulatively: 600s was reachable for rules up to `for: 5m` — 24 % of the corpus. 1200s is reachable
-for every rule up to `for: 15m` — 86.5 %.** ("Reachable" now means *the generation is still open when
-the re-fire lands*, which is `group_close_delay`'s question; the pin is what makes the same table
-answer it.) The default is `for + group_interval` for the
-modal rule: `15m + 5m = 20m`. That is the *smallest* value that reaches the commonest rule shape in
-the wild, and picking the smallest such value is deliberate — see *Which error oto prefers*, below.
-
-A `for: 15m` rule that also pays a full 5-minute batching delay lands exactly on the 20-minute
-boundary. That case is left to the operator rather than absorbed into the default: raise your own
-`refire_grace_s` to `1500` if your rules are long and your batching is slow. The screen will tell you.
-
-**How to choose your own.** Two constraints, and the binding one is whichever is larger:
-
-```
-refire_grace  ≥  2 × group_interval                 (transport floor; below group_interval it does nothing at all)
-refire_grace  ≥  (typical for:) + group_interval    (rule floor; THIS is usually the binding one)
-```
-
-| `group_interval` | Typical rule `for:` | Sane `refire_grace` |
-|---|---|---|
-| `5m` *(the ecosystem default)* | `15m` *(the corpus mode)* | **`20m`** — the shipped default |
-| `5m` | `5m` | `10m`–`15m` |
-| `5m` | `1h` *(node-exporter-style predictive rules)* | `65m`+, or accept that a re-fire opens a new thread |
-| `30s` *(oto's dev compose)* | `15m` | `~16m`; the transport floor is irrelevant here, the rules bind |
-| `15m` | `5m` | `30m`–`45m` — here the transport floor binds |
-
-**The server refuses anything below 600s or above 86400s, and the floor is *derived*, not chosen.**
-Note that **the floor is no longer the default**: it used to be, which meant oto shipped the lowest
-value it was willing to accept and presented it as a recommendation.
-
-> **`refire_grace` must be at least twice oto's ingest replay window (5 minutes), so the floor is 600s.**
-
-oto suppresses a *replayed* webhook batch — an HA Alertmanager sibling, a retry after a 5xx — using a
-content-addressed dedup key over `(source, groupKey, receiver, notification_reason, {fingerprint:status})`
-for 5 minutes. A re-fire whose alert set has not changed produces the **same key**. So a value at or
-below the replay window is unreachable for a second, sharper reason than `group_interval`:
-
-- a re-fire inside the window is also inside the replay window, and is dropped at ingest before the
-  state machine can see it at all;
-- a re-fire the replay window lets through is, by the same arithmetic, already outside the window.
-
-The two used to be **exactly equal** (both 10 minutes), which made the whole band unreachable by
-construction — the first live verification run had to alter the alert set, changing the dedup key, to
-exercise a re-fire at all. Doubling gives every legal configuration a band at least 5 minutes wide in
-which a re-fire is both *observable* and *inside the window*. Zero is a Slack thread per transition.
-
-⚠️ **What an empty band costs is smaller than it was, and the floor is kept anyway.** Since ADR 0040
-the band selects no transition — every re-fire opens a new episode — so an empty band is a control
-with no effect rather than an edge nobody could reach. The arithmetic stays because it is what stops
-the two numbers being edited into contradiction, and because this setting's own future is undecided.
-The ceiling is the thread-merge failure: beyond a day, two separate incidents share one Slack thread.
-
-Then sanity-check the top end against how long your incidents actually last. If a typical incident is
-resolved and genuinely gone in under ten minutes, a ten-minute window will hold the generation open
-across distinct incidents; shorten it toward `2 × group_interval` and accept a few more threads.
-
-### ⛔ `group_close_delay` must be at least `refire_grace`, or none of the above is true
-
-A re-fire avoids a new Slack root message **only if the group generation is still open.** A closed
-generation is never rejoined: the next observation opens generation N+1, and a new generation is a
-new thread with a brand-new root card (§B.5). So a `group_close_delay` shorter than `refire_grace` gives you a setting on the screen
-that promises to hold the thread together for twenty minutes and a generation that let go after five.
-
-**oto used to ship exactly that**: `group_close_delay` 300s against a `refire_grace` of 600s, so the
-entire second half of the grace was decorative. Both are now `1200s`. Equal is safe rather than racy,
-because the two clocks start at different moments: `group_close_delay` runs from the group's last
-*activity* — the resolve as oto observed it — while `refire_grace` runs from the upstream `ended_at`,
-which is the same instant or earlier. The generation therefore always closes at or after the grace
-expires, never before.
-
-It is **not** enforced as a server-side bound, because a cross-key bound would reject a legal partial
-`PATCH` that merely arrived in the wrong order. The settings screen warns instead.
-
-### Which error oto prefers, and why this default is the *smallest* one that works
-
-The two failures are not symmetric, and the choice between them is the whole product:
-
-- **Too short → thread fragmentation.** Noisy, annoying, and every single message is a **loud,
-  visible new root card.** Nobody misses anything. What you lose is readability.
-- **Too long → a genuine re-fire folded into a stale thread.** The episode is recorded correctly
-  either way; what is at risk is whether anybody *reads* it, which is the worst failure oto can have.
-
-**oto prefers the loud error, and this default is chosen accordingly**: `1200s` is the *smallest*
-value that reaches the modal rule, not the largest value that would cover every rule. Covering the
-`for: 1h` tail would have meant 65 minutes, and 65 minutes holds one thread open across genuinely
-separate incidents for the 76 % of rules that do not need it.
-
-One thing makes the "too long" failure less bad than it sounds, and one thing makes it worse:
-
-1. ~~**Flapping still engages.**~~ **NO LONGER TRUE — flap detection is RETIRED** (see below). An
-   alert that fires and resolves repeatedly is no longer marked flapping, so a window that is folding
-   too much is visible in the CASE list — one long episode with many observations — rather than in a
-   badge.
-2. **⚠️ A re-fire into a still-open generation is no longer announced loudly, and you should know
-   that.** It used to arrive as the `refired` reason, which ADR 0020 granted an irreversible
-   `reply_broadcast` on exactly this reasoning: *the thread said resolved and people stopped following
-   it.* Since ADR 0040 retired the edge behind it, **nothing produces `refired`** — a re-fire is
-   `fired`, widened to `new_alerts` where Alertmanager's own `notification_reason` says so — and
-   `fired` is a card update, not a channel broadcast. So the longer this window, the more re-fires
-   land as an in-place update on a thread whose last visible word was *resolved*. **If your channels
-   run quieter than the default `status_changes`, do not raise this above the derived value.** (The
-   older form of this warning — that `verbosity` dropped the `refired` reply at `firing_only` and
-   `firing_and_resolved`, recorded as an open defect in ADR 0026 — is moot for the plainest possible
-   reason: there is no `refired` reply to drop.)
+**The derivation is kept, because it is still the best account of the arithmetic.** ADR 0026 derived
+1200s from `for: 15m` (the mode *and* median of the 155 rules kube-prometheus-stack 88.2.0 ships) plus
+`group_interval: 5m` (the one Alertmanager number the ecosystem does not override), and found three
+arithmetic defects in the old 600s value on the way. None of that becomes wrong; it simply no longer
+has a setting to be about. Read
+[ADR 0026](../adr/0026-tuning-defaults-derived-from-a-real-rule-corpus.md) for it, and read
+*The three Alertmanager numbers everything depends on*, above, which is unaffected — those numbers
+still bound `resolve_grace`, the case retention window W, and any digest window you pick.
 
 ---
+
 
 ## ⛔ Flap damping is RETIRED — `flap_threshold`, `flap_window`, `flap_digest_interval` now decide NOTHING
 
@@ -643,7 +506,7 @@ delivered that nobody asked for. `refired` is now the only reason that always br
 | Key | Default | What it does | Relationship to your config |
 |---|---|---|---|
 | `resolve_grace_s` | `300` (5m) | How long past an alert's `EndsAt` lease oto waits before the reaper marks the case **`expired`**. | Prometheus refreshes `EndsAt` on every send; the lease is typically `4 × scrape_interval` or `evaluation_interval` (commonly 3–4 minutes). Set `resolve_grace` **above** that lease, or a single missed scrape looks like an expiry. `5m` covers the usual case. |
-| `group_close_delay_s` | `1200` (20m) | How long an AlertGroup stays `open` after its last member stops firing, before it closes. Closing a group is what makes the *next* fire open a new generation — and therefore a new Slack root message. | Keep it **at or above `group_interval`**, and **at or above `refire_grace`** — that second one is not a suggestion. **This is the setting that decides whether a re-fire is loud**: since ADR 0040 the episode is always a new case, so the only remaining question is whether its generation is still open, and this key is the whole of that question. It shipped as `300` against a `600` grace, which defeated half of it; both are now `1200`. See `refire_grace`, above. |
+| ⛔ `refire_grace_s`, `group_close_delay_s` | **DELETED** | Nothing. Both keys are gone from `orgs.settings` and from this API (git-bug `7287b28`, migration `00071`). | A re-fire is always a new Slack root card and there is no number that changes that. See the ⛔ section above for why, and what to reach for instead. |
 | `default_verbosity` | `status_changes` | The fallback for a Channel that names no verbosity of its own. A channel's own setting always wins — an org default can never make a quiet channel loud. | Set it to `firing_only` if most of your channels want the quietest setting and you would rather not repeat yourself. |
 | `broadcast_on_resolved` | `false` | Whether `all_resolved` is broadcast into the channel rather than posted quietly in the thread. | See **Broadcast**, above. It is the only broadcast that is configurable, because a broadcast cannot be un-sent. |
 | `raw_retention_days` | `30` | How long raw webhook payloads are kept before their partition is dropped, permanently. | Nothing in `alertmanager.yml` bears on it. The thirty is **chosen**, not derived: a replay is refused when the alerts a batch would touch have moved on, never because the batch is old, so this is the depth of the rejection and failed-batch feeds and the window a replay can be attempted in. See **Retention**, below. |
@@ -750,25 +613,30 @@ change nothing — oto's defaults *are* the derivation for that case**, and this
 
 ```jsonc
 {
-  "refire_grace_s":       1200,    // for: 15m (corpus mode) + group_interval 5m
-  "resolve_grace_s":       300,    // above a typical EndsAt lease of 3-4 minutes
-  "group_close_delay_s":  1200     // = refire_grace; THIS is the one that decides new-thread-or-not
+  "resolve_grace_s":       300     // above a typical EndsAt lease of 3-4 minutes
 
   // ⛔ The three flap keys are NOT here on purpose: flap detection is RETIRED and
   // they decide nothing. Setting them is harmless and has no effect.
+  //
+  // ⛔ Nor are `refire_grace_s` and `group_close_delay_s`, which used to be the two
+  // headline numbers on this page. They are DELETED, not inert — the keys no longer
+  // exist (git-bug 7287b28, migration 00071). `resolve_grace_s` is the only
+  // lifecycle clock a tenant still sets.
 }
 ```
 
 **Two places where you should deviate, and the deviation is not small:**
 
 - **Rules with a long `for:`.** If your alerting is dominated by node-exporter-style predictive rules
-  (`for: 1h`), the observable cycle is 65 minutes: `refire_grace` — and with it `group_close_delay_s`,
-  which is the one that keeps the thread — would need to be ~`4000`. (Flap damping used to need a
-  matching window here; it is retired, so there is nothing to widen.)
+  (`for: 1h`), the observable cycle is 65 minutes. ⛔ **There is no longer a setting that wants
+  widening to match it.** `refire_grace` and `group_close_delay_s` were the two that did, and both are
+  deleted; flap damping used to need a matching window and is retired. What the long cycle still bears
+  on is the case retention window W and any **digest window** you configure on a notification policy —
+  a digest narrower than the cycle summarises a span in which nothing could have happened twice.
 - **A fast `group_interval`.** oto's own dev compose runs `group_interval: 30s`, where the cycle for
-  an instantaneous rule is 60 seconds. There, the *rules* bind rather than the transport, and
-  `refire_grace_s` can come down a long way — no lower than `600`, which is a transport limit and not
-  a preference.
+  an instantaneous rule is 60 seconds. There, the *rules* bind rather than the transport. Nothing on
+  this page needs lowering to suit it any more; the number is worth knowing because it is the floor
+  under every window you pick, including the 300s minimum on a digest.
 
 **And check one thing before adopting any of it:** does your `group_by` contain `instance`, `pod` or
 another per-replica label? If it does, every alert lands in a group of one, so every alert gets its own

@@ -58,7 +58,12 @@ func smokeView() *domain.NotificationView {
 		},
 		Alerts: []domain.AlertView{
 			{
-				ID: "a1", AlertKey: "ak_1", AlertName: "OtoSmokeTest",
+				// ⛔ A REAL UUID, BECAUSE A BUTTON VALUE MUST BE ONE (S8, V11). The
+				// snooze pair's value names the ALERT rather than the Case (§B.8.7), so
+				// this id is the one that travels on a press — and `Validate` refuses a
+				// payload whose button value is not a bare uuid, which is what caught
+				// the short `"a1"` this fixture used to carry.
+				ID: "019fe297-d84f-7599-b5b2-1f23174910a1", AlertKey: "ak_1", AlertName: "OtoSmokeTest",
 				Severity: "critical", Namespace: "observability", Service: "oto-smoke",
 				Labels: map[string]string{
 					"instance": "oto-smoke-b2", "cluster": "smoke-test",
@@ -78,7 +83,7 @@ func smokeView() *domain.NotificationView {
 				FirstSeenAt: otoFirstSeen, LastSeenAt: renderedAt, TotalCases: 1,
 			},
 			{
-				ID: "a2", AlertKey: "ak_2", AlertName: "OtoSmokeTest",
+				ID: "019fe297-d84f-7599-b5b2-1f23174910a2", AlertKey: "ak_2", AlertName: "OtoSmokeTest",
 				Severity: "critical", Namespace: "observability", Service: "oto-smoke",
 				Labels: map[string]string{"instance": "oto-smoke-a1", "cluster": "smoke-test"},
 				State:  "firing", AckState: "unacked",
@@ -764,12 +769,71 @@ func snoozedView() *domain.NotificationView {
 	// five presets (30 m · 1 h · 4 h · 24 h · 7 d); there is no indefinite snooze,
 	// so a fixture with a nil until would be a snooze the product cannot create.
 	v.SnoozedUntil = tptr(snoozedAt.Add(4 * time.Hour))
+	// The card offers the way OUT of the quiet, because this card is the quiet.
+	withSnoozeAffordance(v, true)
 	v.Trail = append(v.Trail, domain.TrailEntry{
 		Kind: "snoozed", At: snoozedAt, Actor: "ram@example.com",
 	})
 	v.Notifications = 2
 	v.RenderedAt = snoozedAt.Add(time.Second)
 	return v
+}
+
+// withSnoozeAffordance gives a fixture the affordance §B.8.6 requires the snooze
+// cards to SHOW, in the shape and the position `notification/service.actions` builds
+// it (git-bug `0a8ca4a`).
+//
+// ⭐⭐ THE FIXTURES HAD NO SNOOZE ACTION AT ALL, WHICH LEFT THE HALF OF THE FEATURE
+// THAT IS HARDEST TO GET RIGHT UNPINNED. `smokeView` carries the three verbs the card
+// had before the snooze landed — Acknowledge, Runbook, Silence — so `root_snoozed` and
+// `root_unsnoozed` proved the FIELD, the footer clause and the colour, and proved
+// nothing about the control: not the `static_select`, not the five option values the
+// handler has to decode, not `withActionEmoji`'s prefixes, and not the widened action
+// row (§H.7, and `maxRowButtons`). Every one of those is now in the bytes.
+//
+// ⛔ ONE AFFORDANCE IN TWO SHAPES AND NEVER BOTH. "The `Snooze` action becomes
+// `:bell: Unsnooze`" — a card offering both would ask the reader which of two
+// contradictory facts about oto is true. Which one appears is decided by
+// `SnoozedUntil`, the same projection the `*Notifications*` field is drawn from, so
+// the field and the control cannot disagree.
+//
+// ⛔ THE VALUE NAMES THE ALERT AND NOT THE CASE. A snooze is scoped to an `alert_key`
+// (§B.8.7): it outlives the episode that provoked it, and `alerts/service`'s verbs
+// take an alert id. Two bare uuids on one card naming two different tables is a
+// hazard, so the fixture reads the id from the alert it belongs to rather than
+// repeating the group's.
+//
+// ⛔ THE PRESETS ARE READ FROM `channels/domain` AND NOT RETYPED HERE. A second copy
+// of five tokens in a fixture is a golden that agrees with itself while the menu
+// offers the handler a choice it cannot decode — the exact defect the affordance was
+// filed against.
+//
+// ⛔ AND IT GOES AT INDEX 1, which is where the production builder puts it: after the
+// ack and BEFORE the two link buttons, because a renderer with a narrower row than
+// Slack's sheds from the end and "make oto stop shouting at 03:00" must not be the
+// thing that falls off. A fixture that appended it would have pinned an order oto does
+// not send.
+func withSnoozeAffordance(v *domain.NotificationView, snoozed bool) {
+	alertID := v.Alerts[0].ID
+
+	action := domain.Action{ID: "oto.unsnooze", Label: "Unsnooze", Value: alertID}
+	if !snoozed {
+		presets := domain.SnoozePresets()
+		opts := make([]domain.ActionOption, 0, len(presets))
+		for _, p := range presets {
+			opts = append(opts, domain.ActionOption{
+				Label: p.Label,
+				Value: p.Token + domain.SnoozeValueSeparator + alertID,
+			})
+		}
+		action = domain.Action{ID: "oto.snooze", Label: "Snooze for…", Options: opts}
+	}
+
+	out := make([]domain.Action, 0, len(v.Actions)+1)
+	out = append(out, v.Actions[0])
+	out = append(out, action)
+	out = append(out, v.Actions[1:]...)
+	v.Actions = out
 }
 
 // unsnoozedView is the other end of the same quiet: oto is audible again.
@@ -781,13 +845,32 @@ func snoozedView() *domain.NotificationView {
 // open unacked case, same colour. That is what makes this card's whole job
 // "distinguishable from a state change".
 func unsnoozedView() *domain.NotificationView {
-	v := snoozedView()
+	v := smokeView()
 	woke := upstreamStart.Add(6*time.Minute + 4*time.Hour)
 	v.Reason = "unsnoozed"
+	v.Actor = &domain.ActorView{
+		Kind: "slack_user", ID: "U024BE7LH", Label: "ram@example.com",
+	}
 	v.SnoozedUntil = nil
-	// The note belonged to the snooze, not to its ending. Carrying it onto this
-	// card would attribute "provider incident — quiet until their ETA" to the act
-	// of waking up, which is the opposite of what the human wrote it about.
+	v.Trail = append(v.Trail, domain.TrailEntry{
+		Kind: "snoozed", At: upstreamStart.Add(6 * time.Minute), Actor: "ram@example.com",
+	})
+	// ⛔ THE MENU IS BACK, WHICH IS THE OTHER HALF OF "ONE AFFORDANCE IN TWO SHAPES".
+	// oto is audible again, so the card offers the quiet rather than the way out of
+	// it — and this is the fixture that pins the `static_select`, since the snoozed
+	// card carries the button.
+	//
+	// ⚠️ IT IS BUILT FROM `smokeView` RATHER THAN FROM `snoozedView` FOR EXACTLY THAT
+	// REASON. Deriving it from the snoozed card would inherit the `oto.unsnooze`
+	// BUTTON and then need it removed, and a fixture that adds an action and takes
+	// another one away is a fixture nobody can read. What it does inherit explicitly
+	// — the actor, the snooze trail entry — is what makes it the same incident.
+	withSnoozeAffordance(v, false)
+	// ⛔ NO COMMENT, STATED AS AN ASSIGNMENT SO THE ABSENCE IS DELIBERATE. The note
+	// belonged to the snooze, not to its ending: attributing "provider incident —
+	// quiet until their ETA" to the act of waking up is the opposite of what the human
+	// wrote it about. It was a deletion while this fixture derived from `snoozedView`
+	// and it is a floor now that it does not.
 	v.Comment = ""
 	v.Group.LastActivityAt = woke
 	v.Trail = append(v.Trail, domain.TrailEntry{Kind: "unsnoozed", At: woke})
@@ -937,6 +1020,200 @@ func TestALongSnoozeNamesTheDayAndNotJustTheClock(t *testing.T) {
 // "not snoozed" and "snoozed until the zero time" are different facts, and only a
 // pointer can tell them apart.
 func tptr(t time.Time) *time.Time { return &t }
+
+// ------------------------------------------------------------------- the digest
+
+// TestGoldenDigest* — THE CARD OTO SENDS INSTEAD OF PER-EVENT TRAFFIC.
+//
+// ⭐⭐ THERE WAS NO DIGEST HERE, AND THERE WAS NO DIGEST IN THE RENDERER (git-bug
+// `78388fb`). The word appeared nowhere in the package outside tests, so a digest fell
+// through to the `default:` arms and was drawn as `*Group.Title* — <status>` with its
+// entire content smuggled into the group's name by `DigestHeadline`. Two things made
+// that visible rather than merely inelegant: the card's `Status` field read
+// `:grey_question: Expired — oto stopped hearing about this`, because
+// `DeriveCardState` reads member counts and a digest has none; and the number the
+// digest exists to report was a fragment of a sentence rather than a field.
+//
+// ⛔ THE GOLDEN IS THE POINT OF THE TICKET AND NOT AN AFTERTHOUGHT. Its Done-when
+// says a golden must cover the digest card "so the next change to it is a diff rather
+// than a discovery" — this is the first card oto has ever laid out for a subject that
+// is not a signal, and every one of its decisions (no actions, no links, the neutral
+// bar, the half-open span) is a decision somebody will reach for again.
+func TestGoldenDigestRootCard(t *testing.T) {
+	t.Parallel()
+	msg := renderView(t, digestView(), domain.ModePostRoot)
+	golden(t, "digest.golden.json", msg.Payload)
+}
+
+// TestGoldenDigestWithNoRecordedSpan is the pre-00070 row, and it is a golden rather
+// than an assertion because the absence has a LAYOUT: a `Covers` field that says the
+// span is not recorded, and a push notification that says the same thing in a
+// sentence. Inventing the span from the policy's current window is the one arithmetic
+// migration 00070 exists to retire (git-bug `342e071`), so the card that cannot state
+// its coverage has to be as reviewable as the card that can.
+func TestGoldenDigestWithNoRecordedSpan(t *testing.T) {
+	t.Parallel()
+	v := digestView()
+	v.Digest.CoveredFrom, v.Digest.CoveredTo = time.Time{}, time.Time{}
+	msg := renderView(t, v, domain.ModePostRoot)
+	golden(t, "digest_no_span.golden.json", msg.Payload)
+}
+
+// TestADigestIsDrawnAsADigestInEveryModeItCanArriveIn is the structural half of the
+// arm, and it is the assertion that would have caught the original defect.
+//
+// ⭐ A DIGEST ARRIVES IN TWO MODES AND IS ONE SHAPE IN BOTH.
+// `notification/service.digestModes` is the whole of its §H.6: open the conversation
+// once with `post_root`, then reply to it once per window. So the SECOND window and
+// every window after it arrives as `thread_reply` — and a renderer that branched on
+// the mode first would draw window 1 as a card and windows 2…n as one-line
+// `:information_source:` notes, which is a worse version of the bug this ticket
+// closed. The layout is chosen by what the view IS, so the two modes differ only in
+// the per-render block ids (S12).
+func TestADigestIsDrawnAsADigestInEveryModeItCanArriveIn(t *testing.T) {
+	t.Parallel()
+
+	root := renderView(t, digestView(), domain.ModePostRoot)
+	reply := renderView(t, digestView(), domain.ModeThreadReply)
+
+	if root.Fallback != reply.Fallback {
+		t.Errorf("the same window reads differently in the two modes it can arrive in:\n"+
+			"post_root:    %q\nthread_reply: %q", root.Fallback, reply.Fallback)
+	}
+	for _, mode := range []struct {
+		name string
+		raw  string
+	}{{"post_root", string(root.Payload)}, {"thread_reply", string(reply.Payload)}} {
+		if !strings.Contains(mode.raw, "*Digest*") {
+			t.Errorf("%s: the card does not name itself a digest: %s", mode.name, mode.raw)
+		}
+		// The two tells of the arms this card used to fall through to. `Expired` is
+		// what `DeriveCardState` says about a view with no members, and
+		// `:information_source:` is `replyBody`'s `default:`.
+		for _, unwanted := range []string{"Expired", ":information_source:"} {
+			if strings.Contains(mode.raw, unwanted) {
+				t.Errorf("%s: the digest is being drawn by a Case-shaped arm (%q is in the "+
+					"payload): %s", mode.name, unwanted, mode.raw)
+			}
+		}
+	}
+}
+
+// TestADigestCardOffersNothingToPressAndSaysWhereToLook pins the two absences the
+// ticket required to be DECIDED rather than deferred, and pins them from the bytes.
+//
+// ⛔ NO ACTIONS: every affordance oto draws acts on a signal, and a button on a digest
+// would have to pick one of the things it counted. ⛔ NO LINKS: `GET /cases`'s `since`
+// is a lower bound only and the digest's membership is a policy matcher evaluated in
+// Go, so any URL would name a different set than the count above it — see
+// `ViewService.digest` for both. What replaces them is a sentence, and the sentence is
+// the thing under assertion here: a card with nothing to press owes its reader
+// somewhere to look.
+func TestADigestCardOffersNothingToPressAndSaysWhereToLook(t *testing.T) {
+	t.Parallel()
+
+	raw := string(renderView(t, digestView(), domain.ModePostRoot).Payload)
+
+	for _, unwanted := range []string{`"type":"actions"`, `"url":`, `"action_id"`} {
+		if strings.Contains(raw, unwanted) {
+			t.Errorf("a digest card carries %s, which is an affordance acting on a window: %s",
+				unwanted, raw)
+		}
+	}
+	if !strings.Contains(raw, "No link") {
+		t.Errorf("the card does not say why it has no link or what to look at instead: %s", raw)
+	}
+}
+
+// TestADigestStatesItsOwnSpanAndNeverAPolicysWindow is the assertion `342e071` bought
+// with two columns, read off the card.
+//
+// ⭐ THE LENGTH IS SUBTRACTED FROM THE TWO STORED ENDS. The fixture's span is
+// FOURTEEN minutes over a ten-minute window, because the lookback reached back four
+// minutes for a straggler that committed too late for the previous window's read — so
+// a card that printed the policy's window would say `10m` here, and a card that
+// printed the stored ends says `14m`. That difference is the whole of the bug: the
+// policy's window is a value an operator can edit, and editing it must not change what
+// a card oto sent last Tuesday claims to have covered.
+func TestADigestStatesItsOwnSpanAndNeverAPolicysWindow(t *testing.T) {
+	t.Parallel()
+
+	payload := renderView(t, digestView(), domain.ModePostRoot).Payload
+	if got := fieldValue(t, payload, "Span"); got != "14m" {
+		t.Errorf("Span = %q, want %q — the span is the two stored ends subtracted, "+
+			"not the policy's current window", got, "14m")
+	}
+	if got := fieldValue(t, payload, "New cases"); got != "7" {
+		t.Errorf("New cases = %q, want %q — the count is the number the digest asserts", got, "7")
+	}
+	// ⛔ "Up to" AND NEVER "To". `digest_covered_to` is the EXCLUSIVE end
+	// (`notifications_digcover_ck`), so a Case that opened at exactly that instant
+	// belongs to the NEXT digest. A card that read as closed on both ends would have
+	// every reader double-counting one boundary per window.
+	if got := fieldValue(t, payload, "Up to"); got == "" {
+		t.Errorf("the card does not name the exclusive end of its span: %s", payload)
+	}
+}
+
+// TestABackfilledDigestNamesTheDayItCovered is the digest's version of the snooze's
+// day problem, and it is the reason the span uses `slackDateTime` and `plainMoment`
+// rather than the terser pair every other clock on a card uses.
+//
+// ⛔ A DIGEST'S SPAN IS THE ONE BACKWARD-LOOKING TIMESTAMP THAT NEED NOT BE NEAR THE
+// RENDER. Everywhere else a bare clock time is unambiguous because the card is about
+// now — "firing since 17:56 UTC". A recovered tick emits up to `MaxDigestBackfill`
+// windows in one pass and a long `digest_window_s` is admissible, so "from 17:52 UTC"
+// can mean last Tuesday, in the one message a reader has no other clue to date it by:
+// there is no group, no member list and no trail on this card.
+func TestABackfilledDigestNamesTheDayItCovered(t *testing.T) {
+	t.Parallel()
+
+	v := digestView()
+	// A window that closed three days before oto got round to reporting it.
+	v.RenderedAt = v.Digest.CoveredTo.Add(3 * 24 * time.Hour)
+
+	payload := renderView(t, v, domain.ModePostRoot).Payload
+	if got := fieldValue(t, payload, "From"); !strings.Contains(got, "{date_short_pretty}") {
+		t.Errorf("From = %q — a span that may be days old needs a date-carrying "+
+			"<!date> token, not a bare clock", got)
+	}
+	// The push notification gets literal characters, because `<!date>` does not
+	// render in one (S5) — so the day has to be in the sentence itself.
+	if text := topLevelText(t, payload); !strings.Contains(text, "Aug") {
+		t.Errorf("push text = %q, want the day named for a three-day-old span", text)
+	}
+	// And the same-day digest stays terse, which is what every other clock beside it
+	// does and what the common case is.
+	same := topLevelText(t, renderView(t, digestView(), domain.ModePostRoot).Payload)
+	if strings.Contains(same, "Aug") {
+		t.Errorf("a same-day digest should read as bare clock times: %q", same)
+	}
+}
+
+// digestView is one closed window, laid out as itself.
+//
+// ⛔ IT CARRIES NO GROUP, NO ALERTS, NO CASE, NO RULE, NO LINKS AND NO ORG, WHICH IS
+// NOT AN ECONOMY — it is what `ViewService.digest` actually builds. A digest reads no
+// snapshot and can read none: the snapshot is keyed by a Case and a digest names none,
+// so a fixture that filled any of those fields in would be testing a view oto cannot
+// produce and would hide exactly the defect this card was drawn to fix.
+func digestView() *domain.NotificationView {
+	// The window is ten minutes and the span is fourteen: `coveredSpanOf` pulls the
+	// start back to the oldest straggler the lookback swept up, so the honest sentence
+	// is "since the last digest, plus stragglers" rather than a tidy `(T, T+W]`.
+	windowStart := upstreamStart
+	return &domain.NotificationView{
+		Reason: "digest",
+		Digest: &domain.DigestView{
+			Count:       7,
+			CoveredFrom: windowStart.Add(-4 * time.Minute),
+			CoveredTo:   windowStart.Add(10 * time.Minute),
+		},
+		// A digest is built at claim time like everything else, a moment after the
+		// window it reports on closed.
+		RenderedAt: windowStart.Add(10*time.Minute + time.Second),
+	}
+}
 
 // ⭐ THE `rendered_hash` IS WHAT MAKES `chat.update` SAFE TO CALL ON EVERY FACT.
 //

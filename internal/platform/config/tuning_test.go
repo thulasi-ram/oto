@@ -10,6 +10,17 @@ import (
 // values: the value is easy and the provenance is the feature. An operator told
 // "managed by configuration" and nothing else has to search a Helm chart, a values
 // file and a Deployment's env block to find the line they are allowed to edit.
+//
+// ⚠️ THE FIXTURE KEY IS `resolve_grace_s` AND IT HAS TO BE A KEY THAT STILL EXISTS.
+// This package is key-agnostic by design — `loadTuning` harvests whatever sits under
+// `tuning.` and `identity/domain.NewDeclarative` is what rejects an unknown one — so
+// a test naming a deleted key goes on passing, which is precisely why it is worth
+// fixing: these fixtures are the closest thing the repository has to a worked example
+// of the layer, and a worked example built on `refire_grace_s` (deleted, git-bug
+// `7287b28`) teaches an operator a key that fails their boot. The assertions are
+// unchanged — key ORDER, the exact `ConfigKey` spelling of both providers, and
+// env-over-file precedence — because the key's identity is not what any of them is
+// about.
 
 func writeConfig(t *testing.T, body string) string {
 	t.Helper()
@@ -33,7 +44,7 @@ func TestNoTuningConfiguredYieldsNoEntries(t *testing.T) {
 
 // TestAFileKeyReportsItsFilePath.
 func TestAFileKeyReportsItsFilePath(t *testing.T) {
-	path := writeConfig(t, "tuning:\n  refire_grace_s: 900\n  default_verbosity: firing_only\n")
+	path := writeConfig(t, "tuning:\n  resolve_grace_s: 900\n  default_verbosity: firing_only\n")
 
 	cfg, err := Load(path)
 	if err != nil {
@@ -44,10 +55,10 @@ func TestAFileKeyReportsItsFilePath(t *testing.T) {
 		t.Fatalf("entries %+v, want two", entries)
 	}
 	// Stable key order, so a UI rendering them twice gets the same list twice.
-	if entries[0].Key != "default_verbosity" || entries[1].Key != "refire_grace_s" {
+	if entries[0].Key != "default_verbosity" || entries[1].Key != "resolve_grace_s" {
 		t.Fatalf("entries are not in key order: %+v", entries)
 	}
-	if entries[1].ConfigKey != "tuning.refire_grace_s" {
+	if entries[1].ConfigKey != "tuning.resolve_grace_s" {
 		t.Fatalf("config key %q, want the file path", entries[1].ConfigKey)
 	}
 	if entries[1].Value != 900 {
@@ -83,8 +94,8 @@ func TestAnEnvVarReportsItsOwnName(t *testing.T) {
 // operator to edit a line that is already being overridden, which is worse than
 // saying nothing — they would change it, deploy, and watch nothing happen.
 func TestTheEnvironmentWinsAndSaysSo(t *testing.T) {
-	path := writeConfig(t, "tuning:\n  refire_grace_s: 900\n")
-	t.Setenv("OTO_TUNING_REFIRE_GRACE_S", "1200")
+	path := writeConfig(t, "tuning:\n  resolve_grace_s: 900\n")
+	t.Setenv("OTO_TUNING_RESOLVE_GRACE_S", "1200")
 
 	cfg, err := Load(path)
 	if err != nil {
@@ -94,7 +105,7 @@ func TestTheEnvironmentWinsAndSaysSo(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("entries %+v, want one merged entry", entries)
 	}
-	if entries[0].ConfigKey != "OTO_TUNING_REFIRE_GRACE_S" {
+	if entries[0].ConfigKey != "OTO_TUNING_RESOLVE_GRACE_S" {
 		t.Fatalf("config key %q, want the env var that is actually in force", entries[0].ConfigKey)
 	}
 	if entries[0].Value != "1200" {
@@ -127,7 +138,7 @@ func TestACommaSeparatedEnvValueBecomesAList(t *testing.T) {
 // raw and has no field on Config; a stray key under it must not be able to
 // disturb anything else the process reads.
 func TestTheTuningSectionDoesNotLeakIntoTheRestOfTheConfig(t *testing.T) {
-	path := writeConfig(t, "tuning:\n  refire_grace_s: 900\n")
+	path := writeConfig(t, "tuning:\n  resolve_grace_s: 900\n")
 
 	cfg, err := Load(path)
 	if err != nil {
@@ -145,7 +156,7 @@ func TestTheTuningSectionDoesNotLeakIntoTheRestOfTheConfig(t *testing.T) {
 // a caller that could edit the slice would edit the deployment's own record of
 // what it configured.
 func TestTuningEntriesHandsBackACopy(t *testing.T) {
-	t.Setenv("OTO_TUNING_REFIRE_GRACE_S", "900")
+	t.Setenv("OTO_TUNING_RESOLVE_GRACE_S", "900")
 
 	cfg, err := Load("")
 	if err != nil {
@@ -154,7 +165,7 @@ func TestTuningEntriesHandsBackACopy(t *testing.T) {
 	first := cfg.TuningEntries()
 	first[0].ConfigKey = "somewhere_else"
 
-	if got := cfg.TuningEntries()[0].ConfigKey; got != "OTO_TUNING_REFIRE_GRACE_S" {
+	if got := cfg.TuningEntries()[0].ConfigKey; got != "OTO_TUNING_RESOLVE_GRACE_S" {
 		t.Fatalf("config key %q: the stored provenance was mutated by a caller", got)
 	}
 }

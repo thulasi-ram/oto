@@ -250,7 +250,10 @@ Recorded here so they can be reversed cheaply. Full reasoning in the ADRs.
    **That defect was overtaken rather than fixed: ADR 0040 retired T8, so nothing
    produces `refired` at all and there is no reply for verbosity to drop.** The
    product question it named — how loud a re-fire should be on a quiet channel —
-   is still open, and is now entirely a question about `group_close_delay`.
+   is still open, and it is no longer a question about `group_close_delay` —
+   ⛔ that setting is deleted (see decision 9's follow-up). A conversation now
+   holds exactly one Case, so a re-fire is always a new root: loud, always, with
+   no knob. Whether that is right is the open ruling recorded in SPEC §B.5.
 9. **A Case is `open` or `closed`, and it is never reopened (ADR 0040)** — and
    this one **reverses shipped behaviour** rather than tuning it, so read §6 of
    that ADR before touching it. `alert_cases.state` held all four §B.2 words;
@@ -264,6 +267,15 @@ Recorded here so they can be reversed cheaply. Full reasoning in the ADRs.
    one that was signed for. `reopen_count`/`reopen_of` are dropped,
    `case.reopened` is retired on 00051's terms, and `refire_grace` survives as an
    inert setting whose future is deliberately undecided.
+   ⛔ **OVERTAKEN — `refire_grace_s` IS DELETED** (git-bug `7287b28`, migration
+   `00071`). "Deliberately undecided" was decided: the setting had no reader
+   outside its own CRUD, and the owner's standing ruling is *delete, do not
+   retire*, because a knob that clamps, validates and reports an origin while
+   changing no outcome is a vocabulary entry the next person has to rule out.
+   `group_close_delay_s` went with it — it timed the close of an `alert_groups`
+   generation, and `00069` deleted the entity. Decision 8's two headline numbers
+   therefore describe settings that no longer exist; the *derivation* stands as
+   the record of how they were reached.
 
 ## Questions genuinely needing the owner
 
@@ -283,4 +295,13 @@ The build is not blocked on any of them.
 Retention defaults were question 5 here. They are now decision 7 above (ADR
 0024). `refire_grace` and the flap thresholds were question 4. They are now
 decision 8 above (ADR 0026). Both were decided without the owner and both are
-written to be cheap to overturn.
+written to be cheap to overturn — and `refire_grace` was in fact overturned:
+see the ⛔ follow-up on decision 9.
+
+4. **How loud should a re-fire be?** New, and it is the successor to the
+   question decision 8 left open. With `alert_groups` deleted a conversation
+   holds exactly one Case, so 500 firing alerts open 500 Slack threads by
+   construction and the only collapse mechanism left is the **opt-in digest**.
+   `test/load`'s `O(groups)` bound and its *"chatter ≤ alerts/10"* ratio are
+   deleted with tombstones. This needs a product ruling; it cannot be tuned,
+   because there is no longer a number to tune.

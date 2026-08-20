@@ -70,14 +70,14 @@ func TestTheWriteRefusesAnOutOfRangeValue(t *testing.T) {
 	svc, store, scope := newFixture(t)
 
 	_, err := svc.UpdateOrgSettings(context.Background(), scope,
-		domain.SettingsPatch{RefireGraceS: intp(0)}, nil)
+		domain.SettingsPatch{ResolveGraceS: intp(0)}, nil)
 	if err == nil {
-		t.Fatal("a refire_grace of 0 was accepted; that is a Slack thread per transition")
+		t.Fatal("a resolve_grace of 0 was accepted; one missed scrape then expires a live case")
 	}
 	if !errs.IsKind(err, errs.KindValidation) {
 		t.Fatalf("kind is not validation: %v", err)
 	}
-	if store.org.Overrides.RefireGraceS != nil {
+	if store.org.Overrides.ResolveGraceS != nil {
 		t.Fatal("the rejected value was written anyway")
 	}
 }
@@ -95,11 +95,11 @@ func TestTheWriteValidatesTheMergedState(t *testing.T) {
 
 	// A legal first write.
 	if _, err := svc.UpdateOrgSettings(ctx, scope,
-		domain.SettingsPatch{GroupCloseDelayS: intp(400)}, nil); err != nil {
+		domain.SettingsPatch{FlapWindowS: intp(400)}, nil); err != nil {
 		t.Fatalf("a legal write failed: %v", err)
 	}
-	if store.org.Settings.GroupCloseDelay != 400*time.Second {
-		t.Fatalf("group_close_delay_s = %v, want 400s", store.org.Settings.GroupCloseDelay)
+	if store.org.Settings.FlapWindow != 400*time.Second {
+		t.Fatalf("flap_window_s = %v, want 400s", store.org.Settings.FlapWindow)
 	}
 
 	// A second, partial write must not disturb the first.
@@ -107,8 +107,8 @@ func TestTheWriteValidatesTheMergedState(t *testing.T) {
 		domain.SettingsPatch{FlapThreshold: intp(7)}, nil); err != nil {
 		t.Fatalf("the second write failed: %v", err)
 	}
-	if store.org.Settings.GroupCloseDelay != 400*time.Second {
-		t.Fatalf("the omitted key reverted: group_close_delay_s = %v", store.org.Settings.GroupCloseDelay)
+	if store.org.Settings.FlapWindow != 400*time.Second {
+		t.Fatalf("the omitted key reverted: flap_window_s = %v", store.org.Settings.FlapWindow)
 	}
 	if store.org.Settings.FlapThreshold != 7 {
 		t.Fatalf("flap_threshold = %d, want 7", store.org.Settings.FlapThreshold)
@@ -124,30 +124,30 @@ func TestOriginSurvivesTheRoundTrip(t *testing.T) {
 	ctx := context.Background()
 
 	org, err := svc.UpdateOrgSettings(ctx, scope,
-		domain.SettingsPatch{RefireGraceS: intp(900)}, nil)
+		domain.SettingsPatch{ResolveGraceS: intp(900)}, nil)
 	if err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	if got := org.Overrides.Origin(domain.KeyRefireGrace); got != domain.OriginOrg {
+	if got := org.Overrides.Origin(domain.KeyResolveGrace); got != domain.OriginOrg {
 		t.Fatalf("origin %q after a write, want org", got)
 	}
-	if org.Settings.RefireGrace != 900*time.Second {
-		t.Fatalf("effective %v, want 900s", org.Settings.RefireGrace)
+	if org.Settings.ResolveGrace != 900*time.Second {
+		t.Fatalf("effective %v, want 900s", org.Settings.ResolveGrace)
 	}
 	if got := org.Overrides.Origin(domain.KeyFlapThreshold); got != domain.OriginDefault {
 		t.Fatalf("an untouched key reports %q, want default", got)
 	}
 
 	org, err = svc.UpdateOrgSettings(ctx, scope,
-		domain.SettingsPatch{}, []domain.SettingKey{domain.KeyRefireGrace})
+		domain.SettingsPatch{}, []domain.SettingKey{domain.KeyResolveGrace})
 	if err != nil {
 		t.Fatalf("reset: %v", err)
 	}
-	if got := org.Overrides.Origin(domain.KeyRefireGrace); got != domain.OriginDefault {
+	if got := org.Overrides.Origin(domain.KeyResolveGrace); got != domain.OriginDefault {
 		t.Fatalf("origin %q after a reset, want default", got)
 	}
-	if org.Settings.RefireGrace != domain.DefaultRefireGrace {
-		t.Fatalf("effective %v after a reset, want the shipped default", org.Settings.RefireGrace)
+	if org.Settings.ResolveGrace != domain.DefaultResolveGrace {
+		t.Fatalf("effective %v after a reset, want the shipped default", org.Settings.ResolveGrace)
 	}
 }
 
@@ -205,7 +205,7 @@ func TestASoftDeletedOrgCannotBeTuned(t *testing.T) {
 	store.org.DeletedAt = &now
 
 	_, err := svc.UpdateOrgSettings(context.Background(), scope,
-		domain.SettingsPatch{RefireGraceS: intp(900)}, nil)
+		domain.SettingsPatch{ResolveGraceS: intp(900)}, nil)
 	if err == nil {
 		t.Fatal("a soft-deleted org accepted a settings write")
 	}

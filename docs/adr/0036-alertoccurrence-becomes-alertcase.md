@@ -12,8 +12,12 @@ survives what the event stream does not)
 §I.1; SCOPE-BOUNDARY §5.1 and the §5.6 column ban, re-pointed at the renamed table
 **Resolves:** git-bug `dc4d731` — *"The authoritative entity is AlertOccurrence and every surface leads
 with Alert"*
-**Design note:** `docs-site/.../design/case-and-grouping.md` §3, whose argument this ADR records so the
-rename has something binding to cite.
+**Design note:** ⛔ **`design/case-and-grouping.md` §3 was cited here and the document is DELETED**
+(git-bug `7570090`) — along with `case-and-grouping-handoff.md`, because half of what both argued was
+the `alert_groups` grouping that no longer exists. Nothing replaces the citation: **this ADR is the
+binding record of the rename argument**, which is what it was written to be. The dangling pointer is
+kept visible rather than quietly removed, so a reader who remembers the design note is told it went
+and why instead of searching for it.
 
 ## Context
 

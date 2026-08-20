@@ -62,9 +62,7 @@ type PageQuery struct {
 // as `orgs.settings` stores them. The domain type is durations; this is the
 // boundary where they become the numbers the contract names.
 type OrgSettingsDTO struct {
-	RefireGraceS        int `json:"refire_grace_s"`
 	ResolveGraceS       int `json:"resolve_grace_s"`
-	GroupCloseDelayS    int `json:"group_close_delay_s"`
 	FlapThreshold       int `json:"flap_threshold"`
 	FlapWindowS         int `json:"flap_window_s"`
 	FlapDigestIntervalS int `json:"flap_digest_interval_s"`
@@ -74,6 +72,14 @@ type OrgSettingsDTO struct {
 	// DefaultVerbosity is the fallback for a Channel that names no verbosity.
 	DefaultVerbosity string `json:"default_verbosity"`
 
+	// ⛔⛔ `refire_grace_s` AND `group_close_delay_s` WERE HERE AND BOTH ARE DELETED
+	// (git-bug 7287b28), off the wire as well as out of the struct: both are gone
+	// from this schema's `required` list in `openapi.yaml`, so a client still
+	// reading either fails to compile rather than reading a number oto never
+	// consults. That is the point of taking them off the CONTRACT rather than
+	// merely off the screen — a settings key an operator can still GET is a knob
+	// they will still reason about.
+	//
 	// ⛔ `broadcast_on_resolved` WAS HERE AND IS DELETED (git-bug 7570090), off the
 	// wire as well as out of the struct — it is gone from `OrgSettingsDTO`'s
 	// `required` list in `openapi.yaml`, so a client that still reads it fails to

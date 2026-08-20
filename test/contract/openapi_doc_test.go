@@ -293,7 +293,7 @@ func sortedKeys[V any](m map[string]V) []string {
 // into ten CI runs.
 //
 // It DEDUPLICATES. One property of one component schema is reached by many
-// paths — `OrgSettingsDTO.refire_grace_s` is inside `MeDTO`, `OrgDTO` and
+// paths — `OrgSettingsDTO.resolve_grace_s` is inside `MeDTO`, `OrgDTO` and
 // `OrgSettingsViewDTO` as well as on its own — and reporting the same fact four
 // times, once per route, buries the eighteen distinct facts under a hundred
 // lines. The message names the SCHEMA the property belongs to, because that is

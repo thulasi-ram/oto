@@ -1,6 +1,31 @@
 # ADR 0040 — A Case is `open` or `closed`, and it is never reopened
 
-- **Status**: Accepted
+> ⛔ **SUPERSEDED IN PART — §6'S LAST BULLET RULED THAT `refire_grace` STAYS, AND THE SETTING IS NOW
+> DELETED.** `refire_grace_s` and `group_close_delay_s` no longer exist: git-bug `7287b28`, migration
+> `00071`, which strips both keys from `orgs.settings` and restates the column comment as the seven
+> keys `settingsJSON` actually reads. **§1 through §5, §7 and §8 are untouched**, and so is the whole
+> of §6 except that one bullet: a Case is still strictly terminal, T8 is still deleted, and
+> `Decision.DropsAck` is still the only road out of a closed episode.
+>
+> ⭐ **THE RULING WAS REVERSED BY ITS OWN PREMISE, NOT BY A CHANGE OF TASTE.** The bullet argued the
+> key stays *because it still constrains two numbers outside the lifecycle layer*. Both of those
+> numbers have since gone. `group_close_delay_s` timed the close of an `alert_groups` **generation**,
+> and git-bug `7570090` / migration `00069` deleted the entity, so the delay had nothing left to
+> close. `MinRefireGraceSeconds = 2 × DedupTTL` was a comment and a test name, never a runtime read,
+> and the bound it justified is restated at the §C.5 replay window itself. ⚠️ The "pin" between the
+> two was never enforced anyway — two independent `1200 * time.Second` literals, with the only check
+> comparing the two DEFAULTS, so two operator-written settings could contradict each other freely.
+> Deleting **both** is what makes that moot; deleting one would have left the trap armed with its
+> tripwire removed.
+>
+> ⚠️ **THE STANDING RULE THE BULLET INVOKED IS UNCHANGED, AND IT IS NOT WHAT DECIDED THIS.** Deleting
+> a settings key is still a contract change of its own. oto is unreleased, `git tag` lists nothing,
+> and the owner's ruling is **delete, do not retire** — a knob that clamps, validates and reports an
+> origin while changing no outcome is a vocabulary entry the next person has to rule out. See
+> SPEC §B.3 (the paragraph that used to quote this bullet and now reverses it) and migration `00071`.
+
+- **Status**: Accepted · **superseded in part** by git-bug `7287b28` / migration `00071` — see the
+  banner above and §6's last bullet.
 - **Date**: 2026-08-18
 - **Supersedes in part**: ADR 0036 (`AlertOccurrence` becomes `AlertCase`) — the entity is unchanged, its `state` column is not.
 - **Reverses**: the "an acknowledgement survives a re-fire inside `refire_grace`" intention behind SPEC §B.3 transition **T8**. See §6, which exists so a future reader does not restore it.
@@ -134,21 +159,32 @@ Consequences, all deliberate:
   one succeeds is the row at `seq - 1`; `reopen_of` was a second spelling of that.
 - `Decision.DropsAck` is now the only road out of a closed episode, so no acknowledgement
   survives any re-fire, however quickly it arrives.
-- `refire_grace` no longer decides a transition, **and the setting stays — under its own name, in
-  `orgs.settings`, with its bounds unchanged.** That is the decision, not a deferral. It is inert at
-  the case-lifecycle layer, and it still constrains two numbers outside that layer, each held by its
-  own test. Its FLOOR is `2 × ingestion/domain.DedupTTL` — `MinRefireGraceSeconds = 600`, derived from
-  the §C.5 replay window rather than chosen, which is what stops the two being edited into
-  contradiction (`TestTheReplayWindowIsStrictlyInsideRefireGrace`). And `DefaultGroupCloseDelay` is
-  pinned **at or above** `DefaultRefireGrace`, equal today at 1200 s — below it is a hard failure and
-  a gap above it is legal but logged (`TestGroupCloseDelayDoesNotDefeatTheRefireGrace`). Renaming,
-  re-homing and removal are all
-  refused: deleting or moving a settings key is a contract change of its own, and there is nothing to
-  buy by paying it — the question this setting used to answer, *how much of a gap should be tolerated
-  before a re-fire counts as a separate episode*, belongs at **case formation**, not at the lifecycle
-  boundary, so the knob for it would be a new key with new semantics rather than this one wearing a
-  new label. Operator copy therefore describes `refire_grace` as the number
-  `group_close_delay` is tied to, and never as a window in which a case reopens.
+- `refire_grace` no longer decides a transition — ⛔ **AND THE SETTING IS DELETED. THIS BULLET RULED
+  THE OTHER WAY AND IS SUPERSEDED** (git-bug `7287b28`, migration `00071`). It read: *"the setting
+  stays — under its own name, in `orgs.settings`, with its bounds unchanged. That is the decision, not
+  a deferral … Renaming, re-homing and removal are all refused."* The superseded wording is kept here
+  because the argument was sound on its premises and it is the premises that failed.
+
+  The bullet rested on the key still constraining **two numbers outside the lifecycle layer**, each
+  held by its own test: a FLOOR of `2 × ingestion/domain.DedupTTL` (`MinRefireGraceSeconds = 600`,
+  derived from the §C.5 replay window, `TestTheReplayWindowIsStrictlyInsideRefireGrace`), and
+  `DefaultGroupCloseDelay` pinned **at or above** `DefaultRefireGrace`, equal at 1200 s
+  (`TestGroupCloseDelayDoesNotDefeatTheRefireGrace`). Both are gone. `group_close_delay_s` timed the
+  close of an `alert_groups` **generation**, and migration `00069` deleted the entity; the floor was a
+  comment and a test name rather than a runtime read, and the bound it justified is restated at the
+  replay window itself. ⚠️ The pin was never enforced in the first place — two independent
+  `1200 * time.Second` literals, with the only check comparing the two DEFAULTS, so two
+  operator-written settings could contradict each other freely.
+
+  ⭐ **THE PART OF THE BULLET THAT STANDS** is where the question belongs: *how much of a gap should be
+  tolerated before a re-fire counts as a separate episode* is a **case formation** question, not a
+  lifecycle-boundary one, so a future knob for it is a **new key with new semantics** and never this
+  one wearing a new label. And the standing rule it invoked is unchanged: deleting a settings key is a
+  contract change of its own. What decided this was the owner's **delete, do not retire** ruling on an
+  unreleased product — a knob that clamps, validates and reports an origin while changing no outcome is
+  a ghost reference at launch. ⚠️ **There is no operator copy for `refire_grace` any more**; the
+  sentence this bullet used to prescribe described it as the number `group_close_delay` is tied to, and
+  both keys left together.
 
 ## 7. `case.reopened` is retired, not deleted
 

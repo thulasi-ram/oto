@@ -55,7 +55,7 @@ For every alert that has ever fired, oto can show: when it first appeared, every
 | C5 | Architect never mentions `notification_reason`. | `notification_reason` is persisted on every batch and drives the post-vs-update decision table (§H.6). Empty (AM < 0.32.0) falls back to fingerprint-set diffing. |
 | C6 | Architect uses a Block Kit `header` block for the title. Research: `header` is `plain_text` only — no bold, no links. | Title is a **`section`** with a bold mrkdwn link. `header` MUST NOT be used. The `alert` block MUST NOT be used (modals only). |
 | C7 | Architect implies colour without specifying the mechanism. Research: colour has no Block Kit equivalent. | Exactly **one** attachment wraps **all** blocks, carrying `color`. **Colour encodes STATE, severity encodes as a leading emoji.** |
-| C8 | Architect: new thread per case, root amend on state change, reply per lifecycle fact. Research: `chat.postMessage` ≈ 1/s/channel; `chat.update` is Tier 3 (50/min) and not per-channel limited. | **`chat.update` in place is the primary mechanism. Thread replies are the exception**, governed by §H.6 and per-channel verbosity. The Slack root message belongs to an **AlertGroup generation**, not to a case. |
+| C8 | Architect: new thread per case, root amend on state change, reply per lifecycle fact. Research: `chat.postMessage` ≈ 1/s/channel; `chat.update` is Tier 3 (50/min) and not per-channel limited. | **`chat.update` in place is the primary mechanism. Thread replies are the exception**, governed by §H.6 and per-channel verbosity. **⚠️ AMENDED — git-bug `7570090` (migration `00069`):** the ruling read *"the Slack root message belongs to an **AlertGroup generation**, not to a case"*, and it now says the opposite. `alert_groups` is deleted, a conversation holds exactly ONE Case, so the root belongs to the Case. The `chat.update`-primary half of C8 is untouched and is what still governs §H.6. |
 | C9 | Architect recovers from crash-after-send by calling `conversations.history`. Research: never depend on reading Slack back; distributed apps are throttled to 1 req/min / 15 objects. | **DROP.** oto never reads Slack to reconstruct its own state. Ambiguous sends are handled by §G.5. |
 | C10 | Architect justifies its own dedup key by 64-bit collision risk (overstated). | Keep the oto-owned key, but the justification is **tenant/cluster scoping and identity policy**, not collisions. oto additionally **recomputes** AM's FNV-1a fingerprint locally and records a mismatch rather than trusting the wire value. |
 | C11 | Architect persists `RenderedMessage` at enqueue time. Red team: queued notifications must be re-evaluated at send time. | Render at **claim** time. If `attempts == 0`, render fresh from current state and persist. If `attempts > 0`, re-send the persisted bytes (transport retry). Both properties satisfied. |
@@ -88,8 +88,6 @@ These names are binding on Go types, table names, JSON fields, API paths and UI 
 | **Alert** | `alerts.Alert` | `alerts` | **The identity of a label set** within `(org, cluster)`. Created on first sight, survives resolution forever. oto's answer to Sentry's *Issue*. Keyed by `alert_key`. |
 | **AlertCase** | `alerts.Case` | `alert_cases` | **One contiguous firing episode** of an Alert. `(alert_id, seq)`. Carries state, ack, timings and the rule snapshot. This is what you acknowledge and whose **firing duration** is measured — never "MTTR" (a banned acronym: §A.1). |
 | **AlertEvent** | `alerts.Event` | `alert_events` | **An immutable record of one thing that happened at one instant.** Never updated, never deleted (aged out by partition). This is the timeline. |
-| **AlertGroup** | `grouping.Group` | `alert_groups` | **One generation of one MACHINE-DERIVED grouping of alerts.** Derived from `(org, cluster, alertname, namespace-or-∅)` — the alert's OWN labels, never Alertmanager's grouping (ADR 0038, §C.4). **Owns exactly one Slack thread.** `receiver` and `source_group_key` survive on the row as provenance and are no part of its identity. |
-| **AlertGroupMember** | `grouping.Member` | *(none — derived from `alert_cases.group_id`)* | Membership of an AlertCase in an AlertGroup generation. **Not a row.** Since ADR 0038 the group key is derived from the alert's own labels, so an episode belongs to exactly one generation and its own `group_id` is the record; it joins at `started_at` and leaves at `ended_at`. The `alert_group_members` table was dropped in migration 00051. |
 | **RuleSnapshot** | `rules.Snapshot` | `rule_snapshots` | A content-addressed capture of a Prometheus alerting rule (`expr`, `for`, `keep_firing_for`, labels, annotations) at a point in time. |
 | **RuleKey** | `rules.Key` | *(column)* | `(source_id, rule_file, rule_group, rule_name)` — the identity across which drift is detected. |
 | **Enricher** | `enrichment.Enricher` | *(registry)* | A named, versioned producer of derived context. |
@@ -100,7 +98,8 @@ These names are binding on Go types, table names, JSON fields, API paths and UI 
 | **NotificationPolicy** | `notification.Policy` | `notification_policies` | matchers → channels → reasons. Decides *whether* and *where*. |
 | **Notification** | `notification.Notification` | `notifications` | **The channel-agnostic intent to communicate one fact about one subject.** Idempotent. |
 | **NotificationDelivery** | `notification.Delivery` | `notification_deliveries` | **One materialisation of a Notification on one Channel.** Owns retry state, provider ids, thread sequence, rendered bytes. |
-| **ChannelThread** | `notification.Thread` | `channel_threads` | Persisted binding of an AlertGroup to a provider conversation anchor (Slack `channel_id` + root `ts`). |
+| **Conversation** | `notification.ConversationKind` + id | *(the pair `(conversation_kind, conversation_id)` on `notifications`)* | What a `channel_threads` row is *about*: a **Case** or a **digest**. A conversation holds exactly **one Case** — a new Case always means a new thread — and a digest's conversation is keyed by the **policy** that asked for it, one per policy per channel. It is what **decides which facts share a message**, and that decision belongs to the `notification` layer, not to a stored grouping row (git-bug `7570090`, migration `00069`). It is **not** a `correlation` (deferred) and **not** an incident (permanently out). |
+| **ChannelThread** | `notification.Thread` | `channel_threads` | Persisted binding of a **Conversation** to a provider conversation anchor (Slack `channel_id` + root `ts`). |
 | **Silence** | `silences.Silence` | `silences` | A **read-only mirror** of an Alertmanager silence. |
 | **UIEvent** | `streaming.UIEvent` | `ui_events` | A monotonic, replayable envelope for the SSE stream. |
 | **Reason** | `notification.Reason` | *(column)* | Why a Notification exists. Enum in §H.6. |
@@ -111,6 +110,21 @@ These names are binding on Go types, table names, JSON fields, API paths and UI 
 **Ambiguity bans.** `event` (unqualified — always `AlertEvent` or `UIEvent`), `issue`, `notification`
 used to mean a Slack message (that is a `NotificationDelivery`), `group` used to mean a UI grouping
 (that is a *view*), `alert` used to mean a case or a Slack message.
+
+⛔ **`AlertGroup` IS A RETIRED NOUN AND MUST NOT COME BACK** (git-bug `7570090`, migration `00069`).
+It named one *generation of a notification grouping*, keyed by `(org, cluster, alertname,
+namespace-or-∅)` from the alert's own labels (ADR 0038), and its glossary row said what it was
+*for* in the same breath as it named the object: it decided which facts share a message and *"owns
+exactly one Slack thread"*. Deciding which facts share a message is the definition of a
+**NotificationPolicy**, and the row held no fact an operator supplied and none upstream sent — it
+held a decision oto made, identically for every org forever. `alert_groups` is deleted,
+`alert_cases.group_id` and `notifications.group_id` with it, `grouping.Group` and `grouping.Member`
+with them, and **the conversation is the Case**. Three consequences worth stating because each is a
+place the noun tries to return: the axes are no longer any entity's identity (§C.4); `alert_group` is
+gone from the `subject_kind` and `conversation_kind` vocabularies; and the plurality Reasons
+`new_alerts` and `some_resolved` left with it, because arithmetic over a set of one has no answer to
+give. `AlertGroupMember` goes with it — the `alert_group_members` table was already dropped in
+migration 00051.
 
 **Scope bans** (SCOPE-BOUNDARY §3 — vocabulary is enforcement). These words MUST NOT appear in a Go
 identifier, a table or column name, a JSON field, an API path, or UI copy:
@@ -131,7 +145,7 @@ that is not mechanically enforced decays in a quarter.
 
 ## B. Alert lifecycle state machine
 
-The authoritative machine runs on **AlertCase**. `Alert.state` and `AlertGroup.state` are projections.
+The authoritative machine runs on **AlertCase**. `Alert.state` is a projection.
 
 ### B.1 Two orthogonal axes
 
@@ -175,10 +189,12 @@ first-class CHECKed enum, so every aggregate that needs `firing` apart from `sup
 Alert and reads it there, guarded by `o.state = 'open'`: `case_one_open_idx` is
 `UNIQUE (alert_id) WHERE ended_at IS NULL`, so an **open** case *is* its Alert's current one and
 `alerts.state` *is* that episode's state — while over a CLOSED row the same read would report a
-re-fired alert's ended episodes as firing. It costs nothing: the group rollup that renders "12
-alerts, 3 firing, 9 resolved" has joined `alerts` since it was written, for `max(a.severity)`, so
-the derivation reads one more column off a row the plan already fetched by primary key (same
-`case_group_idx`, same cost).
+re-fired alert's ended episodes as firing. It costs nothing: the reader that needs the four-way word
+has joined `alerts` already, for `max(a.severity)`, so the derivation reads one more column off a row
+the plan has fetched anyway. ⚠️ **The cost argument USED TO CITE the group rollup that renders "12
+alerts, 3 firing, 9 resolved", on the same `case_group_idx`.** That rollup and that index are deleted
+with `alert_groups` (git-bug `7570090`, migration `00069`); the conclusion is unchanged and the
+witness for it is now the Case list, but nobody has re-measured the plan on the surviving readers.
 
 | State | Terminal | Meaning | Set by |
 |---|---|---|---|
@@ -188,7 +204,11 @@ the derivation reads one more column off a row the plan already fetched by prima
 | `expired` | yes | oto stopped hearing about it: `now > source_ends_at + resolve_grace` **and** the AlertSource is healthy. Means *"Prometheus or Alertmanager went away"*, not *"the problem went away"*. | Reaper job |
 
 `alert.state` = the four-way reading of the current open case; if none is open, the reading of the most recent case.
-`alert_group.state` = `open` if ≥1 member case is open, else `closed` after `group_close_delay` (default 5m).
+⛔ **`alert_group.state` WAS DEFINED HERE AND THERE IS NO SUCH STATE** (git-bug `7570090`,
+migration `00069`): `alert_groups` is deleted, so nothing aggregates the four-way reading over a set
+of cases, and `group_close_delay_s` — the delay this line named — is deleted with it (git-bug
+`7287b28`, migration `00071`). A conversation now holds exactly one Case, so the Case's own reading is
+the only reading there is.
 
 ### B.3 Transition table
 
@@ -200,15 +220,15 @@ they are edges, not columns.
 
 | # | From | To | Trigger | Actor | Side effects (all in ONE transaction) |
 |---|---|---|---|---|---|
-| T1 | *(none)* | `firing` | First observation of an `alert_key`, or a `firing` observation with no open case | Ingest, Reconciler | Upsert `Alert` (emit `alert.created` if inserted); open case `seq = prev+1`; join/create AlertGroup generation; emit `case.opened`; enqueue `enrich.run`; enqueue `notify.evaluate(reason=fired)` |
+| T1 | *(none)* | `firing` | First observation of an `alert_key`, or a `firing` observation with no open case | Ingest, Reconciler | Upsert `Alert` (emit `alert.created` if inserted); open case `seq = prev+1`; emit `case.opened`; enqueue `enrich.run`; enqueue `notify.evaluate(reason=fired)` |
 | T2 | `firing` | `firing` | Repeat observation | Ingest, Reconciler | Update `last_observed_at`, `annotations`, `value`, `source_ends_at`. **Emit NO event** unless a *material* field changed (`severity`, any annotation, `generator_url`, `rule_fingerprint`) → then emit `alert.mutated` |
 | T3 | `firing` | `suppressed` | Reconciler observes `status.state == "suppressed"` | Reconciler | Set `suppression_reason` from `silencedBy`/`inhibitedBy`/`mutedBy`; emit `case.suppressed`; enqueue `notify.evaluate(reason=suppressed)` |
 | T4 | `suppressed` | `firing` | **(a)** Reconciler observes `status.state == "active"`, **OR** **(b)** ANY ingest observation with `status == "firing"` arrives for this case | **Reconciler AND Ingest** | Clear `suppression_reason` and `suppressed_by`; emit `case.unsuppressed` with `detected_by ∈ {reconciler, webhook}`; enqueue `notify.evaluate(reason=unsuppressed)` |
 | T5 | `firing`\|`suppressed` | `resolved` | Per-alert `status == "resolved"` | Ingest | Set `ended_at = max(occurred_at, started_at)` **(clamped — see B.3.2)**, `resolve_reason='upstream'`; emit `case.resolved`; enqueue `notify.evaluate(reason=all_resolved\|some_resolved)` |
 | T6 | `firing`\|`suppressed` | `expired` | `now > source_ends_at + resolve_grace` AND `source_health.status = 'healthy'` | Reaper | Set `ended_at = now`, `resolve_reason='timeout'`; emit `case.expired`; enqueue `notify.evaluate(reason=expired)` |
-| T7 | `resolved`\|`expired` | *(new case `firing`)* | Same `alert_key` fires again — **always, whatever the clock says** | Ingest | The closed case is left exactly as it is; new case `seq+1`, **`unacked`**; **new AlertGroup generation** if the group was closed → **new Slack root message**; emit `case.opened`; `alerts.total_cases += 1` |
-| T9 | any | `ack_state = acked` | Human via `POST /cases/{id}/ack`, `POST /alert-groups/{id}/ack` (fan-out over each member's OPEN case), or Slack `oto.ack` button | Human | Set `acked_by`, `acked_at`, `ack_note`; emit `case.acknowledged`; enqueue `notify.evaluate(reason=acked)` |
-| T10 | `acked` | `unacked` | Human unack via `POST /cases/{id}/unack` or `POST /alert-groups/{id}/unack` (the same fan-out), **or** a new case opens (T7) | Human, Ingest | Emit `case.unacknowledged` with `reason ∈ {manual, new_case}`; enqueue `notify.evaluate(reason=unacked)` |
+| T7 | `resolved`\|`expired` | *(new case `firing`)* | Same `alert_key` fires again — **always, whatever the clock says** | Ingest | The closed case is left exactly as it is; new case `seq+1`, **`unacked`** → **a new Case is a new conversation, so a new Slack root message, always** (git-bug `7570090`); emit `case.opened`; `alerts.total_cases += 1` |
+| T9 | any | `ack_state = acked` | Human via `POST /cases/{id}/ack`, or Slack `oto.ack` button (the `/alert-groups/{id}/ack` fan-out is deleted with the entity — git-bug `7570090`) | Human | Set `acked_by`, `acked_at`, `ack_note`; emit `case.acknowledged`; enqueue `notify.evaluate(reason=acked)` |
+| T10 | `acked` | `unacked` | Human unack via `POST /cases/{id}/unack` (the `/alert-groups/{id}/unack` fan-out is deleted with the entity), **or** a new case opens (T7) | Human, Ingest | Emit `case.unacknowledged` with `reason ∈ {manual, new_case}`; enqueue `notify.evaluate(reason=unacked)` |
 | T11 | any | *(no state change)* | An Enricher completes | Enrichment worker | Emit `enrichment.completed` \| `enrichment.failed`; enqueue `notify.evaluate(reason=enriched)` (debounced 10s) |
 | T12 | any | *(no state change)* | `rule_fingerprint` for this case differs from the previous case's for the same `RuleKey` | Rules service | Emit `rule.definition_changed` with a structured diff; enqueue `notify.evaluate(reason=rule_changed)` |
 | T13 | any | *(no state change)* | Notification / delivery progresses | Notify, Deliver workers | Emit `notification.created`, `delivery.sent`, `delivery.failed`, `delivery.skipped`, `delivery.dead` |
@@ -229,19 +249,36 @@ every query treating `closed` as final was quietly wrong for one window's width.
 terminal: `open → closed`, once.** `T9`/`T10` keep their numbers because the labels are referenced
 across the tree; renumbering them to close the gap would rewrite every reference to buy nothing.
 
-⚠️ **`refire_grace` therefore no longer decides any transition, and ADR 0040 §6 decides its fate:
-the key STAYS — under its own name, in `orgs.settings`, with its bounds unchanged. Renaming,
-re-homing and removal are all REFUSED.** It is inert at the lifecycle layer and still constrains two
-numbers outside it, each held by its own test: its FLOOR is `MinRefireGraceSeconds = 2 × DedupTTL`,
-derived from the §C.5 replay window rather than chosen
-(`TestTheReplayWindowIsStrictlyInsideRefireGrace`), and `group_close_delay_s` is pinned at or above
-it (§D.1, `TestGroupCloseDelayDoesNotDefeatTheRefireGrace`). **Deleting or moving a settings key is a
-contract change of its own** — that rule is unchanged and is exactly why removal was refused — and
-there is nothing to buy by paying it here: the question this setting used to answer, *how much of a
-gap should be tolerated before a re-fire counts as a separate episode*, belongs at **case
-formation** rather than at the lifecycle boundary, so the knob for it would be a new key with new
-semantics rather than this one wearing a new label. Operator copy describes `refire_grace` as the
-number `group_close_delay` is tied to, and never as a window in which a case reopens.
+⛔ **`refire_grace` DECIDED NO TRANSITION AND IS NOW DELETED OUTRIGHT, WHICH REVERSES THE RULING
+THIS PARAGRAPH USED TO CARRY** (git-bug `7287b28`, migration `00071`). It read: *"ADR 0040 §6 decides
+its fate: the key STAYS — under its own name, in `orgs.settings`, with its bounds unchanged.
+Renaming, re-homing and removal are all REFUSED … it is inert at the lifecycle layer and still
+constrains two numbers outside it."* Both of those two numbers have since gone:
+
+- `group_close_delay_s`, which was *pinned at or above it*, timed the close of an `alert_groups`
+  generation. `00069` deleted the entity, so the delay had nothing left to close and left with it.
+  ⚠️ The "pin" was never enforced anyway: it was two independent `1200 * time.Second` literals in
+  `platform/tuning`, and the only check compared the two DEFAULTS — so two operator-written settings
+  could contradict each other freely. Deleting **both** is what makes that moot; deleting one would
+  have left the trap armed with its tripwire removed.
+- `MinRefireGraceSeconds = 2 × DedupTTL`, the FLOOR derived from the §C.5 replay window. The
+  derivation was a comment and a test name, never a runtime read, and the bound it justified is
+  restated at the replay window itself rather than through a constant that no longer exists.
+
+⭐ **AND THE DROP CHANGES NO OBSERVABLE SLACK BEHAVIOUR, WHICH IS THE STRONGEST ARGUMENT THAT NO
+REPLACEMENT IS OWED.** `platform/tuning/defaults.go` had written it down before anybody noticed:
+*"every re-fire opened a new episode, a new generation and a new Slack root card, **with a setting on
+the screen that looked like it should have stopped it**."* A card per re-fire is the shipped
+behaviour. The thing a rollover rule would have had to preserve was never working. **The standing
+rule that deleting a settings key is a contract change of its own is unchanged**; oto is unreleased,
+`git tag` lists nothing, and the owner's ruling is *delete, do not retire* — a knob that clamps,
+validates and reports an origin while changing no outcome is a vocabulary entry the next person has
+to rule out. No ghosts at launch.
+
+⚠️ The question this setting used to answer — *how much of a gap should be tolerated before a re-fire
+counts as a separate episode* — is unchanged and still belongs at **case formation** rather than at
+the lifecycle boundary. If it is ever asked again it is a NEW key with new semantics, not this one
+wearing a new label.
 
 ⚠️ **The three flap keys — `flap_threshold`, `flap_window_s`, `flap_digest_interval_s` — take the
 same ruling, and ADR 0042 Amendment 3 records it: they STAY, permanently inert, under their own
@@ -251,10 +288,12 @@ writer refuses `flapping` as a suppression reason, so no value in these three ch
 delivers. Flap noise is absorbed one layer earlier, at case formation, by the case-retention window
 W.
 
-⛔ **They differ from `refire_grace` in one way that matters, and it is recorded rather than
-glossed: `refire_grace` is inert at its own layer but still PINS two numbers, and these three pin
-nothing at all.** The argument for keeping them is therefore weaker, and rests only on the standing
-rule above — deleting a settings key is a contract change of its own. What tipped it is that the
+⛔ **THE COMPARISON THIS PARAGRAPH DREW AGAINST `refire_grace` NO LONGER HOLDS, AND THE DIRECTION IT
+NOW POINTS IS THE OPPOSITE ONE.** It read: *"`refire_grace` is inert at its own layer but still PINS
+two numbers, and these three pin nothing at all — the argument for keeping them is therefore
+weaker."* `refire_grace` pinned two numbers and has since been **deleted** (above), so "pins
+nothing" is no longer the weaker case; it is the same case. What still separates the three flap keys
+from it is only that the operator-facing cost has been paid down rather than that the key survives. What tipped it is that the
 operator-facing cost has already been paid down: the settings screen states the retirement at every
 value, at level `inert`, and offers **no** `suggest` on any of the three, so the row now tells an
 operator the truth instead of coaching them through a dead damper (git-bug `235f347`). A key that
@@ -308,10 +347,18 @@ surfaced, never rejected** (C12). The same clamp applies to T6 (`expired`).
 > **`unacked`**. There is no window in which it is anything else (ADR 0040). The closed episode is not
 > touched: a Case opens once, closes once, and nothing reopens it.
 >
-> A **NEW Slack root message** is posted only when a **new AlertGroup generation** opens. A new case
-> joining a still-open group generation produces a `chat.update` (+ optional thread reply), never a new
-> root — so whether a re-fire is loud is decided by `group_close_delay`, which is a fact about the
-> **notification grouping**, and never by a fact about the episode.
+> ⛔ **A NEW SLACK ROOT MESSAGE IS POSTED FOR EVERY NEW CASE, AND THE CLAUSE THIS REPLACES SAID THE
+> OPPOSITE.** It read: *"a NEW Slack root message is posted only when a new AlertGroup generation
+> opens; a new case joining a still-open group generation produces a `chat.update` (+ optional thread
+> reply), never a new"* root. There is no generation and no group to join (§C.4, migration `00069`):
+> **a conversation holds exactly one Case**, so a new Case is always a new conversation and therefore
+> always a new root. ⚠️ This is the operator-visible consequence of the deletion and it is not a
+> tuning question — 500 alerts open 500 threads, and the only collapse mechanism left is the opt-in
+> digest. The truncated clause below is retained so the shape of what changed is legible:
+>
+> ~~… so whether a re-fire is loud is decided by `group_close_delay`, which is a fact about the
+> notification grouping, and never by a fact about the episode.~~ `group_close_delay_s` is itself
+> deleted (git-bug `7287b28`, migration `00071`), so nothing decides it: a re-fire is loud, always.
 
 ### B.6 Damping — and why oto no longer does it
 
@@ -577,8 +624,10 @@ recorded and both are displayed.**
 >
 > Snooze records itself as **`notifications.suppressed_reason = 'snoozed'`** — oto's own
 > notification-suppression enum, alongside `throttled` and `verbosity`, which is exactly the
-> company it keeps. `storm` and `flapping` left that enum with ADR 0042; the five values beside
-> `snoozed` are `no_policy`, `throttled`, `verbosity`, `channel_disabled` and `duplicate_render`.
+> company it keeps. `storm` and `flapping` left that enum with ADR 0042; the **six** values beside
+> `snoozed` are `no_policy`, `throttled`, `below_threshold`, `verbosity`, `channel_disabled` and
+> `duplicate_render`. `below_threshold` is the newest and arrived with the policy count condition
+> (git-bug `7570090`, migrations `00072`/`00073`, ADR 0044).
 
 **Which wins, per concern:**
 
@@ -586,9 +635,39 @@ recorded and both are displayed.**
 |---|---|---|
 | Observation and timeline | **Neither** | Both proceed unchanged. Snooze never suppresses an `AlertEvent`. |
 | Whether a notification is created | **Snooze** | `notify.evaluate` records the intent with `status='suppressed'`, `suppressed_reason='snoozed'`, and creates **no deliveries**. The audit trail is complete. |
-| The recorded `suppressed_reason` when several apply | **First match, in this order** | `channel_disabled` → `no_policy` → **`snoozed`** → `throttled` → `verbosity` → `duplicate_render`. Six values, not eight: `storm` and `flapping` left the chain with ADR 0042. Snooze outranks the rest because it is a deliberate human act and therefore the most actionable explanation. |
+| The recorded `suppressed_reason` when several apply | **First match, in this order** | `channel_disabled` → `no_policy` → **`snoozed`** → `throttled` → `below_threshold` → `verbosity` → `duplicate_render`. **Seven values**, not eight: `storm` and `flapping` left the chain with ADR 0042, and `below_threshold` joined it with the policy count condition (git-bug `7570090`, migrations `00072`/`00073`, ADR 0044). Snooze outranks the rest because it is a deliberate human act and therefore the most actionable explanation. |
 | What the Slack card shows | **Both** | Colour and status field follow `case.state` (the world). A separate `*Notifications*` field shows the snooze. |
 | What the UI shows | **Both** | State chip from `case.state`; a `:zzz:` badge with a countdown from the snooze. |
+
+✅ **`below_threshold`'S POSITION IN THE CHAIN IS RATIFIED (owner, 2026-08-20, ADR 0044 §5).** It was
+NOT a ruling this document had already made, and the distinction is kept because it is what a future
+reader needs: the rank was proposed by the change that shipped the axis and was recorded as a proposal
+in four places until the owner ruled on it. The authority is ADR 0044 §5; this clause records it. The
+value itself is
+ticket-authorised: git-bug `7570090` names a policy count condition as the replacement for hardcoded
+flap detection, migrations `00072`/`00073` land it, and ADR 0044 records why a floor whose threshold
+the operator wrote is admissible where `flapping`'s — a constant welded into Go — was not. **Where it
+ranked was decided by ADR 0044 §5 and by nothing before it.** No clause of this document, no earlier
+ADR and no ticket ranked a ceiling against a floor; the question did not exist before this axis did.
+The rank shipped because `suppressorOrder` has to be *some* order, and the reasoning below was
+produced by that change (git-bug `7570090`) rather than recovered from the design record — then
+ratified on its own merits.
+
+The reasoning, now ruled rather than merely offered: `throttled` and `below_threshold` are **the
+same two policy columns read with opposite senses** (`count_min` over `count_window_s`), so they
+belong adjacent, and both belong above `verbosity`, which is a property of a **destination** rather
+than of the policy. The **ceiling** is placed first of the two because a spent cap is the **active**
+fact — oto has been speaking about this conversation and stopped, against a number the operator has
+already been hit by — whereas an unmet floor is the ordinary **resting** state of every policy that
+carries one: for most of its window a count condition is unmet by design, and a resting state that
+outranked an active damper would mask it on every policy carrying both.
+
+⭐ **OVERTURNING IT IS DELIBERATELY CHEAP, WHICH IS THE POINT OF SAYING SO HERE.** It moves one slice
+literal (`suppressorOrder`, `internal/notification/domain/suppression.go`), this line, and one
+description in `api/openapi/openapi.yaml`. **Nothing stored depends on the order** — the chain decides
+*which* reason a suppressed row records at write time, and a row already written keeps the reason it
+was written with. Ratification does not change that: overturning the rank is a new ADR superseding
+0044 §5, never a migration.
 
 #### B.8.3 Operations
 
@@ -596,7 +675,7 @@ recorded and both are displayed.**
 |---|---|
 | `snooze(alert_id, until, note)` | Closes any active snooze on that alert as `superseded`; inserts a new `alert_snoozes` row; emits **`alert.snoozed`**; enqueues `notify.evaluate(reason=snoozed)` so the channel is **told it is going quiet**. |
 | `unsnooze(alert_id)` | Sets `ended_at`, `ended_reason='manual'`; clears the projection; emits **`alert.unsnoozed`**; enqueues `notify.evaluate(reason=unsnoozed)`. |
-| `snooze` on an AlertGroup | **Fan-out of the same primitive, not a new one.** Creates one snooze per *currently-joined member* `alert_id`. Alerts joining the group later are NOT snoozed — a snooze is never predictive. |
+| ⛔ `snooze` on an AlertGroup | **THE ROW IS DELETED WITH THE ENTITY** (git-bug `7570090`, migration `00069`). It described a fan-out over *currently-joined members*, one snooze per member `alert_id`, never predictive. There is no member set to fan out over: a conversation holds one Case, so a snooze is taken on the Alert and nowhere else. |
 | Expiry (`snooze.expire`, every 60 s) | Sets `ended_at = now`, `ended_reason='expired'`; clears the projection; emits `alert.unsnoozed` with `reason='expired'`; if the alert's case is still open, enqueues `notify.evaluate(reason=unsnoozed)`. |
 
 **Bounds (binding).** `snoozed_until` is **NOT NULL**. Minimum **5 minutes**, maximum **30 days**.
@@ -769,10 +848,48 @@ func ComputeSourceFingerprint(ls LabelSet) SourceFingerprint
 - If the wire payload carries `fingerprint` and it differs from ours, we store **ours**, and emit an `ingest.fingerprint_mismatch` metric plus a `fingerprint_mismatch` entry on the batch. We never fail the ingest on this.
 - Purpose: the join key for `/api/v2/alerts` reconciliation and for debugging against upstream. **Never** the product identity.
 
-### C.4 `group_key` — the durable group identity
+### C.4 `group_key` — the split key, which identifies nothing
 
-**Amended by ADR 0038.** The key is now **derived from the alert's own labels** and is no longer a
-function of anything Alertmanager chose.
+⛔ **AMENDED BY git-bug `7570090` (migration `00069`): THE AXES NO LONGER IDENTIFY A STORED ENTITY.**
+This section described a *durable group identity* — the primary key of an `alert_groups` row that
+owned a Slack thread, carried a generation, and that `alert_cases.group_id` pointed at.
+`alert_groups` is **deleted, root and branch**, `alert_cases.group_id` with it, and **the
+conversation is the Case** (CONTEXT.md's glossary; §H's `conversation_kind` is `case | digest`).
+So the formula below still computes, and what it computes is no longer anybody's identity.
+
+⭐ **THIS RECORDS A DELETION AND IT ARGUES AGAINST NOTHING.** In particular it does **not** reopen
+§C.3's cut of the configurable grouping-rule engine — *"Still fixed, still not a rule engine"* — and
+no ADR supersedes 0038. Deleting the entity **strengthens** the cut: there is no longer a key that
+could be made configurable. A configurable delivery-time collapse key was designed, built and
+**reverted** (migration `00065`) under the owner's ruling that a conversation holds exactly one Case,
+which leaves nothing for an operator to choose about which facts share a message. `notification_policies`
+gained `group_by` for one release and lost it again; the column is gone and is not coming back.
+
+⚠️ **WHAT THE KEY IS FOR NOW: MEASUREMENT, AND NOTHING ELSE.** `ComputeGroupKey` and `SplitLabels`
+survive in `internal/alerts/domain/keys.go`. `SplitLabels` is read by `alerts/repository`'s case-policy
+lookup, which is a genuine live consumer; `ComputeGroupKey`'s only caller is `tools/groupreplay`, the
+harness that answers "would these axes have over-split or over-merged this org's real payloads" —
+carried as an explicit `//oto:reachable-ok` rather than as an accident. It writes no row and keys no
+thread.
+
+⛔ **`receiver` AND `source_group_key` NO LONGER SURVIVE ANYWHERE**, because the table that carried
+them is gone. AM's `groupKey` is still never parsed and is still the least-constrained input oto
+takes (§C.5 depends on that fact and is unaffected), but it is no longer stored for observability:
+`alert_groups.source_group_key` was the column, and dropping it also removed the only join from a
+card's subject to `alert_sources`, which is why the Alertmanager Silence deep link is **retired** and
+its restoration spec — a `source_id` on `alert_cases` plus a `kind == alertmanager` check — is
+recorded in `GroupFacts.AlertmanagerURL` rather than here.
+
+⛔ **AND ONE CONSEQUENCE IS OPERATOR-VISIBLE AND NOT YET RULED ON: 500 alerts now open 500 Slack
+threads, by construction.** The group was the only mechanism that collapsed many firing alerts into
+one conversation. The surviving collapse mechanism is the **digest** — policy-keyed, needs no group
+row, §H — and it is opt-in. `test/load`'s `O(groups)` bound, its *"chatter ≤ alerts/10"* ratio and its
+`SlackRoots != 1` assertion are deleted with tombstones. This needs a product ruling and is recorded
+here because this is the section a reader comes to for it.
+
+**Also amended by ADR 0038**, which is what made the key **derived from the alert's own labels**
+rather than a function of anything Alertmanager chose. That amendment stands; it is the entity above
+it that went.
 
 ```
 group_key := "gk_" || base32hexLower( sha256(
@@ -784,7 +901,8 @@ group_key := "gk_" || base32hexLower( sha256(
 split_labels := { alertname }  ∪  { namespace } when the alert has a non-empty one
 ```
 
-- **The axes are `(org, cluster, alertname, namespace-or-∅)` and they are FIXED, not configurable.**
+- **The axes are `(org, cluster, alertname, namespace-or-∅)` and they are FIXED, not configurable** —
+  and since the entity is deleted there is nothing left for them to be the identity *of*.
   A tunable split key reinvents `group_by` inside oto and re-inherits the problem it was built to
   escape; the `correlation` charter already words the requirement as "machine-derived groupings…
   with a **stated** algorithm".
@@ -797,11 +915,16 @@ split_labels := { alertname }  ∪  { namespace } when the alert has a non-empty
 - `severity` and `pod`/`instance` are deliberately **not** axes: an escalation is the same problem
   getting worse and a group's severity is an aggregate; `pod` is the thing being grouped. `service`
   is omitted until evidence says otherwise.
-- **`receiver` and `source_group_key` survive on `alert_groups` as PROVENANCE ONLY.** AM's `groupKey`
-  is stored verbatim for observability **and MUST NOT be parsed** (it is unescaped and unbounded).
-  Dropping `receiver` from the key merges routes that `continue: true` deliberately separated;
-  `cluster_key` is what must distinguish them.
-- A `(org_id, group_key, generation)` tuple is UNIQUE. Generation increments when a closed group re-opens.
+- **Dropping `receiver` from the key merges routes that `continue: true` deliberately separated**;
+  `cluster_key` is what must distinguish them. AM's `groupKey` **MUST NOT be parsed** (it is
+  unescaped and unbounded) and this has not changed — but it is no longer *stored*, because
+  `alert_groups.source_group_key` was where it lived. See the ⛔ block above.
+- ⛔ **`(org_id, group_key, generation)` WAS A UNIQUE TUPLE AND THERE IS NO SUCH TUPLE.** `generation`
+  is deleted with the table (git-bug `7287b28` records the audit: nothing else advanced it, and
+  `group_close_delay_s` — its only timer — left with it). ⚠️ Two claims about `generation` that were
+  in circulation are both **false** and are corrected here so they are not re-derived: it was never
+  packed into `notifications.subject_id`, which held plain row identity (`00008:15,46` · `00011:155`),
+  and `channel_threads` never carried one.
 - ⚠️ **The axes are as-yet unvalidated against production payloads.** `tools/groupreplay` replays
   `ingest_batches.payload` and reports the resulting group-size distribution and over-split /
   over-merge counts; it has so far been run only against synthetic fixtures.
@@ -893,7 +1016,7 @@ idempotency_key := hex( sha256(
 ) )
 ```
 
-`UNIQUE (org_id, idempotency_key)`. `alert_groups.state_version` increments on every material group change. "all_resolved at state_version 7" can therefore exist exactly once.
+`UNIQUE (org_id, idempotency_key)`. The `state_version` hashed in is `alert_cases.state_version`, the episode's optimistic lock (migration `00052`), which advances on every state transition. "all_resolved at state_version 7" can therefore exist exactly once. ⛔ **It WAS `alert_groups.state_version`, "incremented on every material group change"** — the table is deleted (git-bug `7570090`, migration `00069`) and the Case's own lock is the only version left; `all_resolved` survives the deletion because a Case resolving is a fact about the Case, while the plurality Reasons `new_alerts` and `some_resolved` did not.
 
 > **⭐ RULING (issue 0988640): ONE IMPLEMENTATION, IN THE KERNEL.**
 >
@@ -947,8 +1070,9 @@ Zero rows affected ⇒ the event already exists ⇒ skip the `alert_events` inse
   enforce; without it a lagging pod pushes `updated_at` back past `created_at` and trips that CHECK.
   **Named exceptions**, which keep the default and must:
   `alerts.created_at/updated_at`, `alert_cases.created_at/updated_at`,
-  `alert_groups.created_at/updated_at`, `alert_event_keys.created_at`, `alert_snoozes.created_at`,
-  `ui_events.at`. On each of these a live writer omits the column today, so dropping the default
+  `alert_event_keys.created_at`, `alert_snoozes.created_at`,
+  `ui_events.at`. (`alert_groups.created_at/updated_at` was a sixth until git-bug `7570090`,
+  migration `00069`, dropped the table.) On each of these a live writer omits the column today, so dropping the default
   would break a production path immediately rather than protect a future one; the alerts family is
   internally consistent on the database's clock, which is the property that matters, and moving it
   is a separate change that has to move the INSERTs and the UPDATEs together
@@ -995,13 +1119,18 @@ CREATE TABLE orgs (
   slug         CITEXT      NOT NULL UNIQUE,
   name         TEXT        NOT NULL,
   settings     JSONB       NOT NULL DEFAULT '{}'::jsonb,
-    -- keys: refire_grace_s(1200) [INERT at the lifecycle layer since ADR 0040: it decides no
-    --         transition; it survives because group_close_delay_s is pinned at or above it and the
-    --         §C.5 replay floor is derived from it. Its future is undecided.],
-    --       resolve_grace_s(300), group_close_delay_s(1200),                       -- ADR 0026
+    -- The SEVEN keys `settingsJSON` actually reads:
+    -- keys: resolve_grace_s(300),                                                 -- ADR 0026
     --       flap_threshold(5), flap_window_s(7200), flap_digest_interval_s(900),  -- ADR 0026
-    --       raw_retention_days(30), event_retention_months(13)   -- ADR 0024
-    --       [storm_threshold, storm_window_s and storm_cooldown_s were DELETED by ADR 0042]
+    --       raw_retention_days(30), event_retention_months(13),  -- ADR 0024
+    --       default_verbosity
+    --       [storm_threshold, storm_window_s and storm_cooldown_s were DELETED by ADR 0042;
+    --        the four unacked_reminder_* keys by git-bug bd0fb1d (00068);
+    --        broadcast_on_resolved by 00069; and refire_grace_s and group_close_delay_s by
+    --        git-bug 7287b28 (00071) — refire_grace_s decided no transition after ADR 0040
+    --        retired T8, and group_close_delay_s timed the close of an alert_groups generation
+    --        that 00069 deleted. NARROWING THIS LIST IS THE MIGRATION'S JOB: this comment was
+    --        wrong for three releases because 00059 deleted three keys and left it naming them.]
   -- no DEFAULT now() (§D conventions); `app.Bootstrap` and `OrgRepository.UpdateSettings` stamp them.
   created_at   TIMESTAMPTZ NOT NULL,
   updated_at   TIMESTAMPTZ NOT NULL,
@@ -1263,7 +1392,7 @@ Retention is a **floor, never a ceiling** (ADR 0024). A partition holds every te
 
 > ## ⛔ D.4.0 THE COLUMN BAN (BINDING, PERMANENT)
 >
-> **`alerts`, `alert_cases` and `alert_groups` MUST NEVER gain `assigned_to`, `assignee_id`,
+> **`alerts` and `alert_cases` MUST NEVER gain `assigned_to`, `assignee_id`,
 > `owner_id`, `owner_team_id`, `watchers`, `subscriber_ids`, `incident_id`, `ticket_id`,
 > `status_page_id`, human-set `priority`, `sla_due_at`, or ANY nullable person-reference with a
 > present-tense meaning.**
@@ -1395,7 +1524,10 @@ CREATE TABLE alert_cases (
   id                 UUID        PRIMARY KEY,
   org_id             UUID        NOT NULL,
   alert_id           UUID        NOT NULL REFERENCES alerts(id) ON DELETE CASCADE,
-  group_id           UUID,                          -- FK added in 00006
+  -- ⛔ `group_id UUID` (FK `case_group_fk` added in 00006/00008) WAS HERE AND IS DROPPED
+  -- (git-bug 7570090, migration 00069). It was the WHOLE membership record -- `alert_group_members`
+  -- had already gone in 00051 -- so there is no membership left to spell. A Case's conversation is
+  -- the Case (§D.8, §H).
   seq                INT         NOT NULL,          -- 1,2,3… per alert
 
   -- open | closed, and nothing else (ADR 0040 / 00054). The four §B.2 words describe the ALERT:
@@ -1464,7 +1596,9 @@ CREATE TABLE alert_cases (
 -- INVARIANT: at most one open case per alert. Enforced in the DB, not in Go.
 CREATE UNIQUE INDEX case_one_open_idx ON alert_cases (alert_id) WHERE ended_at IS NULL;
 CREATE INDEX case_alert_idx  ON alert_cases (org_id, alert_id, seq DESC);
-CREATE INDEX case_group_idx  ON alert_cases (org_id, group_id, started_at DESC);
+-- ⛔ `case_group_idx ON (org_id, group_id, started_at DESC)` and
+-- `case_group_live_idx ON (org_id, group_id, started_at DESC, id DESC) WHERE ended_at IS NULL` were
+-- here and are dropped BY NAME by migration 00069, with the column they indexed.
 CREATE INDEX case_reap_idx   ON alert_cases (source_ends_at)
                              WHERE ended_at IS NULL AND source_ends_at IS NOT NULL;
 -- ⭐ THE LAST COLUMN OF EACH IS THE KEYSET TIEBREAK (00053), AND IT IS NOT
@@ -1598,79 +1732,37 @@ thirty-two.
 
 Membership stopped being an event at **migration 00051**, when the group key became derived (ADR 0038): `group.member_joined` is implied by `case.opened` and `group.member_left` by `case.resolved`/`case.expired`, and both were facts about the **episode** phrased as if the group were the actor. `group.member_left` was never emitted at all — `Leave` existed at three layers with no production caller. They stay in the closed enum, and therefore in `components.schemas.AlertEventType`, because `alert_events` is retained thirteen months and rows carrying `group.member_joined` already exist: a value removed from the enum is a value `NewEventType` rejects on read and a timeline that errors instead of rendering. `alerts/service.AppendTimelineEvent` refuses a retired type, which is where "never again" is enforced rather than asserted. They leave the enum when the last partition holding them is dropped.
 
-### D.5 Groups
+### D.5 Groups — ⛔ THE TABLE IS DELETED, ROOT AND BRANCH
 
-```sql
--- db/migrations/00006_grouping.sql
+⛔ **THIS SECTION CARRIED THE LITERAL DDL FOR `alert_groups` AND THERE IS NO SUCH TABLE**
+(git-bug `7570090`, migration `00069_a_conversation_is_a_case.sql`). §D is a catalogue that mirrors
+the live schema, so the DDL is **removed rather than annotated**: a `CREATE TABLE` a reader can copy
+is not made safe by a note above it. The heading is retained so §D.6 onwards keep their numbers.
 
-CREATE TABLE alert_groups (
-  id                  UUID        PRIMARY KEY,
-  org_id              UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
-  source_id           UUID        NOT NULL REFERENCES alert_sources(id) ON DELETE CASCADE,
-  cluster_id          UUID        NOT NULL REFERENCES clusters(id),
-  group_key           TEXT        NOT NULL,        -- C.4, DERIVED from the alert's own labels (ADR 0038)
-  generation          INT         NOT NULL DEFAULT 1,
-  source_group_key    TEXT,                        -- AM's raw groupKey. OPAQUE. NEVER PARSED. Provenance only.
-  receiver            TEXT        NOT NULL DEFAULT '',  -- provenance only since ADR 0038; NOT part of group_key
-  group_labels        JSONB       NOT NULL DEFAULT '{}'::jsonb,  -- oto's OWN axes: alertname, and namespace when present
-  title               TEXT        NOT NULL,
+**What migration `00069` dropped, so that nobody re-derives it from the git history and assumes it
+merely moved:**
 
-  state               TEXT        NOT NULL CHECK (state IN ('open','closed')),
-  severity            TEXT,                        -- max member severity
-  state_version       INT         NOT NULL DEFAULT 1,
+- `DROP TABLE alert_groups` — twenty-six columns: the derived `group_key`, `generation`,
+  `source_group_key`, `receiver`, the split axes in `group_labels`, the rendered `title`, `state`,
+  `severity`, `state_version`, the six counts, `last_notification_reason`, and the timestamps. With
+  the table go every constraint named `groups_*` and the indexes `grp_list_idx`, `grp_open_idx`,
+  `grp_close_idx` and `alert_groups_synthetic_idx`.
+- `alert_cases.group_id`, and `case_group_fk` with it. Membership was never a table —
+  `alert_group_members` had already been dropped by migration `00051` — so `group_id` *was* the whole
+  record, and there is now no record. `case_group_idx` and `case_group_live_idx` are dropped by name.
+- `notifications.group_id` and `notifications_group_id_fkey`. The delivery target is the pair
+  `(conversation_kind, conversation_id)` (§D.8), and `notif_group_idx` is replaced column-for-column
+  by `notif_conversation_idx ON notifications (org_id, conversation_id, created_at DESC)` — the
+  policy throttle runs on every delivery decision and must not fall to a scan.
 
-  firing_count        INT         NOT NULL DEFAULT 0,
-  suppressed_count    INT         NOT NULL DEFAULT 0,
-  resolved_count      INT         NOT NULL DEFAULT 0,
-  expired_count       INT         NOT NULL DEFAULT 0,
-  total_count         INT         NOT NULL DEFAULT 0,
-  acked_count         INT         NOT NULL DEFAULT 0,
+⚠️ **THE DOWN MIGRATION CANNOT BRING THE DATA BACK.** It recreates the shape and nothing else: the
+`conversation_id` values are `alert_cases.id` and the recreated `conversation_kind = 'alert_group'`
+promises an `alert_groups.id`, and no mapping between them exists that is not a guess about where a
+message landed. This is recorded here because §D is where a reader looks for the shape and would
+otherwise read the `+goose Down` block as a restore path.
 
-  last_notification_reason TEXT,                   -- AM's notification_reason, last seen
-  -- storm_mode BOOLEAN and storm_since TIMESTAMPTZ were DROPPED by ADR 0042 along with
-  -- groups_storm_ck. A generation has no busy-ness mode; §B.6.1 is why.
-
-  first_seen_at       TIMESTAMPTZ NOT NULL,
-  last_activity_at    TIMESTAMPTZ NOT NULL,
-  closed_at           TIMESTAMPTZ,
-  created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT groups_key_gen_uniq UNIQUE (org_id, group_key, generation),
-  CONSTRAINT groups_key_ck    CHECK (group_key ~ '^gk_[0-9a-v]{26}$'),
-  CONSTRAINT groups_gen_ck    CHECK (generation >= 1),
-  CONSTRAINT groups_title_ck  CHECK (length(btrim(title)) BETWEEN 1 AND 500),
-  CONSTRAINT groups_labels_ck CHECK (jsonb_typeof(group_labels) = 'object'),
-  CONSTRAINT groups_sver_ck   CHECK (state_version >= 1),
-  CONSTRAINT groups_counts_ck CHECK (firing_count >= 0 AND suppressed_count >= 0 AND resolved_count >= 0
-                                     AND expired_count >= 0 AND total_count >= 0 AND acked_count >= 0),
-  CONSTRAINT groups_acked_ck  CHECK (acked_count <= total_count),
-  CONSTRAINT groups_closed_ck CHECK ((state = 'closed') = (closed_at IS NOT NULL)),
-  CONSTRAINT groups_corder_ck CHECK (closed_at IS NULL OR closed_at >= first_seen_at),
-  CONSTRAINT groups_act_ck    CHECK (last_activity_at >= first_seen_at),
-  CONSTRAINT groups_time_ck   CHECK (updated_at >= created_at)
-);
-CREATE INDEX grp_list_idx ON alert_groups (org_id, state, last_activity_at DESC, id DESC);
-CREATE INDEX grp_open_idx ON alert_groups (org_id, group_key) WHERE state = 'open';
-CREATE INDEX grp_close_idx ON alert_groups (org_id, last_activity_at)
-  WHERE state = 'open';
-
--- MEMBERSHIP IS NOT A TABLE. `alert_cases.group_id` is the whole record:
--- an episode joins the generation when it opens, leaves when it ends, and cannot
--- belong to two (ADR 0038 took `receiver` out of the key, so `continue: true` no
--- longer double-threads). Migration 00051 dropped `alert_group_members`, whose
--- `left_at` never had a production writer and whose `(group_id, case_id)`
--- primary key let one alert appear twice on one card.
-ALTER TABLE alert_cases ADD CONSTRAINT case_group_fk
-  FOREIGN KEY (group_id) REFERENCES alert_groups(id) ON DELETE SET NULL;
-
--- The generation's LIVE membership: current-member page, twenty-row preview,
--- fan-out candidates and their count. `case_terminal_ended` makes
--- `ended_at IS NULL` identical to `state = 'open'` — and the LITERAL is what the
--- query must emit, because a partial index is matched against the query's own
--- clauses and never against a CHECK (§E.3b, ADR 0040 §5).
-CREATE INDEX case_group_live_idx ON alert_cases (org_id, group_id, started_at DESC, id DESC)
-  WHERE ended_at IS NULL;
-```
+**Where the replacements are specified:** the conversation and its thread in §D.8 and §H; why the
+axes no longer identify anything in §C.4; why the noun cannot come back in §A.1.
 
 ### D.6 Rule snapshots (the differentiator)
 
@@ -1851,6 +1943,19 @@ CREATE TABLE notification_policies (
   reasons       TEXT[]      NOT NULL,              -- a SET drawn from §H.6 Reason values
   channel_ids   UUID[]      NOT NULL,
   throttle      JSONB       NOT NULL DEFAULT '{}'::jsonb,   -- {"max":N,"window_s":S} per subject
+  -- 00072. WHICH ALTITUDE OF FACT THIS POLICY IS ABOUT: a set over the `notifications.subject_kind`
+  -- vocabulary. EMPTY IS THE DEFAULT AND MEANS EVERY KIND — what every row written before 00072
+  -- says, and today's behaviour exactly. The direction matters, because the failure mode on this
+  -- path is a `no_policy` SUPPRESSION rather than an error anybody sees. Read by `Policy.Handles`,
+  -- the gate `PolicyService.Evaluate` already calls on every lifecycle transition, so it is a
+  -- further axis on that gate and not a second one. ⛔ NOT A SCHEDULE, ever (SCOPE-BOUNDARY §4.8).
+  subject_kinds  TEXT[]     NOT NULL DEFAULT '{}'::text[],
+  -- 00072. THE COUNT CONDITION: "stay silent until at least `count_min` of these have happened
+  -- inside `count_window_s`". NULL for both is "no condition", which is what every existing row
+  -- says. A short count records the Notification with `suppressed_reason = 'below_threshold'`
+  -- (00073, §B.8.2, ADR 0044) and sends nothing.
+  count_min      INT,
+  count_window_s INT,
   -- no DEFAULT now() (§D conventions); `ConfigRepository.CreatePolicy`/`UpdatePolicy`/
   -- `SoftDeletePolicy` stamp them.
   created_at    TIMESTAMPTZ NOT NULL,
@@ -1872,6 +1977,42 @@ CREATE TABLE notification_policies (
   CONSTRAINT policies_chan_ck     CHECK (array_length(channel_ids, 1) BETWEEN 1 AND 16
                                          AND array_position(channel_ids, NULL) IS NULL),
   CONSTRAINT policies_throttle_ck CHECK (jsonb_typeof(throttle) = 'object'),
+  -- 00072: CONTAINMENT AND SET-NESS, AND NO CARDINALITY ARM. A set drawn from a three-value
+  -- vocabulary cannot exceed three by construction, so `cardinality(…) <= 3` would be a number no
+  -- row could ever test — the defect 00046 removed from `policies_reasons_ck`. The Go ceiling
+  -- `MaxPolicySubjectKinds` exists for the DTO's `maxItems`, not because the DDL needs it.
+  -- ⚠️ THE NULL-ELEMENT ARM IS NOT REDUNDANT WITH `<@`: `ARRAY[NULL]::text[] <@ ARRAY['alert']`
+  -- evaluates to NULL, not FALSE, and a CHECK admits NULL — so containment alone would let
+  -- `subject_kinds = '{NULL}'` through. ⚠️ The vocabulary is a LITERAL here and that is the cost of a
+  -- closed set in DDL: it is the third copy (with `subjectKinds` in `internal/notification/domain`
+  -- and the contract's enum), so narrowing or widening SubjectKind means editing this constraint,
+  -- exactly as 00069 had to edit `notifications_subjkind_ck` and `threads_subjkind_ck`.
+  CONSTRAINT policies_subjkinds_ck CHECK (subject_kinds <@ ARRAY['alert','case','digest']::text[]
+                                         AND array_position(subject_kinds, NULL) IS NULL
+                                         AND oto_array_is_set(subject_kinds)),
+  -- 2..10000. TWO, because the fact being evaluated is itself inside the window, so a threshold of
+  -- one clears unconditionally and states no condition — the same argument that keeps zero out of
+  -- `policies_digest_floor_ck`. The ceiling is `digest_floor`'s, because it counts the same objects
+  -- over the same kind of span and two different ceilings on one arithmetic would be a number to
+  -- reconcile rather than a bound to honour.
+  CONSTRAINT policies_count_min_ck    CHECK (count_min IS NULL OR count_min BETWEEN 2 AND 10000),
+  -- 60..86400, the THROTTLE's window bound and not the digest's, and with no divisor rule: this
+  -- window is a sliding one and is not tiled against the UTC day.
+  CONSTRAINT policies_count_window_ck CHECK (count_window_s IS NULL OR
+                                             count_window_s BETWEEN 60 AND 86400),
+  -- ⭐ SYMMETRIC, UNLIKE `policies_digest_pair_ck`, AND THE ASYMMETRY IS THE POINT. A digest's floor
+  -- is optional because its WINDOW alone is a complete instruction. Neither half of a count
+  -- condition means anything alone: a threshold over unbounded history is not evaluable, and a
+  -- window with no threshold counts facts and compares the number against nothing. Both are
+  -- configuration mistakes that would silently mute or silently un-mute a channel.
+  CONSTRAINT policies_count_pair_ck   CHECK ((count_min IS NULL) = (count_window_s IS NULL)),
+  -- ⭐⭐ THE UNIT RULE, AND IT IS WHY THE TWO AXES ARRIVE IN ONE MIGRATION. A count is a number of
+  -- somethings; the something is the policy's bound subject kind. A count on an UNRESTRICTED binding
+  -- has no unit and a count on a two-kind binding has two — and summing an alert-subject fact (an
+  -- identity, true across every firing it ever had) with a case-subject fact (one firing episode)
+  -- produces a number that is about nothing. It applies to the COUNT only: a policy carrying no
+  -- condition keeps every binding `policies_subjkinds_ck` admits, including the empty one.
+  CONSTRAINT policies_count_subject_ck CHECK (count_min IS NULL OR cardinality(subject_kinds) = 1),
   CONSTRAINT policies_time_ck     CHECK (updated_at >= created_at)
 );
 CREATE INDEX policies_eval_idx ON notification_policies (org_id, priority)
@@ -1881,10 +2022,14 @@ CREATE TABLE channel_threads (
   id                       UUID        PRIMARY KEY,
   org_id                   UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
   channel_id               UUID        NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
-  subject_kind             TEXT        NOT NULL CHECK (subject_kind IN ('alert','case','alert_group')),
-  subject_id               UUID        NOT NULL,   -- alerts.id | alert_cases.id | alert_groups.id, per subject_kind.
-                                                   -- v1 keys EVERY thread by the alert_groups GENERATION, so forty
-                                                   -- alerts still produce one thread; thread identity is a policy
+  subject_kind             TEXT        NOT NULL CHECK (subject_kind IN ('alert','case','digest')),
+  subject_id               UUID        NOT NULL,   -- alerts.id | alert_cases.id | notification_policies.id, per
+                                                   -- subject_kind. ⛔ `alert_group` LEFT THIS SET with the entity
+                                                   -- (git-bug 7570090, migration 00069, narrowing threads_subjkind_ck).
+                                                   -- v1 keyed EVERY thread by the alert_groups GENERATION, so forty
+                                                   -- alerts produced one thread; a conversation now holds exactly one
+                                                   -- Case, so forty alerts produce forty threads (§C.4 records the
+                                                   -- operator-visible consequence). Thread identity is still a policy
                                                    -- decision, not something a CHECK gets to weld shut.
   provider_conversation_id TEXT,                   -- Slack channel id C…, from the API RESPONSE
   provider_thread_id       TEXT,                   -- Slack root ts. STRING. NEVER A FLOAT.
@@ -1919,21 +2064,36 @@ CREATE INDEX threads_open_idx ON channel_threads (org_id, state) WHERE state IN 
 CREATE TABLE notifications (
   id              UUID        PRIMARY KEY,
   org_id          UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
-  subject_kind    TEXT        NOT NULL,            -- notifications_subjkind_ck, below. FOUR kinds since 00058.
+  subject_kind    TEXT        NOT NULL,            -- notifications_subjkind_ck, below. THREE kinds since 00069:
+                                                   -- 'alert','case','digest'. It was four from 00058 until git-bug
+                                                   -- 7570090 dropped the `alert_group` arm with the table it named.
                                                    -- WHAT the fact is about. Which Reason declares which subject is the
                                                    -- domain allocation (`notification/domain/reason.go`, proven total by
                                                    -- a test), deliberately NOT a reason → subject CHECK: release N
-                                                   -- writes 'alert_group' for every reason and both releases run at once.
-  subject_id      UUID        NOT NULL,            -- alerts.id | alert_cases.id | alert_groups.id, or — for a digest —
+                                                   -- wrote 'alert_group' for every reason and both releases ran at once.
+  subject_id      UUID        NOT NULL,            -- alerts.id | alert_cases.id, or — for a digest —
                                                    -- notification_policies.id, the POLICY half of the (policy, window)
-                                                   -- pair. No FK: one column cannot reference four tables — the tie is
-                                                   -- notifications_subject_ck.
-  group_id        UUID        REFERENCES alert_groups(id) ON DELETE CASCADE,
-                                                   -- the DELIVERY TARGET, not the subject: which thread the fact lands
-                                                   -- on. NULLABLE since 00058, and the obligation moved to
-                                                   -- notifications_target_ck: mandatory for every subject_kind EXCEPT
-                                                   -- `digest`, which spans many generations and opens its own thread
-                                                   -- keyed by its policy.
+                                                   -- pair. No FK: one column cannot reference three tables — the tie is
+                                                   -- notifications_subject_ck, which has three arms since 00069.
+  -- ⛔ `group_id UUID REFERENCES alert_groups(id) ON DELETE CASCADE` WAS HERE AND IS DROPPED
+  -- (git-bug 7570090, migration 00069), along with notifications_group_id_fkey. The delivery target
+  -- is the pair (conversation_kind, conversation_id) and nothing else; `conversation_id` holds an
+  -- alert_cases.id for `case` and a notification_policies.id for `digest`.
+  -- 00064 added the pair, EXPAND-style — nullable, backfilled from `group_id` via `threadSubjectOf`
+  -- in SQL, then tightened — because the table is written on the ingest hot path and a NOT NULL with
+  -- no default would have failed every in-flight insert from a release-N pod during the rollout.
+  -- 00069 then REPLACED the `alert_group` arm of the kind with `case`, which is a value change and
+  -- not a rename: a generation held MANY Cases and a conversation holds exactly ONE, so there is no
+  -- UPDATE that maps the old ids onto the new promise and the migration refuses rather than guessing
+  -- where a message landed.
+  conversation_kind TEXT      NOT NULL,            -- WHERE this fact lands: which kind of conversation
+                                                   -- owns the thread. Bounded by
+                                                   -- notifications_convkind_ck, below.
+  conversation_id   UUID      NOT NULL,            -- the conversation itself, in the table
+                                                   -- conversation_kind names: alert_cases.id for
+                                                   -- `case`, notification_policies.id for `digest`. No
+                                                   -- FK — one column cannot reference two tables, the
+                                                   -- same reason subject_id has none.
   alert_id        UUID,                            -- set when the fact is about one alert
   case_id   UUID,
   digest_window_start TIMESTAMPTZ,                 -- 00058. The WINDOW half of a digest's subject: the inclusive start,
@@ -1942,6 +2102,20 @@ CREATE TABLE notifications (
                                                    -- recomputed at claim time (a deliberate C11 exception: the window is
                                                    -- closed, but `alert_cases` is reapable, so a recomputed count would
                                                    -- shrink and the row would say a different thing every read).
+  -- 00070. THE SPAN THIS DIGEST ACTUALLY COVERED, so a card can state its own span instead of
+  -- multiplying `digest_window_start` by the policy's CURRENT `digest_window_s` — the inference
+  -- git-bug 342e071 is about, where an operator who narrows a window retroactively changes the span
+  -- every card oto has ever drawn claims to cover.
+  -- `from` is INCLUSIVE and is at or BEFORE `digest_window_start`: it reaches back when the digest
+  -- swept up a Case whose transaction committed too late for the previous window's read
+  -- (`notification/domain.DigestLookback`, git-bug a8a4010), so the honest sentence is "since the
+  -- last digest, plus stragglers". `to` is EXCLUSIVE and is the window's end.
+  -- ⛔ NULL on every digest written before 00070 and it STAYS NULL; there is nothing to backfill it
+  -- from. ⚠️ `to` IS NOT THE TICK'S CURSOR — that is `notification_digest_coverage.covered_to`,
+  -- which advances for every window EXAMINED and not only for every window SENT. One is evidence,
+  -- the other is a position (git-bug 893cee4).
+  digest_covered_from TIMESTAMPTZ,
+  digest_covered_to   TIMESTAMPTZ,
   reason          TEXT        NOT NULL,            -- §H.6 Reason enum
   policy_id       UUID        REFERENCES notification_policies(id) ON DELETE SET NULL,
   state_version   INT         NOT NULL,
@@ -1949,16 +2123,29 @@ CREATE TABLE notifications (
   status          TEXT        NOT NULL DEFAULT 'pending'
                               CHECK (status IN ('pending','dispatched','partial','delivered','failed','suppressed')),
   suppressed_reason TEXT,                          -- channel_disabled | no_policy | snoozed |
-                                                   -- throttled | verbosity | duplicate_render
-                                                   -- SIX values. `storm` (ADR 0042) and `flapping`
+                                                   -- throttled | below_threshold | verbosity |
+                                                   -- duplicate_render
+                                                   -- SEVEN values. `storm` (ADR 0042) and `flapping`
                                                    -- (ADR 0041 Amendment 1) were removed together by
-                                                   -- 00059; oto never withholds for either. That
-                                                   -- listing IS the fixed precedence order: B.8.2.
+                                                   -- 00059; oto never withholds for either.
+                                                   -- `below_threshold` was ADDED by 00073 (git-bug
+                                                   -- 7570090, ADR 0044): the policy's count condition
+                                                   -- (`count_min` over `count_window_s`, 00072) is not
+                                                   -- met YET. It is `throttled`'s dual — the same two
+                                                   -- columns read as a floor instead of a ceiling —
+                                                   -- and it is NOT `flapping` returning: that compared
+                                                   -- against constants welded into Go, this compares
+                                                   -- against a number the operator wrote and can
+                                                   -- clear. That listing IS the fixed precedence
+                                                   -- order: B.8.2. ✅ `below_threshold`'s POSITION in
+                                                   -- it is ruled by ADR 0044 §5 (owner-ratified
+                                                   -- 2026-08-20); it shipped as that change's own
+                                                   -- proposal, and §B.8.2 records the history.
   -- no DEFAULT now() (§D conventions); `NotificationRepository.Insert` and `SetStatus` stamp them.
   created_at      TIMESTAMPTZ NOT NULL,
   updated_at      TIMESTAMPTZ NOT NULL,
   CONSTRAINT notifications_idem_uniq UNIQUE (org_id, idempotency_key),
-  CONSTRAINT notifications_subjkind_ck CHECK (subject_kind IN ('alert','case','alert_group','digest')),
+  CONSTRAINT notifications_subjkind_ck CHECK (subject_kind IN ('alert','case','digest')),
   CONSTRAINT notifications_reason_ck CHECK (reason IN
     ('fired','new_alerts','some_resolved','all_resolved','repeat','suppressed','unsuppressed',
      'expired','refired','acked','unacked','snoozed','unsnoozed','enriched','rule_changed',
@@ -1972,19 +2159,52 @@ CREATE TABLE notifications (
   CONSTRAINT notifications_sver_ck   CHECK (state_version >= 1),
   CONSTRAINT notifications_idem_ck   CHECK (idempotency_key ~ '^[0-9a-f]{64}$'),
   CONSTRAINT notifications_supp_ck   CHECK ((status = 'suppressed') = (suppressed_reason IS NOT NULL)),
+  -- SEVEN values since 00073. `below_threshold` was added by a widening `ADD CONSTRAINT`, which
+  -- cannot fail on existing data; the Down REFUSES if any row records it, because deleting a
+  -- recorded suppression deletes the only evidence oto chose silence (ADR 0044 §6).
   CONSTRAINT notifications_suppmap_ck CHECK (suppressed_reason IS NULL OR suppressed_reason IN
-    ('channel_disabled','no_policy','snoozed','throttled','verbosity','duplicate_render')),
+    ('channel_disabled','no_policy','snoozed','throttled','below_threshold','verbosity',
+     'duplicate_render')),
   -- everything except a digest must name its delivery target. It is the half of the old
   -- `group_id NOT NULL` that is true of every Notification, kept as a constraint when 00058
   -- relaxed the column so that relaxing it could not quietly let an ordinary fact lose its
-  -- destination.
-  CONSTRAINT notifications_target_ck CHECK (subject_kind = 'digest' OR group_id IS NOT NULL),
+  -- destination. ⛔ IT READ `CHECK (subject_kind = 'digest' OR group_id IS NOT NULL)` and the
+  -- column it named is dropped (git-bug 7570090, migration 00069); the delivery target is the pair
+  -- (conversation_kind, conversation_id) and `notifications_convkind_ck` bounds the kind to
+  -- `case | digest`.
+  -- ⭐ THE CONVERSATION VOCABULARY IS ITS OWN CHECK AND DELIBERATELY NOT `subject_kind`'s. A subject
+  -- is what a fact is ABOUT; a conversation is where it is DELIVERED, and the two sets are not the
+  -- same: `alert` is a subject no conversation is ever keyed by. Sharing one CHECK would tie two
+  -- vocabularies that have different reasons to change. TWO values since 00069 — `alert_group` left
+  -- the set in git-bug 7570090 and `case` replaced it. There is no `notifications_target_ck` beside
+  -- it any more: every row names a conversation unconditionally, so the digest is no longer the one
+  -- exception carved into a CHECK.
+  CONSTRAINT notifications_convkind_ck CHECK (conversation_kind IN ('case','digest')),
   -- the two digest columns are present exactly for a digest, and a stored count is at least 1.
   -- The range test is a SEPARATE conjunct: folding it into the equality would make the whole
   -- predicate NULL for a digest row with a missing count, and a CHECK passes on NULL.
   CONSTRAINT notifications_digest_ck CHECK (
     (subject_kind = 'digest') = (digest_window_start IS NOT NULL AND digest_count IS NOT NULL)
     AND (digest_count IS NULL OR digest_count >= 1)),
+  -- 00070, and FOUR SEPARATE CLAUSES rather than one conjunction, for the reason
+  -- `notifications_digest_ck` above spells out: a CHECK passes on NULL, so folding a range test into
+  -- an equality makes the whole predicate NULL — and therefore true — for exactly the half-written
+  -- row the constraint exists to refuse.
+  --   1. BOTH OR NEITHER. A `from` with no `to` is a span that never ends; a `to` with no `from` is a
+  --      length nothing can compute. Neither is renderable, and a renderer that has to guess is back
+  --      to reading the policy's current window.
+  --   2. ONLY A DIGEST HAS ONE. Nothing else in `notifications` is about a span of time.
+  --   3. ORDERED, STRICTLY. A zero-length span would assert that a digest covered no time at all
+  --      while carrying a count of episodes that happened inside it.
+  --   4. IT CONTAINS THE WINDOW'S START — the clause that makes the pair MEAN something rather than
+  --      merely be present. A row that satisfies this cannot claim a span that misses its own window.
+  CONSTRAINT notifications_digcover_ck CHECK (
+        (digest_covered_from IS NULL) = (digest_covered_to IS NULL)
+    AND (digest_covered_from IS NULL OR subject_kind = 'digest')
+    AND (digest_covered_from IS NULL OR digest_covered_to > digest_covered_from)
+    AND (digest_covered_from IS NULL OR digest_window_start IS NULL
+         OR (digest_covered_from <= digest_window_start
+             AND digest_covered_to  >  digest_window_start))),
   -- alert-scoped reasons must name the alert they are about
   CONSTRAINT notifications_focus_ck  CHECK (reason NOT IN ('acked','unacked','refired','rule_changed')
                                             OR alert_id IS NOT NULL),
@@ -1992,14 +2212,14 @@ CREATE TABLE notifications (
   -- that column is present. It stands in for the foreign key a four-table reference cannot
   -- have, and it is what makes subject_id a usable join key instead of a convention.
   -- Each arm carries its own IS NOT NULL because `subject_id = alert_id` over a NULL alert_id
-  -- evaluates to NULL and a CHECK passes on NULL — the group arm gained its guard in 00058,
-  -- when `group_id` stopped being NOT NULL. The digest arm tolerates a NULL policy_id because
-  -- policy_id is ON DELETE SET NULL, and enforcing the tie unconditionally would make the first
-  -- digest ever sent turn its own policy undeletable.
+  -- evaluates to NULL and a CHECK passes on NULL — the group arm gained its guard in 00058, when
+  -- `group_id` stopped being NOT NULL, and left with the entity in 00069. THREE arms now, one per
+  -- surviving subject kind. The digest arm tolerates a NULL policy_id because policy_id is
+  -- ON DELETE SET NULL, and enforcing the tie unconditionally would make the first digest ever sent
+  -- turn its own policy undeletable.
   CONSTRAINT notifications_subject_ck CHECK (
        (subject_kind = 'alert'       AND alert_id IS NOT NULL AND subject_id = alert_id)
     OR (subject_kind = 'case'        AND case_id  IS NOT NULL AND subject_id = case_id)
-    OR (subject_kind = 'alert_group' AND group_id IS NOT NULL AND subject_id = group_id)
     OR (subject_kind = 'digest'      AND digest_window_start IS NOT NULL
                                      AND (policy_id IS NULL OR subject_id = policy_id))),
   CONSTRAINT notifications_time_ck   CHECK (updated_at >= created_at)
@@ -2007,14 +2227,108 @@ CREATE TABLE notifications (
 CREATE INDEX notif_subject_idx ON notifications (org_id, subject_kind, subject_id, created_at DESC);
 CREATE INDEX notif_alert_idx   ON notifications (org_id, alert_id, created_at DESC);
 CREATE INDEX notif_case_idx    ON notifications (org_id, case_id) WHERE case_id IS NOT NULL;
--- the DELIVERY TARGET, not the subject. It serves the policy throttle (windowed) and the group
--- notification receipt (unbounded in time); both were subject-keyed until `subject_kind` admitted
--- more than one value, and the 00011 FK to `alert_groups` creates no index on the referencing side.
-CREATE INDEX notif_group_idx   ON notifications (org_id, group_id, created_at DESC);
+-- the DELIVERY TARGET, not the subject. It serves the policy throttle (windowed) and the
+-- per-conversation notification receipt (unbounded in time); both were subject-keyed until
+-- `subject_kind` admitted more than one value. ⛔ IT WAS `notif_group_idx ON (org_id, group_id,
+-- created_at DESC)`; migration 00069 replaces it column-for-column, because `countRecentSQL` now
+-- keys on `conversation_id` and the throttle runs on every delivery decision.
+CREATE INDEX notif_conversation_idx ON notifications (org_id, conversation_id, created_at DESC);
 -- one digest per (tenant, policy, window). The readable spelling of the key `notifications_idem_uniq`
 -- also enforces through the §C.7 hash, and the index the "last window covered" cursor reads backwards.
 CREATE UNIQUE INDEX notif_digest_uniq ON notifications (org_id, policy_id, digest_window_start)
   WHERE subject_kind = 'digest';
+-- 00073. Serves the policy COUNT CONDITION's windowed count of distinct subjects (`count_min` over
+-- `count_window_s`), which runs on the evaluation path once per fact for every policy carrying a
+-- condition. Two equalities — org_id, policy_id — then the whole range on `created_at DESC`, so the
+-- window stops the scan instead of the org day being read and filtered; the same shape
+-- `notif_conversation_idx` has for the throttle. `notifications.policy_id` has carried an FK since
+-- 00011 and no index: a foreign key creates none on the referencing side. `subject_kind` is
+-- deliberately ABSENT — `policies_count_subject_ck` makes it a constant for every row this index
+-- returns, and a column that narrows nothing is dead weight.
+CREATE INDEX notif_policy_idx ON notifications (org_id, policy_id, created_at DESC);
+
+-- ⭐⭐ THE DIGEST'S TWO STATE TABLES (migration `00070`, git-bug `a8a4010`/`893cee4`). A digest for
+-- `[T, T+W)` reads `[T - DigestLookback, T+W)` so that a Case whose transaction committed after the
+-- previous tick read its window is still counted (§G.3, `notification/domain.DigestLookback`). That
+-- makes two things necessary that a single cursor column could not hold: WHAT HAS BEEN ACCOUNTED FOR,
+-- so the lookback tail is not re-reported in every message; and HOW FAR EXAMINATION HAS REACHED,
+-- which is a fact about the READER and not about the messages it sent.
+--
+-- ⚠️ `updated_at`/`marked_at` BELOW CARRY `DEFAULT now()`, WHICH THE §D CONVENTION ABOVE OTHERWISE
+-- FORBIDS AND WHOSE "named exceptions" LIST DOES NOT YET NAME THEM. This is the literal DDL as
+-- migration `00070` writes it; whether the exception is ratified or the migration is corrected is an
+-- open question and is recorded here rather than silently normalised in either direction.
+
+-- THE TICK'S CURSOR: how far each policy has been EXAMINED, as an instant. One row per policy,
+-- upserted with GREATEST so it can only move forward.
+-- ⛔ IT IS DELIBERATELY NOT `max(notifications.digest_covered_to)`. That would be a fact about
+-- MESSAGES, and a policy whose namespace has been quiet for a week sends none — which is the whole of
+-- git-bug 893cee4: because the old cursor only advanced as a side effect of SENDING, a quiet policy
+-- re-derived a span that grew by one window every window, ran `MaxDigestBackfill` aggregate queries
+-- every sixty seconds forever, and logged a data-loss warning about a backlog nothing was ever owed.
+-- ⚠️ It starts EMPTY at migration time and is NOT backfilled: deriving it from `digest_window_start`
+-- would need the window length in force when each digest was sent, which is the fact nothing stored
+-- (git-bug 342e071). An empty row set reads as "never examined", which covers exactly one window.
+CREATE TABLE notification_digest_coverage (
+  org_id     UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  policy_id  UUID        NOT NULL REFERENCES notification_policies(id) ON DELETE CASCADE,
+  -- The INSTANT examination reached, EXCLUSIVE. An instant and not a window start, which is the fix
+  -- for git-bug 342e071: a start only means a span in combination with the length in force when it
+  -- was written, so re-flooring it under a NEW `digest_window_s` re-tiled a span an earlier digest had
+  -- already summarised. Read through `Digest.WindowStart` so an instant strictly inside a window —
+  -- what a re-tiling leaves behind — names the window that is not yet fully covered rather than the
+  -- one after it. It advances for every window EXAMINED (sent, below the floor, or already covered by
+  -- another pod) and NOT for a window that could not be examined to a conclusion, which is why a
+  -- policy whose channels are all disabled keeps owing its windows instead of losing them.
+  covered_to TIMESTAMPTZ NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT digest_coverage_pk PRIMARY KEY (org_id, policy_id)
+);
+
+-- WHICH EPISODES EACH POLICY HAS ACCOUNTED FOR: one narrow row per (policy, Case) the policy MATCHED.
+-- ⭐⭐ IT IS THE DEDUPE STATE THE LOOKBACK NEEDS AND ALSO THE §B.6 RECEIPT IN ITS STRONG FORM. Two
+-- readings of one row: `reported_in` NOT NULL is "this episode is in that digest" — without it a
+-- digest reading a `DigestLookback` tail would re-report the whole tail in every message; `reported_in`
+-- NULL is "oto examined this episode and the window it fell in did not clear your floor" — the
+-- sentence 00058's below-floor `continue` could never write down, whose absence made "quiet" and
+-- "never looked at" the same absence. And the ABSENCE OF A ROW for a Case a policy matched that is
+-- older than `DigestLookback` is the unrecoverable gap `DigestService.ReconcileOrg` counts (§G.3).
+-- ⛔ MATCHED EPISODES ONLY, WHICH IS WHY THE DETECTOR CANNOT BE A QUERY. Marking an episode a policy
+-- does not select would make a missed report indistinguishable from an episode no policy was ever
+-- interested in — and whether a policy selects an episode is decided in Go, by a compiled
+-- Alertmanager-anchored regular expression whose missing-label rule Postgres's `~` does not share.
+-- Write-once (`ON CONFLICT DO NOTHING`) and bounded by `domain.DigestMarkRetention`.
+CREATE TABLE notification_digest_cases (
+  org_id      UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  policy_id   UUID        NOT NULL REFERENCES notification_policies(id) ON DELETE CASCADE,
+  -- ⚠️ NO FK, ON THE SAME TERMS `notifications.alert_id` AND `case_id` HAVE NONE. `alert_cases` is
+  -- reapable (ADR 0024, `case.reap`), and a mark whose Case has aged out is still the truthful
+  -- statement that oto accounted for it. A CASCADE would delete the receipt and make the reconciler
+  -- report a reaped episode as one nobody was ever told about; the retention sweep bounds this table,
+  -- not the parent's lifetime.
+  case_id     UUID        NOT NULL,
+  -- The Case's `started_at`, COPIED. It is what both readers range on — the tail subtraction and the
+  -- retention sweep — and copying it is what lets them do that without joining a reapable table.
+  started_at  TIMESTAMPTZ NOT NULL,
+  -- The digest that reported this episode, or NULL for "examined and found quiet". BOTH ARE MARKS AND
+  -- ONLY ONE IS A REPORT. Write-once: a later, wider window must not upgrade a NULL into a report,
+  -- because that would make whether an episode was reported depend on when somebody edited
+  -- `digest_window_s`. ⛔ NO FK HERE EITHER, AND NEITHER ACTION IS HONEST: ON DELETE SET NULL would
+  -- rewrite "reported in digest X" into "examined and found quiet", a different claim, and CASCADE
+  -- would delete the receipt and manufacture a phantom gap. The Down's integrity check compensates.
+  reported_in UUID,
+  marked_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT digest_case_pk PRIMARY KEY (org_id, policy_id, case_id)
+);
+-- ⭐ ONE INDEX FOR BOTH READERS, AND THE COLUMN ORDER IS THE TRADE. The tail subtraction asks
+-- (org_id, policy_id, started_at range) and the retention sweep asks (org_id, started_at) across every
+-- policy at once. Leading with `policy_id` would serve the first marginally better and would need a
+-- SECOND index for the second; this order serves the sweep on its two-column prefix and serves the
+-- subtraction as an index-only scan with `policy_id` filtered inside the index, no heap page touched.
+-- A tenant has a handful of digest policies, not thousands, so the filter is cheaper than a second
+-- index is to maintain on every mark written. `org_id` leads, as on every composite index here.
+CREATE INDEX digest_case_span_idx
+  ON notification_digest_cases (org_id, started_at, policy_id);
 
 CREATE TABLE notification_deliveries (
   id                  UUID        PRIMARY KEY,
@@ -2023,7 +2337,7 @@ CREATE TABLE notification_deliveries (
   channel_id          UUID        NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
   thread_id           UUID        REFERENCES channel_threads(id) ON DELETE SET NULL,
   thread_seq          INT,                         -- FIFO position within the thread
-  mode                TEXT        NOT NULL CHECK (mode IN ('post_root','update_root','thread_reply','broadcast_reply')),
+  mode                TEXT        NOT NULL CHECK (mode IN ('post_root','update_root','thread_reply')),
   status              TEXT        NOT NULL DEFAULT 'pending'
                                   CHECK (status IN ('pending','sending','sent','failed','dead','skipped')),
   attempts            INT         NOT NULL DEFAULT 0,
@@ -2343,16 +2657,7 @@ RETURNING *, (xmax = 0) AS was_inserted;
 | GET | `/api/v1/cases/{id}/rule` | Rule snapshot as of this episode's fire time | — | `RuleSnapshotDTO` | `session\|pat` |
 | POST | `/api/v1/cases/{id}/ack` | Ack THIS episode (T9). Addressed by case id because the receipt is stored on `alert_cases` and is cleared when the next episode opens | `AckRequest` | `CaseDTO` | `session\|pat` |
 | POST | `/api/v1/cases/{id}/unack` | Unack (T10, `reason=manual`) | `UnackRequest` | `CaseDTO` | `session\|pat` |
-| **Groups** | | | | | |
-| GET | `/api/v1/alert-groups` | List groups — the default UI landing view | `GroupListQuery` | `[]GroupDTO` | `session\|pat` |
-| GET | `/api/v1/alert-groups/{id}` | Group detail + rollup counts | — | `GroupDetailDTO` | `session\|pat` |
-| GET | `/api/v1/alert-groups/{id}/alerts` | Member alerts | `PageQuery` | `[]AlertDTO` | `session\|pat` |
-| GET | `/api/v1/alert-groups/{id}/timeline` | **Merged, ordered lifecycle timeline** — the signature view | `TimelineQuery` | `[]AlertEventDTO` | `session\|pat` |
-| POST | `/api/v1/alert-groups/{id}/ack` | **Fan-out**: resolve each currently-joined member's OPEN case and ack that case. Not a group-level ack — there is no group ack column | `AckRequest` | `GroupDetailDTO` | `session\|pat` |
-| POST | `/api/v1/alert-groups/{id}/unack` | Fan-out: withdraw the receipt from every open member case (T10, `reason=manual`). The inverse of the row above — *no* member carries a receipt afterwards. | `UnackRequest` | `GroupDetailDTO` | `session\|pat` |
-| POST | `/api/v1/alert-groups/{id}/comments` | Note on the group timeline | `CommentRequest` | `AlertEventDTO` | `session\|pat` |
-| POST | `/api/v1/alert-groups/{id}/snooze` | Fan-out: snooze every **currently-joined** member alert (§B.8.3). Not predictive. | `SnoozeRequest` | `GroupDetailDTO` | `session\|pat` |
-| POST | `/api/v1/alert-groups/{id}/unsnooze` | Fan-out: end snoozes on currently-joined members | — | `GroupDetailDTO` | `session\|pat` |
+| **Groups** — ⛔ **NINE `/api/v1/alert-groups*` PATHS WERE LISTED HERE AND ARE DELETED** (git-bug `7570090`): the list, the detail, `/alerts`, `/timeline`, and the `ack` · `unack` · `comments` · `snooze` · `unsnooze` fan-outs. The `grouping` router is gone from the container with them. The Case surface answers each: `/api/v1/cases/{id}`, its `/events` timeline, and `/ack` · `/unack` — the four routes `alerts/api` registers under `/cases/{id}` — with `/comments` and snooze on the Alert (§B.8.3). | | | | | |
 | **Rules** | | | | | |
 | GET | `/api/v1/rule-snapshots/{id}` | One captured rule definition | — | `RuleSnapshotDTO` | `session\|pat` |
 | GET | `/api/v1/rule-snapshots` | Version history for a RuleKey | `RuleHistoryQuery` | `[]RuleSnapshotDTO` | `session\|pat` |
@@ -2430,7 +2735,8 @@ RETURNING *, (xmax = 0) AS was_inserted;
                              -- ⛔ THERE IS NO `&ack=`. It read `alerts.ack_state`, dropped by 00049;
                              --    an ack is a statement about one FIRING and the Alert outlives it.
                              --    `?ack=…` is now 400 unknown_parameter. The ack facet is served on
-                             --    the case surface and by the group list's own `?ack=`.
+                             --    the case surface. (The group list served one too, until
+                             --    git-bug 7570090 deleted the list with the entity.)
 &flapping=true
 &snoozed=true                -- explicit filter over alert_snoozes; ABSENT still means INCLUDE BOTH
                              --    (B.8.6) at the API. The UI never relies on that default: the
@@ -2682,13 +2988,19 @@ const (
 	ModePostRoot       Mode = "post_root"
 	ModeUpdateRoot     Mode = "update_root"
 	ModeThreadReply    Mode = "thread_reply"
-	ModeBroadcastReply Mode = "broadcast_reply"
 )
+
+// ⛔ `ModeBroadcastReply` ("broadcast_reply") WAS HERE AND IS DELETED (git-bug
+// `7570090`, migration `00069`). Slack thread-broadcast was removed outright by
+// ruling, so a reply lands in the conversation and nowhere else. `all_resolved`
+// — the one Reason broadcast could still have been reached by — survives as an
+// ordinary reply in the Case's conversation. The mirror of this in Go is
+// `internal/notification/domain/mode.go:26`.
 
 type DeliverRequest struct {
 	Message    RenderedMessage
 	Mode       Mode
-	ReplyTo    *MessageRef // required for thread_reply / broadcast_reply
+	ReplyTo    *MessageRef // required for thread_reply
 	Target     *MessageRef // required for update_root
 	DeliveryID uuid.UUID
 	DedupeKey  string // used only if CapDedupeKey
@@ -3498,13 +3810,33 @@ The response **body is ignored by Alertmanager on 2xx**. There is no back-channe
 | `lifecycle` | 4 | `case.reap` | `{}` | Periodic, 60 s |
 | `lifecycle` | 4 | `group.close` | `{}` | Periodic, 60 s |
 | `lifecycle` | 4 | `snooze.expire` | `{}` | Periodic, 60 s |
-| `lifecycle` | 4 | `notify.digest` | `{}` | Periodic, 60 s — the tick only; the WINDOW is `notification_policies.digest_window_s`, aligned to the UTC day |
+| `lifecycle` | 4 | `notify.digest` | `{}` | Periodic, 60 s, `RunOnStart` — the tick only; the WINDOW is `notification_policies.digest_window_s`, aligned to the UTC day. **Added latency: none.** A digest for `[T, T+W)` goes out on the first tick at or after `T+W`, so at most **60 s** late, and the bounded lookback `DigestLookback` = **2 min** widens the READ to `[T − 2 min, T+W)` rather than delaying the send (git-bug `a8a4010`) |
+| `lifecycle` | 4 | `notify.digest.reconcile` | `{}` | Periodic, 3600 s, `RunOnStart` — the digest **DETECTOR** (git-bug `893cee4`), `PriorityBackground`. Folds `Policy.Matches` over a day-wide candidate span per policy and counts matched Cases no digest ever reported. **It is forbidden from delivering anything** (`notification/service.ReconcileOrg`) |
 | `maintenance` | 1 | `partitions.manage` | `{}` | Periodic, 3600 s |
 | `maintenance` | 1 | `retention.prune` | `{}` | Periodic, 3600 s |
 | `maintenance` | 1 | `stats.rollup` | `{day}` | Periodic, 900 s |
 | `maintenance` | 1 | `cache.expire` | `{}` | Periodic, 600 s |
 
 Queue implementation: **River** (`riverqueue.com`), Postgres-backed, `SELECT … FOR UPDATE SKIP LOCKED`, `river.InsertTx` inside the domain transaction. Workers reach it only through `db.Enqueuer` (F.5).
+
+⭐ **THE DIGEST'S BOUNDED LOOKBACK ADDS NO LATENCY, AND STATING THAT IS THE POINT** (git-bug
+`a8a4010`, migration `00070`). `alert_cases.started_at` is oto's clock read at the START of a batch's
+processing, so the instant on the row precedes the transaction that inserted it. A tick reading
+`[T, T+W)` a fraction of a second after `T+W` therefore could not see a Case whose `started_at` fell
+inside the window but whose transaction had not committed, and no later window looked at that instant
+again. The fix is a **re-scan, not a lag**: a digest for `[T, T+W)` reads
+`[T − DigestLookback, T+W)` — `DigestLookback = 2 min`, `internal/notification/domain/digest.go` —
+and subtracts what `notification_digest_cases` says it has already reported. **A digest still goes out
+at the first `notify.digest` tick at or after its window closes, so the only latency on the path is
+the 60 s tick.** ⛔ The alternative shape — never digest a window that closed less than `G` ago — was
+refused: it converts one unmeasurable number into permanent silent loss, because a Case is lost
+exactly when `commit_delay > G` and inter-pod clock skew eats the margin invisibly. Under a re-scan,
+exceeding `L` produces a **duplicate** rather than a hole, and a visible duplicate beats an invisible
+omission. Two minutes is **chosen, not derived** — twice the 60 s tick, 40% of `MinDigestWindow`, and
+three orders of magnitude above the plan-to-commit gap — and nothing in the schema can measure commit
+lateness to derive it from. `notify.digest.reconcile` is what counts the Cases the lookback still
+missed; it detects and never delivers, which is why it is a separate kind with its own hourly cadence,
+timeout and retry budget rather than extra work on the tick's minute.
 
 #### G.3.1 `reconcile`'s width is the supported tenant count (BINDING)
 
@@ -3547,9 +3879,13 @@ One transaction per batch:
 1. Load the batch; if `status != 'pending'`, exit (replay-safe).
 2. Normalise each `alerts[]` element to an `Observation`: apply hard caps (C.9.1) → rejects go to `ingest_rejections`; inject `inject_labels`; compute `alert_key` (C.2) and `source_fingerprint` (C.3); record `observed_skew_ms = received_at - startsAt`.
 3. `UpsertBatch` into `alerts` with `unnest(...)` — **one round trip for a 200-alert webhook**.
-4. Resolve/create the AlertGroup generation from `group_key` (C.4). Since ADR 0038 the key is
-   derived per **alert**, so one webhook may resolve several generations: the batch is partitioned
-   by `(cluster, alertname, namespace-or-∅)` first and step 4 runs once per partition.
+4. ⛔ **STEP 4 WAS "RESOLVE/CREATE THE ALERTGROUP GENERATION FROM `group_key`" AND THERE IS NO SUCH
+   STEP** (git-bug `7570090`, migration `00069`). It partitioned the batch by
+   `(cluster, alertname, namespace-or-∅)` and ran once per partition. `alert_groups` is deleted and
+   `alert_cases.group_id` with it, so a batch is no longer partitioned on the way in: the conversation
+   is resolved per Case at `notify.evaluate` (§H), not per group at ingest. `ComputeGroupKey` survives
+   for measurement only (§C.4), and the numbering below is left alone so the step references in §G
+   still resolve.
 5. Run the state machine per observation (§B.3). Collect events.
 6. `AppendBatch` events (deduped via `alert_event_keys`).
 7. Insert `ui_events` + `NOTIFY oto_events`.
@@ -3719,7 +4055,7 @@ Recovery never skips a slot that is still in play — doing so would send a repl
 
 **§G.7.4 Coalescing.** A `ModeUpdateRoot` whose `rendered_hash` equals the thread's last root hash is skipped as a no-op — this is what turns a flapping alert's forty identical updates into one send and thirty-nine visible `skipped` rows.
 
-Why not a per-thread FIFO queue: thread count is unbounded (one per group generation) and no queue system handles millions of ephemeral ordered partitions well. Advisory locks make ordering a property of the write, cost one hash, and need no new infrastructure.
+Why not a per-thread FIFO queue: thread count is unbounded (one per Case conversation, and it was one per group generation before git-bug `7570090` — the bound got *looser*, never tighter) and no queue system handles millions of ephemeral ordered partitions well. Advisory locks make ordering a property of the write, cost one hash, and need no new infrastructure.
 
 ### G.8 The reconciler (`source.reconcile`) — mandatory, CORE
 
@@ -3851,7 +4187,9 @@ Implemented in `internal/channels/render/slack`. **Every renderer is a pure func
 
 ### H.3 Root message — exact structure
 
-Posted once per **AlertGroup generation**. Updated in place for its entire life.
+Posted once per **Case conversation** — one Case, one root, always (git-bug `7570090`, migration
+`00069`; it was once per **AlertGroup generation**, and §C.4 records the operator-visible cost of the
+change). Updated in place for its entire life.
 
 ```json
 {
@@ -4030,7 +4368,7 @@ exists: an episode above the first succeeded one that had ended.
 
 ### H.6 `notification_reason` → Reason → mode decision table (BINDING)
 
-Alertmanager's wire `notification_reason` (AM ≥ 0.32.0) maps to an oto `Reason`, and each `Reason` maps to a delivery mode. Empty `notification_reason` (AM < 0.32.0) falls back to diffing the incoming fingerprint set against the generation's current members (`alert_cases` where `group_id` is the generation and `ended_at IS NULL`).
+Alertmanager's wire `notification_reason` (AM ≥ 0.32.0) maps to an oto `Reason`, and each `Reason` maps to a delivery mode. ⛔ **THE EMPTY-`notification_reason` FALLBACK NAMED A SET THAT NO LONGER EXISTS** (git-bug `7570090`, migration `00069`). It read: *"falls back to diffing the incoming fingerprint set against the generation's current members (`alert_cases` where `group_id` is the generation and `ended_at IS NULL`)."* There is no `group_id` and no member set; a Case's own transition is the whole diff, which is what an AM below 0.32.0 already produced correctly for every non-plurality Reason.
 
 > ### Where the wire column is applied, and what it is allowed to decide
 >
@@ -4044,34 +4382,33 @@ Alertmanager's wire `notification_reason` (AM ≥ 0.32.0) maps to an oto `Reason
 > - **oto's transitions** know WHAT CHANGED about one alert. They are the only source for `acked`,
 >   `expired` and `suppressed` — facts Alertmanager cannot see or has no word for. (`refired` was a
 >   fourth until ADR 0040 retired the edge behind it; see the † under §H.5.)
-> - **`notification_reason`** knows WHY THIS BATCH WAS DELIVERED about a whole group. It is the only
->   source that can tell a first fire from a member joining an already-notified group, because the
->   per-alert view of both is identical: a case opened.
+> - **`notification_reason`** knew WHY A BATCH WAS DELIVERED about a whole group.
 >
-> So the wire value is applied at **`notify.evaluate`** — the first moment a whole group is in scope
-> — by `domain.ReconcileWithWire`, reading `alert_groups.last_notification_reason`. It is
-> deliberately narrow, and these three rules are binding:
+> ⛔ **RULES 1 AND 2 ARE DELETED WITH THE ENTITY AND THE VOCABULARY THEY WIDENED INTO** (git-bug
+> `7570090`, migration `00069`). They read: *"it may only widen a transition-derived Reason to the
+> group-scoped sibling describing the same delivery (`fired → new_alerts`, `some_resolved →
+> all_resolved`)"*, and *"`some_resolved → all_resolved` is decided by oto's own membership counts"*.
+> Both siblings are gone: `new_alerts` and `some_resolved` left `notifications_reason_ck` with the
+> container they counted, because each asserts a plurality inside one conversation and a conversation
+> holds exactly one Case. There is no membership count and no `alert_groups.last_notification_reason`
+> to read, so `domain.ReconcileWithWire` is a **passthrough with no caller** — retained as the
+> tombstone that names what the widening was. `all_resolved` survives: a Case resolving is a fact
+> about the Case. One rule is left standing, and it never depended on the group:
 >
-> 1. It may only **widen** a transition-derived Reason to the group-scoped sibling describing the
->    same delivery (`fired → new_alerts`, `some_resolved → all_resolved`). It may never contradict an
->    observed transition: oto saw that and Alertmanager did not.
-> 2. `some_resolved → all_resolved` is decided by **oto's own membership counts**, with the wire
->    value as corroboration. The counts are a projection of the cases oto recorded, so they
->    cannot disagree with the card that renders them.
-> 3. `repeat` has no transition behind it — nothing changed — so it is emitted from the ingest
+> 1. `repeat` has no transition behind it — nothing changed — so it is emitted from the ingest
 >    orchestrator when the wire value maps to it, and nowhere else. An absent or unknown wire value
 >    changes nothing at all: an Alertmanager below 0.32.0 sends no field, and must not lose its
 >    notifications for it.
 
 | AM `notification_reason` | oto `Reason` | Mode(s) | Verbosity gate |
 |---|---|---|---|
-| `first notification` | `fired` | **`post_root`** (or `update_root` if a live thread already exists for this generation) | always |
-| `new alerts added` | `new_alerts` | `update_root` **+** `thread_reply` | reply at `all` \| `status_changes` |
-| `some alerts resolved` | `some_resolved` | **`update_root` only** — no thread noise | always |
+| `first notification` | `fired` | **`post_root`** (or `update_root` if a live thread already exists for this Case's conversation) | always |
 | `all alerts resolved` | `all_resolved` | `update_root` **+** `thread_reply` | reply at `all` \| `status_changes` \| `firing_and_resolved` |
 | `repeat interval elapsed` | `repeat` | **`update_root` ONLY. NEVER post a new message.** | always |
 | `none` | *(none)* | **suppress** — record `notification.suppressed` and stop | — |
 | `unknown` / *(empty)* | *(diff fallback)* | derive from the fingerprint-set diff, then use the row above | — |
+
+⛔ **TWO ROWS WERE HERE AND ARE DELETED** (git-bug `7570090`, migration `00069`): `new alerts added → new_alerts` (`update_root` + `thread_reply`) and `some alerts resolved → some_resolved` (`update_root` only). Both oto Reasons left `notifications_reason_ck` with `alert_groups`, so the wire strings now fall through to the `unknown` row and the diff fallback. The AM wire vocabulary is unchanged — it is Alertmanager's, not oto's — and what changed is that oto has no Reason to map these two onto.
 
 **oto-internal reasons** (no AM equivalent):
 
@@ -4092,7 +4429,7 @@ Alertmanager's wire `notification_reason` (AM ≥ 0.32.0) maps to an oto `Reason
 
 **⛔ THE `storm` ROW WAS HERE AND IS DELETED.** ADR 0042 removed storm damping and migration `00060` removed the Reason: `notifications_reason_ck` admits eighteen values and `storm` is not one of them, so no row can spell it and nothing can render it. It does not keep `refired`'s treatment, because `refired`'s CHECK still admits it and `storm`'s no longer does.
 
-**※ `digest` is the eighteenth Reason and the only one NO TRANSITION PRODUCES** (migration 00058). It is minted by the `notify.digest` tick: at the top of a policy's window the evaluator counts the Cases that OPENED inside it, and if the count clears the policy's floor it says so once. It has no Alertmanager equivalent because nothing happened — which is why it is in this table and not the one above. It is also the one Reason with **no `group_id`**: a digest spans many generations, so it opens its own conversation keyed by its policy (`notifications_target_ck`, §D.8). It is **not a damper** — a policy carrying a window sends the digest IN ADDITION to everything else it routes, and suppresses nothing.
+**※ `digest` is the fifteenth Reason and the only one NO TRANSITION PRODUCES** (migration 00058; fifteen is `len(AllReasons())` and moves with the enum — nineteen at 00058, eighteen when 00060 dropped `storm`, seventeen at 00067, fifteen when 00069 dropped `new_alerts` and `some_resolved`). It is minted by the `notify.digest` tick: at the top of a policy's window the evaluator counts the Cases that OPENED inside it, and if the count clears the policy's floor it says so once. It has no Alertmanager equivalent because nothing happened — which is why it is in this table and not the one above. It is the one Reason whose conversation is **not a Case**: a digest spans many Cases, so it opens its own conversation keyed by its policy — `conversation_kind = 'digest'`, `conversation_id = notification_policies.id` (`notifications_convkind_ck`, §D.8). It was described here as *"the one Reason with no `group_id`"*, and `group_id` is dropped (git-bug `7570090`). It is **not a damper** — a policy carrying a window sends the digest IN ADDITION to everything else it routes, and suppresses nothing.
 
 **† `refired` is retained but unreachable** — nothing has produced it since ADR 0040 retired T8, and a
 re-fire is delivered as `fired`. The row stays because stored notifications carry the value and must
@@ -4124,7 +4461,7 @@ still render. See the † under §H.5.
 | `section.fields` | **10 items, 2 000 chars each** | drop lowest-priority fields; order is Status, Severity, Service, Namespace, Started, Firing-for, Flapping, Team |
 | `header.text` | 150 chars, `plain_text` only | **not used at all** (S1) |
 | `context.elements` | **10 items** | merge into one mrkdwn element |
-| `actions.elements` | **25 elements** | v1 renders at most 4 |
+| `actions.elements` | **25 elements** | v1 renders at most **5**: up to 4 buttons, at most one snooze select, and the links overflow. §B.8.6 requires the snooze pair to be VISIBLE ("the `Snooze` action becomes `:bell: Unsnooze`"), so the budget moved rather than the requirement; the row is 4 buttons + overflow, or 3 buttons + the select + overflow. **This line read "at most 4" and was widened by [ADR 0043](../adr/0043-the-slack-action-row-renders-five-elements.md)** (git-bug `78388fb`), which records the foreclosed alternatives — the overflow is at its five-option ceiling, and a modal needs a `trigger_id` on §H.8's 3-second path. Five is the SMALLEST number that satisfies §B.8.6; the next widening owes its own ADR |
 | `button.text` | **75 chars** (visually truncates ~30) | labels are short and repetitive by design |
 | `button.url` / `image.image_url` | 3 000 chars | truncate query params, keep the base URL |
 | `button.value` | 2 000 chars | oto uses a 26-char UUID (S8) |
@@ -4428,17 +4765,17 @@ Numbered, user-observable. v1 is not done until every one of these is demonstrab
 4. Sending the identical webhook body twice (simulating an HA Alertmanager pair or a retry) produces **exactly one** Alert, one case, one Slack message, and the second call returns 202 with `duplicate: true`.
 5. A 5 000-alert batch is accepted and fully processed without a timeout, without an OOM, and without emitting 5 000 Slack messages.
 6. An alert with 100 labels, or a 5 KiB label value, is **rejected into `ingest_rejections` with a visible reason and a metric** — never silently dropped, and never able to take the process down.
-7. Editing `alertmanager.yml` (adding a route, changing `group_by`) does **not** orphan an open Slack thread: the group keeps its `group_key` and the same thread continues.
+7. Editing `alertmanager.yml` (adding a route, changing `group_by`) does **not** orphan an open Slack thread: the thread is keyed by the Case, which no Alertmanager route can touch. (Until git-bug `7570090` this read *"the group keeps its `group_key` and the same thread continues"* — the guarantee is stronger now, not weaker, because the key is no longer in the path at all.)
 
 **Lifecycle**
 
 8. The Alertmanager UI shows an alert as silenced; within one reconcile interval oto shows it as **`suppressed`** with the silence's creator, comment and expiry, and the Slack card turns grey. (This is impossible from webhooks alone.)
 9. Killing Alertmanager does **not** cause oto to mark alerts resolved or expired. The source is shown `unreachable`, a banner appears, and cases are held.
 10. An alert whose `endsAt` lapses while the source is healthy becomes **`expired`**, is visibly distinguished from `resolved` in the UI and in Slack, and the copy never claims it resolved.
-11. An alert that resolves and re-fires 2 minutes later creates **case #N+1**, `unacked`, and — the group generation still being open — posts a thread reply against the existing root. Re-firing 2 hours later also creates **case #N+1**, and, the group having closed in the meantime, a **new root message**. The clock changes which Slack message the fact lands on; it never changes the episode.
+11. An alert that resolves and re-fires — at 2 minutes or at 2 hours — creates **case #N+1**, `unacked`, and a **new root message**, because a new Case is a new conversation (git-bug `7570090`). ⛔ **THE CLOCK NO LONGER CHOOSES.** This criterion previously demanded a thread reply at 2 minutes (the group generation still open) and a new root at 2 hours (the generation having closed); `group_close_delay_s` was the timer and it is deleted. The episode was never clock-dependent and now the Slack message is not either.
 12. Acking from the Slack button and acking from `POST /api/v1/cases/{id}/ack` produce byte-identical state and go through the **same service method**.
 13. An alert flapping 30 times an hour produces **one Case and one root card** for as long as it keeps re-firing inside its retention window W (§B.3, §B.6.2) — the noise is not made rather than withheld, and nothing is damped at delivery. With W unset (the default, 0) it produces one Case per firing, all of them visible. `flap_score` / `is_flapping` are retired in place and no longer part of this claim.
-14. 300 alerts arriving for one group in 30 seconds produce **one** root card and **one** Slack thread, because they share a `group_key` and the generation owns the thread. oto withholds none of the 300 — storm damping was removed (ADR 0042) and nothing replaced it. Ingest keeps up: the batch is accepted inside the §G.2 budget and no alert is dropped.
+14. ⛔ **THIS CRITERION IS INVERTED, AND THE INVERSION IS UNRULED PRODUCT RISK** (git-bug `7570090`, migration `00069`, and §C.4's last ⛔ block). It read: *"300 alerts arriving for one group in 30 seconds produce **one** root card and **one** Slack thread, because they share a `group_key` and the generation owns the thread."* Nothing owns a `group_key` any more, so 300 alerts produce **300 conversations and 300 root cards**. What still holds and is still tested: oto withholds none of the 300 — storm damping was removed (ADR 0042) and nothing replaced it — and ingest keeps up, the batch accepted inside the §G.2 budget with no alert dropped. The surviving collapse mechanism is the opt-in **digest** (§H); the acceptance criterion that replaces this one is blocked on the product ruling §C.4 asks for.
 
 **The differentiator**
 
@@ -4548,7 +4885,7 @@ Numbered, user-observable. v1 is not done until every one of these is demonstrab
     `occurrence_id` and `total_occurrences` — which a `\b` would let through — cannot come back.
     A vocabulary ban that is not mechanically
     enforced decays in a quarter — the same argument §I.3 makes about layering.
-50. `alerts`, `alert_cases` and `alert_groups` contain no column matching
+50. `alerts` and `alert_cases` contain no column matching
     `assigned|owner|watcher|subscriber|incident|ticket|sla_|^case$|case_status|priority`, asserted by
     a schema introspection test against the live database, not by reading the migration files
     (§D.4.0). The last three terms are ADR 0036's anti-caseload clause, added with the `AlertCase`
@@ -6193,7 +6530,7 @@ Implementers who find an ambiguity MUST raise it rather than choose. An undocume
 | # | Work | Authoritative clause |
 |---|---|---|
 | **P-14** | `alerts` domain + service + repository: `Snooze` entity, `SnoozeRepository` (§F.5.2), `SnoozeService.Snooze/Unsnooze`, the `alerts.snoozed_until` projection write in the same transaction, and the `alert.snoozed` / `alert.unsnoozed` events. Add both to the closed `alert_events.type` enum. **`snoozed` must NOT be added to `suppression_reason`, and `State` must not gain a `snoozed` value** — assert this with a test. | §B.8.2–B.8.5 |
-| **P-15** | API: `POST /alerts/{id}/snooze`, `/unsnooze`, `POST /alert-groups/{id}/snooze`, `/unsnooze` (fan-out over currently-joined members only), `SnoozeRequest` DTO with `required_without` cross-validation and 300 s…2 592 000 s bounds matching the CHECKs. Add `?snoozed=` to `AlertListQuery`; **the default list includes snoozed alerts.** | §E.2, §B.8.6, §L.2.5 |
+| **P-15** | API: `POST /alerts/{id}/snooze`, `/unsnooze` (the `/alert-groups/{id}/snooze` · `/unsnooze` fan-out was specified here and is deleted with the entity — git-bug `7570090`), `SnoozeRequest` DTO with `required_without` cross-validation and 300 s…2 592 000 s bounds matching the CHECKs. Add `?snoozed=` to `AlertListQuery`; **the default list includes snoozed alerts.** | §E.2, §B.8.6, §L.2.5 |
 | **P-16** | Worker `snooze.expire` on the `lifecycle` queue, every 60 s: end expired snoozes, clear the projection, emit `alert.unsnoozed{reason:"expired"}`, and enqueue `notify.evaluate(reason=unsnoozed)` when the case is still open. Implement the `suppressed_reason` precedence chain from §B.8.2 in `notify.evaluate`, with `snoozed`/`unsnoozed` exempt from suppression. | §B.8.3–B.8.4, §G.3 |
 | **P-17** | Slack renderer: `snoozed`/`unsnoozed` reply types (§H.5); the `*Notifications*` field while snoozed; `Snooze`↔`Unsnooze` action swap; **colour and severity emoji unchanged while snoozed** — add a golden file proving a snoozed critical still renders `#a30200`. UI: `:zzz:` badge with countdown, the active-snooze banner, the snooze filter chip, and the preset durations 30 m / 1 h / 4 h / 24 h / 7 d with no "indefinite" option. | §H.4, §H.5, §B.8.6 |
 
@@ -6202,7 +6539,7 @@ Implementers who find an ambiguity MUST raise it rather than choose. An undocume
 | # | Work | Authoritative clause |
 |---|---|---|
 | **P-18** | `just lint-vocabulary` + a CI job implementing AC-49's grep over `internal/`, `web/src/`, `db/migrations/`. Allowlist `docs/`, explicit SCOPE-BOUNDARY cross-reference comments, and `river.JobSnooze`. | AC-49, §A.1 |
-| **P-19** | Three structural tests: (a) schema introspection asserts no column on `alerts`/`alert_cases`/`alert_groups` matches `assigned\|owner\|watcher\|subscriber\|incident\|ticket\|sla_`, run against the live DB not the migration text; (b) walk the mounted `chi` route tree and assert no `/resolve`, `/close`, `/merge`, `/dismiss`, `/reopen`; (c) a compile-time assertion that `UnackedReminderAfterS` is `*int`, not a slice. | AC-50, AC-51, AC-52 |
+| **P-19** | Three structural tests: (a) schema introspection asserts no column on `alerts`/`alert_cases` matches `assigned\|owner\|watcher\|subscriber\|incident\|ticket\|sla_`, run against the live DB not the migration text; (b) walk the mounted `chi` route tree and assert no `/resolve`, `/close`, `/merge`, `/dismiss`, `/reopen`; (c) a compile-time assertion that `UnackedReminderAfterS` is `*int`, not a slice. | AC-50, AC-51, AC-52 |
 | **P-20** | `api/openapi/`: rename `escalate_after_seconds`→`unacked_reminder_after_seconds` (3 sites); replace *"what you time for MTTR"* with *"whose firing duration is measured"* in the `CaseDTO` description and the glossary; add the four snooze operations and `SnoozeRequest`; add `snoozed`/`unsnoozed` to the reason enums; state §E.1.1 in the API description. Regenerate the TS types and valibot validators (gates G3/G4). | §E.1.1, §E.2, SCOPE-BOUNDARY §5.4 |
 | **P-21** | **Ratified, no code change — recorded so it is not "fixed" back:** (a) `errs` owns `Kind`/`Error`/`ProblemDTO`/`HTTPStatus()` with no I/O imports, `httpx.WriteProblem` does the writing (§L.1); (b) `encoding/json` is permitted in `domain`, json struct **tags** are not (§L.4.1); (c) constraint names are a runtime contract — `<table>_<purpose>_ck` stays, no `ck_`/`ix_`/`uq_` prefixes (§D conventions); (d) `citext` is migration `00002`, and the realised schema's **201** named CHECKs are correct (§L.7.0). | §L.1, §L.4.1, §D, §L.7 |
 | **P-22** | Rename any `incidents` placeholder to `correlation` and add the §I.1.1 PERMANENTLY-OUT table to `CONTEXT.md`'s module map. No code exists for either; this is a docs-and-tree change only. | §I.1, §I.1.1 |

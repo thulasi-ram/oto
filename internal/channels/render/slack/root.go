@@ -437,24 +437,82 @@ func trailSpan(v *domain.NotificationView, state CardState) string {
 	return "total " + humanDuration(end.Sub(start))
 }
 
-// actionsBlock renders at most four elements: up to three buttons and one
-// overflow (§H.7). Exactly one button may be primary and none may be danger
-// inline (S10) — destructive things live behind a confirm, not one mis-tap away.
+// maxRowButtons is how many BUTTONS the action row prints, and it is oto's own
+// taste rather than a Slack limit — Slack allows 25 elements in an actions block
+// (maxActionItems) and V8 is what enforces that.
+//
+// ⚠️ IT WAS THREE, AND §H.7 USED TO SAY "v1 renders at most 4" ELEMENTS. Both
+// numbers were written when the card had exactly three verbs — Acknowledge,
+// Runbook, Silence — and §B.8.6 adds a fourth that it requires to be VISIBLE: "the
+// `Snooze` action becomes `:bell: Unsnooze`". Hiding that one behind a menu would
+// have made the affordance §B.8.6 asks for the affordance the reader cannot see, so
+// the budget moved rather than the requirement. The row is now five elements at its
+// widest — four buttons plus the links overflow, or three buttons plus the snooze
+// select plus the links overflow — which is a fifth of what Slack permits.
+//
+// ⭐ §H.7 SAYS FIVE BECAUSE THIS CHANGE-SET RAISED IT FROM FOUR, AND THAT DIRECTION
+// IS RECORDED RATHER THAN GLOSSED. The line read "v1 renders at most 4" until the
+// snooze work edited it, so the number in the SPEC was amended to match the renderer
+// — authority ran code → SPEC, which is the opposite of how this repository is
+// supposed to work. It is admissible here for one reason and it is not "the goldens
+// needed it": §B.8.6 requires the snooze pair to be VISIBLE, the select is the
+// affordance that satisfies that, and the select needs a slot the four-element budget
+// does not have. That argument is what the widening's own ADR carries — in flight with
+// this change-set — and the ADR, not this comment and not the edited SPEC line, is
+// what authorises the new number. The next person to widen the row owes the same
+// argument in the same place.
+// The bound is pinned in bytes by `root_snoozed` (4 buttons + overflow) and
+// `root_unsnoozed` (3 buttons + select + overflow), which are the two widest rows oto
+// can draw.
+const maxRowButtons = 4
+
+// actionsBlock renders at most five elements: up to four buttons, the snooze
+// select, and the links overflow. Exactly one button may be primary and none may
+// be danger inline (S10) — destructive things live behind a confirm, not one
+// mis-tap away.
+//
+// ⭐ THE VIEW'S ORDER IS KEPT, and a full button budget does not stop the scan.
+// `Actions` is ordered by the builder that knows what the card is about
+// (`notification/service.actions`), so reordering here would silently override a
+// decision made where the facts are; and a menu-shaped action that appeared after
+// the last button oto had room for is SKIPPED PAST rather than dropped, because it
+// costs no button slot. `break` here would have made "how many buttons fit"
+// silently decide whether the snooze affordance exists at all.
 func (r *Renderer) actionsBlock(v *domain.NotificationView, state CardState, nonce string) (Block, bool) {
-	elements := make([]Action, 0, 4)
+	elements := make([]Action, 0, maxRowButtons+2)
 
 	if !state.IsTerminal() {
 		primaryUsed := false
+		buttons := 0
 		for _, a := range v.Actions {
-			if len(elements) >= 3 {
-				break
+			if a.ID == "" {
+				continue
 			}
-			if a.ID == "" || a.Label == "" {
+			// ⭐ A MENU-SHAPED ACTION IS NOT A BUTTON AND DOES NOT COMPETE WITH ONE.
+			// The view says "this action asks a question" by carrying Options; Slack
+			// answers that with a static select, whose placeholder is the action's
+			// own label so the control still reads as itself unopened. See
+			// ElementStaticSelect for why this is not a second overflow.
+			if len(a.Options) > 0 {
+				// The links overflow is appended after this loop and must always
+				// have room, so the row leaves it a slot. Nothing builds more than
+				// one menu today; the bound is here because V8 refuses the WHOLE
+				// payload at 26 elements, and losing every button on the card to a
+				// view that grew a second menu is not a trade worth taking.
+				if len(elements) >= maxActionItems-1 {
+					continue
+				}
+				if sel, ok := selectMenu(a); ok {
+					elements = append(elements, sel)
+				}
+				continue
+			}
+			if a.Label == "" || buttons >= maxRowButtons {
 				continue
 			}
 			btn := Action{
 				Type:     ElementButton,
-				Text:     plain(truncateRunes(a.Label, maxButtonText)),
+				Text:     plain(withActionEmoji(a.ID, a.Label, maxButtonText)),
 				ActionID: a.ID,
 			}
 			switch {
@@ -476,6 +534,7 @@ func (r *Renderer) actionsBlock(v *domain.NotificationView, state CardState, non
 				primaryUsed = true
 			}
 			elements = append(elements, btn)
+			buttons++
 		}
 	}
 
@@ -486,6 +545,81 @@ func (r *Renderer) actionsBlock(v *domain.NotificationView, state CardState, non
 		return Block{}, false
 	}
 	return actionsBlock(blockID("actions", nonce), elements...), true
+}
+
+// selectMenu draws a menu-shaped Action as a labelled dropdown.
+//
+// ⛔ THE OPTION VALUES ARE PASSED THROUGH VERBATIM AND ARE NOT PARSED HERE. A
+// renderer is a pure function from the view to bytes: whatever `oto.snooze`'s
+// options mean is the handler's business (`channels/service`, snoozePresets), and a
+// renderer that understood the token would be a second place the preset table has
+// to be kept correct. What this function DOES enforce is the shape — an option with
+// no label or no value is dropped rather than emitted, because V9/V11 would
+// otherwise fail the whole payload and cost the card every button on it.
+//
+// An empty result means NO ELEMENT, never an empty select: Slack refuses a select
+// with no options with `invalid_blocks`.
+func selectMenu(a domain.Action) (Action, bool) {
+	opts := make([]OverflowOption, 0, len(a.Options))
+	for _, o := range a.Options {
+		// ⛔ AN OVER-LONG VALUE IS DROPPED, NEVER TRUNCATED. A label is prose and
+		// survives losing its tail; a value is a SELECTOR the handler looks up, and
+		// half of one names a different choice or no choice at all. Truncating it
+		// would turn a rendering limit into a wrong action.
+		if o.Label == "" || o.Value == "" || len(o.Value) > maxOptionValue {
+			continue
+		}
+		if len(opts) >= maxSelectOptions {
+			break
+		}
+		opts = append(opts, OverflowOption{
+			Text:  *plain(truncateRunes(o.Label, maxOptionText)),
+			Value: o.Value,
+		})
+	}
+	if len(opts) == 0 {
+		return Action{}, false
+	}
+	// The label becomes the PLACEHOLDER. It is the only text a select shows before
+	// it is opened, so an action whose label went missing would render as an
+	// anonymous dropdown; the view builder always sets one, and V9 refuses the
+	// payload if it ever stops.
+	return Action{
+		Type:        ElementStaticSelect,
+		Placeholder: plain(withActionEmoji(a.ID, a.Label, maxPlaceholderText)),
+		ActionID:    a.ID,
+		Options:     opts,
+	}, true
+}
+
+// withActionEmoji prefixes an action's label with its Slack emoji and bounds the
+// result.
+//
+// ⛔ THE EMOJI BELONGS TO THE RENDERER AND NOT TO THE VIEW, which is the whole
+// reason this function exists rather than a `:bell:` sitting in
+// `notification/service`. `:bell:` is a SLACK SPELLING — it is a shortcode Slack
+// resolves against its own emoji set, and a webhook consumer receiving the literal
+// four-plus-four characters would be reading a colon-delimited word where oto meant
+// a picture. The links overflow already mints its own icons here for the same
+// reason (`:blue_book:`, `:chart_with_upwards_trend:`).
+//
+// ⭐ TWO IDS EARN ONE, AND BOTH ARE §B.8.6's OWN WORDS: the field it adds is
+// ":zzz: Snoozed …" and the action it swaps is ":bell: Unsnooze". Nothing else on
+// the row carries an icon, because Acknowledge, Runbook and Silence are the card's
+// ordinary verbs and an icon on every button is an icon on none.
+//
+// The label is bounded BEFORE the prefix is applied, so a long label can never
+// leave a half-written shortcode — `:bel` renders as three literal characters and a
+// colon, which is worse than a truncated word.
+func withActionEmoji(id, label string, limit int) string {
+	prefix := ""
+	switch id {
+	case "oto.snooze":
+		prefix = ":zzz: "
+	case "oto.unsnooze":
+		prefix = ":bell: "
+	}
+	return prefix + truncateRunes(label, limit-len([]rune(prefix)))
 }
 
 // overflowMenu is built from the view's links, not from its actions: every entry

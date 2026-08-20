@@ -24,9 +24,7 @@ import (
 func toOrgSettingsDTO(s domain.Settings) OrgSettingsDTO {
 	s = s.Normalise()
 	return OrgSettingsDTO{
-		RefireGraceS:        int(s.RefireGrace / time.Second),
 		ResolveGraceS:       int(s.ResolveGrace / time.Second),
-		GroupCloseDelayS:    int(s.GroupCloseDelay / time.Second),
 		FlapThreshold:       s.FlapThreshold,
 		FlapWindowS:         int(s.FlapWindow / time.Second),
 		FlapDigestIntervalS: int(s.FlapDigestInterval / time.Second),

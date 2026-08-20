@@ -55,54 +55,45 @@ import "time"
 
 // The §D.1 lifecycle and damping defaults.
 const (
-	// DefaultRefireGrace is `for + group_interval` for the MODAL real rule:
-	// 15m + 5m = 20m — the earliest instant oto can observe a re-fire of the
-	// commonest rule shape in the wild.
+	// ⛔⛔ `DefaultRefireGrace` AND `DefaultGroupCloseDelay` WERE HERE AND BOTH ARE
+	// DELETED (git-bug 7287b28, owner ruling of 2026-08-19). They were the two
+	// numbers ADR 0026's derivation moved together — 600→1200 and 300→1200 — and
+	// each ended up describing a mechanism that no longer exists:
 	//
-	// ⚠️ IT NO LONGER DECIDES A TRANSITION (ADR 0040). It was the smallest value at
-	// which the T8 reopen path was reachable; T8 is retired and every re-fire opens
-	// a new episode. The number is retained because `group_close_delay` is pinned
-	// at or above it — that pin is what still decides whether a re-fire lands in
-	// the existing Slack thread or gets a new root card — and because the ingest
-	// replay floor is derived from it. The arithmetic below is unchanged and still
-	// binding; what it now buys is thread continuity rather than an edge.
+	//   - `refire_grace` selected T8, the transition that ran a re-fire on the
+	//     CLOSED case. ADR 0040 retired T8: a Case is strictly terminal and every
+	//     re-fire opens the next `seq`. `routingCommand` passes `ResolveGrace`
+	//     now, and a grep for a read of the grace outside the settings CRUD
+	//     returns nothing.
+	//   - `group_close_delay` closed an `alert_groups` GENERATION, and there are
+	//     no generations: a conversation is a Case (git-bug 7570090). Its one
+	//     consumer was `app/adapters.go`'s `LifecyclePolicy{CloseDelay}`, which
+	//     went with the entity.
 	//
-	// ⛔ IT WAS 600s AND 600s IS UNREACHABLE FOR 76% OF REAL RULES. The clock
-	// starts at the case's `ended_at`, which T5 takes from the UPSTREAM
-	// `EndsAt` — the moment Prometheus stopped considering the rule firing, not
-	// the moment oto heard about it. For the same alert to fire again its
-	// condition must hold for `for:` all over again, and Alertmanager then batches
-	// the notification. So the earliest re-fire oto can OBSERVE lands at
-	// `ended_at + for`, and typically at `ended_at + for + group_interval`. With
-	// `for: 15m` that is 15–20 minutes, and a 10-minute grace has always expired:
-	// every re-fire opened a new episode, a new generation and a new Slack root
-	// card, with a setting on the screen that looked like it should have stopped
-	// it. 600s covered rules up to `for: 5m` — 24% of the corpus. 1200s covers
-	// every rule up to `for: 15m` — 86.5%.
-	DefaultRefireGrace = 1200 * time.Second
+	// ⭐ THE PROSE THAT USED TO SIT HERE ALREADY SAID SO, WHICH IS WHY THE RULING
+	// IS A CLEANUP RATHER THAN A DESIGN. It read: *"every re-fire opened a new
+	// episode, a new generation and a new Slack root card, with a setting on the
+	// screen that looked like it should have stopped it."* A card per re-fire is
+	// today's shipped behaviour, so deleting the pair changes no observable Slack
+	// output — the thing a replacement rule would have had to preserve was never
+	// working.
+	//
+	// ⛔ AND THE "PIN" WAS NEVER ENFORCED. The two were declared as two
+	// independent `1200 * time.Second` literals with a comment insisting the
+	// equality was *"the whole point rather than a coincidence"* — the `4aea61e`
+	// shape, where the invariant lives in prose and nothing in the type system
+	// stops the next editor moving one. Deleting BOTH is what makes that moot;
+	// deleting one would have left the trap armed and half-hidden.
+	//
+	// DELETED, NOT RETIRED, on the owner's standing ruling: oto is unreleased,
+	// there is no `git tag`, and a bounded, defaulted, patchable knob that decides
+	// nothing is the `tools/lintreach` defect class — a declaration wired to
+	// nothing — which lintreach itself cannot see, because a setting's only reader
+	// is its own CRUD. No ghosts at launch.
+
 	// DefaultResolveGrace is how long past `source_ends_at` the reaper waits
 	// before a case may expire (§B.4).
 	DefaultResolveGrace = 300 * time.Second
-	// DefaultGroupCloseDelay is how long a generation with no live member stays
-	// open before it closes. It EQUALS DefaultRefireGrace,
-	// and the equality is the whole point rather than a coincidence.
-	//
-	// ⛔ IT WAS 300s WHILE `refire_grace` WAS 600s, WHICH DEFEATED `refire_grace`.
-	// Reopening a case only avoids a new Slack root message if the group
-	// GENERATION is still open — a closed generation is never rejoined, because the
-	// next observation opens generation N+1 and a new generation is a NEW thread with
-	// a brand-new root (§B.5). With the
-	// old pair the generation closed 5 minutes after the resolve and the grace ran
-	// for 10, so the whole second half of the grace bought a case reopen
-	// that still posted a new card. oto's own tuning guidance already said "keep
-	// group_close_delay at or above refire_grace"; the shipped defaults broke it.
-	//
-	// Equal is safe rather than racy because the two clocks start at different
-	// moments: this one runs from the group's last ACTIVITY (the resolve as oto
-	// observed it) while `refire_grace` runs from the upstream `ended_at`, which is
-	// the same instant or earlier. So the group always closes at or after the grace
-	// expires, never before.
-	DefaultGroupCloseDelay = 1200 * time.Second
 	// DefaultFlapThreshold SURVIVED the derivation unchanged: at the window below
 	// it sits at 42% of the observable ceiling, which is the "roughly half the
 	// ceiling" rule docs/setup/tuning.md states, and it stays above the floor of 3

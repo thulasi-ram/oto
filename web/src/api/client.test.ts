@@ -173,19 +173,19 @@ describe("the request primitive", () => {
   it("turns a problem+json body into an ApiError with its violations intact", async () => {
     stubFetch({
       "PATCH /api/v1/org/settings": validationFailed({
-        field: "refire_grace_s",
+        field: "resolve_grace_s",
         code: "min",
         message: "below the range oto accepts",
       }),
     });
 
-    const err = await patchItem("/api/v1/org/settings", { refire_grace_s: 1 }).catch(
+    const err = await patchItem("/api/v1/org/settings", { resolve_grace_s: 1 }).catch(
       (e: unknown) => e,
     );
     expect(err).toBeInstanceOf(ApiError);
     expect((err as ApiError).status).toBe(422);
     expect((err as ApiError).code).toBe("validation_failed");
-    expect(violationsByField(err).get("refire_grace_s")).toBe("below the range oto accepts");
+    expect(violationsByField(err).get("resolve_grace_s")).toBe("below the range oto accepts");
   });
 
   it("keeps a bodyless error usable — the 412 with nothing in it", async () => {

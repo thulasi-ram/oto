@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	kernel "github.com/thulasiram/oto/internal/alerts/domain"
 	"github.com/thulasiram/oto/internal/notification/domain"
 	"github.com/thulasiram/oto/internal/platform/clock"
@@ -128,37 +130,67 @@ func (v *ViewService) Build(
 // digest projects a digest Notification, which needs no snapshot: everything it
 // asserts is on the row.
 //
-// ⚠️ THE HEADLINE GOES WHERE THE GROUP TITLE GOES, AND THAT IS A DELIBERATE PIECE OF
-// SCAFFOLDING. `internal/channels/render/slack` draws `*Group.Title* — <status>` in
-// its `default:` arm and derives `rendered_fallback` from the same field, so a view
-// with an empty title would produce an empty fallback and fail `deliveries_fb_ck`
-// with a 23514 — after the message had already gone to Slack, which is the worst
-// place in the module to fail. Putting the sentence there makes a digest render as a
-// plain, correct info card on a renderer that has never heard of one.
+// ⭐⭐ THE HEADLINE NO LONGER RIDES `Group.Title`, AND THE VIEW CARRIES NO SENTENCE AT
+// ALL (git-bug `78388fb`). This function used to return
+// `Group: GroupView{Title: DigestHeadline(n, "", 0), State: "open"}` and its own
+// comment called that "a floor, not a design". The floor worked — a renderer that had
+// never heard of a digest drew `*<sentence>* — <status>` and every word of it was true
+// — and it worked for a reason that could not last: `Group.Title` was the one field
+// that could not be left empty, because an empty title produced an empty
+// `rendered_fallback` and failed `deliveries_fb_ck` with a 23514 AFTER the message had
+// gone to Slack. Being forced is not the same as being right, and the shape carried a
+// future defect: a group title holding something that is not a title, and
+// `State: "open"` on a view with no group, are both read correctly by accident until
+// some generic reader stops guessing.
 //
-// ⭐ WHAT IS DELIBERATELY ABSENT IS AS IMPORTANT AS WHAT IS PRESENT.
+// The facts go into `DigestView` and the renderer lays them out. `Digest != nil` is
+// now the discriminator — a renderer branches on it before anything else — and the
+// non-empty fallback is the digest card's own sentence, written where sentences
+// belong.
+//
+// ⭐ WHAT IS DELIBERATELY ABSENT IS AS IMPORTANT AS WHAT IS PRESENT, and two of the
+// three absences are now DECIDED rather than deferred.
 //
 //   - NO Actions. Every action on a card acts on a signal — acknowledge this case,
 //     snooze this alert, silence in Alertmanager. A digest is about a window; a button
 //     on it would have to pick one of the things it counted, which is a decision the
 //     digest deliberately did not make.
-//   - NO Links. Every deep link is `<base>/alerts/<id>` or `/groups/<id>`, and a
-//     digest names neither. A link to a filtered list is the right answer and it needs
-//     a filter vocabulary this view does not have; a wrong link is worse than none.
+//   - NO Links, AND THAT IS NOW A RULING AND NOT AN OMISSION. Two independent reasons,
+//     either of which alone is enough. (1) `GET /cases`'s `since` is a LOWER BOUND
+//     ONLY — the OpenAPI parameter says so in as many words, "combined with `sort`,
+//     this is the time-range control: page backwards through the sorted list to reach
+//     an upper bound" — so `/cases?since=<covered_from>` shows everything since the
+//     span's start, which for any digest but the newest is unboundedly more than the
+//     digest counted. (2) Membership is decided by the policy's compiled matcher in Go
+//     (`Policy.Matches`, folded in `service/digest.go`), and a regular expression over
+//     a label map has no URL form at all — so even with an upper bound the link would
+//     name a different set. A link that looks like the digest's contents and is not is
+//     worse than none, so the card states the span and says where to look instead.
+//     What would unlock a real link is an upper time bound on the list plus a
+//     policy-scoped filter; both are API work, not renderer work.
 //   - NO Org. `snap.Org` comes from the snapshot, and the digest does not take one.
 //     It costs the org name in the footer of a card whose destination already belongs
 //     to exactly one org.
-//
-// A renderer that learns to lay a digest out should read `DigestCount` and
-// `DigestWindowStart` off the notification. This is a floor, not a design; see
-// `DigestHeadline`.
 func (v *ViewService) digest(n domain.Notification) *NotificationView {
-	// The window LENGTH is a property of the policy, not of the notification, and this
-	// service reads no policy — so the headline names the window's start and its count
-	// and leaves the length to a renderer that has the policy in hand.
+	d := &DigestView{}
+	// ⛔ THE NIL READS ARE UNREACHABLE AND ARE STILL WRITTEN AS READS. A digest row
+	// satisfies `notifications_digest_ck`, so `DigestCount` is present and at least 1
+	// on every row that can get here; a nil would be a repository bug, and a card
+	// saying "0" is a smaller wrong answer than a panic inside a claimed delivery.
+	if n.DigestCount != nil {
+		d.Count = *n.DigestCount
+	}
+	// ⭐ THE SPAN IS READ AND NEVER DERIVED. It is nil only on a digest written before
+	// migration 00070, and the pair stays nil there for the reason 00070 exists: the
+	// only way to invent it is the window start times the policy's CURRENT
+	// `digest_window_s`, which is the inference `342e071` is about. The renderer draws
+	// the absence.
+	if n.DigestCoveredFrom != nil && n.DigestCoveredTo != nil {
+		d.CoveredFrom, d.CoveredTo = n.DigestCoveredFrom.UTC(), n.DigestCoveredTo.UTC()
+	}
 	return &NotificationView{
 		Reason:     string(n.Reason),
-		Group:      GroupView{Title: DigestHeadline(n, "", 0), State: "open"},
+		Digest:     d,
 		RenderedAt: v.clk.Now().UTC(),
 	}
 }
@@ -651,6 +683,53 @@ func (v *ViewService) actions(snap domain.Snapshot) []Action {
 		})
 	}
 
+	// ⭐ §B.8.6's SNOOZE PAIR, AND IT IS ONE AFFORDANCE IN TWO SHAPES. "The `Snooze`
+	// action becomes `:bell: Unsnooze`" — never both, because a card offering both
+	// would be asking the reader which of two contradictory facts about oto is true.
+	// `SnoozedUntil` is the same fact the `*Notifications*` field on the card is
+	// drawn from, so the field and the action can no longer disagree: they read one
+	// projection (git-bug `0a8ca4a`).
+	//
+	// ⛔ THE SUBJECT IS THE ALERT AND NOT THE CASE, WHICH IS WHY IT IS NOT `caseID`.
+	// A snooze is a fact about a SIGNAL's notification behaviour (§B.8.7): it is
+	// scoped to an `alert_key`, it outlives the episode that provoked it, and
+	// `alerts/service`'s verbs take an alert id for exactly that reason. Two bare
+	// uuids on one card naming two different tables is a hazard, so it is stated
+	// here and stated again on the handler's action ids.
+	//
+	// ⛔ IT COMES BEFORE THE TWO LINK BUTTONS ON PURPOSE. A renderer with a narrower
+	// row than Slack's sheds from the end, and "where do I look" survives being one
+	// tap further away in a way that "make oto stop shouting at 03:00" does not.
+	if alertID := snoozeAlertID(snap); alertID != "" {
+		if snoozedUntil(snap) != nil {
+			actions = append(actions, Action{
+				ID: "oto.unsnooze", Label: "Unsnooze", Value: alertID,
+			})
+		} else {
+			// ⛔ FIVE PRESETS AND NO FREE-TEXT DURATION (§B.8.3). The list is
+			// `channels/domain`'s, not this file's, because the handler that decodes
+			// the answer reads the same table — a menu offering a choice the handler
+			// cannot decode is a button that does nothing, which is the defect this
+			// whole affordance was filed against.
+			//
+			// The option value carries the preset TOKEN as well as the alert, because
+			// a menu press has to say which of the offered choices was taken. It is
+			// still two selectors and no state: see `channels/service`'s
+			// snoozeValueSeparator for why that is not a widening of S8.
+			presets := snoozePresets()
+			opts := make([]ActionOption, 0, len(presets))
+			for _, p := range presets {
+				opts = append(opts, ActionOption{
+					Label: p.Label,
+					Value: p.Token + snoozeValueSeparator + alertID,
+				})
+			}
+			actions = append(actions, Action{
+				ID: "oto.snooze", Label: "Snooze for…", Options: opts,
+			})
+		}
+	}
+
 	links := v.links(snap)
 	if links.Runbook != "" {
 		actions = append(actions, Action{
@@ -663,6 +742,30 @@ func (v *ViewService) actions(snap domain.Snapshot) []Action {
 		})
 	}
 	return actions
+}
+
+// snoozeAlertID is the ALERT the card's snooze affordance acts on, as a string, and
+// "" when there is none to name.
+//
+// ⛔ IT IS THE SAME CHOICE `links` MAKES, AND DELIBERATELY THE SAME CODE SHAPE:
+// focus first, then the newest member. A Case holds exactly one Alert, so the two
+// arms agree in production; the fallback is what keeps a snapshot built without a
+// focus from silently rendering a menu whose every option names the nil uuid.
+//
+// ⚠️ IT IS NOT `snoozedUntil`'S SUBJECT BY COINCIDENCE. That function reads the
+// focus for the same reason — a snooze is scoped to an `alert_key` and a group
+// snooze is a fan-out of one row per member — so the alert whose clock the card
+// PRINTS is the alert the card's button ACTS on. If those two ever diverged, a card
+// would offer to wake an alert other than the one it says is asleep.
+func snoozeAlertID(snap domain.Snapshot) string {
+	source := snap.Focus
+	if source == nil && len(snap.Alerts) > 0 {
+		source = &snap.Alerts[0]
+	}
+	if source == nil || source.ID == uuid.Nil {
+		return ""
+	}
+	return source.ID.String()
 }
 
 // alertmanagerFilter renders Alertmanager's matcher syntax for this generation.

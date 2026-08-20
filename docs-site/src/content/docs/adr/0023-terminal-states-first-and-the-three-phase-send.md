@@ -1,7 +1,10 @@
 ---
 title: 0023 — Terminal thread states are decided first, and the send is three phases
 ---
-**Status:** Accepted · 2026-08-09
+**Status:** Accepted · 2026-08-09 · **Narrowed once** — `frozen` left the thread state
+vocabulary on 2026-08-19 (git-bug `e5c060b`, migration `00066`); the decision itself is
+intact and the gate order is now `dead` → unsequenced → already-resolved → root →
+predecessor → proceed. See the callout under **Decision**.
 **Amends:** SPEC §G.7 (which specified the opposite order, and a single-transaction send)
 **Relates to:** [0005](/adr/0005-durable-group-key-owns-the-slack-thread/) (the thread a generation owns),
 [0008](/adr/0008-slack-update-in-place-primary/) (update-in-place, which is why a duplicate root is the
@@ -49,6 +52,17 @@ rate-limited destination is entitled to keep waiting for thirty seconds.
 unsequenced → already-resolved → root → predecessor → proceed. A dead thread yields
 `recover_thread`, never a snooze; a frozen thread yields `abandon`. Only then do the waiting
 conditions get a chance to answer.
+
+> ⚠️ **NARROWED, 2026-08-19 — `frozen` NO LONGER EXISTS (git-bug `e5c060b`, migration
+> `00066`).** Not superseded: nothing in this ADR is falsified. The decision it records —
+> terminal states first — stands and is why `dead` is still tested before every waiting condition. But `frozen`
+> was never reachable: `Freeze` had no production caller, the group-close sweep never called
+> it, and no row could hold the state. It has left `threads_state_ck`, the two `ThreadState`
+> vocabularies, the `ThreadStore` port and the gate, so the order is now `dead` →
+> unsequenced → already-resolved → root → predecessor → proceed, and
+> `abandon`/`thread_frozen` is no longer an emittable verdict on
+> `oto_thread_order_decisions_total`. **The argument above is left as written**, because it
+> is the record of what was decided in August 2026 and half of it is still load-bearing.
 
 Two bounds close the same hole from the other side:
 

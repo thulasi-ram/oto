@@ -37,9 +37,7 @@ type orgRow struct {
 // two here would silently disable a damper for every org that never opened the
 // settings screen.
 type settingsJSON struct {
-	RefireGraceS        *int `json:"refire_grace_s,omitempty"`
 	ResolveGraceS       *int `json:"resolve_grace_s,omitempty"`
-	GroupCloseDelayS    *int `json:"group_close_delay_s,omitempty"`
 	FlapThreshold       *int `json:"flap_threshold,omitempty"`
 	FlapWindowS         *int `json:"flap_window_s,omitempty"`
 	FlapDigestIntervalS *int `json:"flap_digest_interval_s,omitempty"`
@@ -56,13 +54,21 @@ type settingsJSON struct {
 	// the only boolean this blob ever held.
 	//
 	// ⛔ FOUR KEYS FOLLOWED THOSE AND ALL FOUR ARE DELETED (git-bug `bd0fb1d`): the
-	// unacked-reminder delay and the three that carried its mention surface. The
-	// struct closes here; the nine keys above are the whole of `orgs.settings`.
+	// unacked-reminder delay and the three that carried its mention surface.
+	//
+	// ⛔⛔ AND `refire_grace_s` AND `group_close_delay_s` LED THE INTEGER BLOCK
+	// ABOVE — the first and third fields — AND BOTH ARE DELETED (git-bug 7287b28,
+	// migration 00071). The struct closes here; the seven keys above are the whole
+	// of `orgs.settings`.
 	//
 	// ⚠️ NOTHING HERE DELETES A STORED KEY. `orgs.settings` is one JSONB document,
-	// so a row written before this commit still HOLDS `broadcast_on_resolved` and
-	// `encoding/json` simply drops it on read. Migration 00069 removes it from every
-	// row; until it runs the value is unreachable rather than absent.
+	// so a row written before this commit still HOLDS `broadcast_on_resolved`,
+	// `refire_grace_s` and `group_close_delay_s`, and `encoding/json` simply drops
+	// them on read. Migration 00069 removes the first from every row and 00071
+	// removes the other two; until each runs the value is unreachable rather than
+	// absent. ⭐ THAT ORDER IS SAFE AND THE REVERSE IS NOT: the struct stops
+	// reading a key BEFORE the migration deletes it, so no deploy window exists in
+	// which Go expects a key the database has already dropped.
 }
 
 // toPatch maps the stored blob onto the domain's override record. It is a
@@ -71,9 +77,7 @@ type settingsJSON struct {
 // before the domain ever saw it.
 func (s settingsJSON) toPatch() domain.SettingsPatch {
 	return domain.SettingsPatch{
-		RefireGraceS:        s.RefireGraceS,
 		ResolveGraceS:       s.ResolveGraceS,
-		GroupCloseDelayS:    s.GroupCloseDelayS,
 		FlapThreshold:       s.FlapThreshold,
 		FlapWindowS:         s.FlapWindowS,
 		FlapDigestIntervalS: s.FlapDigestIntervalS,
@@ -86,9 +90,7 @@ func (s settingsJSON) toPatch() domain.SettingsPatch {
 // fromPatch is toPatch's inverse, for the write path.
 func fromPatch(p domain.SettingsPatch) settingsJSON {
 	return settingsJSON{
-		RefireGraceS:        p.RefireGraceS,
 		ResolveGraceS:       p.ResolveGraceS,
-		GroupCloseDelayS:    p.GroupCloseDelayS,
 		FlapThreshold:       p.FlapThreshold,
 		FlapWindowS:         p.FlapWindowS,
 		FlapDigestIntervalS: p.FlapDigestIntervalS,

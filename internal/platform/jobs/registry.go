@@ -136,8 +136,9 @@ type Handlers struct {
 	SilencesSync       Handler[SilencesSyncArgs]
 	SlackInteraction   Handler[SlackInteractionArgs]
 
-	CaseReap     Handler[CaseReapArgs]
-	NotifyDigest Handler[NotifyDigestArgs]
+	CaseReap              Handler[CaseReapArgs]
+	NotifyDigest          Handler[NotifyDigestArgs]
+	NotifyDigestReconcile Handler[NotifyDigestReconcileArgs]
 
 	PartitionsManage Handler[PartitionsManageArgs]
 	RetentionPrune   Handler[RetentionPruneArgs]
@@ -227,6 +228,20 @@ func RegisterAll(r *Registry, h Handlers) error {
 				orStub(h.NotifyDigest, KindNotifyDigest))
 		},
 		func() error {
+			// FIVE minutes, and the one lifecycle kind that is not two, per TENANT.
+			// The digest tick's two minutes bound a fold over at most
+			// MaxDigestBackfill windows; the detector's span is a whole
+			// DigestReconcileHorizon — a day — folded in Go once per digest policy,
+			// because which policies select a Case is decided by `Policy.Matches` and
+			// not by SQL (notification/service.ReconcileOrg argues why an anti-join
+			// cannot replace it). Two minutes would kill the tenant whose day the
+			// detector most needs to read, and a detector that times out on exactly
+			// the busy install is a number nobody can alarm on. The read is capped at
+			// the sweep limit either way, so five minutes bounds a bounded thing.
+			return Register(r, Spec{Queue: QueueLifecycle, PayloadVersion: 1, Timeout: 5 * time.Minute},
+				orStub(h.NotifyDigestReconcile, KindNotifyDigestReconcile))
+		},
+		func() error {
 			return Register(r, Spec{Queue: QueueMaintenance, PayloadVersion: 1, Timeout: 10 * time.Minute},
 				orStub(h.PartitionsManage, KindPartitionsManage))
 		},
@@ -265,7 +280,8 @@ func RegisterAll(r *Registry, h Handlers) error {
 //
 // ⭐ THE PER-TENANT PERIODICS ARE STILL HERE, AND THE ZERO ARGS BELOW ARE WHY.
 // `case.reap`, `group.close`,
-// `notify.digest`, `retention.prune` and `stats.rollup` are all fanned out per tenant now
+// `notify.digest`, `notify.digest.reconcile`, `retention.prune` and `stats.rollup`
+// are all fanned out per tenant now
 // (jobs.TenantFanOut), but their SCHEDULE still needs no list: an args struct
 // with a nil OrgID IS the fan-out tick, and expanding it into one job per
 // tenant happens in the handler, where
@@ -301,6 +317,17 @@ func AddDefaultPeriodic(r *Registry, clk clock.Clock) {
 	// minute, and the owed window is capped by MaxDigestBackfill rather than lost.
 	add(time.Minute, KindNotifyDigest, func() (river.JobArgs, *river.InsertOpts) {
 		return NotifyDigestArgs{}, nil
+	})
+	// The digest DETECTOR (git-bug `893cee4`), hourly and deliberately not on the
+	// tick's minute. Its cadence is set by `notification/domain.DigestMarkRetention`'s
+	// hour of slack over `DigestReconcileHorizon`: that hour is the budget for a
+	// detector that runs late and still finds its evidence, and once inside it is
+	// enough to spend the budget. RunOnStart is right here for the OPPOSITE reason it
+	// is right for the tick — nothing is owed, so nothing is caught up; a deploy is
+	// simply the moment an operator most wants to know whether the last window went
+	// out, and waiting an hour to answer that is an hour of not knowing.
+	add(time.Hour, KindNotifyDigestReconcile, func() (river.JobArgs, *river.InsertOpts) {
+		return NotifyDigestReconcileArgs{}, nil
 	})
 	add(time.Hour, KindPartitionsManage, func() (river.JobArgs, *river.InsertOpts) {
 		return PartitionsManageArgs{}, nil

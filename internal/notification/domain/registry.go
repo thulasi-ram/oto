@@ -47,6 +47,30 @@ type PolicyDraft struct {
 	ChannelIDs []uuid.UUID
 	Throttle   *Throttle
 
+	// Subjects is `subject_kinds` (migration `00072`). Nil AND empty both mean the
+	// column stays at its `'{}'` default, which is "every subject kind" — the
+	// shipped behaviour and the state of every row written before 00072.
+	//
+	// ⭐ IT IS A SLICE AND NOT A POINTER TO ONE, unlike the two digest scalars
+	// below, because it has no third state. A digest window distinguishes "leave the
+	// column alone" from "set it to NULL"; an empty binding and an absent binding are
+	// the SAME instruction — claim every altitude — so a pointer would introduce a
+	// distinction the column cannot hold and the wire would have to invent a spelling
+	// for.
+	Subjects SubjectBinding
+
+	// CountMin and CountWindow are the two halves of `CountOverWindow` (migration
+	// `00072`). Nil means the column stays NULL, which is "this policy carries no
+	// count condition" — the shipped default.
+	//
+	// ⭐ TWO SCALARS AND NOT A `*CountOverWindow`, for the reason the digest gives
+	// below: the wire is two scalars, the columns are two nullable columns, and
+	// `Policy.Validate` reports violations against those two field paths. A nested
+	// command object would have to be flattened at the boundary and the flattening is
+	// where the two spellings would drift.
+	CountMin    *int
+	CountWindow *time.Duration
+
 	// DigestWindow and DigestFloor are the two halves of `Digest` (migration
 	// 00058). Nil means the column stays NULL, which is "this policy sends no
 	// digest" — the shipped default.
@@ -83,6 +107,27 @@ type PolicyPatch struct {
 	// which is how an operator turns the summary — or just its floor — off.
 	DigestWindow **time.Duration
 	DigestFloor  **int
+
+	// Subjects is a SINGLE pointer where its neighbours are double, and the
+	// asymmetry is the column's rather than an oversight. `subject_kinds` is
+	// `NOT NULL DEFAULT '{}'` — there is no NULL to set — so an empty slice already
+	// spells "claim every altitude" and a second level of pointer would be a way to
+	// ask for a state that does not exist. `{"subject_kinds": []}` is how an operator
+	// removes a binding, and `{"subject_kinds": null}` is refused by the contract
+	// rather than silently meaning the same thing.
+	Subjects *SubjectBinding
+
+	// CountMin and CountWindow are double pointers for the reason the digest's two
+	// halves are: the contract types both as nullable and a pointer to nil CLEARS the
+	// column, which is how an operator turns the condition off.
+	//
+	// ⚠️ THEY ARE SEPARATELY NULLABLE AND THAT IS NOT A LICENCE TO CLEAR ONE.
+	// `policies_count_pair_ck` is symmetric — neither half means anything alone — so
+	// clearing exactly one is a 23514 the merged validation catches first. They are
+	// two pointers because the WIRE is two fields, not because half a condition is a
+	// state.
+	CountMin    **int
+	CountWindow **time.Duration
 }
 
 // IsEmpty reports whether the patch would change nothing.
@@ -90,7 +135,8 @@ func (p PolicyPatch) IsEmpty() bool {
 	return p.Name == nil && p.Priority == nil && p.Enabled == nil &&
 		p.Matchers == nil && p.Reasons == nil && p.ChannelIDs == nil &&
 		p.Throttle == nil &&
-		p.DigestWindow == nil && p.DigestFloor == nil
+		p.DigestWindow == nil && p.DigestFloor == nil &&
+		p.Subjects == nil && p.CountMin == nil && p.CountWindow == nil
 }
 
 // DefaultPolicyPriority mirrors the `notification_policies.priority` DDL default.

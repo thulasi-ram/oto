@@ -17,7 +17,7 @@ import (
 	sources "github.com/thulasiram/oto/internal/sources/domain"
 )
 
-// ⛔⛔ THIS FILE IS THE ARITHMETIC BEHIND FOUR DEFAULTS, EXECUTED.
+// ⛔⛔ THIS FILE IS THE ARITHMETIC BEHIND THE SHIPPED TIMING DEFAULTS, EXECUTED.
 //
 // `refire_grace` and the flap thresholds used to be guesses — `docs/ORCHESTRATION.md`
 // listed them as needing the owner, and the numbers had acquired bounds, a config
@@ -29,9 +29,12 @@ import (
 // as constants with their sources, and every default is RECOMPUTED from it. Change
 // a default without changing the reasoning and this file fails.
 //
-// ⚠️ These are test-only cross-package imports, the same idiom as
-// `refire_grace_replay_test.go`: `identity/domain` is a settings vocabulary and
-// must not depend on the lifecycle or the source client at build time.
+// ⚠️ These are test-only cross-package imports, the same idiom
+// `ingestion/domain/bounds_test.go` uses: `identity/domain` is a settings
+// vocabulary and must not depend on the lifecycle or the source client at build
+// time. (That file is what is left of `refire_grace_replay_test.go`, which used
+// to be cited here and which git-bug 7287b28 deleted along with the two settings
+// it tied together.)
 //
 // ⭐ WHAT CHANGED, AND WHY THE LAST SECTION OF THIS FILE IS NOW A TRIPWIRE RATHER
 // THAN A LOAD-BEARING WALL. The four packages that need a shipped default used to
@@ -111,104 +114,35 @@ func TestTheDerivationUsesTheSameAlertmanagerDefaultsOtoServes(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------------------- refire_grace
+// ------------------------------------------ refire_grace × close delay: DELETED
 
-// ⭐ THE HEADLINE RESULT. `refire_grace`'s clock starts at the case's
-// `ended_at`, which T5 takes from the UPSTREAM `EndsAt` — when Prometheus stopped
-// considering the rule firing, not when oto heard about it. So a re-fire must pay
-// the rule's whole `for:` dwell again INSIDE the grace window, and Alertmanager
-// then batches the notification on top of that.
-func TestRefireGraceReachesTheModalRealRule(t *testing.T) {
-	t.Parallel()
-
-	// The typical re-fire: the `for:` dwell, plus up to one batching delay.
-	typical := ModalRuleFor + EcosystemGroupInterval
-
-	if identity.DefaultRefireGrace < typical {
-		t.Fatalf("DefaultRefireGrace = %s, but the modal real rule (for: %s) re-fires into "+
-			"oto's view at %s. Every re-fire of 44.5%% of real rules would open a new episode, "+
-			"a new generation and a brand-new Slack root card — which is the wall of messages "+
-			"oto exists to prevent, produced by a setting that looks like it prevented it",
-			identity.DefaultRefireGrace, ModalRuleFor, typical)
-	}
-
-	// ⛔ AND NOT MUCH MORE THAN THAT. `refire_grace` too high folds a genuine
-	// re-fire into a stale thread, which is the shape of a MISSED PAGE — the worst
-	// failure oto can have — while too low merely fragments threads, and every one
-	// of those fragments is a LOUD new root card. oto prefers the loud error
-	// (ADR 0026 §5), so the default is the SMALLEST value that reaches the mode,
-	// not the largest that would cover the `for: 1h` tail.
-	if identity.DefaultRefireGrace > typical+EcosystemGroupInterval {
-		t.Fatalf("DefaultRefireGrace = %s, more than one batching delay past what the modal "+
-			"rule needs (%s). oto prefers the loud error: a grace this wide merges genuinely "+
-			"separate incidents for the 76%% of rules that never needed it", identity.DefaultRefireGrace, typical)
-	}
-}
-
-// The old default is pinned as a REGRESSION, not as history: 600s is still a legal
-// value an operator can write, and this states exactly what writing it costs.
-func TestTheOldRefireGraceCouldNotReachTheModalRule(t *testing.T) {
-	t.Parallel()
-
-	const wasShipped = 600 * time.Second
-
-	if wasShipped >= ModalRuleFor {
-		t.Fatalf("the corpus or the arithmetic moved: %s no longer fails to reach a for: of %s, "+
-			"so ADR 0026's central finding needs re-deriving", wasShipped, ModalRuleFor)
-	}
-	// It could not even reach the BEST case — a re-fire whose condition returned
-	// the instant the alert resolved and whose notification was flushed at once.
-	if bound, ok := identity.Bounds(identity.KeyRefireGrace); ok {
-		if int(wasShipped/time.Second) != bound.Min {
-			t.Fatalf("the old default was the BOUND FLOOR (%ds) presented as a recommendation; "+
-				"that is the smell ADR 0026 removed, and the floor has since moved to %d",
-				int(wasShipped/time.Second), bound.Min)
-		}
-	}
-}
-
-// --------------------------------------------------- refire_grace × close delay
-
-// ⛔⛔ THE DEFECT THE TWO DEFAULTS HAD *BETWEEN* THEM, AND THE ONE A PER-KNOB TEST
-// WOULD NEVER HAVE CAUGHT.
+// ⛔⛔ THREE TESTS AND ~90 LINES OF DERIVATION STOOD HERE AND ALL THREE ARE
+// DELETED WITH THEIR SUBJECTS (git-bug 7287b28, owner ruling of 2026-08-19):
 //
-// Reopening a case only avoids a new Slack root message while the group
-// GENERATION is still open: a closed generation is never rejoined, and the next
-// observation opens N+1, which is a new thread with a brand-new root
-// (ADR 0005, §B.5). oto shipped
-// `group_close_delay: 300s` against `refire_grace: 600s`, so the generation closed
-// five minutes into a ten-minute grace and the whole second half of the grace
-// bought a case reopen that posted a new card anyway. oto's own tuning page
-// already stated the rule; its own defaults broke it.
-func TestGroupCloseDelayDoesNotDefeatTheRefireGrace(t *testing.T) {
-	t.Parallel()
-
-	if identity.DefaultGroupCloseDelay < identity.DefaultRefireGrace {
-		t.Fatalf("group_close_delay %s < refire_grace %s: a re-fire oto classified as the same "+
-			"problem coming back finds a CLOSED generation and gets a brand-new Slack root card "+
-			"anyway, which is the entire thing the grace exists to prevent",
-			identity.DefaultGroupCloseDelay, identity.DefaultRefireGrace)
-	}
-
-	// Equality is SAFE rather than racy, and the reason is that the two clocks start
-	// at different moments: this one runs from the group's last ACTIVITY (the
-	// resolve as oto observed it) while the grace runs from the upstream `ended_at`,
-	// which is the same instant or earlier. The generation therefore always closes
-	// at or after the grace expires, never before.
-	if identity.DefaultGroupCloseDelay != identity.DefaultRefireGrace {
-		t.Logf("group_close_delay (%s) exceeds refire_grace (%s); legal, and wider than ADR 0026 "+
-			"derived — check the ADR still describes what ships",
-			identity.DefaultGroupCloseDelay, identity.DefaultRefireGrace)
-	}
-
-	// It must also clear `group_interval`, or a generation closes between two
-	// batches of ONE incident and the second half arrives as a new group.
-	if identity.DefaultGroupCloseDelay < EcosystemGroupInterval {
-		t.Fatalf("group_close_delay %s is below the ecosystem group_interval %s: a generation "+
-			"can close between two Alertmanager batches of the same incident",
-			identity.DefaultGroupCloseDelay, EcosystemGroupInterval)
-	}
-}
+//   - `TestRefireGraceReachesTheModalRealRule` — that 1200s reaches the modal
+//     real rule's `for: 15m` plus one batching delay, and no further, because oto
+//     prefers a loud fragmented thread to a silently merged one (ADR 0026 §5).
+//   - `TestTheOldRefireGraceCouldNotReachTheModalRule` — that the old 600s was
+//     the BOUND FLOOR presented as a recommendation, ADR 0026's central finding.
+//   - `TestGroupCloseDelayDoesNotDefeatTheRefireGrace` — that the close delay is
+//     at or above the grace, because a generation that closed first handed a
+//     re-fire a new Slack root card anyway.
+//
+// ⭐ THE THIRD ONE IS WHY THIS BLOCK IS A COMMENT RATHER THAN A DELETION. It was
+// the ONE test in this file asserting a relationship BETWEEN two defaults, and it
+// existed because the shipped pair had once been wrong in exactly that way — 300s
+// against 600s. It was also the only thing enforcing the "pin" that
+// `platform/tuning` described as *"the whole point rather than a coincidence"*,
+// and it enforced it one level too high: it compared the two DEFAULTS, so nothing
+// stopped an operator's two SETTINGS from contradicting each other. That is the
+// `4aea61e` shape, and both halves are now gone, which is the only thing that
+// makes it moot. Deleting one and keeping the other would have left the trap
+// armed with its tripwire removed.
+//
+// ⚠️ SO THE DERIVATION BELOW NOW COVERS TWO DEFAULTS, NOT FOUR, AND THE HEADER OF
+// THIS FILE SAYS SO. The corpus constants are unchanged and still measured; what
+// changed is that two of the four numbers they justified described mechanisms
+// ADR 0040 and git-bug 7570090 deleted.
 
 // ------------------------------------------------------------- flap damping
 
@@ -338,17 +272,13 @@ func TestTheBoundsStillAdmitTheOneRealFastCapture(t *testing.T) {
 			"and should be raised", floor, got, FastCaptureGroupInterval)
 	}
 
-	// The group_close_delay floor is likewise below the ecosystem group_interval on
-	// purpose: it is correct at 30s.
-	cd, ok := identity.Bounds(identity.KeyGroupCloseDelay)
-	if !ok {
-		t.Fatal("group_close_delay_s has no bound")
-	}
-	if time.Duration(cd.Min)*time.Second < FastCaptureGroupInterval {
-		t.Fatalf("the group_close_delay floor of %ds is below even the fast capture's "+
-			"group_interval of %s, so it admits a value no cluster can use",
-			cd.Min, FastCaptureGroupInterval)
-	}
+	// ⛔ THE SAME CHECK FOR `group_close_delay_s`'s FLOOR WAS HERE AND IS DELETED
+	// WITH THE KEY (git-bug 7287b28). It made the same point from the other end —
+	// that a 60s floor is below the ecosystem's 5m `group_interval` ON PURPOSE,
+	// because the compose capture runs `group_interval: 30s` and a bound that
+	// excluded it would exclude a value a real cluster needs. `flap_window_s`
+	// above still carries that argument, so the reasoning did not leave with the
+	// key.
 }
 
 // Every shipped default must be inside its own bound. A default the server would
@@ -395,14 +325,20 @@ func TestEveryShippedDefaultIsInsideItsOwnBound(t *testing.T) {
 func TestEveryMirroredDefaultAgreesWithIdentity(t *testing.T) {
 	t.Parallel()
 
-	// ⭐ `refire_grace` IS NOT CHECKED AGAINST THE ALERTS SIDE ANY MORE, AND THE
-	// ABSENCE IS THE POINT. ADR 0040 retired T8, so the lifecycle machine no longer
-	// measures a re-fire against a grace window and neither `alerts/domain` nor
-	// `alerts/service` keeps a fallback for one. The SETTING survives untouched — an
-	// org still tunes `refire_grace_s` and `identity/domain` still ships the default
-	// the derivation at the top of this file computes — so the agreement that still
-	// has two sides is identity's with `platform/tuning`, asserted at the foot of
-	// this test. There is no alerts-side copy left that could drift from it.
+	// ⭐ `refire_grace` IS NOT CHECKED HERE ANY MORE BECAUSE IT NO LONGER EXISTS
+	// (git-bug 7287b28), AND THE TWO-STAGE WAY IT LEFT IS THE FAILURE MODE THIS
+	// WHOLE SECTION IS A TRIPWIRE FOR, SO IT IS RECORDED RATHER THAN DELETED.
+	//
+	// It stopped being checked against the ALERTS side first: ADR 0040 retired T8,
+	// so the lifecycle machine no longer measured a re-fire against a grace window
+	// and neither `alerts/domain` nor `alerts/service` kept a fallback for one. The
+	// SETTING survived that, untouched — an org still tuned `refire_grace_s` and
+	// identity still shipped a default derived from the corpus — which is exactly
+	// the state the owner then ruled on: a knob with a derivation, a bound and no
+	// reader. The mirror going was the early symptom; the key going is the fix.
+	//
+	// The agreement that still has two sides is identity's with `platform/tuning`,
+	// asserted at the foot of this test.
 	if alerts.DefaultResolveGrace != identity.DefaultResolveGrace {
 		t.Errorf("alerts/domain.DefaultResolveGrace = %s, identity/domain says %s",
 			alerts.DefaultResolveGrace, identity.DefaultResolveGrace)
@@ -442,15 +378,14 @@ func TestEveryMirroredDefaultAgreesWithIdentity(t *testing.T) {
 
 	// And the home itself is the home: identity does not merely AGREE with
 	// platform/tuning, it IS it. A `!=` here is unreachable while the declaration
-	// is `= tuning.DefaultRefireGrace`, and reachable the moment it is not.
-	if identity.DefaultRefireGrace != tuning.DefaultRefireGrace {
-		t.Errorf("identity/domain.DefaultRefireGrace = %s but platform/tuning says %s: the "+
+	// is `= tuning.DefaultResolveGrace`, and reachable the moment it is not.
+	// ⛔ THE `DefaultRefireGrace` AND `DefaultGroupCloseDelay` CHECKS WERE HERE AND
+	// BOTH SIDES OF EACH ARE NOW GONE (git-bug 7287b28): neither `identity/domain`
+	// nor `platform/tuning` declares either constant.
+	if identity.DefaultResolveGrace != tuning.DefaultResolveGrace {
+		t.Errorf("identity/domain.DefaultResolveGrace = %s but platform/tuning says %s: the "+
 			"settings vocabulary has stopped naming the one home",
-			identity.DefaultRefireGrace, tuning.DefaultRefireGrace)
-	}
-	if identity.DefaultGroupCloseDelay != tuning.DefaultGroupCloseDelay {
-		t.Errorf("identity/domain.DefaultGroupCloseDelay = %s but platform/tuning says %s",
-			identity.DefaultGroupCloseDelay, tuning.DefaultGroupCloseDelay)
+			identity.DefaultResolveGrace, tuning.DefaultResolveGrace)
 	}
 	if identity.DefaultFlapWindow != tuning.DefaultFlapWindow {
 		t.Errorf("identity/domain.DefaultFlapWindow = %s but platform/tuning says %s",
@@ -464,14 +399,16 @@ func TestEveryMirroredDefaultAgreesWithIdentity(t *testing.T) {
 // where it lives — `DefaultChannelVerbosity` is identity's, and nothing else needs
 // it. ⛔ THIS SENTENCE USED TO CITE `DefaultUnackedReminderAfter` AND THE MENTION
 // POLICY, both deleted with the reminder (git-bug bd0fb1d).
+// ⛔ `DefaultRefireGrace` AND `DefaultGroupCloseDelay` WERE THE FIRST AND THIRD
+// ENTRIES AND BOTH ARE DELETED (git-bug 7287b28). A name here that no package
+// declares is worse than useless: it makes the guard below look like it is
+// watching something.
 var sharedTuningDefaults = map[string]bool{
-	"DefaultRefireGrace":     true,
-	"DefaultResolveGrace":    true,
-	"DefaultGroupCloseDelay": true,
-	"DefaultFlapThreshold":   true,
-	"DefaultFlapWindow":      true,
-	"DefaultRawRetention":    true,
-	"DefaultEventRetention":  true,
+	"DefaultResolveGrace":   true,
+	"DefaultFlapThreshold":  true,
+	"DefaultFlapWindow":     true,
+	"DefaultRawRetention":   true,
+	"DefaultEventRetention": true,
 }
 
 // ⛔⛔ THE GUARD THAT SURVIVES A FUTURE EDITOR, AND THE ONE THE OLD VERSION OF THIS

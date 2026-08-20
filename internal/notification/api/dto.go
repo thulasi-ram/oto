@@ -49,6 +49,52 @@ type PolicyDTO struct {
 	ChannelIDs []uuid.UUID  `json:"channel_ids"`
 	Throttle   *ThrottleDTO `json:"throttle"`
 
+	// SubjectKinds is `subject_kinds` (migration 00072): which altitude of fact
+	// this policy is about, drawn from the `alert | case | digest` vocabulary
+	// `notifications.subject_kind` holds.
+	//
+	// ⭐ AN EMPTY ARRAY MEANS EVERY KIND AND IT IS NEVER `null`. It is a plain
+	// slice rather than a pointer for the reason `matchers` and `reasons` are: the
+	// column is `NOT NULL DEFAULT '{}'` so there is no third state, and "claims
+	// every altitude" is a real answer rather than an absence. A nullable field
+	// would offer clients two spellings of one fact.
+	//
+	// ⚠️ IT OVERLAPS `reasons` AND THE CONTRACT SAYS SO RATHER THAN HIDING IT. Each
+	// Reason is about exactly one subject kind, so as a filter this narrows nothing
+	// a shorter `reasons` list could not. It earns its place as the count
+	// condition's UNIT — `count_min` requires exactly one kind — and as a
+	// declaration an operator can read without knowing the Reason-to-subject map.
+	SubjectKinds []string `json:"subject_kinds"`
+
+	// CountMin and CountWindowSeconds are `count_min` and `count_window_s`
+	// (migration 00072): stay silent until at least CountMin facts about this
+	// policy's bound subject kind have happened inside the window. `null` on either
+	// means the policy carries no count condition, which is what every policy
+	// written before 00072 says.
+	//
+	// ⭐ IT IS THE THROTTLE'S DUAL AND THE SAME TWO FIELDS — a floor where the
+	// throttle is a ceiling — and a policy may carry both. The window is a SLIDING
+	// lookback like the throttle's, not a tiled one like the digest's, so there is
+	// no divisor rule on it and none is implied by its range.
+	//
+	// ⭐ IT SUPPRESSES, AS OF MIGRATION 00073, AND A UI MAY PROMISE THE BEHAVIOUR.
+	// `NotificationService.suppressors` counts the facts already inside the window,
+	// adds the one being evaluated (which is why the floor starts at 2), and records
+	// `below_threshold` when the total is still under CountMin. The two migrations
+	// landed in that order on purpose: 00072 shipped the columns and refused to widen
+	// `notifications_suppmap_ck`, because a suppression reason nothing can write is a
+	// dead enum entry an operator has to rule out; 00073 admits the reason together
+	// with its writer.
+	//
+	// ⚠️ WHAT IT GATES IS AN ORDINARY NOTIFICATION ON THE ORDINARY EVALUATION PATH,
+	// which is every policy bound to `alert` or to `case`. A policy bound to `digest`
+	// has its count condition read by nothing — a digest is minted by the tick
+	// against `digest_window_s`/`digest_floor`, its own floor over its own window, and
+	// never passes the suppressor chain — and whether that pairing stays admissible at
+	// all is being tightened. Do not build on either answer for that one binding.
+	CountMin           *int32 `json:"count_min"`
+	CountWindowSeconds *int32 `json:"count_window_seconds"`
+
 	// DigestWindowSeconds and DigestFloor are `digest_window_s` and
 	// `digest_floor` (migration 00058): summarise what matched me over a window,
 	// and stay silent unless at least Floor Cases OPENED inside it. `null` on
@@ -301,6 +347,30 @@ type CreatePolicyRequest struct {
 	ChannelIDs []uuid.UUID  `json:"channel_ids" validate:"required,min=1,max=16,unique"`
 	Throttle   *ThrottleDTO `json:"throttle,omitempty"`
 
+	// SubjectKinds binds the policy to an altitude. OPTIONAL, and omitting it —
+	// like sending `[]` — claims every kind, which is the shipped behaviour and what
+	// every payload written before migration 00072 means.
+	//
+	// `max` is the SIZE OF THE VOCABULARY held against `MaxPolicySubjectKinds`, on
+	// the rule `reasons` is held to: `unique` over a closed set makes a fourth
+	// element unreachable, so any larger number would be one no request could reach.
+	// The values are validated against the domain's closed vocabulary in the mapper
+	// rather than by an `oneof` tag, because a duplicated list here would be the
+	// second copy that drifts.
+	SubjectKinds []string `json:"subject_kinds,omitempty" validate:"omitempty,max=3,unique"`
+
+	// CountMin and CountWindowSeconds ask for the count condition. Both are
+	// OPTIONAL, so every payload written before migration 00072 stays valid — the
+	// contract evolves additively (openapi.yaml §evolution).
+	//
+	// The tags carry the RANGE from `policies_count_min_ck` and
+	// `policies_count_window_ck` and nothing else. The symmetric pair rule
+	// (`policies_count_pair_ck`) and the unit rule (`policies_count_subject_ck`,
+	// which ties the condition to a one-element `subject_kinds`) are cross-field and
+	// live in `domain.Policy.Validate` — the same division the digest makes.
+	CountMin           *int32 `json:"count_min,omitempty"             validate:"omitempty,min=2,max=10000"`
+	CountWindowSeconds *int32 `json:"count_window_seconds,omitempty"  validate:"omitempty,min=60,max=86400"`
+
 	// DigestWindowSeconds and DigestFloor ask for the periodic summary. Both are
 	// OPTIONAL, so every payload written before migration 00058 stays valid — the
 	// contract evolves additively (openapi.yaml §evolution).
@@ -335,6 +405,28 @@ type UpdatePolicyRequest struct {
 	// not empty", which is a real instruction and not the same as clearing both.
 	DigestWindowSeconds NullableInt32 `json:"digest_window_seconds,omitempty"`
 	DigestFloor         NullableInt32 `json:"digest_floor,omitempty"`
+
+	// SubjectKinds is the ONE new field on this request that is NOT nullable, and
+	// the asymmetry is the column's rather than an oversight. `subject_kinds` is
+	// `NOT NULL DEFAULT '{}'`, so there is no NULL to set: an EMPTY ARRAY is how an
+	// operator removes a binding, and it is a `*[]string` for exactly the reason
+	// `Reasons` is — absent means "leave it alone" and present means "this is the new
+	// value". `{"subject_kinds": null}` is refused by the contract rather than
+	// silently meaning the same thing as `[]`.
+	SubjectKinds *[]string `json:"subject_kinds,omitempty" validate:"omitempty,max=3,unique"`
+
+	// The count condition is nullable for the reason the digest and the throttle
+	// are: an explicit `null` TURNS THE CONDITION OFF, which is a different request
+	// from omitting the field.
+	//
+	// ⚠️ THE TWO HALVES ARE SEPARATELY NULLABLE AND THAT IS NOT A LICENCE TO CLEAR
+	// ONE. `policies_count_pair_ck` is symmetric, unlike the digest's pair rule, so
+	// clearing exactly one half is refused — `validateMerged` catches it as a
+	// field-level 422 before the UPDATE can turn it into a 23514. They are two
+	// nullable fields because the WIRE is two fields, not because half a condition is
+	// a state a policy may be in.
+	CountMin           NullableInt32 `json:"count_min,omitempty"`
+	CountWindowSeconds NullableInt32 `json:"count_window_seconds,omitempty"`
 }
 
 // IsEmpty reports whether the request asks for nothing.
@@ -342,7 +434,9 @@ func (r UpdatePolicyRequest) IsEmpty() bool {
 	return r.Name == nil && r.Priority == nil && r.Enabled == nil &&
 		r.Matchers == nil && r.Reasons == nil && r.ChannelIDs == nil &&
 		!r.Throttle.Set &&
-		!r.DigestWindowSeconds.Set && !r.DigestFloor.Set
+		!r.DigestWindowSeconds.Set && !r.DigestFloor.Set &&
+		r.SubjectKinds == nil &&
+		!r.CountMin.Set && !r.CountWindowSeconds.Set
 }
 
 // PolicyPreviewRequest describes the fact to dry-run.

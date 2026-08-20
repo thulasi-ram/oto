@@ -149,13 +149,15 @@ export interface paths {
          *     enum (`-last_seen_at`, `-first_seen_at`) does not apply to buckets, which are keyset-ordered by
          *     their own key; and `include=` embeds sub-resources of an alert, of which a bucket has none.
          *
-         *     ### ⛔ This is not `/alert-groups`, and the two must not be confused
+         *     ### ⛔ A roll-up was never `/alert-groups`, and that route is now gone as well
          *
-         *     An **AlertGroup** is one generation of one *machine-derived grouping*, keyed by
-         *     `(org, cluster, alertname, namespace-or-∅)` from the alert's own labels. It has a row, a
-         *     generation and it owns exactly one chat
-         *     thread. A **roll-up** is a view over the alert list: it has no row, no generation, no thread,
-         *     and it exists for the duration of one query.
+         *     An **AlertGroup** *was* one generation of one machine-derived grouping, keyed by
+         *     `(org, cluster, alertname, namespace-or-∅)` from the alert's own labels: it had a row, it had a
+         *     generation, and it owned exactly one chat thread. It is deleted, root and branch (git-bug
+         *     `7570090`), so there is no `/alert-groups` left to confuse this with. A **roll-up** is what it
+         *     always was — a view over the alert list, with no row, no generation and no thread, alive for the
+         *     duration of one query — and the distinction is kept on the record because "group the alerts" is
+         *     the request that used to arrive meaning either one.
          *
          *     ### Cost
          *
@@ -209,8 +211,9 @@ export interface paths {
          *       notifications have resumed — identically to `POST /api/v1/alerts/{id}/unsnooze`.
          *     - `outcome: skipped`, `reason: not_snoozed` — the alert was already awake. **A skip is a normal
          *       outcome, not an error.** Refusing the other ninety-nine because one had already woken would
-         *       make the button unusable in exactly the situation it exists for, which is the rule
-         *       `POST /api/v1/alert-groups/{id}/unsnooze` already follows for its members.
+         *       make the button unusable in exactly the situation it exists for. The deleted
+         *       `POST /api/v1/alert-groups/{id}/unsnooze` followed the same rule for its members (git-bug
+         *       `7570090`); this operation is the only fan-out oto still serves, so the rule lives here now.
          *     - `outcome: skipped`, `reason: alert_not_found` — no alert with that id exists **in this org**. An id
          *       belonging to another tenant is reported identically to an id belonging to nobody, because
          *       telling the two apart is an existence oracle: it would confirm a competitor's row is real.
@@ -696,8 +699,8 @@ export interface paths {
          *     **An acked case is still firing.** Acknowledgement is an orthogonal axis that says "a human has
          *     seen this", never "this is over".
          *
-         *     This is the same service method the Slack acknowledge button reaches, through the group
-         *     fan-out, so acking from chat and acking from the API produce byte-identical state. It appends a
+         *     This is the same service method the Slack acknowledge button reaches — directly, by case id, so
+         *     acking from chat and acking from the API produce byte-identical state. It appends a
          *     `case.acknowledged` event with the actor, and triggers an in-place update of the chat card.
          *
          *     Acknowledgement identity **is** stored, because it is operationally necessary. It is never
@@ -707,10 +710,11 @@ export interface paths {
          *     is simply in the wrong state. An id naming no case in this tenant is a `404`, indistinguishable
          *     from one that never existed.
          *
-         *     **To acknowledge a whole Slack thread's worth of alerts, use
-         *     `POST /api/v1/alert-groups/{id}/ack`**, which is a fan-out that resolves each member's open
-         *     case and acks each of those. It is not a group-level ack: there is no group ack column and
-         *     there will not be one.
+         *     **This is the only ack there is, and a Slack thread needs no other one.** A conversation holds
+         *     exactly one Case (git-bug `7570090`), so acknowledging the thread and acknowledging the episode
+         *     are the same request. The `POST /api/v1/alert-groups/{id}/ack` fan-out that used to ack a whole
+         *     thread's worth of member episodes is deleted along with `alert_groups`; there was never a
+         *     group-level ack column behind it, and there will not be one.
          */
         post: operations["ackCase"];
         delete?: never;
@@ -1869,7 +1873,7 @@ export interface paths {
         };
         /**
          * The org's tuning, each value with its origin
-         * @description The knobs that decide how loudly oto talks: `refire_grace`, the flap thresholds and the fallback
+         * @description The knobs that decide how loudly oto talks: `resolve_grace`, the flap thresholds and the fallback
          *     channel verbosity. (An unacked-reminder default was in this list and is deleted — migration `00068`, git-bug `bd0fb1d`: oto sends nothing unprompted.)
          *
          *     **It returns three things, and all three are the point.**
@@ -1913,7 +1917,7 @@ export interface paths {
          *
          *     **The bounds are enforced here, on the server.** They are checked against the *merged* state, so a
          *     write cannot slip a value past by relying on a key it did not send, and the result is stored only
-         *     if the whole merged state is legal. A `refire_grace_s` of `0` is refused whatever a UI would have
+         *     if the whole merged state is legal. A `resolve_grace_s` of `0` is refused whatever a UI would have
          *     allowed — that value is a Slack thread per transition.
          *
          *     **A key this deployment's configuration manages is refused with `409`**, and the problem's
@@ -2298,9 +2302,13 @@ export interface components {
          */
         ResolveReason: "upstream" | "timeout" | null;
         /**
-         * @description `open` while at least one member case is `firing` or `suppressed`; `closed` after
-         *     `group_close_delay` (default 5 minutes) with no live members. A closed group that re-opens
-         *     starts a **new generation** and therefore a new root chat message.
+         * @description `open` while at least one member case is `firing` or `suppressed`; `closed` once no live
+         *     member is left.
+         *
+         *     ⚠️ This enum outlived the entity it described. `alert_groups` was deleted with the
+         *     one-Case-per-conversation ruling, and `group_close_delay_s` — the setting that used to time the
+         *     close, and the only thing that ever produced `closed` — was deleted with it as a knob that
+         *     decided nothing. Nothing advances this state today.
          * @example open
          * @enum {string}
          */
@@ -2434,10 +2442,30 @@ export interface components {
          *     do, where "flapping" only tells them what happened. It sits below `channel_disabled` and
          *     `no_policy` because those two mean the message had nowhere to go at all, which is a truer
          *     account of why nothing was sent.
+         *
+         *     ### `below_threshold` — the policy's count condition is not met **yet**
+         *
+         *     A policy may carry `count_min` over `count_window_seconds`: *stay silent until at least this
+         *     many of these have happened*. When the count falls short the fact is recorded and nothing is
+         *     sent, with this reason. What is counted is the **distinct subjects of the one
+         *     `subject_kinds` value the policy binds** — the binding is the count's unit — for that policy,
+         *     over the sliding window `[now - count_window_seconds, now]`, including the fact being
+         *     evaluated and including rows this same floor suppressed. So five re-fires of one Case count
+         *     once, and a policy that is holding its tongue still climbs towards its own threshold.
+         *
+         *     > It is **`throttled`'s dual**: the same two policy fields read as a floor instead of a
+         *     > ceiling, which is why it ranks directly below it. A spent cap is an *active* fact — oto has
+         *     > been speaking and stopped — while an unmet floor is the *resting* state of every policy
+         *     > that carries one, and a resting state must not mask an active damper.
+         *     >
+         *     > ⛔ It is **not** the deleted `flapping` damper under a new name. That compared against
+         *     > constants compiled into oto that nobody could see or change; this compares against a number
+         *     > the operator wrote and can clear with one `PATCH`. A damper whose threshold is yours is
+         *     > your request; a damper whose threshold is ours is our judgement, and oto publishes none.
          * @example throttled
          * @enum {string|null}
          */
-        NotificationSuppressedReason: "channel_disabled" | "no_policy" | "snoozed" | "throttled" | "verbosity" | "duplicate_render" | null;
+        NotificationSuppressedReason: "channel_disabled" | "no_policy" | "snoozed" | "throttled" | "below_threshold" | "verbosity" | "duplicate_render" | null;
         /**
          * @description How one delivery materialises in the conversation. `update_root` is the primary mechanism;
          *     thread replies are the exception, gated by the channel's verbosity.
@@ -3207,8 +3235,9 @@ export interface components {
              *     person which one it was cannot get that from a count. Two codes are produced today:
              *     `not_snoozed` (the alert was already awake) and `alert_not_found` (no such alert in this org —
              *     which is also the answer for another tenant's id, because distinguishing them would confirm
-             *     that another tenant's row exists). Treat the set as open: it is the refusal's own code, the
-             *     same way `alert-groups` fan-outs key their skips.
+             *     that another tenant's row exists). Treat the set as open: a skip is keyed by the refusal's
+             *     own stable code, so a new way to decline one id arrives here as a new code rather than as a
+             *     new field.
              * @example not_snoozed
              */
             reason?: string | null;
@@ -3298,11 +3327,12 @@ export interface components {
         /**
          * @description One bucket of a server-side alert roll-up, counted over the **whole filtered result set**.
          *
-         *     > ### ⛔ A roll-up bucket is not an AlertGroup
+         *     > ### ⛔ A roll-up bucket was never an AlertGroup
          *     >
-         *     > An `AlertGroup` is one generation of one Alertmanager notification group; it has a row, a
-         *     > generation, and it owns a chat thread. This has none of those — it is a *view*, computed for
-         *     > one query and gone. They are separate endpoints because they are separate concepts.
+         *     > An `AlertGroup` *was* one generation of one Alertmanager notification group; it had a row, a
+         *     > generation, and it owned a chat thread. This has none of those — it is a *view*, computed for
+         *     > one query and gone. They were separate endpoints because they are separate concepts, and the
+         *     > `AlertGroup` half is deleted (git-bug `7570090`) while this one is not.
          */
         AlertRollupDTO: {
             /**
@@ -3364,19 +3394,22 @@ export interface components {
          * @description Delivery roll-up for one subject, so the UI can show **per alert** whether anyone was actually
          *     told. A non-zero `dead` count is a product signal, not a footnote.
          *
-         *     ⛔ **It is required on all four detail responses** — `GET /alerts/{id}`, `GET /cases/{id}`,
-         *     `GET /alert-groups/{id}` and `GET /notifications/{id}` — and an **all-zero roll-up is an answer,
+         *     ⛔ **It is required on every detail response that carries one** — `GET /alerts/{id}`,
+         *     `GET /cases/{id}` and `GET /notifications/{id}` — and an **all-zero roll-up is an answer,
          *     never an omission**. "Nobody has been told anything about this" is the single most important thing
          *     this object says: it is what a suppressed notification looks like, and what an alert no policy
-         *     matched looks like. The field was declared on those four schemas and emitted by none of them for
+         *     matched looks like. The field was declared on those schemas and emitted by none of them for
          *     as long as it was optional, which made oto's silence indistinguishable from "no alert" — the exact
          *     failure the field exists to prevent, hidden by the fact that every schema validator still passed.
+         *     A fourth response carried it, `GET /alert-groups/{id}`, and went with `alert_groups` (git-bug
+         *     `7570090`).
          *
          *     Scope, per subject: an **alert's** roll-up covers the intents that name the alert *and* the
-         *     intents about every group generation it has been a member of, because oto notifies about
-         *     generations and counting only the alert-scoped reasons would report zero for almost every alert
-         *     that fired. An **case's** is the same, narrowed to one episode. A **group's** is the
-         *     generation's own fan-out. A **notification's** is its own deliveries and nothing else.
+         *     intents about every Case of it, because `notifications.alert_id` is set only when an intent names
+         *     a focus and counting those alone would report zero for almost every alert that fired. A Case
+         *     belongs to exactly one alert, so reaching through them charges nothing to an alert the fact was
+         *     not about. A **case's** is the same, narrowed to one episode and to the conversation that episode
+         *     owns. A **notification's** is its own deliveries and nothing else.
          */
         DeliverySummaryDTO: {
             /** Format: int32 */
@@ -3900,9 +3933,9 @@ export interface components {
          *     status call oto already makes, per field, with its provenance.
          *
          *     **Observed or derived, never typed in.** Every oto tuning knob is a function of these three
-         *     numbers: a `refire_grace` below `group_interval` is unreachable and every re-fire opens a new Slack
-         *     thread; a `flap_window` below `group_interval` cannot contain two observable transitions; a `flap_threshold` above the
-         *     observable ceiling is dead code that looks correctly configured. Asking an operator to enter them
+         *     numbers: a `resolve_grace` below one `group_interval` expires a case between two batches of the
+         *     same incident; a `flap_window` below `group_interval` cannot contain two observable transitions; a
+         *     `flap_threshold` above the observable ceiling is dead code that looks correctly configured. Asking an operator to enter them
          *     by hand produced an answer that was unshared, unvalidated, and silently wrong the moment somebody
          *     edited `alertmanager.yml`.
          *
@@ -4423,6 +4456,108 @@ export interface components {
             channel_ids: components["schemas"]["Uuid"][];
             throttle?: components["schemas"]["ThrottleDTO"] | null;
             /**
+             * @description WHICH ALTITUDE OF FACT THIS POLICY IS ABOUT, drawn from the same vocabulary
+             *     `NotificationDTO.subject_kind` holds. An **empty array means every kind**, which is the
+             *     default and is the behaviour of every policy written before migration `00072`.
+             *
+             *     It is never `null`: "claims every altitude" is an answer rather than an absence, so the
+             *     column is `NOT NULL DEFAULT '{}'` and this array is always present.
+             *
+             *     ⚠️ IT OVERLAPS `reasons`, AND THE CONTRACT SAYS SO RATHER THAN HIDING IT. Every Reason is
+             *     about exactly one subject kind, so as a filter this narrows nothing a shorter `reasons` list
+             *     could not. It earns its place twice over: it is the **unit** of `count_min`, and it is a
+             *     declaration an operator can read without knowing the Reason-to-subject map by heart. A
+             *     binding that admits none of the policy's own reasons is refused with a `422` on this field,
+             *     because such a policy would route nothing and record a `no_policy` suppression for every
+             *     fact it saw.
+             *
+             *     ⛔ **A POLICY CARRYING `count_min` MUST BIND EXACTLY `["case"]`** — this enum still admits
+             *     all three values because the column does, but only one of them may sit beside a count
+             *     condition (`policies_count_case_ck`, migration `00072`). Violating it is a `422` with code
+             *     `unsupported` on this field. See `count_min` for why the other two bindings are refused
+             *     rather than honoured wrongly.
+             *
+             *     ⛔ IT IS NOT A SCHEDULE and never becomes one (SCOPE-BOUNDARY §4.8).
+             * @example [
+             *       "case"
+             *     ]
+             */
+            subject_kinds: ("alert" | "case" | "digest")[];
+            /**
+             * Format: int32
+             * @description THE FLOOR TO `throttle`'S CEILING: stay silent until at least this many facts about this
+             *     policy's bound subject kind have happened inside `count_window_seconds`. `null` — the
+             *     default — means no condition.
+             *
+             *     **One is not admissible.** The fact being evaluated is itself inside the window, so a
+             *     threshold of one is cleared unconditionally and describes a behaviour that does not exist —
+             *     the same reason zero is not a `digest_floor`.
+             *
+             *     It requires `count_window_seconds`, and it requires `subject_kinds` to be **exactly
+             *     `["case"]`**. Both rules are cross-field and come back as a `422` rather than as a schema
+             *     error: the missing window is code `incomplete` on `count_window_seconds`, an unrestricted or
+             *     two-kind binding is code `required` on `subject_kinds`, and a one-kind binding that is not
+             *     `case` is code **`unsupported`** on `subject_kinds`.
+             *
+             *     ⛔ **WHY THE UNIT MUST BE THE CASE, AND WHY THE OTHER TWO BINDINGS ARE REFUSED RATHER THAN
+             *     HONOURED WRONGLY** (`policies_count_case_ck`, migration `00072`). A count is a number of
+             *     somethings, so an unrestricted binding supplies no unit and a two-kind binding supplies two —
+             *     adding alert-subject facts to case-subject facts is adding identities to episodes. Of the
+             *     three single bindings only `case` decides anything an operator would recognise:
+             *
+             *     - `["alert"]` **would be a permanent mute.** The numerator is `count(DISTINCT subject_id)`,
+             *       and an alert-subject fact's `subject_id` is the alert **identity** — one value, unchanged
+             *       across every firing it ever has. Five re-fires count one, the evaluator's `+1` for the fact
+             *       in hand makes one, and `1 < count_min` suppresses as `below_threshold` every notification
+             *       that policy would ever route, forever. Making it count *occurrences* instead was rejected:
+             *       that is a throttle's numerator wearing a floor's clothes.
+             *     - `["digest"]` **would be a knob nothing reads.** A digest is minted by the digest tick
+             *       against `digest_floor` over `digest_window_seconds` and never passes through the
+             *       suppressors, so a count condition beside it is evaluated by nothing at all. Refusing it is
+             *       also what stops one policy carrying two floors with one of them inert, since `digest` is
+             *       the only binding a digest window and a count condition could otherwise legally share.
+             *
+             *     `["case"]` needs no reinterpretation: five firings of one alert are five Cases and therefore
+             *     five distinct subjects, which is the count the feature was sold on. ⚠️ **The limitation is
+             *     part of the feature, not a gap left open** — there is no way to ask for a count over alert
+             *     identities, and there should not be one until somebody names the question it answers.
+             *
+             *     **It suppresses, as of migration `00073`.** The evaluator counts the facts already inside
+             *     `count_window_seconds`, adds the one being evaluated, and when the total is still below this
+             *     floor the intent is recorded `status: suppressed` with `suppressed_reason: below_threshold`.
+             *     The columns shipped in `00072` and the reason in `00073`, in that order deliberately: a
+             *     suppression reason nothing can write is a state the contract publishes and the product cannot
+             *     reach. A UI may promise the behaviour.
+             *
+             *     ⚠️ WHAT IT GATES IS THE ORDINARY EVALUATION PATH, which is every policy bound to `alert` or
+             *     to `case`. A policy whose `subject_kinds` is `["digest"]` has its count condition read by
+             *     nothing — a digest is minted by the digest tick against `digest_window_seconds` and
+             *     `digest_floor`, its own floor over its own window, and never reaches the suppressors — and
+             *     whether that pairing stays admissible at all is being tightened. Do not build on either
+             *     answer for that one binding.
+             * @example 5
+             */
+            count_min?: number | null;
+            /**
+             * Format: int32
+             * @description HOW FAR BACK `count_min` COUNTS. `null` — the default — means no condition.
+             *
+             *     It is a **sliding lookback** and not a tiled window, which is why it carries no divisor rule
+             *     where `digest_window_seconds` does: a digest is a report ABOUT a span, so the span has to be
+             *     an object two pods can independently name, whereas this is `[now - W, now]` re-derived at
+             *     every evaluation from the instant of the fact — exactly as the throttle's window is. Its
+             *     floor is therefore the throttle's 60 seconds rather than the digest's 300.
+             *
+             *     It is the other half of `count_min` and inherits every cross-field rule stated there,
+             *     including the binding one: a policy carrying a count condition must have `subject_kinds`
+             *     exactly `["case"]`, or it is a `422` with code `unsupported` on `subject_kinds`.
+             *
+             *     ⛔ IT IS NOT A SCHEDULE (SCOPE-BOUNDARY §4.8): it says how far back to COUNT, carries no
+             *     timezone, no time of day and no weekday, and never will.
+             * @example 3600
+             */
+            count_window_seconds?: number | null;
+            /**
              * Format: int32
              * @description The DIGEST WINDOW: summarise what matched this policy over this many seconds, as ONE message
              *     per window instead of one per fact. `null` — the default — means this policy sends no digest
@@ -4903,7 +5038,7 @@ export interface components {
          *     than a silent drop. Storm collapse is not here: it was removed rather than defaulted off.
          *
          *     Every bound above is enforced **server-side** on `PATCH /api/v1/org/settings`, not merely by the
-         *     settings form: the request that sets `refire_grace_s` to 0 arrives from `curl` long before it
+         *     settings form: the request that sets `resolve_grace_s` to 0 arrives from `curl` long before it
          *     arrives from a form. Values already stored outside a bound are **clamped on read** rather than
          *     rejected, so a row written before a bound existed can never fail an alert.
          *
@@ -4913,58 +5048,12 @@ export interface components {
         OrgSettingsDTO: {
             /**
              * Format: int32
-             * @description The window a re-fire is considered "the same problem coming back" in.
-             *
-             *     **It no longer decides whether a case is reopened, because a case is never reopened.** A
-             *     re-fire always opens a new episode at the next `seq`, unacknowledged. The value is retained
-             *     because `group_close_delay_s` is pinned against it and because the ingest replay window is
-             *     derived from it, and because removing a settings key is a contract change of its own; what
-             *     it should become is an open question.
-             *
-             *     **The default is 1200 and it is derived from real rules (ADR 0026): `for` + `group_interval`
-             *     for the modal rule in the wild.** The clock starts at the case's `ended_at`, which is
-             *     taken from the UPSTREAM `EndsAt` — when Prometheus stopped considering the rule firing, not
-             *     when oto heard about it — so the same alert must hold its condition for the rule's whole
-             *     `for:` all over again before it can fire, and Alertmanager then batches the notification.
-             *     `for: 15m` is the mode and median of the 155 rules kube-prometheus-stack ships, and
-             *     `group_interval: 5m` is the one Alertmanager number the ecosystem does not override, so the
-             *     earliest re-fire oto can observe lands 15–20 minutes after `ended_at`. The previous default
-             *     of 600 was unreachable for 76% of those rules.
-             *
-             *     **Keep `group_close_delay_s` at or above this value.** A closed generation is never
-             *     rejoined — the next observation opens generation N+1, and a new generation is a new
-             *     thread — so a shorter close delay posts a new root card for the re-fire anyway.
-             *
-             *     **The floor is 600, and it is derived rather than chosen: it is twice oto's ingest replay
-             *     window.** A replayed webhook batch — an HA Alertmanager sibling, a retry after a 5xx — is
-             *     suppressed for 5 minutes by its content-addressed dedup key. A re-fire whose alert set is
-             *     unchanged produces the *same* dedup key, so a `refire_grace` at or below that window can
-             *     never be reached: every re-fire oto is still able to observe is, by arithmetic, already
-             *     outside the grace, and *every* re-fire therefore opens a new generation and a brand-new
-             *     Slack root message — the wall of near-identical messages oto exists to prevent, produced by
-             *     a setting that looks like it should have prevented it. Zero would be a Slack thread per
-             *     transition.
-             * @default 1200
-             */
-            refire_grace_s: number;
-            /**
-             * Format: int32
              * @description How long past its upstream end time a case is held before the reaper may expire it.
              *     Must exceed the `EndsAt` lease Prometheus refreshes (typically 3–4 minutes), or a single
              *     missed scrape looks like an expiry.
              * @default 300
              */
             resolve_grace_s: number;
-            /**
-             * Format: int32
-             * @description Keep at or above `group_interval`, or a generation closes between two batches of one
-             *     incident — and at or above `refire_grace_s`, or a re-fire oto classified as the same
-             *     problem coming back finds a closed generation and gets a brand-new Slack root message
-             *     anyway, which is the whole thing the grace exists to prevent. The default equals
-             *     `refire_grace_s` for that reason (ADR 0026).
-             * @default 1200
-             */
-            group_close_delay_s: number;
             /**
              * Format: int32
              * @description Transitions within `flap_window_s` before an alert is **marked** flapping. Below 3 a single
@@ -5747,6 +5836,49 @@ export interface components {
             channel_ids: components["schemas"]["Uuid"][];
             throttle?: components["schemas"]["ThrottleDTO"];
             /**
+             * @description Bind this policy to an altitude of fact. Optional: omitting it — like sending `[]` — claims
+             *     every kind, which is the shipped behaviour and what every payload written before migration
+             *     `00072` means, so adding this field keeps existing clients valid.
+             *
+             *     A binding that admits none of the policy's own `reasons` is a `422` on this field: such a
+             *     policy routes nothing and records a `no_policy` suppression for every fact it sees, which
+             *     would look configured on the settings screen and be silent in the channel.
+             *
+             *     ⛔ **If this request carries `count_min`, this field must be exactly `["case"]`** — anything
+             *     else is a `422` with code `unsupported` here (`policies_count_case_ck`). An alert's subject is
+             *     its identity and does not change when it fires again, so a count over alert-subject facts
+             *     could never pass a threshold above one and would mute the policy permanently; a digest is
+             *     minted against `digest_floor` by the digest tick, which never reads `count_min` at all.
+             * @example [
+             *       "case"
+             *     ]
+             */
+            subject_kinds?: ("alert" | "case" | "digest")[];
+            /**
+             * Format: int32
+             * @description Stay silent until at least this many facts about the bound subject kind have happened inside
+             *     `count_window_seconds` — the floor to `throttle`'s ceiling. Optional; omitting it means no
+             *     condition.
+             *
+             *     One is not admissible: the fact being evaluated is itself inside the window, so a threshold
+             *     of one clears unconditionally. It requires `count_window_seconds`, and it requires
+             *     `subject_kinds` to be exactly `["case"]` — a count needs a unit, and the Case is the only
+             *     unit that can move: an alert's subject is its identity, unchanged across every firing, and a
+             *     digest never reaches the suppressors that would read this. Both rules are cross-field and
+             *     come back as a `422`, the binding one with code `unsupported` on `subject_kinds`.
+             * @example 5
+             */
+            count_min?: number;
+            /**
+             * Format: int32
+             * @description How far back `count_min` counts, as a sliding lookback from the instant of the fact — not a
+             *     tiled window, so there is no divisor rule here. Optional; omitting it means no condition, and
+             *     supplying it without `count_min` is a `422`. It inherits `count_min`'s binding rule too: a
+             *     policy with a count condition must bind exactly `["case"]`.
+             * @example 3600
+             */
+            count_window_seconds?: number;
+            /**
              * Format: int32
              * @description Summarise what matched this policy over this many seconds instead of sending one message per
              *     fact. Optional; omitting it means no digest, which is what every payload written before
@@ -5787,6 +5919,43 @@ export interface components {
              *     different request from omitting the field.
              */
             digest_floor?: number | null;
+            /**
+             * @description THE ONE FIELD ON THIS REQUEST THAT IS NOT NULLABLE, and the asymmetry is the column's:
+             *     `subject_kinds` is `NOT NULL DEFAULT '{}'`, so there is no `null` to set. **An empty array is
+             *     how a binding is removed** — it means "claim every altitude" — and omitting the field leaves
+             *     the binding alone. `null` is refused rather than silently treated as `[]`.
+             *
+             *     Narrowing a binding is cross-checked against both other axes: it is a `422` if the new
+             *     binding admits none of the policy's reasons, and a `422` if the policy carries a `count_min`
+             *     and the new binding is not exactly `["case"]` — code `required` when it names no single kind,
+             *     code **`unsupported`** when the single kind it names is `alert` or `digest`
+             *     (`policies_count_case_ck`). The check runs against the MERGED policy, so a `PATCH` that
+             *     touches only this field can be refused for a `count_min` it never mentioned; clear the count
+             *     condition in the same request to widen the binding.
+             * @example [
+             *       "case"
+             *     ]
+             */
+            subject_kinds?: ("alert" | "case" | "digest")[];
+            /**
+             * Format: int32
+             * @description An explicit `null` turns the count condition off, which is a different request from omitting
+             *     the field. `policies_count_pair_ck` is **symmetric**, unlike the digest's pair rule, so
+             *     clearing this requires clearing `count_window_seconds` in the same request — neither half of a
+             *     count condition means anything alone.
+             *
+             *     ⛔ **Turning a count condition ON requires the policy's `subject_kinds` to be exactly
+             *     `["case"]`** after the merge, whether this request restates the binding or leaves it alone;
+             *     otherwise it is a `422` on `subject_kinds` (`policies_count_case_ck`). See `PolicyDTO.count_min`
+             *     for why `alert` would mute the policy permanently and `digest` would be read by nothing.
+             */
+            count_min?: number | null;
+            /**
+             * Format: int32
+             * @description An explicit `null` turns the count condition off, and must be sent together with a `null`
+             *     `count_min` for the reason above.
+             */
+            count_window_seconds?: number | null;
         };
         /**
          * @description Describe the fact to dry-run. Supply the subject — `case_id` — plus the `reason` to simulate;
@@ -6109,14 +6278,14 @@ export interface components {
             };
             /**
              * @description Per key whose origin is `config`, the environment variable or file key that set it —
-             *     `OTO_TUNING_REFIRE_GRACE_S` or `tuning.refire_grace_s`. **Keys with any other origin are
+             *     `OTO_TUNING_RESOLVE_GRACE_S` or `tuning.resolve_grace_s`. **Keys with any other origin are
              *     absent**, so a present key means "this is where to go and change it".
              *
              *     Without this, "managed by configuration" is a wall: it tells an operator they cannot fix the
              *     value here and nothing about where they can, which turns a five-second edit into an
              *     archaeology exercise across a Helm chart, a values file and a Deployment's env block.
              * @example {
-             *       "refire_grace_s": "OTO_TUNING_REFIRE_GRACE_S"
+             *       "resolve_grace_s": "OTO_TUNING_RESOLVE_GRACE_S"
              *     }
              */
             config_keys: {
@@ -6147,11 +6316,7 @@ export interface components {
          */
         OrgSettingsPatchDTO: {
             /** Format: int32 */
-            refire_grace_s?: number;
-            /** Format: int32 */
             resolve_grace_s?: number;
-            /** Format: int32 */
-            group_close_delay_s?: number;
             /** Format: int32 */
             flap_threshold?: number;
             /** Format: int32 */
@@ -6175,11 +6340,7 @@ export interface components {
          */
         UpdateOrgSettingsRequest: {
             /** Format: int32 */
-            refire_grace_s?: number;
-            /** Format: int32 */
             resolve_grace_s?: number;
-            /** Format: int32 */
-            group_close_delay_s?: number;
             /** Format: int32 */
             flap_threshold?: number;
             /** Format: int32 */
@@ -6195,7 +6356,7 @@ export interface components {
              * @description Settings keys to return to oto's shipped default. After a reset the key's origin reports
              *     `default` again. An unknown key is rejected with 422, never ignored.
              * @example [
-             *       "refire_grace_s"
+             *       "resolve_grace_s"
              *     ]
              */
             reset?: string[];
@@ -7665,9 +7826,27 @@ export interface operations {
                  */
                 ack?: components["schemas"]["AckState"][];
                 /**
-                 * @description Comma-separated AlertGroup ids. An AlertGroup is one generation of oto's NOTIFICATION
-                 *     GROUPING — the object that owns one Slack thread — and this filter answers "which episodes
-                 *     is that thread about". It is not a correlation and not an incident.
+                 * @deprecated
+                 * @description ⛔ **RETAINED, INERT, AND SLATED FOR REMOVAL. Supplying it returns an EMPTY page — always.**
+                 *
+                 *     It took AlertGroup ids and asked "which episodes is that thread about". `alert_groups` is
+                 *     deleted (git-bug `7570090`, migration `00069`) and `alert_cases.group_id` went with it, so
+                 *     there is no membership left to select on and no Case belongs to any container any more.
+                 *     **Empty is the truthful answer, not a bug**: the alternative — dropping the predicate and
+                 *     serving the page — is a SILENT WIDENING of a filtered read, which is the one failure nothing
+                 *     reports (`alerts/repository.ListCases` short-circuits in Go precisely to avoid it).
+                 *
+                 *     ⛔ **AND IT IS DELIBERATELY NOT RENAMED TO `conversation_id`**, which is what the same
+                 *     rename did to `GET /notifications`. That parameter had a successor because a notification
+                 *     still has a delivery target to be narrowed by; **this one has none, because the Case IS the
+                 *     conversation.** Filtering Cases by conversation id would be filtering them by their own id,
+                 *     which is `GET /api/v1/cases/{id}`. There is nothing left to ask, so nothing is offered under
+                 *     a new name — an inert filter wearing the new vocabulary would be worse than an inert filter
+                 *     wearing the old one, because it would look like the supported spelling.
+                 *
+                 *     It is still ACCEPTED rather than `400 unknown_parameter` only because it is still published
+                 *     here; the parameter and `ListCasesQuery.GroupID` behind it come out together, and a caller
+                 *     must stop sending it now.
                  */
                 group_id?: string[];
                 /**
@@ -10215,8 +10394,20 @@ export interface operations {
                 /** @description Comma-separated reasons. */
                 reason?: components["schemas"]["NotificationReason"][];
                 /** @description Comma-separated suppression reasons. Implies `status=suppressed`. */
-                suppressed_reason?: ("channel_disabled" | "no_policy" | "snoozed" | "throttled" | "verbosity" | "duplicate_render")[];
-                group_id?: components["schemas"]["Uuid"];
+                suppressed_reason?: ("channel_disabled" | "no_policy" | "snoozed" | "throttled" | "below_threshold" | "verbosity" | "duplicate_render")[];
+                /**
+                 * @description Narrow to one CONVERSATION — "show me every intent that landed on this thread". The id alone
+                 *     is discriminating without the kind beside it: it holds an `alert_cases.id` for a case
+                 *     conversation and a `notification_policies.id` for a digest, and one cannot accidentally match
+                 *     the other.
+                 *
+                 *     ⛔ **It was spelled `group_id` and that spelling is now REJECTED, not ignored.** `group_id`
+                 *     named `notifications.group_id`, a column deleted with `alert_groups` (git-bug `7570090`,
+                 *     migration `00069`); the delivery target it asked about survived under the new name. An
+                 *     unknown query parameter is a `400 unknown_parameter` (§E.3), so a caller still sending the
+                 *     old name is told so in one round trip rather than served the whole unfiltered audit page.
+                 */
+                conversation_id?: components["schemas"]["Uuid"];
                 alert_id?: components["schemas"]["Uuid"];
                 policy_id?: components["schemas"]["Uuid"];
                 /** @description Lower bound on `created_at`. */
@@ -10843,7 +11034,24 @@ export interface operations {
             query?: {
                 /** @description Comma-separated interest set. Omit for all of them. */
                 resources?: ("alerts" | "groups" | "cases" | "events" | "deliveries" | "sources")[];
-                /** @description Narrow to one group generation — for a group detail page. */
+                /**
+                 * @description Narrow the interest set to one group generation.
+                 *
+                 *     ⚠️ **IT KEEPS THIS SPELLING AND IS NOT `conversation_id`, AND THAT IS DELIBERATE RATHER
+                 *     THAN AN OVERSIGHT.** Unlike the `group_id` on `GET /api/v1/cases`, this parameter is not a
+                 *     column filter and never was: the stream's interest set is a predicate over FRAMES, applied
+                 *     by `streaming/domain.Interest.Matches` on both the live and the resume path, and the
+                 *     `group.upserted` kind together with the `group_id` derived from a frame's payload are still
+                 *     in `UiEventKind` and still honoured. Renaming it here would publish a name the server does
+                 *     not read.
+                 *
+                 *     ⛔ **What it no longer has is a screen.** The group detail page it was added for went with
+                 *     `alert_groups` (git-bug `7570090`), and the web client names `group.upserted` only to
+                 *     invalidate nothing — there is no cache entry left for it. So the axis narrows a stream that
+                 *     nothing currently publishes frames onto. Retiring the group axis from the streaming
+                 *     subsystem is its own change, and until it happens this parameter is described as it behaves
+                 *     rather than as it ought to be.
+                 */
                 group_id?: components["schemas"]["Uuid"];
                 /** @description Narrow to one alert — for an alert detail page. */
                 alert_id?: components["schemas"]["Uuid"];

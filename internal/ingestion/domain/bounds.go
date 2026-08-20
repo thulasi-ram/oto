@@ -106,38 +106,40 @@ const (
 
 // DedupTTL is how long an `ingest_dedup` row suppresses a replay (SPEC §C.5).
 //
-// It covers `n_peers × cluster.peer-timeout` (45 s for a three-node cluster) and
-// Alertmanager's own retry backoff, whose ceiling is ~5 minutes, so both an HA
-// sibling and a retry after a partition land inside it. It is a TRANSPORT
-// window: its only job is to recognise the same delivery arriving twice.
+// ⭐ IT IS DERIVED FROM ALERTMANAGER'S OWN TRANSPORT, AND FROM NOTHING ELSE. Two
+// numbers put it here, both properties of the sender rather than of oto:
 //
-// ⛔ IT MUST STAY STRICTLY BELOW `refire_grace`, AND THAT IS NOT A COINCIDENCE
-// TO BE PRESERVED BY LUCK. It was ten minutes, and `refire_grace` then defaulted
-// to ten minutes too, so the two windows were exactly equal — which made the
-// inside-the-grace re-fire path UNREACHABLE by construction:
+//   - `n_peers × cluster.peer-timeout` — 45 s for a three-node HA cluster at the
+//     default 15 s timeout — so an HA sibling's copy of the same notification
+//     lands inside the window;
+//   - Alertmanager's notify retry backoff, whose ceiling is ~5 minutes, so a
+//     retry after a partition lands inside it too.
 //
-//   - a re-fire inside `refire_grace` is, by the equality, also inside the replay
-//     window, so it was dropped at ingest and the state machine never saw it;
-//   - a re-fire the replay window let through was, by the same equality, already
-//     outside `refire_grace`.
+// It is a TRANSPORT window: its only job is to recognise the same delivery
+// arriving twice. `TestTheReplayWindowStillCoversHAAndRetries` asserts both
+// floors, which is what keeps this constant honest.
 //
-// The first live tester had to alter the alert set — changing the dedup key — to
-// exercise re-fire at all. The relationship is now enforced from the other end:
-// `MinRefireGrace` in `identity/domain` is `2 × DedupTTL`, so every legal
-// configuration leaves a window at least this wide in which a re-fire is both
-// OBSERVABLE and INSIDE the grace. `TestTheReplayWindowIsStrictlyInsideRefireGrace`
-// pins the two constants together.
+// ⛔⛔ IT USED TO BE STATED THE OTHER WAY ROUND, AGAINST `refire_grace`, AND THAT
+// FRAMING IS DELETED WITH THE SETTING (git-bug 7287b28). The history is worth one
+// paragraph, because the trap it describes is real and could return.
 //
-// ⚠️ WHAT AN UNREACHABLE BAND COSTS IS SMALLER SINCE ADR 0040, AND THE BOUND IS
-// KEPT ANYWAY. `refire_grace` no longer selects a transition — every re-fire
-// opens a new episode — so an empty band is a control with no effect rather than
-// an edge nobody could reach. The arithmetic stays because it is what stops the
-// two numbers being edited into contradiction, and because the setting's own
-// future is undecided.
+// This was ten minutes and `refire_grace` then defaulted to ten minutes too, so
+// the two windows were exactly EQUAL — which made the inside-the-grace re-fire
+// path unreachable by construction: a re-fire inside the grace was also inside
+// the replay window and was dropped at ingest, and one the replay window let
+// through was already outside the grace. The first live tester had to alter the
+// alert set, changing the dedup key, to exercise re-fire at all. Nobody noticed,
+// because nothing connected the two numbers.
 //
-// The transport window is the one that yielded, because it has a known lower
-// bound (a peer timeout and a retry budget, both properties of Alertmanager) while
-// `refire_grace` is a product setting an operator owns.
+// ⚠️ THE FIX WENT INTO THE OTHER CONSTANT, WHICH IS WHY DELETING THAT ONE COSTS
+// THIS BOUND NOTHING. `identity/domain.MinRefireGraceSeconds` was defined as
+// `2 × DedupTTL` — the DEPENDENT half — so the grace could not be configured
+// underneath the window it had to clear. This constant was never computed from
+// the grace; the transport window is the one with a known lower bound, and the
+// product setting is the one that had to yield to it. ADR 0040 then retired the
+// transition the grace selected, and the owner's ruling of 2026-08-19 deleted the
+// setting outright. What is gone is a derivation that pointed AT this number, not
+// a derivation OF it.
 const DedupTTL = 5 * time.Minute
 
 // RetryAfter is the `Retry-After` sent with every 503 on this path (§G.2).

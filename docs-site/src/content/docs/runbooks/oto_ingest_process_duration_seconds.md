@@ -17,7 +17,8 @@ cases, groups are formed and notifications are minted.
 ## What a rise means
 
 Nothing is lost when this is slow — the batch is durable — but everything downstream is late: the
-Slack message, the timeline, the reminder. And because the `ingest` queue is where the backlog
+Slack message and the timeline. (This used to name "the reminder" as a third; oto sends nothing
+unprompted since git-bug `bd0fb1d`.) And because the `ingest` queue is where the backlog
 accumulates, a rise here is the direct cause of `queue_depth` shedding on the accept path.
 
 `outcome="skipped"` is a batch that had already been processed. Non-zero is normal (a retry after a

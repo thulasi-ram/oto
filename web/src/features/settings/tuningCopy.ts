@@ -377,110 +377,23 @@ const retiredFlapGuide = (): Guidance => ({
 export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
   /* ---- threads and lifecycle -------------------------------------------- */
 
-  refire_grace_s: {
-    key: "refire_grace_s",
-    kind: "seconds",
-    label: "Re-fire grace",
-    what: "An alert resolves, then the same alert fires again. This window no longer decides what happens to that alert: a case is terminal, so every re-fire opens the next case, unacknowledged, however fast it arrives. Nothing reopens a closed case. What the number still does is bound two others — its floor is twice the 5-minute ingest replay window, because a re-fire arriving inside that window is dropped as a duplicate delivery before anything can see it, and Group close delay ships pinned equal to it. Whether a re-fire gets a brand-new Slack root message and thread, or updates the open generation's existing card in its existing thread, is decided entirely by Group close delay.",
-    risks: [
-      {
-        label: "Too short",
-        text: "A window nothing can arrive in. Alertmanager will not report a changed group sooner than one group_interval after the last notification, and oto drops a replayed batch for 5 minutes, so a grace below either floor describes a band no re-fire can land in. Nothing breaks — the setting decides no transition — but it also stops describing anything, and because Group close delay is meant to sit at or above it, a low value here is the number an operator lowers that one against. That is the setting that fragments your Slack threads.",
-      },
-      {
-        label: "Too long",
-        text: "Case counts and durations are unaffected — two outages hours apart are always two cases, each with its own ack and its own firing duration. What a long value costs you is Slack: Group close delay is pinned at or above this one, so raising this raises the floor under how long a generation is held open, and this morning's thread grows a reply about tonight's incident. Above a day, two genuinely separate incidents share one root card.",
-      },
-    ],
-    amRule:
-      "Two floors, and the RULE floor is usually the binding one. The grace clock starts at the case's ended_at, which oto takes from the upstream EndsAt — when Prometheus stopped considering the rule firing, not when oto heard about it. So the alert must hold its condition for the rule's whole for: all over again, and Alertmanager then batches the notification: the earliest re-fire oto can observe lands at for + up to one group_interval. The transport floor is 2 x group_interval. Set the grace above whichever is larger, then check the top end against how long your incidents actually last.",
-    // ⛔ THE `for:` TERM IS THE ONE THAT MATTERS AND IT USED TO BE ABSENT. This
-    // verdict compared the value only against `group_interval`, which is the
-    // smaller floor for every rule whose `for:` exceeds it — i.e. for 82% of the
-    // rules a real cluster runs. It reported the old 600s default as comfortably
-    // fine while the modal `for: 15m` rule could never reach it.
-    guide: (v, am) => {
-      const gi = amSeconds(am.groupInterval);
-      if (gi === null) return null;
-      const named = amPhrase("group_interval", am.groupInterval);
-      const basis = `an assumed for: of ${duration(ASSUMED_RULE_FOR_S)}`;
-      const ruleFloor = ASSUMED_RULE_FOR_S + gi;
-      const want = Math.max(ruleFloor, gi * 2);
-      if (v < gi) {
-        return {
-          level: "inert",
-          text: `Unreachable. Shorter than ${named}, so the window has always expired before oto can hear about a re-fire at all. The case is new either way; what this value stops doing is describing anything, and it is the floor Group close delay is set against.`,
-          suggest: want,
-        };
-      }
-      if (v < ASSUMED_RULE_FOR_S) {
-        return {
-          level: "inert",
-          text: `Unreachable for an ordinary rule. With ${basis}, a re-fire cannot be detected by Prometheus until ${duration(ASSUMED_RULE_FOR_S)} after the resolve, and oto hears about it up to one ${named} later still. The case is new either way; what this value stops doing is describing anything, and it is the floor Group close delay is set against.`,
-          suggest: want,
-        };
-      }
-      if (v < want) {
-        return {
-          level: "tight",
-          text: `Reachable only by a re-fire that lands in the very first batch after the resolve. With ${basis} and ${named}, the typical re-fire is observed ${duration(ruleFloor)} after the resolve.`,
-          suggest: want,
-        };
-      }
-      return ok(
-        `Above both floors: the transport floor of 2 x group_interval (${duration(gi * 2)}) and the rule floor of for + group_interval (${duration(ruleFloor)}), with ${basis}.`,
-      );
-    },
-  },
+  /* ⛔⛔ `refire_grace_s` AND `group_close_delay_s` WERE THE FIRST TWO KNOBS HERE
+     AND BOTH ARE DELETED (git-bug 7287b28, owner ruling of 2026-08-19).
 
-  group_close_delay_s: {
-    key: "group_close_delay_s",
-    kind: "seconds",
-    label: "Group close delay",
-    what: "How long an alert group stays open after its last member's case ends. A group is Alertmanager's batch of alerts, not one alert's firing — closing one is what makes the next fire open a new generation, and a new generation is a new Slack root message.",
-    risks: [
-      {
-        label: "Too short",
-        text: "A generation closes between two Alertmanager batches of the same problem, so the second half of it arrives as a brand-new group with a brand-new root card.",
-      },
-      {
-        label: "Too long",
-        text: "The generation spans genuinely separate incidents, and tonight's fire lands as an update to a card about something that ended this morning.",
-      },
-    ],
-    amRule:
-      "Keep it at or above group_interval, and at or above the re-fire grace — the second one is not a suggestion. A close delay shorter than the grace gives you a re-fire that oto correctly classified as the same problem coming back, and then posts a brand-new root card for it anyway, which is the entire thing the grace exists to prevent. oto shipped 5m against a 10m grace and defeated half its own grace that way; the two defaults are now equal. Equal is safe rather than racy: this clock starts at the group's last activity, which is the resolve as oto observed it, while the grace clock starts at the case's upstream ended_at, which is the same instant or earlier.",
-    // ⛔ ONE SUGGESTION CLEARS BOTH FLOORS, BECAUSE THERE ARE TWO AND THE BUTTON
-    // WRITES ONE NUMBER. The first branch used to offer `group_interval` alone
-    // while saying nothing about the grace — so against the shipped pair
-    // (group_interval 5m, grace 20m) the button read "use 300", and clicking it
-    // landed the operator straight in the second branch: a second warning and a
-    // second button, from a fix that was known-insufficient when it was offered.
-    guide: (v, am, num) => {
-      const gi = amSeconds(am.groupInterval);
-      if (gi === null) return null;
-      const named = amPhrase("group_interval", am.groupInterval);
-      const refire = num("refire_grace_s");
-      // An empty or mid-edit grace box parses to NaN. It withdraws the second
-      // comparison rather than poisoning the first one.
-      const want = Number.isFinite(refire) ? Math.max(gi, refire) : gi;
-      if (v < gi) {
-        return {
-          level: "inert",
-          text: `Below ${named}. A generation can close between two batches of one incident.`,
-          suggest: want,
-        };
-      }
-      if (Number.isFinite(refire) && v < refire) {
-        return {
-          level: "tight",
-          text: `Shorter than the re-fire grace (${duration(refire)}). A re-fire inside the grace window would still find a closed group, so it gets a new root message despite the grace.`,
-          suggest: want,
-        };
-      }
-      return ok(`At or above ${named}, and not shorter than the re-fire grace.`);
-    },
-  },
+     Between them they carried the longest `guide` closures in this file — two
+     floors apiece, a cross-knob `num("refire_grace_s")` read, and a suggestion
+     that had to clear both — and every word of it did the arithmetic against the
+     operator's own Alertmanager for a number NO oto CODE PATH READ.
+     `refire_grace_s` stopped deciding a transition when ADR 0040 retired T8, and
+     `group_close_delay_s` closed `alert_groups` generations, which no longer
+     exist.
+
+     ⭐ THE CROSS-KNOB READ IS THE PART WORTH REMEMBERING. `group_close_delay_s`
+     was the only knob whose guidance consulted another knob's live value, and it
+     did so to warn about a "pin" that nothing anywhere enforced — two
+     independent 1200s literals in `platform/tuning` with a comment insisting the
+     equality was load-bearing. This screen was the last place the invariant was
+     stated at all. Both halves are gone, so it is moot rather than unguarded. */
 
   resolve_grace_s: {
     key: "resolve_grace_s",
@@ -669,8 +582,8 @@ export const KNOB_GROUPS: readonly KnobGroup[] = [
     id: "threads",
     title: "Threads and lifecycle",
     blurb:
-      "These three decide how many Slack threads a recurring problem generates, and when oto stops believing an alert is still there.",
-    keys: ["refire_grace_s", "group_close_delay_s", "resolve_grace_s"],
+      "When oto stops believing an alert is still there. ⛔ Re-fire grace and Group close delay were the other two knobs in this group and both are deleted: a case is terminal, so nothing reopens one, and there are no group generations left to close.",
+    keys: ["resolve_grace_s"],
   },
   {
     id: "flap",

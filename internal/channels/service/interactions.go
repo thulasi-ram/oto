@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/thulasiram/oto/internal/channels/domain"
 	"github.com/thulasiram/oto/internal/platform/clock"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
@@ -44,11 +45,57 @@ const (
 	// same four steps — see applyUnacknowledge. It is the ONLY withdrawal this
 	// surface has, because ack is the only thing it writes.
 	ActionUnacknowledge = "oto.unack"
+	// ActionSnooze asks oto to GO QUIET about one signal for a while (§B.8.3,
+	// §B.8.6). It is the third verb this surface writes and the first that is not a
+	// receipt: an ack is a statement about what a human has seen, a snooze is an
+	// instruction about what OTO does next.
+	//
+	// ⭐ IT IS STILL NOT A CLAIM ABOUT A PERSON (§E.1.1). Snooze changes nothing in
+	// the cluster, nothing about the alert's state, and nothing about who is
+	// looking at it — the alert goes on firing, the card keeps its colour and its
+	// `:rotating_light:`, and only oto's own narration stops (§B.8.1, §H.4). That
+	// is why it may live on a chat card at all, where "resolve" and "assign" may
+	// not: it is reversible, it expires by itself, and it is attributed.
+	//
+	// ⛔ IT IS THE ONE ACTION ON THIS SURFACE WHOSE PAYLOAD IS NOT A BARE ID, and
+	// it is a MENU rather than a button for the reason §B.8.3 gives: there are five
+	// presets and no free-text duration, because "there is no indefinite snooze".
+	// The chosen option's value carries the preset token AND the alert, separated
+	// by snoozeValueSeparator, and the token is looked up in a closed table rather
+	// than parsed — see snoozeSubject.
+	ActionSnooze = "oto.snooze"
+	// ActionUnsnooze ends that quiet early, and it is what §B.8.6 means by "the
+	// `Snooze` action BECOMES `:bell: Unsnooze`": the two never appear on one card,
+	// because a card offering both would be asking the reader which of two
+	// contradictory facts about oto is true.
+	//
+	// ⛔ ITS VALUE IS AN ALERT ID AND `oto.ack`'S IS A CASE ID. Both are bare
+	// uuids, both are opaque, and they name DIFFERENT TABLES — a snooze is a fact
+	// about the signal's notification behaviour and outlives any one episode
+	// (§B.8.7), while a receipt is a fact about one episode. Swapping them would
+	// resolve to nothing and be answered honestly, which is the good outcome; the
+	// bad one is assuming they are interchangeable because they look alike.
+	ActionUnsnooze = "oto.unsnooze"
 	// ActionNoopPrefix marks the URL buttons. Slack delivers an interaction for
 	// every one of them and oto must acknowledge it; there is nothing to do
 	// beyond that, and the explicit namespace is what says so out loud.
 	ActionNoopPrefix = "oto.noop."
 )
+
+// snoozeValueSeparator joins the preset token to the alert id in a snooze
+// option's value.
+//
+// ⛔ THE VALUE IS STILL NOT TRUSTED AND STILL CARRIES NO STATE (S8). It is two
+// SELECTORS and nothing else: which of the five offered durations was chosen, and
+// which row to look up. Neither half is decoded into behaviour — the token is
+// matched against `domain.SnoozeDuration`'s closed list and the id is resolved in
+// oto's own database under the tenant scope — so a forged value can name a
+// duration oto never offered or an alert in another org and be refused either way.
+// ⭐ THE BYTE ITSELF IS `channels/domain`'s, not this file's, for the same reason
+// the preset list is: the module that MINTS the value and the module that SPLITS it
+// have to agree, and two spellings of one separator is a menu whose every option
+// this handler refuses. See domain.SnoozeValueSeparator.
+const snoozeValueSeparator = domain.SnoozeValueSeparator
 
 // interactionEnqueueTimeout bounds the ONE database write the HTTP path makes.
 //
@@ -157,6 +204,48 @@ type Cases interface {
 		actorKind, actorID, actorLabel string) error
 }
 
+// Snoozes is oto's own quiet, over ONE ALERT.
+//
+// ⛔ ITS SUBJECT IS THE ALERT AND NOT THE CASE, WHICH MAKES IT THE ONLY PORT ON
+// THIS SURFACE THAT IS NOT CASE-SHAPED. A snooze is "a fact about a signal's
+// notification behaviour" (§B.8.7): it is scoped to an `alert_key`, it survives the
+// episode that provoked it, and `alerts/service`'s own verbs — `SnoozeAs`,
+// `UnsnoozeAs` — take an alert id for exactly that reason. Reshaping this port
+// around the Case to match its neighbour would have meant resolving case → alert
+// somewhere, and the somewhere would have been a layer with no business knowing
+// that a Case has exactly one Alert.
+//
+// ⛔ THERE IS NO NOTE, AND THAT IS DELIBERATE RATHER THAN UNFINISHED. `snooze(note)`
+// exists in the domain and in the API because a form has somewhere to type; a
+// two-tap menu on a card does not, and an empty note is more honest than a
+// fabricated one. The attribution is not lost — `actorLabel` is recorded on the
+// `alert_snoozes` row and in the `alert.snoozed` event either way, so the timeline
+// still says who went quiet and until when.
+//
+// ⛔ NO EXPLICIT TENANCY PROBE, UNLIKE `Cases`. The reason `CaseExists` is a
+// separate call is that a scoped ack against another org's Case writes NOTHING and
+// says nothing; these two verbs both begin by READING the alert under the scope, so
+// an alert this tenant cannot see comes back as `errs.KindNotFound` on its own and
+// the human gets a sentence. Adding a probe would be a second round trip to
+// re-answer a question the verb already answers.
+//
+// ⛔ THE VERBS RETURN ONLY AN ERROR, and the refusal is in its code — the same
+// contract `Cases` states and for the same reason. `not_snoozed` is the one
+// precondition an unsnooze can earn; a snooze has none, because it is orthogonal to
+// state and supersedes its own incumbent rather than refusing (§B.8.3).
+type Snoozes interface {
+	// SnoozeAlert makes oto quiet about one alert until `until`. An `until` outside
+	// the domain's 5-minute…30-day window is a validation error, which is why the
+	// caller derives it from a preset and never from the payload.
+	SnoozeAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID,
+		actorKind, actorID, actorLabel string, until time.Time) error
+	// UnsnoozeAlert ends the quiet early, with `ended_reason='manual'`. It refuses
+	// with `errs.KindPrecondition` carrying `not_snoozed` when there is no quiet to
+	// end — which is the double-click, and is an outcome rather than a fault.
+	UnsnoozeAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID,
+		actorKind, actorID, actorLabel string) error
+}
+
 // ⛔⛔ `GroupAckResult` WAS HERE AND IS DELETED IN FULL (git-bug 7570090). It held
 // `Members`, `Applied`, `SkippedCodes` and `Unreached` — the account of one fan-out
 // over one group generation — and it is gone because there is no fan-out left. One
@@ -191,8 +280,14 @@ type InteractionOptions struct {
 	Conversations SlackConversations
 	Actors        SlackActors
 	Cases         Cases
-	Enqueuer      db.Enqueuer
-	Notice        SlackNotice
+	// Snoozes is OPTIONAL, and a nil one is a deployment that has not wired oto's
+	// quiet yet rather than a card without a Snooze menu — the renderer is a pure
+	// function of the view and cannot see this field. A press therefore has to be
+	// answered by a sentence saying so, which `applySnooze` does; the one thing it
+	// must never be answered with is the silence this file exists to abolish.
+	Snoozes  Snoozes
+	Enqueuer db.Enqueuer
+	Notice   SlackNotice
 	// Metrics is optional. A nil one costs the `oto_slack_unknown_action_total`
 	// series and nothing else, which is the right trade for a test that does not
 	// want a registry.
@@ -213,6 +308,7 @@ type InteractionService struct {
 	conversations SlackConversations
 	actors        SlackActors
 	cases         Cases
+	snoozes       Snoozes
 	enqueuer      db.Enqueuer
 	notice        SlackNotice
 	metrics       *InteractionMetrics
@@ -238,6 +334,7 @@ func NewInteractionService(o InteractionOptions) (*InteractionService, error) {
 		conversations: o.Conversations,
 		actors:        o.Actors,
 		cases:         o.Cases,
+		snoozes:       o.Snoozes,
 		enqueuer:      o.Enqueuer,
 		notice:        o.Notice,
 		metrics:       o.Metrics,
@@ -286,11 +383,18 @@ func (s *InteractionService) Handle(ctx context.Context, payload json.RawMessage
 	for _, a := range env.Actions {
 		id := strings.TrimSpace(a.ActionID)
 		switch {
-		case id == ActionAcknowledge, id == ActionUnacknowledge:
+		// ⛔ THE FOUR WRITING ACTIONS SHARE ONE ARM AND ONE ENQUEUE, and none of
+		// them reads the database here — see the note on `Handle`. `a.value()` is
+		// what makes the arm shared at all: `oto.snooze` is a MENU, so Slack sends
+		// its answer under `selected_option.value` where the three buttons send
+		// theirs under `value`, and reading only the latter would enqueue every
+		// snooze press with an empty subject.
+		case id == ActionAcknowledge, id == ActionUnacknowledge,
+			id == ActionSnooze, id == ActionUnsnooze:
 			reqs = append(reqs, db.JobRequest{
 				Args: jobs.SlackInteractionArgs{
 					ActionID:      id,
-					Value:         strings.TrimSpace(a.Value),
+					Value:         a.value(),
 					TeamID:        env.Team.ID,
 					ChannelID:     env.Channel.ID,
 					SlackUserID:   env.User.ID,
@@ -392,6 +496,10 @@ func (s *InteractionService) Apply(ctx context.Context, args jobs.SlackInteracti
 		return s.applyAcknowledge(ctx, logger, scope, args)
 	case ActionUnacknowledge:
 		return s.applyUnacknowledge(ctx, logger, scope, args)
+	case ActionSnooze:
+		return s.applySnooze(ctx, logger, scope, args)
+	case ActionUnsnooze:
+		return s.applyUnsnooze(ctx, logger, scope, args)
 	default:
 		// Reachable only across a deploy: `Handle` enqueues nothing it cannot
 		// route, so a job carrying an unserved action is one an OLDER binary
@@ -553,6 +661,220 @@ func (s *InteractionService) applyUnacknowledge(
 		return nil
 	default:
 		return err
+	}
+}
+
+// applySnooze is the first verb on this surface that changes what OTO DOES rather
+// than what oto has recorded, and every one of the four numbered steps means
+// something slightly different because of it.
+//
+// ⭐ THE SUBJECT IS AN ALERT AND THE STEP HAS A SECOND HALF. A snooze press answers
+// a question — "for how long?" — so its payload names a duration as well as a row,
+// and the duration is the half an attacker would want. It is never taken from the
+// payload as a number: the token is looked up in `channels/domain`'s closed preset
+// table and an unknown one is refused, which keeps S8 true of a value that is no
+// longer a bare uuid. See snoozeSubject.
+//
+// ⭐ THE TENANCY CHECK IS THE VERB ITSELF, unlike the ack's explicit `CaseExists`.
+// `alerts/service.Snooze` opens by reading the alert under this scope, so an alert
+// belonging to another org comes back `errs.KindNotFound` rather than writing a
+// silent nothing — the failure mode `CaseExists` exists to prevent cannot occur
+// here, and asking anyway would be a second round trip for the same answer.
+//
+// ⛔ NOTHING IS POSTED FROM HERE, for the reason both acks give: the snooze enqueues
+// its own `notify.evaluate(reason=snoozed)` inside its transaction, and §B.8.4 makes
+// `snoozed` exempt from the very suppression it creates precisely so the channel is
+// TOLD it is going quiet. The card and its thread reply come from the dispatch path,
+// where thread ordering, delivery idempotency and the per-channel rate limit hold
+// (§G.5, §G.7, §H.9).
+func (s *InteractionService) applySnooze(
+	ctx context.Context, logger *slog.Logger, scope db.TenantScope, args jobs.SlackInteractionArgs,
+) error {
+	// ---- 2. THE SUBJECT ------------------------------------------------
+	alertID, quiet, ok := snoozeSubject(args.Value)
+	if !ok {
+		logger.Warn("channels: a Snooze menu carried a value oto did not mint")
+		s.tell(ctx, args, "oto could not read that choice. It may have been posted by an older version — "+
+			"open the alert in oto and snooze it there.")
+		return nil
+	}
+	logger = logger.With(
+		slog.String("alert_id", alertID.String()),
+		slog.String("snooze_for", quiet.String()))
+
+	// ⚠️ AN UNWIRED PORT IS ANSWERED WITH A SENTENCE, NEVER WITH NOTHING. The
+	// renderer is a pure function of the view and cannot know whether this
+	// deployment injected a snooze port, so the menu is on the card either way; the
+	// only thing this branch can still control is whether the human finds out.
+	if s.snoozes == nil {
+		logger.Warn("channels: a Snooze press arrived at a deployment with no snooze port")
+		s.tell(ctx, args, "oto cannot snooze from Slack in this deployment yet. "+
+			"Open the alert in oto and snooze it there.")
+		return nil
+	}
+
+	// ---- 3. THE HUMAN --------------------------------------------------
+	//
+	// A snooze is ALWAYS attributed — the domain refuses a non-human actor — and
+	// the label is what the card's own `*Notifications*` field prints back:
+	// ":zzz: Snoozed by <@U…> until …" (§B.8.6). An unlinked Slack member still
+	// snoozes, recorded as `actor_kind = 'slack'`; see actor.
+	kind, actorID, label := s.actor(ctx, scope, args)
+
+	// ---- 4. THE QUIET --------------------------------------------------
+	//
+	// ⭐ THE CLOCK STARTS WHEN OTO ACTS, NOT WHEN THE CARD WAS DRAWN. The preset is
+	// a LENGTH and the absolute moment is derived here, on the worker, because that
+	// is the last point before the write: a card rendered an hour ago would
+	// otherwise have baked in an expiry that was already in the past, and §B.8.3's
+	// 5-minute minimum would refuse the press with a validation error the human
+	// could do nothing about. A job retry re-anchors it, which is the same reading —
+	// "quiet for thirty minutes from when oto went quiet".
+	until := s.clk.Now().Add(quiet)
+	switch err := s.snoozes.SnoozeAlert(ctx, scope, alertID, kind, actorID, label, until); {
+	case err == nil:
+		logger.Info("channels: snoozed from Slack")
+		return nil
+	case errs.IsKind(err, errs.KindNotFound):
+		s.tell(ctx, args, "oto can no longer find that alert from this channel. "+
+			"It may have been removed, or it belongs to a different oto organisation.")
+		return nil
+	case errs.IsKind(err, errs.KindPrecondition), errs.IsKind(err, errs.KindValidation):
+		// ⛔ AN OUTCOME, NOT A FAILURE — the same rule the two acks are under. A
+		// snooze earns no precondition today (it supersedes its own incumbent rather
+		// than refusing, §B.8.3), and the arm is here anyway because a code this
+		// surface has never seen must still produce a sentence.
+		code := errs.CodeOf(err)
+		logger.Info("channels: a Slack snooze applied to nothing",
+			slog.String("refusal", code))
+		s.tell(ctx, args, snoozeRefusalText(code))
+		return nil
+	default:
+		return err
+	}
+}
+
+// applyUnsnooze ends the quiet early, and it is applySnooze with the question
+// removed: there is exactly one way to stop being quiet, so there is no preset to
+// decode and the value is a bare alert id again.
+//
+// ⛔ IT IS NOT AN ACK AND IT IS NOT A RESOLVE. Waking oto up says "start telling me
+// about this again" and nothing whatever about the alert, which is still firing,
+// still the same colour, and still carrying whatever receipt it had before somebody
+// went quiet about it (§B.8.1).
+func (s *InteractionService) applyUnsnooze(
+	ctx context.Context, logger *slog.Logger, scope db.TenantScope, args jobs.SlackInteractionArgs,
+) error {
+	// ---- 2. THE SUBJECT ------------------------------------------------
+	alertID, err := uuid.Parse(args.Value)
+	if err != nil || alertID == uuid.Nil {
+		logger.Warn("channels: an Unsnooze button carried a value that is not an id")
+		s.tell(ctx, args, "oto could not read that button. It may have been posted by an older version — "+
+			"open the alert in oto and wake it there.")
+		return nil
+	}
+	logger = logger.With(slog.String("alert_id", alertID.String()))
+
+	if s.snoozes == nil {
+		logger.Warn("channels: an Unsnooze press arrived at a deployment with no snooze port")
+		s.tell(ctx, args, "oto cannot end a snooze from Slack in this deployment yet. "+
+			"Open the alert in oto and wake it there.")
+		return nil
+	}
+
+	// ---- 3. THE HUMAN --------------------------------------------------
+	//
+	// ⚠️ IT IS WHOEVER PRESSED, AND IT NEED NOT BE WHOEVER SNOOZED — the same
+	// reading the withdrawal of a receipt is under. oto has no axis on which a
+	// snooze belongs to the person who started it, so there is nothing here to check
+	// a permission against, and a quiet nobody can end is a mute by another name.
+	kind, actorID, label := s.actor(ctx, scope, args)
+
+	// ---- 4. THE WAKE-UP ------------------------------------------------
+	switch err := s.snoozes.UnsnoozeAlert(ctx, scope, alertID, kind, actorID, label); {
+	case err == nil:
+		logger.Info("channels: unsnoozed from Slack")
+		return nil
+	case errs.IsKind(err, errs.KindNotFound):
+		s.tell(ctx, args, "That alert is no longer available.")
+		return nil
+	case errs.IsKind(err, errs.KindPrecondition):
+		code := errs.CodeOf(err)
+		logger.Info("channels: a Slack unsnooze applied to nothing",
+			slog.String("refusal", code))
+		s.tell(ctx, args, unsnoozeRefusalText(code))
+		return nil
+	default:
+		return err
+	}
+}
+
+// snoozeSubject splits one snooze option's value into the alert it names and the
+// duration oto offered for it.
+//
+// ⛔ THE DURATION IS LOOKED UP, NEVER PARSED (S8, §B.8.3). `domain.SnoozeDuration`
+// matches the token against the five presets the card actually offered; anything
+// else — including a perfectly well-formed `720h` — answers false and the press is
+// refused. A `time.ParseDuration` here would have let four edited characters buy a
+// month of silence on somebody else's alert, and §B.8.3's "there is no indefinite
+// snooze" would have become advice.
+//
+// ⭐ IT REFUSES A THIRD FIELD RATHER THAN IGNORING ONE. `SplitN(…, 2)` would read
+// `30m|<uuid>|anything` as a valid press and silently drop the tail; a value oto did
+// not mint is not a value to interpret charitably.
+func snoozeSubject(value string) (uuid.UUID, time.Duration, bool) {
+	token, rest, found := strings.Cut(strings.TrimSpace(value), snoozeValueSeparator)
+	if !found || strings.Contains(rest, snoozeValueSeparator) {
+		return uuid.Nil, 0, false
+	}
+	quiet, ok := domain.SnoozeDuration(token)
+	if !ok {
+		return uuid.Nil, 0, false
+	}
+	alertID, err := uuid.Parse(rest)
+	if err != nil || alertID == uuid.Nil {
+		return uuid.Nil, 0, false
+	}
+	return alertID, quiet, true
+}
+
+// snoozeRefusalText says which kind of nothing a snooze met.
+//
+// ⛔ IT HAS NO NAMED CODE TODAY AND STILL EXISTS, which is the opposite of dead
+// code: §B.8.3 makes a snooze unrefusable by design — it is orthogonal to state, so
+// a resolved alert can be snoozed, and an existing quiet is SUPERSEDED rather than
+// rejected — so the only reachable arm is the default. The default is the whole
+// point. Every other verb on this surface learned its refusal codes after a human
+// had already been answered with silence, and a press this surface cannot explain
+// must still get a sentence (§H.8).
+func snoozeRefusalText(code string) string {
+	switch code {
+	case "no_open_case":
+		// Not reachable through the domain today, and it would still be the wrong
+		// sentence to leave unwritten: an alert whose episode has ended is one oto
+		// has nothing left to say about, which is what the human was asking for.
+		return "There is nothing to quieten — this alert has already resolved or expired."
+	default:
+		return "oto could not snooze this alert. Open it in oto to see why."
+	}
+}
+
+// unsnoozeRefusalText is snoozeRefusalText in the mirror, and unlike its twin it
+// has a real code to key on.
+//
+// ⛔ `not_snoozed` IS THE DOUBLE-CLICK AND MUST NOT READ AS A FAULT. Two people
+// looking at the same card both press Unsnooze; the second one gets this, and the
+// state they wanted is the state that holds. Telling them something went wrong
+// would be describing a success.
+func unsnoozeRefusalText(code string) string {
+	switch code {
+	case "not_snoozed":
+		return "oto is not quiet about this alert — there is no snooze here to end. " +
+			"Ending a snooze only starts the notifications again; it does not change the alert's state."
+	case "no_open_case":
+		return "There is nothing to wake — this alert has already resolved or expired."
+	default:
+		return "There is no snooze here to end."
 	}
 }
 

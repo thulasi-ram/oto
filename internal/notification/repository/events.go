@@ -324,8 +324,13 @@ SELECT subject_id FROM channel_threads WHERE org_id = $1 AND id = $2`
 
 // AppendThreadSkip records a gap-recovery advance (§G.7.3).
 //
-// It resolves the group from the thread rather than taking it as an argument
-// because the ordering gate, correctly, knows nothing about alert groups.
+// It resolves the thread's SUBJECT from the thread row rather than taking it as an
+// argument, because the ordering gate — correctly — knows nothing about what a thread
+// is about. `channel_threads.subject_id` is the CONVERSATION'S SUBJECT — the Case for
+// a Case conversation, the policy for a digest one — and the `alert_groups` this
+// comment used to say it resolved is deleted (git-bug `7570090`), so there is no group
+// left to resolve. The id still reaches the timeline through `Event`'s group column,
+// which is the shape `alert_events` keeps.
 func (r *EventRepository) AppendThreadSkip(
 	ctx context.Context, s db.TenantScope,
 	threadID uuid.UUID, seq int, deliveryID uuid.UUID, reason string,

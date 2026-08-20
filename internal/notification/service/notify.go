@@ -514,6 +514,87 @@ func (s *NotificationService) suppressors(
 		sup.AddIf(count >= t.Max, domain.SuppressedThrottled)
 	}
 
+	// ⭐⭐ THE COUNT CONDITION IS THE THROTTLE'S DUAL AND IT IS DELIBERATELY THE SAME
+	// FOUR STEPS — guard, count, compare, record (git-bug `7570090` stage 6,
+	// migrations `00072`/`00073`). A throttle
+	// is a CEILING — count, compare, suppress when the count is too HIGH. This is a
+	// FLOOR — count, compare, suppress when the count is too LOW.
+	//
+	// ⛔ AND `digest_floor` IS NOT THE THIRD CELL OF THAT TABLE, WHICH THIS COMMENT
+	// USED TO CLAIM. Per SPEC §H.6 the digest floor "is NOT a damper and suppresses
+	// nothing": a window below its floor had nothing to summarise, so no fact is being
+	// withheld and no `suppressed` row is minted. Both floors count things inside a
+	// span and there the resemblance stops — one decides whether a summary is worth
+	// composing, this one decides whether oto stays silent about a fact it already
+	// has. See `domain.CountOverWindow`, declared beside `Throttle` for that reason.
+	//
+	// Reading the two blocks together is the point: if this one ever stops looking
+	// like the one above it, one of them has grown a mechanism the other lacks.
+	//
+	// ⛔ THE UNIT COMES FROM THE BINDING AND NOWHERE ELSE, WHICH IS WHAT MAKES THIS
+	// AXIS MORE THAN A SECOND SPELLING OF `reasons`. `policies_count_subject_ck`
+	// requires a count condition to name exactly ONE `subject_kind`, and `Sole` is
+	// that constraint in Go. A binding of two kinds (or none) supplies no unit, so
+	// the condition is not evaluated at all rather than evaluated against a number
+	// about nothing — `Clears`'s own rule, which opens rather than closes when it has
+	// no instruction, because the failure mode on this path is a suppression nobody
+	// asked for.
+	//
+	// ⛔⛔ THE KIND AND THE ID COME FROM ONE SOURCE — `subjectOf` — AND TAKING THEM
+	// FROM TWO WAS A REAL DISAGREEMENT RATHER THAN A STYLE POINT. The kind used to be
+	// read off the policy's binding while the id came off the fact, under a comment
+	// arguing that `Policy.Handles` makes them agree by construction. It does not.
+	// `subjectOf` answers `SubjectAlert` only when the intent carries an `AlertID`,
+	// while five alert-subject Reasons (`comment`, `snoozed`, `unsnoozed`,
+	// `suppressed`, `unsuppressed`) are not `AlertScoped` and may legitimately arrive
+	// without one — `comment` on an alert with no open episode is the plain case. The
+	// query then ran `subject_kind = 'alert' AND subject_id <> <a case id>`, so the
+	// exclusion excluded nothing, the caller's `+ 1` landed on top of a numerator that
+	// still contained the row it was meant to replace, and the floor cleared one fact
+	// early. The row was then written with `subject_kind = 'case'`, so it could never
+	// contribute to its own policy's floor afterwards.
+	//
+	// So the pair below is exactly the pair `mint` is about to store, and the
+	// operator's declared unit is a GUARD on it rather than a second source of truth:
+	// a binding that does not match the fact's own altitude evaluates nothing, which
+	// is `Clears`'s rule for a condition it has no instruction for — the failure mode
+	// on this path is a suppression nobody asked for, so an ambiguous unit must open
+	// rather than close. `policies_count_case_ck` makes the disagreement unwritable
+	// through the service; a row that predates the constraint or came in around it
+	// still reaches here.
+	//
+	// ⚠️ THE DIGEST PATH IS NOT GATED HERE AND CANNOT BE, which is now a refusal at
+	// the door rather than a gap. A digest is minted by the tick in digest.go against
+	// `digest_window_s`/`digest_floor` — its own floor over its own window — and never
+	// reaches a suppressor, so `count_min` beside `subject_kinds = {digest}` would be
+	// read by nothing at all; `Policy.validateCount` and `policies_count_case_ck`
+	// refuse that combination instead of accepting an inert knob. What is left is the
+	// binding the count actually works for, `{case}` — "PodRestart opened 5 Cases in
+	// an hour", the ticket's own example.
+	if match.Routed() && match.Policy.Count.Enabled() {
+		c := match.Policy.Count
+		kind, subjectID := subjectOf(in)
+		if sole, ok := match.Policy.Subjects.Sole(); ok && sole == kind {
+			// The window is `[TakenAt - Window, TakenAt]`, re-derived from the instant of
+			// the fact being evaluated exactly as the throttle's is — no alignment, no
+			// tiling and nothing durable, because nothing is REPORTED about this span.
+			// BOTH ends are the snapshot's, so a retry of this evaluation counts what the
+			// first attempt counted. See `domain.CountOverWindow`.
+			seen, err := s.notifications.CountRecentSubjects(ctx, scope,
+				match.Policy.ID, kind, subjectID, snap.TakenAt.Add(-c.Window), snap.TakenAt)
+			if err != nil {
+				return sup, err
+			}
+			// ⭐ `+ 1` IS THE FACT BEING EVALUATED, AND IT IS THE REASON
+			// `MinCountThreshold` IS 2. This subject is inside the window by definition —
+			// it just happened — and it has no row yet, because the intent is inserted
+			// after every suppressor has spoken. `CountRecentSubjects` excludes it from
+			// the stored side so counting it here cannot double-count an episode that
+			// already produced facts in the window.
+			sup.AddIf(!c.Clears(seen+1), domain.SuppressedBelowThreshold)
+		}
+	}
+
 	return sup, nil
 }
 

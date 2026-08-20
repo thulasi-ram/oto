@@ -7,6 +7,15 @@ title: oto — System Design Proposal
 > **Audience:** engineering + product owner
 > **Scope:** the complete v1 architecture for an alert-first, lifecycle-centric alert management platform.
 
+> ⛔ **HISTORICAL. THIS IS THE ORIGINAL PROPOSAL AND IT IS NOT THE SPECIFICATION.** Where it and
+> `docs/design/SPEC.md` disagree, the SPEC wins, and `CONTEXT.md` is the current domain vocabulary.
+> The proposal is kept because it is the record of what was proposed and why, and reading it as
+> current will mislead you: it still describes `AlertOccurrence` (now `AlertCase`), transition **T8**
+> (retired by ADR 0040 — a Case is strictly terminal), `refire_grace` and `group_close_delay` (both
+> **deleted** by git-bug `7287b28`, migration `00071`), group **generations** and the whole
+> `alert_groups` entity (**deleted** by git-bug `7570090`, migration `00069` — the conversation is now
+> the Case), thread `state='frozen'` (deleted), and a `pagerduty` channel type oto does not have.
+
 ---
 
 ## 0. Executive summary

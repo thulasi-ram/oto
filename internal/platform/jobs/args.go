@@ -260,6 +260,47 @@ func (NotifyDigestArgs) InsertOpts() river.InsertOpts {
 	return periodicOpts(QueueLifecycle, PriorityNormal, time.Minute)
 }
 
+// NotifyDigestReconcileArgs is the DIGEST DETECTOR: once an hour, per tenant, look
+// for an episode a digest policy MATCHED and no digest ever reported, and say how
+// many there are. Periodic, 3600 s, zero payload.
+//
+// Queue: lifecycle · Priority: BACKGROUND · Retry: periodic (3) · Payload v1
+//
+// ⛔ IT DETECTS AND NEVER DELIVERS, which `notification/service.ReconcileOrg` states
+// as binding and this kind's priority is the queue-level half of. It shares
+// `lifecycle` with the digest tick because it reads the same tables, and it sits a
+// priority BELOW it so that on a busy install the four lifecycle workers finish the
+// windows an operator is waiting for before they spend time counting the ones that
+// were missed. A detector that can delay a delivery has made the outage worse.
+//
+// ⭐ HOURLY, AND THE NUMBER COMES FROM `DigestMarkRetention`. The evidence a gap is
+// real is the ABSENCE of a digest mark, marks are pruned at
+// `MaxDigestWindow + 1 hour` and the detector's horizon is `MaxDigestWindow`, so the
+// hour of slack is exactly the budget for a detector that is itself late still
+// finding its evidence. Running once inside that hour spends the budget once; running
+// every minute like the tick would re-fold a day of Cases in Go sixty times to
+// re-derive a number that changes on the scale of a digest window.
+//
+// IDEMPOTENCY KEY: none needed, and none is possible — the job writes no row that a
+// key could name. It reads, it logs, and its one write is the retention prune of the
+// mark table, which is a bounded DELETE by a time predicate and therefore convergent:
+// a second pass deletes what the first left and nothing else. Tick uniqueness is by
+// kind, ARGS and period, and `TenantFanOut` makes that per-tenant, so each org gets
+// its own hourly slot and a tenant whose read is too big to finish retries and
+// dead-letters alone.
+type NotifyDigestReconcileArgs struct {
+	Payload
+	TenantFanOut
+}
+
+// Kind implements db.JobArgs and river.JobArgs.
+func (NotifyDigestReconcileArgs) Kind() string { return KindNotifyDigestReconcile }
+
+// InsertOpts pins the queue, priority, retry ceiling and tick uniqueness.
+func (NotifyDigestReconcileArgs) InsertOpts() river.InsertOpts {
+	return periodicOpts(QueueLifecycle, PriorityBackground, time.Hour)
+}
+
 // ------------------------------------------------------- channels (inbound)
 
 // SlackInteractionArgs carries ONE verified Slack block action off the HTTP

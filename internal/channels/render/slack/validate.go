@@ -488,29 +488,51 @@ func validateActions(payload json.RawMessage, idx int, b Block) error {
 				return fail(payload, "V9", "overflow %d in block %d has %d options, limit %d",
 					j, idx, len(el.Options), maxOverflowOptions)
 			}
+			if err := checkOptions(payload, "overflow", idx, el.Options); err != nil {
+				return err
+			}
+
+		case ElementStaticSelect:
+			// ⛔ ITS LIMITS ARE ITS OWN AND ARE NOT THE OVERFLOW'S. A static select
+			// takes up to ONE HUNDRED options where an overflow takes five, and it
+			// carries a `placeholder` an overflow does not have. Checking it against
+			// the overflow's five would refuse a legal payload; checking it against
+			// nothing is how `invalid_blocks` reaches production. The option OBJECT
+			// is the same object in both, which is why that half is shared.
+			if el.Placeholder == nil || strings.TrimSpace(el.Placeholder.Text) == "" {
+				return fail(payload, "V9", "static select %d in block %d has no placeholder", j, idx)
+			}
+			if el.Placeholder.Type != TypePlainText {
+				return fail(payload, "V9", "static select %d in block %d placeholder must be plain_text, got %q",
+					j, idx, el.Placeholder.Type)
+			}
+			if len([]rune(el.Placeholder.Text)) > maxPlaceholderText {
+				return fail(payload, "V9", "static select %d in block %d placeholder is %d chars, limit %d",
+					j, idx, len([]rune(el.Placeholder.Text)), maxPlaceholderText)
+			}
+			if len(el.Options) == 0 {
+				return fail(payload, "V9", "static select %d in block %d has no options", j, idx)
+			}
+			if len(el.Options) > maxSelectOptions {
+				return fail(payload, "V9", "static select %d in block %d has %d options, limit %d",
+					j, idx, len(el.Options), maxSelectOptions)
+			}
+			// ⛔ A SELECT IS A THING TO CHANGE, NEVER A PLACE TO GO. Slack accepts no
+			// `url` on a select's option and a browser would never be opened by one, so
+			// an option that carries a URL here is a rendering mistake — the links
+			// menu's shape pasted onto a control that acts — and it is refused rather
+			// than silently dropped.
 			for k, opt := range el.Options {
-				if strings.TrimSpace(opt.Text.Text) == "" {
-					return fail(payload, "V9", "overflow option %d in block %d has no label", k, idx)
-				}
-				// An overflow's option label is plain_text, always. mrkdwn in an
-				// option renders as its own source text.
-				if opt.Text.Type != TypePlainText {
-					return fail(payload, "V9", "overflow option %d in block %d label must be plain_text, got %q",
-						k, idx, opt.Text.Type)
-				}
-				if len([]rune(opt.Text.Text)) > maxOptionText {
-					return fail(payload, "V9", "overflow option %d label is %d chars, limit %d",
-						k, len([]rune(opt.Text.Text)), maxOptionText)
-				}
-				if err := checkURL(payload, "V10", "overflow option url", opt.URL); err != nil {
-					return err
-				}
-				if len(opt.Value) > maxOptionValue {
-					return fail(payload, "V11", "overflow option value is %d chars, limit %d "+
-						"(an OPTION's limit, not a button's %d)",
-						len(opt.Value), maxOptionValue, maxButtonValue)
+				if opt.URL != "" {
+					return fail(payload, "V10", "static select option %d in block %d carries a url; "+
+						"a select acts, it does not navigate", k, idx)
 				}
 			}
+			if err := checkOptions(payload, "static select", idx, el.Options); err != nil {
+				return err
+			}
+			// A select is not a call to action: it has no `style` and cannot be the
+			// card's one primary, so V13 counts nothing here.
 
 		default:
 			return fail(payload, "V8", "block %d element %d has unsupported type %q", idx, j, el.Type)
@@ -521,6 +543,45 @@ func validateActions(payload json.RawMessage, idx int, b Block) error {
 	// do now", which is none.
 	if primaries > 1 {
 		return fail(payload, "V13", "%d buttons carry style \"primary\", at most 1 is permitted", primaries)
+	}
+	return nil
+}
+
+// checkOptions validates the option OBJECTS of a menu element — an overflow's or a
+// static select's alike, because Slack has exactly one option object and it has the
+// same three limits wherever it appears (see OverflowOption).
+//
+// ⛔ WHAT IT DELIBERATELY DOES NOT CHECK IS THE COUNT. Five for an overflow, one
+// hundred for a select: that number is the one thing the two elements do NOT share,
+// so it stays at each call site where the right constant is in view. Folding it in
+// here is how one element's limit ends up enforced on the other, which is the
+// mistake maxOptionValue's own comment was written about.
+//
+// `kind` is the element's name in the message, so a failure still says which
+// control the operator's card lost.
+func checkOptions(payload json.RawMessage, kind string, idx int, opts []OverflowOption) error {
+	for k, opt := range opts {
+		if strings.TrimSpace(opt.Text.Text) == "" {
+			return fail(payload, "V9", "%s option %d in block %d has no label", kind, k, idx)
+		}
+		// An option label is plain_text, always. mrkdwn in an option renders as its
+		// own source text.
+		if opt.Text.Type != TypePlainText {
+			return fail(payload, "V9", "%s option %d in block %d label must be plain_text, got %q",
+				kind, k, idx, opt.Text.Type)
+		}
+		if len([]rune(opt.Text.Text)) > maxOptionText {
+			return fail(payload, "V9", "%s option %d label is %d chars, limit %d",
+				kind, k, len([]rune(opt.Text.Text)), maxOptionText)
+		}
+		if err := checkURL(payload, "V10", kind+" option url", opt.URL); err != nil {
+			return err
+		}
+		if len(opt.Value) > maxOptionValue {
+			return fail(payload, "V11", "%s option value is %d chars, limit %d "+
+				"(an OPTION's limit, not a button's %d)",
+				kind, len(opt.Value), maxOptionValue, maxButtonValue)
+		}
 	}
 	return nil
 }

@@ -34,17 +34,28 @@ func policyDTO(p domain.Policy) PolicyDTO {
 	if channels == nil {
 		channels = []uuid.UUID{}
 	}
+	// ⭐ THE EMPTY BINDING IS MATERIALISED HERE, which is the one place in the round
+	// trip where nil and empty are NOT interchangeable. The domain treats both as
+	// "every altitude" and the repository leaves the read nil on purpose; the WIRE
+	// cannot, because `encoding/json` renders a nil slice as `null` and the contract
+	// declares `subject_kinds` non-nullable. `channels` above is materialised for
+	// exactly the same reason.
+	subjects := make([]string, 0, len(p.Subjects))
+	for _, k := range p.Subjects {
+		subjects = append(subjects, string(k))
+	}
 
 	out := PolicyDTO{
-		ID:         p.ID,
-		Name:       p.Name,
-		Priority:   int32(p.Priority), //nolint:gosec // bounded by policies_prio_ck
-		Enabled:    p.Enabled,
-		Matchers:   matchers,
-		Reasons:    reasons,
-		ChannelIDs: channels,
-		CreatedAt:  p.CreatedAt.UTC(),
-		UpdatedAt:  p.UpdatedAt.UTC(),
+		ID:           p.ID,
+		Name:         p.Name,
+		Priority:     int32(p.Priority), //nolint:gosec // bounded by policies_prio_ck
+		Enabled:      p.Enabled,
+		Matchers:     matchers,
+		Reasons:      reasons,
+		ChannelIDs:   channels,
+		SubjectKinds: subjects,
+		CreatedAt:    p.CreatedAt.UTC(),
+		UpdatedAt:    p.UpdatedAt.UTC(),
 	}
 	if p.Throttle.Enabled() {
 		out.Throttle = &ThrottleDTO{
@@ -63,6 +74,20 @@ func policyDTO(p domain.Policy) PolicyDTO {
 	if p.Digest.Floor > 0 {
 		v := int32(p.Digest.Floor) //nolint:gosec // bounded by policies_digest_floor_ck
 		out.DigestFloor = &v
+	}
+	// The count condition, on the same rule: the zero value means "no condition" in
+	// the domain and `null` on the wire, and the seconds ⇄ Duration conversion
+	// happens here and nowhere else. Both halves are emitted independently even
+	// though `policies_count_pair_ck` makes them move together — a mapper that
+	// dropped one because the other was zero would hide the day the constraint is
+	// the thing that broke.
+	if p.Count.Min > 0 {
+		v := int32(p.Count.Min) //nolint:gosec // bounded by policies_count_min_ck
+		out.CountMin = &v
+	}
+	if p.Count.Window > 0 {
+		v := int32(p.Count.Window / time.Second) //nolint:gosec // bounded by policies_count_window_ck
+		out.CountWindowSeconds = &v
 	}
 	return out
 }
@@ -226,6 +251,23 @@ func (r CreatePolicyRequest) toDraft() (domain.PolicyDraft, error) {
 		v := int(*r.DigestFloor)
 		d.DigestFloor = &v
 	}
+	// An absent `subject_kinds` and an empty one are the same instruction — claim
+	// every altitude — so there is no `!= nil` guard here and none is wanted: an
+	// empty slice through `toSubjectKinds` produces an empty binding, which is what
+	// the column's `'{}'` default already says.
+	subjects, err := toSubjectKinds(r.SubjectKinds, "subject_kinds")
+	if err != nil {
+		return domain.PolicyDraft{}, err
+	}
+	d.Subjects = subjects
+	if r.CountMin != nil {
+		v := int(*r.CountMin)
+		d.CountMin = &v
+	}
+	if r.CountWindowSeconds != nil {
+		v := time.Duration(*r.CountWindowSeconds) * time.Second
+		d.CountWindow = &v
+	}
 	return d, nil
 }
 
@@ -278,6 +320,32 @@ func (r UpdatePolicyRequest) toPatch() (domain.PolicyPatch, error) {
 		}
 		p.DigestFloor = &n
 	}
+	// One level of pointer, not two, because the column is NOT NULL: presence means
+	// "this is the new binding" and an empty array is how an operator removes one.
+	// See PolicyPatch.Subjects.
+	if r.SubjectKinds != nil {
+		ks, err := toSubjectKinds(*r.SubjectKinds, "subject_kinds")
+		if err != nil {
+			return domain.PolicyPatch{}, err
+		}
+		p.Subjects = &ks
+	}
+	if r.CountMin.Set {
+		var n *int
+		if r.CountMin.Value != nil {
+			v := int(*r.CountMin.Value)
+			n = &v
+		}
+		p.CountMin = &n
+	}
+	if r.CountWindowSeconds.Set {
+		var d *time.Duration
+		if r.CountWindowSeconds.Value != nil {
+			v := time.Duration(*r.CountWindowSeconds.Value) * time.Second
+			d = &v
+		}
+		p.CountWindow = &d
+	}
 	return p, nil
 }
 
@@ -317,6 +385,33 @@ func toReasons(in []string, field string) ([]domain.Reason, error) {
 			continue
 		}
 		out = append(out, r)
+	}
+	if len(violations) > 0 {
+		return nil, errs.Validation("validation_failed",
+			pluralise(len(violations)), violations...)
+	}
+	return out, nil
+}
+
+// toSubjectKinds validates against the domain's CLOSED SubjectKind vocabulary,
+// for the reason `toReasons` above validates against the Reason one: the set has
+// been narrowed before — migration `00069` deleted `alert_group` — and a
+// duplicated list in a struct tag is the second copy that drifts. The violation
+// path is the JSON name with the offending index, as §L.2.2 requires.
+func toSubjectKinds(in []string, field string) (domain.SubjectBinding, error) {
+	out := make(domain.SubjectBinding, 0, len(in))
+	var violations []errs.Violation
+	for i, raw := range in {
+		k := domain.SubjectKind(raw)
+		if !k.Valid() {
+			violations = append(violations, errs.Violation{
+				Field:   field + "/" + itoa(i),
+				Code:    "enum",
+				Message: "unknown notification subject kind " + raw,
+			})
+			continue
+		}
+		out = append(out, k)
 	}
 	if len(violations) > 0 {
 		return nil, errs.Validation("validation_failed",

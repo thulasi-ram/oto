@@ -70,11 +70,20 @@ const (
 	// KindNotifyDigest is the DIGEST TICK: at each window boundary, count what
 	// matched each digest policy and say so once. It is the only notification job
 	// whose subject is a WINDOW rather than an object (migration 00058).
-	KindNotifyDigest     = "notify.digest"
-	KindPartitionsManage = "partitions.manage"
-	KindRetentionPrune   = "retention.prune"
-	KindStatsRollup      = "stats.rollup"
-	KindCacheExpire      = "cache.expire"
+	KindNotifyDigest = "notify.digest"
+	// KindNotifyDigestReconcile is the DIGEST DETECTOR, and it is a separate kind
+	// from the tick above rather than extra work on it because the two have opposite
+	// shapes: the tick is once a minute, narrow, and DELIVERS; this is hourly, folds a
+	// day-wide candidate span per policy, and is forbidden from delivering anything
+	// (`notification/service.ReconcileOrg`). One kind would have meant one queue slot,
+	// one timeout and one retry budget covering both, so a detector that ran long
+	// would eat the tick's minute and digests would go late to make a number
+	// auditable — which is the wrong trade in the only direction that matters.
+	KindNotifyDigestReconcile = "notify.digest.reconcile"
+	KindPartitionsManage      = "partitions.manage"
+	KindRetentionPrune        = "retention.prune"
+	KindStatsRollup           = "stats.rollup"
+	KindCacheExpire           = "cache.expire"
 )
 
 // Priority levels. River orders 1 (highest) before 4 (lowest) within a queue.

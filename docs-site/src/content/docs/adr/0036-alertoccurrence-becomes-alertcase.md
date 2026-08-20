@@ -1,7 +1,10 @@
 ---
 title: 0036 — AlertOccurrence becomes AlertCase, and `case` is argued against FR-1 by name
 ---
-**Status:** Accepted · 2026-08-18
+**Status:** Accepted · 2026-08-18 · **narrowed in part by
+[0040](/adr/0040-a-case-is-open-or-closed-and-never-reopened/)**, which keeps this entity exactly as this
+ADR defines it — one contiguous firing episode, `(alert_id, seq)` — and narrows its `state` column to
+`open | closed`. Read 0040 before adding anything to `alert_cases.state`.
 **Relates to:** [0003](/adr/0003-alert-occurrence-event-separation/) (the three entities — this renames the
 middle one and changes nothing about it), [0013](/adr/0013-alert-first-scope-boundary/) (the boundary this
 ADR argues against by name), [0024](/adr/0024-retention-defaults-and-cold-storage/) (why the episode row
@@ -10,8 +13,12 @@ survives what the event stream does not)
 §I.1; SCOPE-BOUNDARY §5.1 and the §5.6 column ban, re-pointed at the renamed table
 **Resolves:** git-bug `dc4d731` — *"The authoritative entity is AlertOccurrence and every surface leads
 with Alert"*
-**Design note:** `docs-site/.../design/case-and-grouping.md` §3, whose argument this ADR records so the
-rename has something binding to cite.
+**Design note:** ⛔ **`design/case-and-grouping.md` §3 was cited here and the document is DELETED**
+(git-bug `7570090`) — along with `case-and-grouping-handoff.md`, because half of what both argued was
+the `alert_groups` grouping that no longer exists. Nothing replaces the citation: **this ADR is the
+binding record of the rename argument**, which is what it was written to be. The dangling pointer is
+kept visible rather than quietly removed, so a reader who remembers the design note is told it went
+and why instead of searching for it.
 
 ## Context
 
@@ -209,3 +216,66 @@ which is what makes the word safe here and would not make it safe on any object 
 - **Argue that `case` needs no FR-1 defence because §A.1 does not list it.** True on the letter and
   corrosive in practice. §A.1's list is not the boundary; FR-1 is, and the list is its cached result. A
   word admitted because it was not yet written down is how the next word gets in.
+
+---
+
+## Amendment, 2026-08-18 — the Cases destination lists Cases, and an AlertGroup is not a correlation
+
+**Status:** Accepted. It **supersedes an earlier amendment of the same date** which recorded that the
+UI had spent `Case` on "the correlation" and that §2.5 of the anti-caseload clause was therefore
+void. That amendment was wrong on its facts, and a wrong amendment left standing is worse than none:
+it retired a clause nothing had actually broken and it taught the word `correlation` to mean a thing
+oto has never built.
+
+**Nothing in §3 is amended.** The Case/correlation line stands exactly as drawn: a Case spans one
+alert identity, a correlation spans many, and an incident is a human response effort and is
+permanently out (FR-1). **Nothing in §2 is void either** — all six points of the anti-caseload
+clause, the copy commitment included, are in force.
+
+### The three facts the earlier amendment got wrong
+
+1. **The nav's Cases destination lists CASES.** `GET /api/v1/cases` is the org-wide list of
+   `alert_cases` rows — one contiguous firing episode of one alert, `(alert_id, seq)` — and it is
+   where a human acknowledges. `POST /api/v1/cases/{id}/ack` is addressed by that episode's id, which
+   is the only id an acknowledgement has ever had a subject in: `ack_state`, `acked_by`, `acked_at`
+   and `ack_note` are columns of `alert_cases` and of no other table (migration 00049). There is no
+   second object wearing the word.
+2. **`alert_groups` is a NOTIFICATION GROUPING, not a correlation.** It is Alertmanager's grouping
+   concept, now derived by oto from the alert's own labels — `(org, cluster, alertname,
+   namespace-or-∅)` (ADR 0038) — and its whole job is that it **owns exactly one Slack thread**. It
+   is plumbing: it decides which facts share a message, and it makes no claim that its members are
+   one problem. A correlation *does* make that claim, from a stated algorithm, and is DEFERRED-POST-V1
+   (`SPEC.md` §I.1). Calling the group one promoted a delivery mechanism into an inference oto does
+   not perform.
+3. **The word is therefore not overloaded, and §2.5 was never breached.** §2.5 forbids caseload
+   vocabulary — "queue", "my cases", "open cases assigned to", "resolve case", a case count rendered
+   as a workload. A destination named **Cases** that lists firing episodes and offers **acknowledge**
+   is the entity's own name on the entity's own list; it is none of those things. The clause bans the
+   gravity, not the noun.
+
+### What the surfaces are called, then
+
+| where | what `Case` means | the object |
+|---|---|---|
+| Go, SQL, the API contract | one contiguous firing episode of one Alert | `alert_cases` |
+| the UI's Cases nav, list and detail | the same | `alert_cases` |
+| the UI's group surfaces and every Slack card | one generation of the notification grouping | `alert_groups` |
+
+An AlertGroup is called a **group** on every surface, and a Slack card's deep link goes to
+`/groups/<id>` — the card is *about* the group, because the group is what owns the thread. Minting
+`/cases/<id>` from an `alert_groups` id, as the superseded amendment's change did, addressed one
+table's screen with another table's key.
+
+### What is genuinely still true, and is a smaller thing
+
+Two neighbouring nouns share a stem: an `alert_cases` row is a Case, and `case_id` appears on
+`alert_events`, on notifications and in dedupe keys. Nothing else in the product is called a Case.
+The remaining care is only that a surface showing one alert's HISTORY — the alert detail's episode
+list, `GET /alerts/{id}/cases` — reads naturally, and **firing episode** is the phrase for that
+because it is the entity's definition rather than a second name for it.
+
+### What would retire this amendment
+
+Nothing outstanding. It exists to correct the record; if `correlation` is ever built, §3's table is
+the place that decision lands, and it will be a new object with a stated algorithm rather than a
+rename of `alert_groups`.

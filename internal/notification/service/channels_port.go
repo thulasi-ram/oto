@@ -79,6 +79,11 @@ type (
 	AlertView = chdomain.AlertView
 	// CaseView is one firing episode as a renderer sees it.
 	CaseView = chdomain.CaseView
+	// DigestView is a count and the span it was counted over — what a digest has
+	// instead of a GroupView (git-bug `78388fb`). It is aliased here for the same
+	// reason every other view type is: `ViewService.digest` builds one and this is
+	// the only file in the module allowed to name `internal/channels/domain`.
+	DigestView = chdomain.DigestView
 	// RuleView is what the alerting rule said when the case fired.
 	RuleView = chdomain.RuleView
 	// RuleChangeView is what changed in the rule since the previous case.
@@ -89,6 +94,8 @@ type (
 	ActorView = chdomain.ActorView
 	// Action is one interactive affordance on a card.
 	Action = chdomain.Action
+	// ActionOption is one choice inside a menu-shaped Action (§B.8.3's presets).
+	ActionOption = chdomain.ActionOption
 	// PreviousState is the state the card showed before this delivery (§H.4).
 	PreviousState = chdomain.PreviousState
 	// TrailEntry is one transition on the card's state trail (§H.4).
@@ -96,6 +103,29 @@ type (
 	// Links are the deep links a card offers.
 	Links = chdomain.Links
 )
+
+// snoozePresets is the closed list of durations a card may offer to go quiet for
+// (§B.8.3: 30 m · 1 h · 4 h · 24 h · 7 d, and no indefinite option).
+//
+// ⛔ IT IS FORWARDED THROUGH THIS FILE RATHER THAN IMPORTED WHERE IT IS USED,
+// because of the sentence at the top: this is the ONLY file in the module that may
+// name `internal/channels/domain`, and the value is needed by `ViewService.actions`
+// two files away. A `var` holding the function is how a FUNCTION crosses a seam
+// that only has room for type aliases.
+//
+// ⭐ WHY THE LIST LIVES OVER THERE AT ALL. `channels/service` decodes the token
+// that comes back off the press, and this module mints the token that goes out. One
+// table read from both ends is the only shape in which the menu cannot offer a
+// choice the handler is unable to decode — which would present as a button that
+// does nothing, the exact defect the snooze affordance was filed against
+// (git-bug `0a8ca4a`).
+var snoozePresets = chdomain.SnoozePresets
+
+// snoozeValueSeparator joins a preset token to the alert id in one snooze option's
+// value. Forwarded for the same reason snoozePresets is, and owned over there so
+// that the module which splits the value cannot disagree with the module that
+// builds it.
+const snoozeValueSeparator = chdomain.SnoozeValueSeparator
 
 // Target is one opened destination: the delivery port.
 //

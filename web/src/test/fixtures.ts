@@ -221,6 +221,11 @@ export function policy(patch: Partial<Policy> = {}): Policy {
     matchers: [{ name: "severity", op: "=", value: "critical" }],
     reasons: ["fired", "all_resolved"],
     channel_ids: ["4f0a6c7d-5e8b-4f0a-1c2d-3e4f50617283"],
+    // The EMPTY binding, which is "this policy is about every subject kind" —
+    // migration 00072's default and the state of every policy written before it.
+    // It is required rather than optional on the wire because "claims every
+    // altitude" is an answer and not an absence, so the fixture states it.
+    subject_kinds: [],
     created_at: T0,
     updated_at: T0,
     ...patch,
@@ -374,16 +379,17 @@ export function orgSettings(
   } = {},
 ): OrgSettingsView {
   const settings: Record<string, unknown> = {
-    refire_grace_s: 900,
     resolve_grace_s: 300,
-    group_close_delay_s: 900,
     flap_threshold: 5,
     flap_window_s: 7200,
     flap_digest_interval_s: 900,
     raw_retention_days: 30,
     event_retention_months: 13,
     default_verbosity: "status_changes",
-    // ⛔ FIVE KEYS WERE HERE AND NONE OF THEM EXISTS ON THE WIRE ANY MORE.
+    // ⛔ `refire_grace_s` AND `group_close_delay_s` LED THIS BAG AND BOTH ARE
+    // DELETED (git-bug 7287b28) — off the wire, not merely off the screen.
+    //
+    // ⛔ FIVE MORE KEYS WERE HERE AND NONE OF THEM EXISTS ON THE WIRE EITHER.
     // `broadcast_on_resolved` went with Slack thread-broadcast (git-bug 7570090);
     // `unacked_reminder_after_s` and the three `unacked_reminder_mention*` went
     // with the unacked reminder (git-bug bd0fb1d) and this bag outlived them.

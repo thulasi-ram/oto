@@ -45,27 +45,27 @@ func TestDeclarativeConfigBeatsAnOrgOverride(t *testing.T) {
 	t.Parallel()
 
 	svc, store, scope := declFixture(t, domain.DeclaredEntry{
-		Key: "refire_grace_s", ConfigKey: "OTO_TUNING_REFIRE_GRACE_S", Value: "600",
+		Key: "resolve_grace_s", ConfigKey: "OTO_TUNING_RESOLVE_GRACE_S", Value: "600",
 	})
 	ctx := context.Background()
 
 	// The org wrote 900 before the deployment started stating a value.
-	store.org.Overrides = domain.SettingsPatch{RefireGraceS: intp(900)}
+	store.org.Overrides = domain.SettingsPatch{ResolveGraceS: intp(900)}
 	store.org.Settings = store.org.Overrides.Settings()
 
 	org, err := svc.GetOrg(ctx, scope)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	if org.Settings.RefireGrace != 600*time.Second {
-		t.Fatalf("effective refire_grace = %v, want 600s: the deployment's configuration "+
+	if org.Settings.ResolveGrace != 600*time.Second {
+		t.Fatalf("effective resolve_grace = %v, want 600s: the deployment's configuration "+
 			"must beat the org override, or the value reverts on every deploy",
-			org.Settings.RefireGrace)
+			org.Settings.ResolveGrace)
 	}
-	if got := org.Origin(domain.KeyRefireGrace); got != domain.OriginConfig {
+	if got := org.Origin(domain.KeyResolveGrace); got != domain.OriginConfig {
 		t.Fatalf("origin %q, want config", got)
 	}
-	if got := org.ConfigKey(domain.KeyRefireGrace); got != "OTO_TUNING_REFIRE_GRACE_S" {
+	if got := org.ConfigKey(domain.KeyResolveGrace); got != "OTO_TUNING_RESOLVE_GRACE_S" {
 		t.Fatalf("config key %q: a badge with no key to go and edit is a wall", got)
 	}
 	// An untouched key is unaffected in both directions.
@@ -85,9 +85,9 @@ func TestAShadowedOverrideStaysVisible(t *testing.T) {
 	t.Parallel()
 
 	svc, store, scope := declFixture(t, domain.DeclaredEntry{
-		Key: "refire_grace_s", ConfigKey: "tuning.refire_grace_s", Value: 600,
+		Key: "resolve_grace_s", ConfigKey: "tuning.resolve_grace_s", Value: 600,
 	})
-	store.org.Overrides = domain.SettingsPatch{RefireGraceS: intp(900), FlapThreshold: intp(9)}
+	store.org.Overrides = domain.SettingsPatch{ResolveGraceS: intp(900), FlapThreshold: intp(9)}
 	store.org.Settings = store.org.Overrides.Settings()
 
 	org, err := svc.GetOrg(context.Background(), scope)
@@ -96,9 +96,9 @@ func TestAShadowedOverrideStaysVisible(t *testing.T) {
 	}
 
 	shadowed := org.Shadowed()
-	if shadowed.RefireGraceS == nil || *shadowed.RefireGraceS != 900 {
+	if shadowed.ResolveGraceS == nil || *shadowed.ResolveGraceS != 900 {
 		t.Fatalf("the shadowed override is not reported: %+v — an operator has to be able "+
-			"to see both numbers", shadowed.RefireGraceS)
+			"to see both numbers", shadowed.ResolveGraceS)
 	}
 	// A key the deployment does NOT manage is not shadowed: it is simply in force.
 	if shadowed.FlapThreshold != nil {
@@ -108,7 +108,7 @@ func TestAShadowedOverrideStaysVisible(t *testing.T) {
 		t.Fatalf("flap_threshold = %d, want the org's own 9", org.Settings.FlapThreshold)
 	}
 	// And the stored override is untouched: nothing deleted it on the org's behalf.
-	if store.org.Overrides.RefireGraceS == nil || *store.org.Overrides.RefireGraceS != 900 {
+	if store.org.Overrides.ResolveGraceS == nil || *store.org.Overrides.ResolveGraceS != 900 {
 		t.Fatal("the shadowed override was removed from storage; nothing asked for that")
 	}
 }
@@ -118,11 +118,11 @@ func TestPatchOnAConfigManagedKeyIs409(t *testing.T) {
 	t.Parallel()
 
 	svc, store, scope := declFixture(t, domain.DeclaredEntry{
-		Key: "refire_grace_s", ConfigKey: "OTO_TUNING_REFIRE_GRACE_S", Value: "600",
+		Key: "resolve_grace_s", ConfigKey: "OTO_TUNING_RESOLVE_GRACE_S", Value: "600",
 	})
 
 	_, err := svc.UpdateOrgSettings(context.Background(), scope,
-		domain.SettingsPatch{RefireGraceS: intp(900)}, nil)
+		domain.SettingsPatch{ResolveGraceS: intp(900)}, nil)
 	if err == nil {
 		t.Fatal("a write to a config-managed key was accepted; it would revert on the next deploy")
 	}
@@ -137,15 +137,15 @@ func TestPatchOnAConfigManagedKeyIs409(t *testing.T) {
 	if len(vs) != 1 {
 		t.Fatalf("violations %+v, want exactly the offending key", vs)
 	}
-	if vs[0].Field != "refire_grace_s" {
+	if vs[0].Field != "resolve_grace_s" {
 		t.Fatalf("violation field %q, want the settings key", vs[0].Field)
 	}
-	if !strings.Contains(vs[0].Message, "OTO_TUNING_REFIRE_GRACE_S") {
+	if !strings.Contains(vs[0].Message, "OTO_TUNING_RESOLVE_GRACE_S") {
 		t.Fatalf("the detail does not name the config key: %q — without it the caller is "+
 			"told they cannot change the value and nothing about where they can",
 			vs[0].Message)
 	}
-	if store.org.Overrides.RefireGraceS != nil {
+	if store.org.Overrides.ResolveGraceS != nil {
 		t.Fatal("the refused value was written anyway")
 	}
 }
@@ -157,19 +157,19 @@ func TestResetOnAConfigManagedKeyIs409(t *testing.T) {
 	t.Parallel()
 
 	svc, store, scope := declFixture(t, domain.DeclaredEntry{
-		Key: "refire_grace_s", ConfigKey: "tuning.refire_grace_s", Value: 600,
+		Key: "resolve_grace_s", ConfigKey: "tuning.resolve_grace_s", Value: 600,
 	})
-	store.org.Overrides = domain.SettingsPatch{RefireGraceS: intp(900)}
+	store.org.Overrides = domain.SettingsPatch{ResolveGraceS: intp(900)}
 
 	_, err := svc.UpdateOrgSettings(context.Background(), scope,
-		domain.SettingsPatch{}, []domain.SettingKey{domain.KeyRefireGrace})
+		domain.SettingsPatch{}, []domain.SettingKey{domain.KeyResolveGrace})
 	if err == nil {
 		t.Fatal("a reset of a config-managed key was accepted")
 	}
 	if !errs.IsKind(err, errs.KindConflict) {
 		t.Fatalf("kind %q, want conflict: %v", errs.KindOf(err), err)
 	}
-	if store.org.Overrides.RefireGraceS == nil {
+	if store.org.Overrides.ResolveGraceS == nil {
 		t.Fatal("the reset destroyed the shadowed override despite being refused")
 	}
 }
@@ -180,7 +180,7 @@ func TestAnUnmanagedKeyIsStillWritable(t *testing.T) {
 	t.Parallel()
 
 	svc, _, scope := declFixture(t, domain.DeclaredEntry{
-		Key: "refire_grace_s", ConfigKey: "OTO_TUNING_REFIRE_GRACE_S", Value: "600",
+		Key: "resolve_grace_s", ConfigKey: "OTO_TUNING_RESOLVE_GRACE_S", Value: "600",
 	})
 
 	org, err := svc.UpdateOrgSettings(context.Background(), scope,
@@ -192,8 +192,8 @@ func TestAnUnmanagedKeyIsStillWritable(t *testing.T) {
 		t.Fatalf("flap_threshold = %d, want 40", org.Settings.FlapThreshold)
 	}
 	// And the managed key is still forced in the returned org.
-	if org.Settings.RefireGrace != 600*time.Second {
-		t.Fatalf("the write dropped the declarative overlay: refire_grace = %v", org.Settings.RefireGrace)
+	if org.Settings.ResolveGrace != 600*time.Second {
+		t.Fatalf("the write dropped the declarative overlay: resolve_grace = %v", org.Settings.ResolveGrace)
 	}
 }
 
@@ -203,10 +203,12 @@ func TestAnUnmanagedKeyIsStillWritable(t *testing.T) {
 func TestAllKeysCanBeSetDeclaratively(t *testing.T) {
 	t.Parallel()
 
+	// ⛔ `KeyRefireGrace: 600` AND `KeyGroupCloseDelay: 300` LED THIS MAP AND BOTH
+	// ARE DELETED WITH THEIR KEYS (git-bug 7287b28). The map is checked against
+	// `AllSettingKeys()` below, so it cannot silently fall behind the key set in
+	// either direction.
 	values := map[domain.SettingKey]any{
-		domain.KeyRefireGrace:        600,
 		domain.KeyResolveGrace:       300,
-		domain.KeyGroupCloseDelay:    300,
 		domain.KeyFlapThreshold:      5,
 		domain.KeyFlapWindow:         1800,
 		domain.KeyFlapDigestInterval: 900,

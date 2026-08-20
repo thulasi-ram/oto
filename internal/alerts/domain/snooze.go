@@ -527,6 +527,10 @@ const (
 	SuppressorSnoozed = "snoozed"
 	// SuppressorThrottled — the per-subject rate cap.
 	SuppressorThrottled = "throttled"
+	// SuppressorBelowThreshold — the policy's count condition (`count_min` over
+	// `count_window_s`) is not met yet. The throttle's dual: the same two policy
+	// columns read as a floor rather than a ceiling.
+	SuppressorBelowThreshold = "below_threshold"
 	// SuppressorVerbosity — the channel does not want this class of fact.
 	SuppressorVerbosity = "verbosity"
 	// SuppressorDuplicateRender — the rendered payload is byte-identical to the
@@ -538,7 +542,14 @@ const (
 // apply, the FIRST MATCH is the one recorded.
 //
 //	channel_disabled -> no_policy -> snoozed
-//	                 -> throttled -> verbosity -> duplicate_render
+//	                 -> throttled -> below_threshold -> verbosity -> duplicate_render
+//
+// ⭐ `below_threshold` JOINED DIRECTLY BELOW `throttled` (migration 00073) because
+// the two are the same two policy columns with opposite senses — a ceiling and a
+// floor over a sliding window — and both sit above `verbosity`, which is a
+// property of a destination rather than of the policy. The ceiling ranks first
+// because a spent cap is an ACTIVE fact, while an unmet floor is the resting state
+// of every policy that carries one and must not mask it.
 //
 // Snooze outranked the automatic dampers because it is a DELIBERATE HUMAN ACT and
 // therefore the most actionable explanation: "you snoozed this" tells a user what
@@ -554,14 +565,18 @@ const (
 // kept as retired ranks so a binary meeting an older row could still SORT it — the
 // maintainer has authorised the database reset that answers the 23514, so there is
 // no such row and no such binary. What is left is settled rather than argued: every
-// reason here is a human's request, an absent destination, a provider's rate limit
-// or "nothing changed", and not one is oto's own judgement about a signal.
+// reason here is a human's request, an absent destination, a policy's own ceiling or
+// floor over a window, or "nothing changed", and not one is oto's own judgement
+// about a signal. `below_threshold` is the closest call and it passes on the same
+// test: its threshold is a column an operator wrote, where `flapping`'s was a
+// constant compiled into oto.
 func SuppressorPrecedence() []string {
 	return []string{
 		SuppressorChannelDisabled,
 		SuppressorNoPolicy,
 		SuppressorSnoozed,
 		SuppressorThrottled,
+		SuppressorBelowThreshold,
 		SuppressorVerbosity,
 		SuppressorDuplicateRender,
 	}

@@ -109,6 +109,57 @@
               "style": "primary"
             },
             {
+              "type": "static_select",
+              "placeholder": {
+                "type": "plain_text",
+                "text": ":zzz: Snooze for…",
+                "emoji": true
+              },
+              "action_id": "oto.snooze",
+              "options": [
+                {
+                  "text": {
+                    "type": "plain_text",
+                    "text": "30 minutes",
+                    "emoji": true
+                  },
+                  "value": "30m|019fe297-d84f-7599-b5b2-1f23174910a1"
+                },
+                {
+                  "text": {
+                    "type": "plain_text",
+                    "text": "1 hour",
+                    "emoji": true
+                  },
+                  "value": "1h|019fe297-d84f-7599-b5b2-1f23174910a1"
+                },
+                {
+                  "text": {
+                    "type": "plain_text",
+                    "text": "4 hours",
+                    "emoji": true
+                  },
+                  "value": "4h|019fe297-d84f-7599-b5b2-1f23174910a1"
+                },
+                {
+                  "text": {
+                    "type": "plain_text",
+                    "text": "24 hours",
+                    "emoji": true
+                  },
+                  "value": "24h|019fe297-d84f-7599-b5b2-1f23174910a1"
+                },
+                {
+                  "text": {
+                    "type": "plain_text",
+                    "text": "7 days",
+                    "emoji": true
+                  },
+                  "value": "7d|019fe297-d84f-7599-b5b2-1f23174910a1"
+                }
+              ]
+            },
+            {
               "type": "button",
               "text": {
                 "type": "plain_text",

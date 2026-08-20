@@ -1,5 +1,17 @@
 # 0039 — Group close stays activity-driven
 
+> ⛔ **SUPERSEDED — THE OBJECT OF THIS DECISION IS DELETED.** `alert_groups` is gone, root and branch
+> (git-bug `7570090`, migration `00069`): there is no generation to close, so nothing is
+> activity-driven or otherwise. `group_close_delay_s`, whose meaning this ADR was written to keep,
+> left with it (git-bug `7287b28`, migration `00071`). **The conversation is now the Case**, and a
+> conversation holds exactly one — so what ends a conversation is the Case ending, and there is no
+> delay in it.
+>
+> ⭐ The reasoning is kept because the shape recurs: this ADR refused to implement a clause
+> *verbatim* on the grounds that doing so would delete a mechanism the clause never mentioned. That is
+> the same failure mode as reading a "stated purpose" as a "whole purpose", which git-bug `7570090`
+> went on to pay for twice.
+
 **Status:** Accepted · 2026-08-18
 
 **Amends:** [0038](0038-the-group-key-is-derived-from-the-alerts-own-labels.md) — records what the

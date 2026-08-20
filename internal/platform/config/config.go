@@ -461,8 +461,8 @@ func Load(path string) (Config, error) {
 var sections = []string{
 	"http", "db", "log", "telemetry", "jobs", "ingest", "retention", "slack", "security",
 	// `tuning` carries no field on Config: it is harvested by loadTuning and typed
-	// by identity/domain. It is named here anyway so that OTO_TUNING_REFIRE_GRACE_S
-	// resolves to `tuning.refire_grace_s` in the merged instance too, and a values
+	// by identity/domain. It is named here anyway so that OTO_TUNING_RESOLVE_GRACE_S
+	// resolves to `tuning.resolve_grace_s` in the merged instance too, and a values
 	// file and an env var describe the same path everywhere in the process.
 	TuningSection,
 }

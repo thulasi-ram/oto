@@ -198,8 +198,9 @@ express direction or acyclicity.
 - `docs/setup/slack.md` — connecting a workspace: the three credentials, and what to do about
   every Slack error oto classifies. Paste `deploy/slack/manifest.yaml` into Slack's
   "Create an app from manifest" flow rather than ticking scopes by hand.
-- `docs/setup/tuning.md` — `refire_grace`, the flap thresholds, and how the right value
-  for each is derived from your own `alertmanager.yml` and your rules' `for:` durations.
+- `docs/setup/tuning.md` — `resolve_grace`, the flap thresholds, the retention windows, and how
+  the right value for each is derived from your own `alertmanager.yml` and your rules' `for:`
+  durations.
 - `docs/runbooks/` — one page per `oto_*` metric: what it counts, what a sustained value means,
   what to check and what to do. [The index](docs/runbooks/README.md) says which metrics are worth
   paging on and which are purely informational, and lists the metrics the SPEC names that no

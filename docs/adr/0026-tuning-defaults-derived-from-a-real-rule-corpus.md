@@ -1,5 +1,25 @@
 # 0026 — `refire_grace` and the flap thresholds, derived from a real rule corpus
 
+> ⛔ **SUPERSEDED IN PART — BOTH SETTINGS THIS ADR RAISED ARE DELETED.** `refire_grace_s` and
+> `group_close_delay_s` no longer exist: git-bug `7287b28`, migration `00071`. ADR 0040 retired the
+> transition `refire_grace` selected, and git-bug `7570090` / migration `00069` deleted the
+> `alert_groups` generation that `group_close_delay` timed, so neither had a reader left outside its
+> own CRUD. The flap thresholds are unaffected by that deletion and remain inert under ADR 0042
+> Amendment 3.
+>
+> ⭐ **THE DERIVATION IS NOT SUPERSEDED AND IS WHY THIS DOCUMENT IS STILL WORTH READING.** The two
+> measured tables — `group_interval: 5m` as the one Alertmanager number the ecosystem does not
+> override, and `for: 15m` as the mode *and* median of kube-prometheus-stack 88.2.0's 155 rules — are
+> the corpus every later window is still sized against, including the case retention window W and a
+> notification policy's digest window. The three arithmetic defects found here are also still the best
+> account of how a plausible-looking default can be unreachable in practice.
+>
+> ⚠️ **AND ONE CLAIM IN §4 WAS ALWAYS UNENFORCED**, which the deletion makes moot rather than fixes:
+> *"`group_close_delay ≥ refire_grace` is safe at equality"* was two independent `1200 * time.Second`
+> literals with a comment insisting the equality was the whole point, and the only check compared the
+> two DEFAULTS — so two operator-written settings could contradict each other freely. Deleting both is
+> what closed it. Deleting one would have left the trap armed with its tripwire removed.
+
 **Status:** Accepted · 2026-08-09
 **Decided WITHOUT the owner.** See *How to overturn this*, below — it is designed to be cheap.
 **Relates to:** [0020](0020-broadcast-the-transitions-that-must-be-seen.md) (why a re-fire inside the

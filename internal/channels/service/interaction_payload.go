@@ -79,6 +79,31 @@ type slackAction struct {
 	Value    string `json:"value"`
 	Type     string `json:"type"`
 	URL      string `json:"url"`
+	// SelectedOption is where a MENU puts its answer, and a menu puts nothing in
+	// `value`.
+	//
+	// ⛔ WITHOUT THIS FIELD EVERY MENU PRESS ARRIVES BLANK. Slack sends a button's
+	// payload under `value` and a static select's or an overflow's under
+	// `selected_option.value` — the same interaction envelope, a different key —
+	// so reading only `value` would route `oto.snooze` to the handler with an
+	// empty subject and answer a real press with "oto could not read that button".
+	// That is precisely the silent no-op `interactions.go` exists to abolish,
+	// arriving through a field nobody had added.
+	SelectedOption struct {
+		Value string `json:"value"`
+	} `json:"selected_option"`
+}
+
+// value is the action's payload wherever Slack chose to put it.
+//
+// A button carries `value`; a select or an overflow carries
+// `selected_option.value`. Preferring the option is safe for both: a button never
+// sends one, so the fallback is not a guess.
+func (a slackAction) value() string {
+	if v := strings.TrimSpace(a.SelectedOption.Value); v != "" {
+		return v
+	}
+	return strings.TrimSpace(a.Value)
 }
 
 // handle is the display name to record, in preference order.

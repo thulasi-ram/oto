@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/thulasiram/oto/internal/channels/domain"
 	"github.com/thulasiram/oto/internal/platform/clock"
@@ -60,13 +61,49 @@ func (r *Renderer) Render(
 		Continued:   o.Continued,
 		DeliveredAt: at.UTC(),
 		Org:         Org{ID: v.Org.ID, Slug: v.Org.Slug, Name: v.Org.Name},
-		Group:       mapGroup(v.Group),
 		Alerts:      mapAlerts(v.Alerts, o.MaxInstances),
 		Links:       mapLinks(v.Links),
 		Comment:     v.Comment,
-		Summary:     summarise(v),
 	}
 
+	// ⭐⭐ THE DIGEST IS DECIDED BEFORE THE GROUP IS READ, and it is decided on
+	// `v.Digest` rather than on the Reason — the view says what it IS, and the only view
+	// that carries a `Digest` is one `notification/service.ViewService.digest` built
+	// (git-bug `78388fb`). The Slack renderer branches in the same place on the same
+	// field, deliberately: two renderers agreeing on the discriminator is what stops a
+	// third one inventing a rule of its own.
+	//
+	// ⛔ IT IS THE ARM THAT WAS MISSING WHILE THE SLACK ONE LANDED. `78388fb` moved the
+	// digest's headline out of `Group.Title` — where a pre-composed sentence had been
+	// smuggled so that a renderer which had never heard of a digest still drew something
+	// true — and taught Slack the layout. This file kept reading `v.Group.Title`, so the
+	// sentence it had been living off vanished and `summarise` fell all the way through
+	// to its own defaults: `[UNKNOWN] alert group (digest)`, over a `group` object of
+	// zeros. Every consumer's digest became garbage, silently, because nothing here
+	// looked at `v.Digest`.
+	//
+	// ⚠️ `org` COMES OUT WITH EMPTY STRINGS ON A DIGEST AND THAT IS NOT FIXED HERE. The
+	// tenant is absent because `ViewService.digest` reads no snapshot to take one from,
+	// and that omission is argued at that seam ("a card whose destination already
+	// belongs to exactly one org"). `org` is a frozen non-optional v1 key whose members
+	// are all strings, so its absence surfaces as empty strings rather than as an
+	// invented tenant — which is the honest shape available without a schema bump.
+	if v.Digest != nil {
+		env.Digest = mapDigest(*v.Digest)
+		env.Summary = digestSummary(*v.Digest)
+	} else {
+		g := mapGroup(v.Group)
+		env.Group = &g
+		env.Summary = summarise(v)
+	}
+
+	// ⚠️ EVERYTHING BELOW IS NIL ON A DIGEST VIEW BY CONSTRUCTION, not by a guard here.
+	// `ViewService.digest` returns a view carrying a Reason, a `Digest` and a render
+	// time and nothing else — no focus, no case, no rule, no actor, no enrichment, no
+	// action and no link — so each check below already answers "absent" and the digest
+	// arm needs no second copy of the tail. A future digest view that DID populate one
+	// of these would be a change at that seam and would have to argue for itself there;
+	// re-indenting this block into an else would only hide that argument.
 	if v.Focus != nil {
 		f := mapAlert(*v.Focus)
 		env.Focus = &f
@@ -156,6 +193,34 @@ func mapGroup(g domain.GroupView) Group {
 		ClusterKey:      g.ClusterKey,
 		SourceGroupKey:  g.SourceGroupKey,
 	}
+}
+
+// mapDigest projects the digest's facts and NOTHING ELSE.
+//
+// ⭐ IT COPIES A COUNT AND A SPAN AND COMPOSES NO SENTENCE, which is the shape
+// `78388fb` was about. `DigestView` carries facts precisely so that each channel can
+// lay them out its own way; a webhook consumer wants the number and the two instants
+// in machine form, and the one human sentence it also gets lives in `summary` where
+// every other envelope's sentence lives.
+//
+// ⛔ THE SPAN IS COPIED OR LEFT NIL — NEVER DERIVED, NEVER DEFAULTED. `DigestView`
+// documents both instants as zero on a digest written before migration 00070, and a
+// zero `time.Time` would marshal as `0001-01-01T00:00:00Z`: a valid, UTC, in-spec
+// timestamp that `Validate` would pass and every consumer would believe. The pair is
+// therefore mapped through pointers, so "not recorded" is an ABSENT key and can never
+// be mistaken for a span in the year 1.
+func mapDigest(d domain.DigestView) *Digest {
+	out := &Digest{Count: d.Count}
+	if d.CoveredFrom.IsZero() || d.CoveredTo.IsZero() {
+		// Both or neither: half a span is not a narrower answer than none, it is an
+		// unbounded one, and a consumer given only `covered_from` would read it as
+		// "everything since".
+		return out
+	}
+	from, to := d.CoveredFrom.UTC(), d.CoveredTo.UTC()
+	span := to.Sub(from).Seconds()
+	out.CoveredFrom, out.CoveredTo, out.SpanSeconds = &from, &to, &span
+	return out
 }
 
 func mapAlerts(in []domain.AlertView, limit int) []Alert {
@@ -276,6 +341,52 @@ func summarise(v *domain.NotificationView) string {
 	if v.Reason != "" {
 		parts = append(parts, "("+v.Reason+")")
 	}
+	return strings.Join(parts, " ")
+}
+
+// digestSummary is a digest's one human sentence — the `summary` a consumer that only
+// wants a string reads, and the `Fallback` the delivery writes to satisfy
+// `deliveries_fb_ck`.
+//
+// ⭐ IT IS WRITTEN HERE RATHER THAN CARRIED IN THE VIEW, and that relocation is the
+// whole of `78388fb`. The old design pre-composed this sentence in
+// `notification/service` and rode it in `Group.Title` — the one field that could not be
+// left empty, because an empty title produced an empty fallback and failed the CHECK
+// with a 23514 AFTER the message had gone out. The constraint was real; it is met here
+// now, in the renderer, which is where a sentence about layout belongs.
+//
+// ⚠️ IT SAYS "UP TO" AND NOT "TO", for the reason the `Digest` type states at length:
+// `covered_to` is exclusive, and prose that reads as a closed span teaches the one
+// human reading it to double-count a boundary the machine fields do not.
+//
+// It deliberately does NOT reuse `summarise`'s `[<STATE>]` prefix vocabulary. A reader
+// (or a grep) that has learned to scan for `[FIRING]` / `[RESOLVED]` must not read a
+// digest as a sixth state, so the bracketed word is `[DIGEST]` — the same choice, for
+// the same reason, that the Slack card's top-level text makes.
+func digestSummary(d domain.DigestView) string {
+	cases := " new cases"
+	if d.Count == 1 {
+		cases = " new case"
+	}
+	parts := []string{"[DIGEST]", strconv.Itoa(d.Count) + cases}
+	if d.CoveredFrom.IsZero() || d.CoveredTo.IsZero() {
+		// The absence is stated rather than skipped, exactly as the Slack card states
+		// it. A sentence that simply stopped after the count would read as a digest
+		// covering some window the reader is left to guess at, and the guess available
+		// — the policy's window today — is the one inference this pair exists to
+		// prevent.
+		return strings.Join(append(parts, "in a window whose span was not recorded"), " ")
+	}
+	from, to := d.CoveredFrom.UTC(), d.CoveredTo.UTC()
+	// RFC 3339 UTC, because that is this envelope's only timestamp dialect (§L.6's W2
+	// check enforces it on every instant-shaped string in the payload) and because a
+	// digest's span is routinely not on the reader's own day: a recovered tick emits up
+	// to `MaxDigestBackfill` windows in one pass, so a bare clock time would be
+	// ambiguous in exactly the case a reader is least able to resolve.
+	parts = append(parts,
+		"in "+to.Sub(from).String(),
+		"from "+from.Format(time.RFC3339),
+		"up to "+to.Format(time.RFC3339))
 	return strings.Join(parts, " ")
 }
 

@@ -16,7 +16,7 @@ import (
 //	shipped default  →  org override (Postgres)  →  declarative config  (highest)
 //
 // Declarative wins because that is what an operator running this under IaC
-// already believes. If `refire_grace_s` is in the Helm values file, the values
+// already believes. If `resolve_grace_s` is in the Helm values file, the values
 // file is the truth; anything else means the cluster drifts from the repository
 // that is supposed to describe it. The failure this ordering removes is the
 // silent one: somebody edits the number in the UI, the next deploy reverts it,
@@ -52,7 +52,7 @@ type DeclaredEntry struct {
 	// Key is the tuning key as `orgs.settings` spells it.
 	Key string
 	// ConfigKey is where an operator would go to change it —
-	// `OTO_TUNING_REFIRE_GRACE_S` or `tuning.refire_grace_s`. It is rendered into
+	// `OTO_TUNING_RESOLVE_GRACE_S` or `tuning.resolve_grace_s`. It is rendered into
 	// the settings screen and into the 409 a write receives.
 	ConfigKey string
 	// Value is the raw configured value: a string from the environment, a typed
@@ -81,7 +81,7 @@ type Declarative struct {
 // revert this layer exists to remove.
 //
 // ⚠️ THE BOUNDS ARE THE SAME TABLE THE API ENFORCES. A declarative value is not
-// privileged: `refire_grace_s: 0` is refused from a values file exactly as it is
+// privileged: `resolve_grace_s: 0` is refused from a values file exactly as it is
 // refused from `curl`, because the reason it is refused — a Slack thread per
 // transition — does not care who asked.
 func NewDeclarative(entries []DeclaredEntry) (Declarative, error) {
@@ -201,9 +201,9 @@ func settingKeyNames() []string {
 
 // rekeyViolations restates a bounds failure in the operator's own vocabulary.
 //
-// `SettingsPatch.Validate` reports `refire_grace_s`, which is right for an API
+// `SettingsPatch.Validate` reports `resolve_grace_s`, which is right for an API
 // caller and wrong for somebody holding a values file: the field they can act on
-// is `OTO_TUNING_REFIRE_GRACE_S`. The MESSAGE — the reason the bound is what it is
+// is `OTO_TUNING_RESOLVE_GRACE_S`. The MESSAGE — the reason the bound is what it is
 // — is carried through untouched, because that reason is identical either way.
 func rekeyViolations(err error, configKeys map[SettingKey]string) error {
 	vs := errs.ViolationsOf(err)
@@ -222,7 +222,7 @@ func rekeyViolations(err error, configKeys map[SettingKey]string) error {
 //
 // Environment variables are strings and YAML is typed, so the same key arrives as
 // `"600"` from one provider and `600` from the other. These four accept both and
-// refuse everything else BY NAME — a values file that says `refire_grace_s: "ten
+// refuse everything else BY NAME — a values file that says `resolve_grace_s: "ten
 // minutes"` must fail the rollout, not boot with a default and a shrug.
 
 func asInt(v any) (int, error) {

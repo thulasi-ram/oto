@@ -105,10 +105,14 @@ being declared done, which is the standard the depguard rules were held to.
 
 ## Open work handed on from the phase-4 audit
 
-- `escalate_after_seconds` still ships on the wire from
-  `internal/notification/api/{dto,mapper}.go`. The DB column (00019), the
-  contract and the UI all say `unacked_reminder_after_s(econds)`; the Go DTO is
-  the last holdout and is listed in `tools/lintvocab/baseline.txt`.
+- ~~`escalate_after_seconds` still ships on the wire from
+  `internal/notification/api/{dto,mapper}.go`; the Go DTO is the last holdout of
+  the `escalation` → `unacked_reminder` rename and is listed in
+  `tools/lintvocab/baseline.txt`.~~ **Closed the hard way (git-bug `bd0fb1d`):
+  the owner withdrew the unacked reminder, so the field is gone from the wire,
+  the DB and the UI rather than renamed.** `escalation` remains a banned word —
+  it was banned for dragging in rotas and ownership, which is true whether or not
+  oto reminds anyone.
 - ~~G1 (Go DTO → OpenAPI), G2 (schemathesis against a running server) and G4
   (generated valibot validators) are unbuilt.~~ **Closed.** All three are built
   and in CI; see the gate table in `README.md`. G2 is Go-native rather than
@@ -170,13 +174,20 @@ being declared done, which is the standard the depguard rules were held to.
 ## Open defects found by implementers, awaiting SPEC amendment
 
 - ~~`§G.7.2` ordering switch tests "root has not landed" before "thread is dead"~~
-  **AMENDED.** `§G.7` now states the implemented order (dead → frozen →
-  sequence → root), the bounded `MaxWait` escalation and its dead-letter
+  **AMENDED.** `§G.7` now states the implemented order (dead → sequence →
+  root; the `frozen` arm was removed by git-bug e5c060b and migration 00066,
+  because nothing could ever enter that state), the bounded `MaxWait` escalation and its dead-letter
   outcome, and the three-phase send with the claim durable before the provider
   call. Reasoning is in ADR 0023.
-- `mention_on_reminder` lives in Slack channel config but neither
+- ~~`mention_on_reminder` lives in Slack channel config but neither
   `NotificationView` nor `RenderOptions` can carry it to the renderer. Worked
-  around with a channel-scoped renderer copy; may want a port field instead.
+  around with a channel-scoped renderer copy; may want a port field instead.~~
+  **CLOSED, BY DELETION.** git-bug `bd0fb1d`: the owner withdrew the unacked
+  reminder and ruled the mention goes with it, so there is no mention surface
+  anywhere in oto and nothing left to carry to the renderer. The
+  channel-scoped renderer copy, `RenderOptions.Mentions`, `WithMentions` and
+  the `For` method all went with it — the port field this item wanted was the
+  right answer to a question that no longer has a subject.
 - `V11`'s bare-UUID assertion was scoped to `button.value` only, because
   `§H.3`'s own overflow option carries `"labels|<group_id>"`.
 
@@ -237,6 +248,35 @@ Recorded here so they can be reversed cheaply. Full reasoning in the ADRs.
    entirely at `firing_only` / `firing_and_resolved`. On those channels a
    re-fire inside the grace is silent. Recorded as an open defect in ADR 0026 —
    changing what `firing_only` means is a product decision, not a tuning one.
+   **That defect was overtaken rather than fixed: ADR 0040 retired T8, so nothing
+   produces `refired` at all and there is no reply for verbosity to drop.** The
+   product question it named — how loud a re-fire should be on a quiet channel —
+   is still open, and it is no longer a question about `group_close_delay` —
+   ⛔ that setting is deleted (see decision 9's follow-up). A conversation now
+   holds exactly one Case, so a re-fire is always a new root: loud, always, with
+   no knob. Whether that is right is the open ruling recorded in SPEC §B.5.
+9. **A Case is `open` or `closed`, and it is never reopened (ADR 0040)** — and
+   this one **reverses shipped behaviour** rather than tuning it, so read §6 of
+   that ADR before touching it. `alert_cases.state` held all four §B.2 words;
+   three of them were facts about the Alert or restatements of a neighbouring
+   column, so the column is now `open | closed` and the four-way reading is
+   derived (migration 00054, lossless in both directions). With it went
+   transition **T8**: a re-fire used to reopen the closed episode when it landed
+   inside `refire_grace`, carrying its acknowledgement across a gap in the
+   firing. Every re-fire is now T7 — the next `seq`, unacknowledged — because an
+   acknowledgement is a receipt for one firing and the second firing is not the
+   one that was signed for. `reopen_count`/`reopen_of` are dropped,
+   `case.reopened` is retired on 00051's terms, and `refire_grace` survives as an
+   inert setting whose future is deliberately undecided.
+   ⛔ **OVERTAKEN — `refire_grace_s` IS DELETED** (git-bug `7287b28`, migration
+   `00071`). "Deliberately undecided" was decided: the setting had no reader
+   outside its own CRUD, and the owner's standing ruling is *delete, do not
+   retire*, because a knob that clamps, validates and reports an origin while
+   changing no outcome is a vocabulary entry the next person has to rule out.
+   `group_close_delay_s` went with it — it timed the close of an `alert_groups`
+   generation, and `00069` deleted the entity. Decision 8's two headline numbers
+   therefore describe settings that no longer exist; the *derivation* stands as
+   the record of how they were reached.
 
 ## Questions genuinely needing the owner
 
@@ -256,4 +296,13 @@ The build is not blocked on any of them.
 Retention defaults were question 5 here. They are now decision 7 above (ADR
 0024). `refire_grace` and the flap thresholds were question 4. They are now
 decision 8 above (ADR 0026). Both were decided without the owner and both are
-written to be cheap to overturn.
+written to be cheap to overturn — and `refire_grace` was in fact overturned:
+see the ⛔ follow-up on decision 9.
+
+4. **How loud should a re-fire be?** New, and it is the successor to the
+   question decision 8 left open. With `alert_groups` deleted a conversation
+   holds exactly one Case, so 500 firing alerts open 500 Slack threads by
+   construction and the only collapse mechanism left is the **opt-in digest**.
+   `test/load`'s `O(groups)` bound and its *"chatter ≤ alerts/10"* ratio are
+   deleted with tombstones. This needs a product ruling; it cannot be tuned,
+   because there is no longer a number to tune.

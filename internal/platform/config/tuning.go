@@ -32,8 +32,8 @@ import (
 // `identity/service.UpdateOrgSettings`.
 //
 // ⭐ THE ORIGIN IS HALF THE FEATURE. `TuningEntry.ConfigKey` records the EXACT
-// key that set the value — `OTO_TUNING_REFIRE_GRACE_S` for an environment
-// variable, `tuning.refire_grace_s` for a file key. A badge saying "managed by
+// key that set the value — `OTO_TUNING_RESOLVE_GRACE_S` for an environment
+// variable, `tuning.resolve_grace_s` for a file key. A badge saying "managed by
 // configuration" and nothing else is a wall: the operator has to know WHERE TO GO
 // AND CHANGE IT, and only the loader knows which of the two providers won.
 //
@@ -45,8 +45,8 @@ import (
 // `identity/domain.NewDeclarative`, which can say what the legal keys are.
 
 // TuningSection is the config section, and the env infix, that carries the
-// declarative tuning layer: `tuning.refire_grace_s` and
-// `OTO_TUNING_REFIRE_GRACE_S` are the same key.
+// declarative tuning layer: `tuning.resolve_grace_s` and
+// `OTO_TUNING_RESOLVE_GRACE_S` are the same key.
 const TuningSection = "tuning"
 
 // TuningEntry is one declaratively-configured tuning value, with the config key
@@ -56,10 +56,10 @@ const TuningSection = "tuning"
 // force every consumer to guess whether `600` arrived from the environment or
 // from the file, and the guess is exactly what an operator needs answered.
 type TuningEntry struct {
-	// Key is the tuning key as `orgs.settings` spells it, e.g. `refire_grace_s`.
+	// Key is the tuning key as `orgs.settings` spells it, e.g. `resolve_grace_s`.
 	Key string
 	// ConfigKey is where the value came from, spelled the way an operator would
-	// have to type it: `OTO_TUNING_REFIRE_GRACE_S` or `tuning.refire_grace_s`.
+	// have to type it: `OTO_TUNING_RESOLVE_GRACE_S` or `tuning.resolve_grace_s`.
 	ConfigKey string
 	// Value is koanf's resolved value — a string from the environment, a typed
 	// scalar or a list from YAML. Parsing is the consumer's business.
@@ -83,7 +83,7 @@ var envTuningPrefix = EnvPrefix + strings.ToUpper(TuningSection) + "_"
 //
 // It re-reads the file and the environment into two throwaway koanf instances
 // rather than inspecting the merged one, because the merged instance cannot
-// answer the only question that matters here. Merged, `tuning.refire_grace_s`
+// answer the only question that matters here. Merged, `tuning.resolve_grace_s`
 // exists and holds 600; it does not say whether an operator would find that 600
 // in their values file or in a Deployment's env block, and sending them to the
 // wrong one is worse than saying nothing.

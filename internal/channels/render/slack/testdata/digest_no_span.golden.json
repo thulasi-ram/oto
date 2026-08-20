@@ -1,0 +1,55 @@
+{
+  "text": ":bar_chart: [DIGEST] 7 new cases in a window whose span was not recorded.",
+  "unfurl_links": false,
+  "unfurl_media": false,
+  "attachments": [
+    {
+      "color": "#6b6b6b",
+      "fallback": ":bar_chart: [DIGEST] 7 new cases in a window whose span was not recorded.",
+      "blocks": [
+        {
+          "type": "section",
+          "block_id": "oto_digest_e6163e861f",
+          "text": {
+            "type": "mrkdwn",
+            "text": ":bar_chart: *Digest*\n_One summary per closed window — not a live signal, and not a card that will change._"
+          }
+        },
+        {
+          "type": "section",
+          "block_id": "oto_digestfacts_e6163e861f",
+          "fields": [
+            {
+              "type": "mrkdwn",
+              "text": "*New cases*\n7"
+            },
+            {
+              "type": "mrkdwn",
+              "text": "*Covers*\nnot recorded for this digest"
+            }
+          ]
+        },
+        {
+          "type": "context",
+          "block_id": "oto_digestlook_e6163e861f",
+          "elements": [
+            {
+              "type": "mrkdwn",
+              "text": ":mag: No link — a digest's set is a policy's matcher over a span, and neither has a URL. Look at *Cases* in oto."
+            }
+          ]
+        },
+        {
+          "type": "context",
+          "block_id": "oto_digestfooter_e6163e861f",
+          "elements": [
+            {
+              "type": "mrkdwn",
+              "text": "oto  ·  _digest_  ·  posted <!date^1786125970^{time}|18:06 UTC>"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

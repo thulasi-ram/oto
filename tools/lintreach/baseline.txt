@@ -85,7 +85,6 @@ noread:github.com/thulasiram/oto/internal/channels/render/slack.Error.Payload	fi
 noread:github.com/thulasiram/oto/internal/channels/render/slack.Payload.LinkNames	field is never read in production — the value goes nowhere (internal/channels/render/slack/blockkit.go:65)
 noread:github.com/thulasiram/oto/internal/channels/render/slack.Text.Emoji	field is never read in production — the value goes nowhere (internal/channels/render/slack/blockkit.go:108)
 noread:github.com/thulasiram/oto/internal/channels/render/webhookjson.Error.Payload	field is never read in production — the value goes nowhere (internal/channels/render/webhookjson/validate.go:22)
-noread:github.com/thulasiram/oto/internal/channels/service.InteractionService.clk	field is never read in production — the value goes nowhere (internal/channels/service/interactions.go:169)
 noread:github.com/thulasiram/oto/internal/channels/service.SlackDestination.ChannelID	field is never read in production — the value goes nowhere (internal/channels/service/interactions.go:77)
 noread:github.com/thulasiram/oto/internal/channels/service.slackAction.Type	field is never read in production — the value goes nowhere (internal/channels/service/interaction_payload.go:80)
 noread:github.com/thulasiram/oto/internal/channels/service.slackAction.URL	field is never read in production — the value goes nowhere (internal/channels/service/interaction_payload.go:81)

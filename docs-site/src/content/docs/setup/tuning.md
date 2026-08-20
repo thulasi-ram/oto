@@ -20,7 +20,7 @@ configuration you already have.
 >   `config`), the **config key** behind any `config` origin, any **shadowed** override, and the
 >   **bounds** the server will accept, with the reason for each.
 > - `PATCH /api/v1/org/settings` writes them. It is a partial write — an omitted key is left alone —
->   and `"reset": ["refire_grace_s"]` returns a key to oto's default.
+>   and `"reset": ["resolve_grace_s"]` returns a key to oto's default.
 >
 > **The bounds below are enforced server-side, not by the form**, and they are checked against the
 > merged state. A change takes effect on the **next evaluation**: nothing caches these numbers, so
@@ -48,11 +48,9 @@ Every key on this page can be set either way. In a config file:
 
 ```yaml
 tuning:
-  refire_grace_s: 1500
-  flap_window_s: 10800
+  resolve_grace_s: 420
+  raw_retention_days: 60
   default_verbosity: firing_only
-  broadcast_on_resolved: true
-  unacked_reminder_mention_list: ["<@U012AB3CD>", "<!subteam^S01ABCDEF>"]
 ```
 
 or as environment variables — the key, upper-cased, behind `OTO_TUNING_`:
@@ -70,7 +68,7 @@ actually in force.
 **What you get, and what you give up:**
 
 - `GET /api/v1/org/settings` reports the key's origin as **`config`** and names the exact key in
-  `config_keys` — `OTO_TUNING_REFIRE_GRACE_S` or `tuning.refire_grace_s`. A "managed by configuration"
+  `config_keys` — `OTO_TUNING_RESOLVE_GRACE_S` or `tuning.resolve_grace_s`. A "managed by configuration"
   badge with no key beside it would just be a wall; this is where you go to change it.
 - **`PATCH` on that key is refused with `409`**, and the problem names the config key. It is not accepted
   and quietly reverted, because that is precisely the mystery this exists to end.
@@ -79,7 +77,7 @@ actually in force.
   under `shadowed`. Delete the config key and the `900` takes effect again — nothing was destroyed on
   your behalf, and nothing is hidden.
 - **The bounds still apply.** Configuration is authoritative about *which* value is in force, not about
-  which values are legal: `refire_grace_s: 0` is refused from a values file exactly as it is from `curl`.
+  which values are legal: `resolve_grace_s: 0` is refused from a values file exactly as it is from `curl`.
 - **A bad key fails the boot**, with the config key named. An unknown key, an unparseable value or one
   outside its bound stops the process rather than starting a pod whose values file contains a line that
   silently does nothing.
@@ -176,10 +174,10 @@ route:
 Those are Alertmanager's own defaults (`dispatch/route.go`). What they mean for oto:
 
 - **`group_wait` is a floor on alert→Slack latency** that oto cannot improve. With the default there is
-  an inherent ~30s delay before oto learns about a brand-new group. Also, and importantly for the flap
-  knobs: *"If an alert is resolved before `group_wait` has elapsed, no notification will be sent"* —
-  **the fastest flaps are invisible to oto entirely.** oto cannot damp, count or report what it is never
-  told about.
+  an inherent ~30s delay before oto learns about a brand-new group. Also, and importantly for the case
+  retention window W: *"If an alert is resolved before `group_wait` has elapsed, no notification will be
+  sent"* — **the fastest flaps are invisible to oto entirely.** oto cannot damp, count or report what it
+  is never told about.
 - **`group_interval` is the clock rate of oto's whole view of the world.** oto does not learn about a
   change to an existing group faster than this. Your Slack card can be up to `group_interval` stale, by
   construction. **Every oto duration below should be read as a multiple of `group_interval`, not as an
@@ -199,8 +197,9 @@ And one number from your **rules**, not your Alertmanager config:
 ```
 
 `for:` is the dwell time before Prometheus considers the rule firing. **It is the hard floor on how
-fast an alert can possibly oscillate**, and it is what makes both `refire_grace` and the flap
-thresholds either meaningful or dead code. If your rules use `for:` durations that vary from `0s` to
+fast an alert can possibly oscillate**, and it is what makes the case retention window W either
+meaningful or dead code. (It used to bound two more settings, `group_close_delay` and the
+`refire_grace` it was pinned to; ⛔ both are deleted — see below.) If your rules use `for:` durations that vary from `0s` to
 `1h`, no single global value is correct for all of them; tune for the rules that actually misbehave.
 
 ---
@@ -267,192 +266,100 @@ place to read a number — several alerts take `for:` from a config variable —
 
 ---
 
-## `refire_grace` — default **1200s (20 minutes)**, accepted range **600–86400**
+## ⛔ `refire_grace` and `group_close_delay` are DELETED — there is nothing here to tune
 
-> **This default was 600s and it was wrong.** Against the corpus above, a 10-minute grace was
-> unreachable for 76 % of real rules — see *The arithmetic against real numbers*, below.
-> It moved to 1200s in [ADR 0026](/adr/0026-tuning-defaults-derived-from-a-real-rule-corpus/),
-> and `group_close_delay` moved with it, because on its own the change would have bought nothing.
+> **Both keys are gone from `orgs.settings`, from the settings screen, from the values file and from
+> the API** (git-bug `7287b28`, migration `00071`). A values file that still sets either is not
+> rejected — `encoding/json` drops an unknown key on read — but nothing anywhere reads it. If you are
+> here because a runbook or an older copy of this page told you to tune one of them, the answer is
+> that the behaviour they described no longer exists.
 
-**What it does.** An alert resolves, then the same `alert_key` fires again. `refire_grace` decides
-whether that is *the same problem coming back* or *a new problem*:
+**What happened, in the order it happened.**
 
-- **Within the grace window** → the existing case **reopens** (`reopen_count += 1`), oto reuses
-  the existing Slack thread, and the card updates in place with a `refired` reply. **No new root
-  message.**
-- **After the grace window** → a **new case** opens. If the alert group had already closed, that
-  means a **new AlertGroup generation**, and a new AlertGroup generation means a **brand-new Slack root
-  message and a brand-new thread.**
+1. [ADR 0040](/adr/0040-a-case-is-open-or-closed-and-never-reopened/) made an AlertCase strictly
+   terminal: **every** re-fire opens the next episode, unacknowledged, whatever the clock says. That
+   removed transition T8 — the edge `refire_grace` selected — so the setting stopped deciding
+   anything about a case.
+2. It survived one more release on the strength of a *pin*: `group_close_delay` shipped at or above
+   it, so `refire_grace` was said to be "the number `group_close_delay` is tied to". ⚠️ **The pin was
+   never enforced.** It was two independent `1200s` literals with a comment insisting the equality
+   was the whole point, and the only check compared the two DEFAULTS — so two operator-written
+   values could contradict each other freely.
+3. `group_close_delay` timed the close of an `alert_groups` **generation**, and git-bug `7570090`
+   (migration `00069`) deleted `alert_groups` outright: the conversation is now the **Case**. With no
+   generation to close, the delay had no job, and with the delay gone the pin had nothing to pin.
 
-So `refire_grace` is, in practice, the knob that decides how many Slack threads a recurring problem
-generates.
+⭐ **AND THE DELETION CHANGES NOTHING YOU CAN SEE IN SLACK, WHICH IS THE STRONGEST ARGUMENT THAT NO
+REPLACEMENT IS OWED.** oto's own tuning defaults had already written it down: *"every re-fire opened a
+new episode, a new generation and a new Slack root card, **with a setting on the screen that looked
+like it should have stopped it**."* A card per re-fire was already the shipped behaviour. The thing a
+replacement knob would have had to preserve was never working.
 
-**Too short → thread fragmentation.** This is the failure mode to actually worry about, and the reason
-is arithmetic, not taste:
+**What this means for you, practically.**
 
-> **If `refire_grace` is shorter than `group_interval`, every single re-fire opens a new Slack thread.**
+- **A re-fire is always a new Slack root card.** There is no window in which it folds into the
+  previous thread, and no number that changes that. A conversation holds exactly one Case.
+- **`resolve_grace_s` is the only remaining lifecycle clock you tune** — how long oto waits after it
+  stops hearing about an alert before calling it `expired`. See *The rest of the org settings*.
+- ⚠️ **500 firing alerts open 500 threads.** The one mechanism that collapses many alerts into one
+  message is the **digest** — a per-policy window with a floor, configured on the notification policy
+  rather than on the org, and **opt-in**. If your channel volume was previously absorbed by group
+  generations, the digest is where to look, and this is a known open question rather than a settled
+  design (SPEC §B.5).
 
-Alertmanager will not tell oto that a group changed sooner than `group_interval` after the last
-notification. So the resolve notification and the subsequent re-fire notification are separated by *at
-least* `group_interval` on the wire. If `refire_grace` is 2 minutes and `group_interval` is 5 minutes,
-the grace window has always expired by the time oto is even capable of hearing about the re-fire. The
-window is unreachable. Every re-fire is classified as a new case, opens a new generation, and
-posts a new root card — and you get exactly the wall of near-identical Slack messages oto exists to
-prevent, with a `refire_grace` setting that looks like it should have prevented it.
-
-**Too long → history that lies.** Two genuinely separate incidents six hours apart get recorded as one
-case that "reopened", sharing one thread and one duration. Your alert history under-counts
-cases, the duration statistics are meaningless (one case with a six-hour gap in the middle),
-and a Slack thread from this morning grows a reply about this evening's outage.
-
-### The arithmetic against real numbers
-
-**The grace clock does not start when oto hears about the resolve. It starts when *Prometheus*
-stopped considering the rule to be firing.** T5 sets the case's `ended_at` from the upstream
-`EndsAt`, not from the observation time — deliberately, because that is when the problem actually
-ended. Everything below follows from that one fact, and it is what the old default missed.
-
-For the same alert to fire again, its condition must hold continuously for the rule's `for:` all over
-again, starting no earlier than `ended_at`. Alertmanager then batches the resulting notification. So:
-
-```
-earliest re-fire oto can OBSERVE  =  ended_at + for                       (best case)
-typical                           =  ended_at + for + group_interval      (a full batching delay)
-```
-
-Run that against the two tables above — `group_interval: 5m`, and the corpus's `for:` distribution:
-
-| Rule `for:` | share of corpus | earliest observable re-fire | typical | reachable at **600s**? | at **1200s**? |
-|---|---|---|---|---|---|
-| *none* / `0s` | 7.1 % | ~0 | `5m` | ✅ | ✅ |
-| `1m`–`3m` | 3.9 % | 1–3m | 6–8m | ✅ | ✅ |
-| `5m` | 12.9 % | `5m` | `10m` | ⚠️ exactly on the boundary | ✅ |
-| **`10m`** | **18.1 %** | `10m` | `15m` | ❌ **only in the best case** | ✅ |
-| **`15m`** *(mode)* | **44.5 %** | `15m` | `20m` | ❌ **never** | ⚠️ on the boundary |
-| `20m`+ | 13.4 % | ≥20m | ≥25m | ❌ | ❌ |
-
-**Cumulatively: a 600s grace was reachable for rules up to `for: 5m` — 24 % of the corpus. 1200s is
-reachable for every rule up to `for: 15m` — 86.5 %.** The default is `for + group_interval` for the
-modal rule: `15m + 5m = 20m`. That is the *smallest* value that reaches the commonest rule shape in
-the wild, and picking the smallest such value is deliberate — see *Which error oto prefers*, below.
-
-A `for: 15m` rule that also pays a full 5-minute batching delay lands exactly on the 20-minute
-boundary. That case is left to the operator rather than absorbed into the default: raise your own
-`refire_grace_s` to `1500` if your rules are long and your batching is slow. The screen will tell you.
-
-**How to choose your own.** Two constraints, and the binding one is whichever is larger:
-
-```
-refire_grace  ≥  2 × group_interval                 (transport floor; below group_interval it does nothing at all)
-refire_grace  ≥  (typical for:) + group_interval    (rule floor; THIS is usually the binding one)
-```
-
-| `group_interval` | Typical rule `for:` | Sane `refire_grace` |
-|---|---|---|
-| `5m` *(the ecosystem default)* | `15m` *(the corpus mode)* | **`20m`** — the shipped default |
-| `5m` | `5m` | `10m`–`15m` |
-| `5m` | `1h` *(node-exporter-style predictive rules)* | `65m`+, or accept that re-fires open new threads |
-| `30s` *(oto's dev compose)* | `15m` | `~16m`; the transport floor is irrelevant here, the rules bind |
-| `15m` | `5m` | `30m`–`45m` — here the transport floor binds |
-
-**The server refuses anything below 600s or above 86400s, and the floor is *derived*, not chosen.**
-Note that **the floor is no longer the default**: it used to be, which meant oto shipped the lowest
-value it was willing to accept and presented it as a recommendation.
-
-> **`refire_grace` must be at least twice oto's ingest replay window (5 minutes), so the floor is 600s.**
-
-oto suppresses a *replayed* webhook batch — an HA Alertmanager sibling, a retry after a 5xx — using a
-content-addressed dedup key over `(source, groupKey, receiver, notification_reason, {fingerprint:status})`
-for 5 minutes. A re-fire whose alert set has not changed produces the **same key**. So a `refire_grace`
-at or below the replay window is unreachable for a second, sharper reason than `group_interval`:
-
-- a re-fire inside the grace is also inside the replay window, and is dropped at ingest before the
-  state machine can classify it;
-- a re-fire the replay window lets through is, by the same arithmetic, already outside the grace.
-
-The two windows used to be **exactly equal** (both 10 minutes), which made the reopen path unreachable
-by construction — the first live verification run had to alter the alert set, changing the dedup key,
-to exercise it at all. Doubling gives every legal configuration a band at least 5 minutes wide in
-which a re-fire is both *observable* and *inside the grace*. Zero is a Slack thread per transition.
-The ceiling is the "history that lies" failure: beyond a day, two separate incidents merge into one
-case.
-
-Then sanity-check the top end against how long your incidents actually last. If a typical incident is
-resolved and genuinely gone in under ten minutes, a ten-minute grace window will merge distinct
-incidents; shorten it toward `2 × group_interval` and accept a few more threads.
-
-### ⛔ `group_close_delay` must be at least `refire_grace`, or none of the above is true
-
-Reopening a case only avoids a new Slack root message **if the group generation is still
-open.** Closing a generation freezes its thread, and the next observation opens generation N+1 with a
-brand-new root card (§B.5). So a `group_close_delay` shorter than `refire_grace` gives you a re-fire
-that oto correctly classified as *the same problem coming back* — `reopen_count += 1`, the right
-history, the right episode — and then posts a new card anyway.
-
-**oto used to ship exactly that**: `group_close_delay` 300s against a `refire_grace` of 600s, so the
-entire second half of the grace was decorative. Both are now `1200s`. Equal is safe rather than racy,
-because the two clocks start at different moments: `group_close_delay` runs from the group's last
-*activity* — the resolve as oto observed it — while `refire_grace` runs from the upstream `ended_at`,
-which is the same instant or earlier. The generation therefore always closes at or after the grace
-expires, never before.
-
-It is **not** enforced as a server-side bound, because a cross-key bound would reject a legal partial
-`PATCH` that merely arrived in the wrong order. The settings screen warns instead.
-
-### Which error oto prefers, and why this default is the *smallest* one that works
-
-The two failures are not symmetric, and the choice between them is the whole product:
-
-- **Grace too short → thread fragmentation.** Noisy, annoying, and every single message is a **loud,
-  visible new root card.** Nobody misses anything. What you lose is readability and an accurate
-  case count.
-- **Grace too long → a genuine re-fire folded into a stale thread.** That is the shape of a **missed
-  page**, which is the worst failure oto can have.
-
-**oto prefers the loud error, and this default is chosen accordingly**: `1200s` is the *smallest*
-value that reaches the modal rule, not the largest value that would cover every rule. Covering the
-`for: 1h` tail would have meant a 65-minute grace, and a 65-minute grace merges genuinely separate
-incidents for the 76 % of rules that do not need it.
-
-Two things make the "too long" failure less bad than it sounds — and one thing makes it worse, which
-you should know about:
-
-1. **A re-fire inside the grace is broadcast into the channel**, not whispered into a thread. It is
-   one of only two transitions ADR 0020 grants an irreversible `reply_broadcast`, on exactly this
-   reasoning: *the thread said resolved and people stopped following it.*
-2. **Flapping still engages.** An alert that reopens repeatedly crosses `flap_threshold` and is marked
-   flapping in the UI, so a grace that is folding too much is visible rather than silent.
-3. **⚠️ But the broadcast is gated by channel `verbosity`, and at `firing_only` or
-   `firing_and_resolved` the `refired` reply is dropped entirely.** On a channel set quieter than the
-   default `status_changes`, a re-fire inside the grace *is* silent — and the longer the grace, the
-   more re-fires fall into that hole. **If you have set a channel to `firing_only`, do not raise
-   `refire_grace` above the derived value.** This is a genuine tension between §H.6's verbosity table
-   and ADR 0020's broadcast set, and it is recorded as an open defect in ADR 0026 rather than fixed
-   here, because changing what `firing_only` means is a product decision and not a tuning one.
+**The derivation is kept, because it is still the best account of the arithmetic.** ADR 0026 derived
+1200s from `for: 15m` (the mode *and* median of the 155 rules kube-prometheus-stack 88.2.0 ships) plus
+`group_interval: 5m` (the one Alertmanager number the ecosystem does not override), and found three
+arithmetic defects in the old 600s value on the way. None of that becomes wrong; it simply no longer
+has a setting to be about. Read
+[ADR 0026](/adr/0026-tuning-defaults-derived-from-a-real-rule-corpus/) for it, and read
+*The three Alertmanager numbers everything depends on*, above, which is unaffected — those numbers
+still bound `resolve_grace`, the case retention window W, and any digest window you pick.
 
 ---
 
-## Flap damping — `flap_threshold` **5** (3–100), `flap_window` **7200s (2h)** (300–86400), `flap_digest_interval` **900s (15m)** (60–86400)
+
+## ⛔ Flap damping is RETIRED — `flap_threshold`, `flap_window`, `flap_digest_interval` now decide NOTHING
+
+> **Do not tune these three. They are inert.** The keys still exist in `orgs.settings` and the
+> settings API still accepts them, so a values file that sets them keeps working — but nothing in oto
+> reads them any more. Everything from here to the end of this section is kept for the record of how
+> the numbers were derived; none of it describes current behaviour.
+
+**What replaced it.** Flap noise is damped at **case formation** by the *case retention window* W
+(migration `00057`): a case whose alert has resolved stays OPEN for W, and a re-fire inside W lands in
+that still-open case instead of opening the next one. One case across the flap, one root card, one
+thread reply. Nothing is withheld at delivery, and no notification is suppressed for flapping.
+
+**Why the detector went with it.** `flap_score` was an EWMA over lifecycle transitions, and W removes
+exactly the transitions it counted: a damped flap appends neither `case.opened` nor `case.resolved`, so
+the score read *below* `flap_threshold` precisely when an alert was flapping hardest. A detector that
+reports false while the thing is happening is worse than no detector, so `alerts.flap_score` and
+`alerts.is_flapping` are **retired in place** — the values already stored stay visible and readable,
+and nothing writes them again. See **ADR 0041**, Amendment 1, and SPEC §B.6.2.
+
+<details>
+<summary>Historical: how the flap defaults were derived (ADR 0026)</summary>
 
 > **`flap_window` was 1800s and it was wrong. `flap_threshold` was 5 and it survived.** Against the
 > corpus above, `5`-in-`30m` was unreachable for *every* rule shape — the damper was dead code that
 > looked configured. See *The `for:` trap*, below, and
 > [ADR 0026](/adr/0026-tuning-defaults-derived-from-a-real-rule-corpus/).
 
-**What it does.** `flap_score` is an EWMA of state transitions per hour. When an alert exceeds
-`flap_threshold` transitions within `flap_window`, oto marks it flapping and changes behaviour: the
-alert still opens and closes cases normally, and the card still updates, but **thread replies stop
-and are replaced by one coalesced digest reply per `flap_digest_interval`**. Flapping is a visible state
-in the UI, never a silent one.
+**What it did.** `flap_score` was an EWMA of state transitions per hour. When an alert exceeded
+`flap_threshold` transitions within `flap_window`, oto marked it flapping and changed behaviour: the
+alert still opened and closed cases normally, and the card still updated, but **thread replies stopped
+and were replaced by one coalesced digest reply per `flap_digest_interval`**. Flapping was a visible
+state in the UI, never a silent one.
 
-**Too high (or unreachable) → the damper never engages.** You keep every individual transition reply for
-an alert that is oscillating, which is the noisiest possible outcome and the exact thing the feature
-exists to stop.
+**Too high (or unreachable) → the damper never engaged.** You kept every individual transition reply for
+an alert that was oscillating, which is the noisiest possible outcome and the exact thing the feature
+existed to stop.
 
-**Too low → real transitions get collapsed into a digest.** An alert that legitimately fired, resolved
-and fired again during a rolling deploy gets marked as flapping, and the second firing is folded into a
-15-minute digest instead of being announced. You find out late. Worse, "flapping" is displayed in the
-UI, so a healthy alert is mislabelled as noisy and someone eventually deletes a useful rule because of
+**Too low → real transitions got collapsed into a digest.** An alert that legitimately fired, resolved
+and fired again during a rolling deploy got marked as flapping, and the second firing was folded into a
+15-minute digest instead of being announced. You found out late. Worse, "flapping" was displayed in the
+UI, so a healthy alert was mislabelled as noisy and someone eventually deleted a useful rule because of
 it.
 
 ### The `for:` trap — why the 30-minute window made this dead code
@@ -460,9 +367,11 @@ it.
 > **A threshold of 5 transitions in 30 minutes was unreachable for every rule shape in the corpus,
 > including rules with no `for:` at all.**
 
-What oto counts is lifecycle events on the alert — `case.opened`, `case.reopened`,
-`case.resolved`, `case.expired` and the suppression pair — so **one full
-fire → resolve → fire cycle contributes exactly two.** The question is therefore how fast a cycle can
+What oto counts is lifecycle events on the alert — `case.opened`, `case.resolved`, `case.expired` and
+the suppression pair — so **one full fire → resolve → fire cycle contributes exactly two.** (The
+counting query also names the retired `case.reopened`, in both its spellings, so that a window
+reaching back before ADR 0040 still reports the alert as restlessly as it actually was. Nothing
+appends that type any more.) The question is therefore how fast a cycle can
 physically be *observed*, and there are two independent floors:
 
 - **The rule floor.** A `resolved → firing` edge needs the condition to hold continuously for `for:`
@@ -510,7 +419,7 @@ threshold sits at 42 % of it, comfortably inside the "roughly half" rule; every 
 corpus has a larger ceiling still.
 
 Rounding **up** is deliberate. A window that is too wide fails *visibly* — a stale "flapping" badge on
-an alert that has settled — and self-heals within one 5-minute `flap.score` tick, because the window
+an alert that had settled — and self-healed within one 5-minute `flap.score` tick, because the window
 is rolling. A window that is too narrow fails *invisibly*, as silence where a damper should have been.
 
 **`flap_threshold` stays 5, and that is a result rather than an omission.** It is above the floor of 3
@@ -536,61 +445,7 @@ allowed one summary reply. Keep it **at or above `group_interval`** — a digest
 `group_interval` is the useful range, and 15m is exactly `3 ×` the 5m the ecosystem runs. Set it too
 high and the digest arrives long after anyone cared; too low and the digest is not a digest.
 
----
-
-## Storm collapse — `storm_threshold` **25** (2–10000), `storm_window` **60s** (10–3600), `storm_cooldown` **600s (10m)** (60–86400)
-
-**What it does.** If more than `storm_threshold` distinct alerts join **one AlertGroup generation**
-within `storm_window`, the group enters storm mode: oto posts or updates exactly **one** root message
-carrying a count and a link, and **suppresses every per-alert thread reply**. Storm mode ends after
-`storm_cooldown` with no new members. Like flapping, it is a visible state.
-
-**Too high → the flood you built this for.** A node pool dies, 200 pods alert, and oto faithfully posts
-200 thread replies. Emitting 1,000 Slack messages is strictly worse than emitting zero, and you will
-also hit `chat.postMessage`'s ~1 message/second/channel limit and spend twenty minutes delivering a
-backlog nobody will read.
-
-**Too low → oto goes quiet exactly when you need detail.** Storm mode suppresses per-alert replies. A
-threshold of 5 means a routine deploy touching six services collapses into "6 alerts, see them all in
-oto" — and the operator has to leave Slack to find out *which* six. Storm mode is a defence against a
-flood, not a summarisation strategy.
-
-### `group_by` decides whether these knobs do anything at all
-
-This is the one that catches people. `storm_threshold` counts alerts joining **one group**, and your
-`group_by` decides how many alerts can ever be in a group:
-
-```yaml
-group_by: [alertname, cluster, namespace]   # coarse — one group can hold hundreds. Storm mode works.
-group_by: [alertname, instance, pod]        # fine — one group holds ~1 alert. Storm mode can NEVER fire.
-group_by: [...]                             # every label — one group per alert. Same.
-```
-
-**If your `group_by` includes a high-cardinality label (`instance`, `pod`, `container`), storm collapse
-is unreachable at any threshold**, because no group ever accumulates 25 members. You will get one root
-card per alert instead, which is a flood by a different route. The fix is in `alertmanager.yml`, not in
-oto: group on the labels that describe the *problem*, not the ones that describe the *instance*.
-
-**How to choose.**
-
-- **`storm_threshold`** — set it above your largest *normal* group and below your smallest *abnormal*
-  one. A useful proxy: the number of replicas in your largest deployment. If your biggest service runs
-  40 pods and a bad deploy alerts on all of them, `25` is right. If your groups never exceed 8 members
-  even in an outage, lower it to `10`; if you routinely see 60-member groups during ordinary deploys,
-  raise it, or you will lose per-alert detail every Tuesday.
-- **`storm_window`** — must be **longer than `group_wait`**, or a burst that Alertmanager is still
-  batching will not look like a burst to oto. With `group_wait: 30s`, the shipped `60s` is a sensible
-  `2 ×`. If you have raised `group_wait` to `2m` to reduce noise, raise `storm_window` to `4m` with it,
-  or storm mode will trigger inconsistently depending on where the burst falls relative to the batch
-  boundary.
-- **`storm_cooldown`** — how long the group must be quiet before normal per-alert behaviour resumes.
-  Keep it **at or above `group_interval`**, otherwise storm mode will flicker on and off across
-  consecutive batches. The default `10m` is `2 ×` the Alertmanager default. The server refuses
-  anything below `60s`, which is the point at which the flicker becomes certain.
-
-**The server refuses a `storm_threshold` of 1.** A threshold of 1 collapses every group on its second
-member: permanent storm mode, every per-alert reply suppressed forever, which is silence wearing a
-damper's name.
+</details>
 
 ---
 
@@ -610,13 +465,7 @@ one change that matters surfaces once in the channel. See
 | Transition | Why the quiet form is invisible |
 |---|---|
 | Unacked reminder | Its purpose is to reach somebody who has **not** engaged. In-thread it reaches only the already-engaged, which is the wrong audience. |
-| Re-fire within `refire_grace` | The thread said *resolved* and people stopped following it. This is the one re-fire case that produces no new root message. (A re-fire *after* the grace window already posts a new card — see `refire_grace` above.) |
-
-**Storm is not one of them, and is instead a channel-level notice.** A storm means *many* alerts across
-many groups, so one broadcast per storming group would be exactly the flood the damping exists to
-prevent. Each group's thread still records that it went quiet; the **channel** is told once, and the
-"once" is enforced by a latch (`channels.storm_notice_at`) whose window is your `storm_cooldown_s`.
-Twenty groups collapsing in a minute produce one message.
+| Re-fire (`refired`) ⚠️ **unreachable** | The thread said *resolved* and people stopped following it. This was the one re-fire that produced no new root message. **Nothing produces `refired` any more** — ADR 0040 retired the edge behind it, so a re-fire is `fired` (or `new_alerts`) and is not broadcast. The policy is intact and the value stays declared; it simply has no producer. A re-fire that finds a **closed** generation still posts a new root card, which was always loud. |
 
 **There is no severity-increase broadcast, and there cannot be.** `severity` is a Prometheus label and
 labels are hashed into an Alert's identity, so `warning` and `critical` versions of one rule are two
@@ -637,15 +486,19 @@ because a resolve arrived quietly.
    engineer be angry to have missed this?"*, not *"is this interesting?"* A channel that learns to
    scroll past oto's broadcasts has lost the only mechanism oto has for genuine urgency.
 2. **A broadcast is a `chat.postMessage`**, so it spends the ~1 message/second/channel budget — unlike
-   an update, which is Tier 3 and effectively free. This is why broadcasts are damped during a storm:
-   one broadcast per interesting transition, during the exact event that generates hundreds of them, is
-   a self-inflicted flood. In storm mode exactly one broadcast is permitted **per channel** — the storm
-   notice itself.
+   an update, which is Tier 3 and effectively free. Two hundred pods alerting at once therefore spend
+   two hundred seconds of that budget if every one of them broadcasts. **oto damps none of this for
+   you** — storm collapse was removed ([ADR 0042](/adr/0042-storm-damping-is-removed/)) and nothing
+   replaced it at the notification layer. The two default broadcasts are the whole of the defence, and
+   `broadcast_on_resolved` is the only one you can add.
 
 **Interaction with `verbosity`.** Broadcast is decided per *transition*, then modulated by the
 destination channel's `verbosity` and `thread_updates` settings. A channel that has opted out of thread
-replies does not receive louder ones. The single exception is the unacked reminder, which is always
-broadcast — a reminder nobody sees is not a reminder.
+replies does not receive louder ones.
+
+⛔ **There used to be one exception — the unacked reminder, always broadcast, because a reminder
+nobody sees is not a reminder. oto no longer sends it at all** (git-bug `bd0fb1d`): nothing is
+delivered that nobody asked for. `refired` is now the only reason that always broadcasts.
 
 ---
 
@@ -654,14 +507,10 @@ broadcast — a reminder nobody sees is not a reminder.
 | Key | Default | What it does | Relationship to your config |
 |---|---|---|---|
 | `resolve_grace_s` | `300` (5m) | How long past an alert's `EndsAt` lease oto waits before the reaper marks the case **`expired`**. | Prometheus refreshes `EndsAt` on every send; the lease is typically `4 × scrape_interval` or `evaluation_interval` (commonly 3–4 minutes). Set `resolve_grace` **above** that lease, or a single missed scrape looks like an expiry. `5m` covers the usual case. |
-| `group_close_delay_s` | `1200` (20m) | How long an AlertGroup stays `open` after its last member stops firing, before it closes. Closing a group is what makes the *next* fire open a new generation — and therefore a new Slack root message. | Keep it **at or above `group_interval`**, and **at or above `refire_grace`** — that second one is not a suggestion. A `group_close_delay` shorter than `refire_grace` hands a re-fire that oto classified as *the same problem coming back* a brand-new root card anyway, which is the entire thing the grace exists to avoid. It shipped as `300` against a `600` grace, which defeated half the grace; both are now `1200`. See `refire_grace`, above. |
-| `unacked_reminder_after_s` | `0` (unset) | The org **default** a notification policy's own `unacked_reminder_after_s` falls back to when it is NULL. A policy with an opinion always wins. | **Zero means "no org default"**, which is what shipped — not "immediately". When set, the range is `60`–`86400`, mirroring `policies_reminder_ck` exactly. ⛔ One stage, forever (§G.9.1). |
+| ⛔ `refire_grace_s`, `group_close_delay_s` | **DELETED** | Nothing. Both keys are gone from `orgs.settings` and from this API (git-bug `7287b28`, migration `00071`). | A re-fire is always a new Slack root card and there is no number that changes that. See the ⛔ section above for why, and what to reach for instead. |
 | `default_verbosity` | `status_changes` | The fallback for a Channel that names no verbosity of its own. A channel's own setting always wins — an org default can never make a quiet channel loud. | Set it to `firing_only` if most of your channels want the quietest setting and you would rather not repeat yourself. |
 | `broadcast_on_resolved` | `false` | Whether `all_resolved` is broadcast into the channel rather than posted quietly in the thread. | See **Broadcast**, above. It is the only broadcast that is configurable, because a broadcast cannot be un-sent. |
-| `unacked_reminder_mention` | `none` | Who the unacked reminder addresses: `none`, `here`, `channel`, or `list`. | ⚠️ **`here` and `channel` probably do nothing.** Slack documents that `@here`/`@channel` *"won't notify people … when they're used in threads"*, and oto's reminder is a thread reply. Individual and usergroup mentions **do** notify from that position, so `list` is the only form known to work — which is why the default is `none` rather than a control that silently achieves nothing. |
-| `unacked_reminder_mention_list` | `[]` | The explicit audience for mode `list`: Slack users `<@U…>` and usergroups `<!subteam^S…>`, at most 10. | ⛔ **Not a rota.** A fixed audience you choose once. It must never become time-aware and there is never a second stage (§G.9.1). oto does not know who is on call. |
-| `unacked_reminder_mention_min_severity` | `critical` | The severity at or above which a mention is attached at all. | `@here` on every unacked *warning* is how a channel learns to mute oto, and a muted channel hides the real incident. The gate **fails closed**: a severity oto cannot rank gets no mention at any setting. |
-| `raw_retention_days` | `30` | How long raw webhook payloads are kept before their partition is dropped, permanently. | Nothing in `alertmanager.yml` bears on it. The thirty is **derived**: it is oto's event-idempotency horizon, past which replaying a stored batch would append the timeline twice. See **Retention**, below. |
+| `raw_retention_days` | `30` | How long raw webhook payloads are kept before their partition is dropped, permanently. | Nothing in `alertmanager.yml` bears on it. The thirty is **chosen**, not derived: a replay is refused when the alerts a batch would touch have moved on, never because the batch is old, so this is the depth of the rejection and failed-batch feeds and the window a replay can be attempted in. See **Retention**, below. |
 | `event_retention_months` | `13` | How long the instant-by-instant timeline is kept before the month is dropped, permanently. | The only setting on this page that destroys something oto cannot rebuild. See **Retention**, below, before you lower it. |
 
 **`expired` is not `resolved`, and the distinction is load-bearing.** `expired` means *oto stopped
@@ -687,7 +536,7 @@ Start here, because it is the part most people get wrong. **Retention deletes th
 record.** No setting on this page, at any value, deletes:
 
 - the **alert** itself, its full label set, its annotations, when it was first seen and last seen, how
-  many times it has fired, and whether it is flapping;
+  many times it has fired, and the last flap verdict oto recorded before flap detection was retired;
 - **every firing episode** — when it started, when and how it ended, whether that end was `resolved`
   or `expired`, whether it was suppressed and by what, who acknowledged it, when, and their ack note;
 - **what the rule said at the moment it fired** — the rule snapshot;
@@ -705,21 +554,25 @@ The raw webhook bodies Alertmanager sent, and the record of which elements of th
 
 After the boundary you **can no longer**: see the exact bytes that produced an alert, inspect a
 rejection feed older than the window, or replay a stored batch through a fixed parser. You **can still**
-answer every question in the list above — none of it is served from here. There is no UI or API for raw
-payloads today; they are a `psql`-level debugging artifact.
+answer every question in the list above — none of it is served from here. Two screens do read these
+tables: `GET /api/v1/sources/{id}/rejections` and `GET /api/v1/sources/{id}/failed-batches`, neither of
+which takes a date range, because an operator asking *"why did my alert never appear?"* does not know
+when it went missing. **This setting is the depth of both feeds.**
 
-Thirty days is not a taste. It is exactly the window in which a stored batch can still be replayed
-without duplicating the timeline, because oto's event-dedupe keys age out at thirty days. Keeping raw
-payloads longer keeps bytes that can no longer be used for the one thing they are kept for. **Lower it**
-if the payloads are sensitive in your environment and you want them gone sooner; the cost is
-reproducibility, not history. Raising it above thirty buys disk, not capability.
+Thirty days is **chosen**, not derived. Age is not what makes a replay unsafe: `oto replay` refuses a
+batch whose alerts have moved on since it arrived — a later batch already wrote to the case, or the case
+closed while this batch still says firing — and it allows one at any age the bytes survive. So what the
+thirty buys is the depth of those two feeds and the window in which a replay can be attempted at all;
+past the boundary there is nothing to replay and no flag that changes it. **Lower it** if the payloads
+are sensitive in your environment and you want them gone sooner; the cost is reproducibility and feed
+depth, not history. Raising it buys more of both, and disk.
 
 At a thousand alert firings a day this window costs about 50 MB; at ten thousand, about 500 MB.
 
 ### `event_retention_months` (default 13) — what you lose
 
 The instant-by-instant timeline: the ordered transitions with an actor on each, the delivery attempts,
-the enrichment and storm markers — and, the one that matters, **every human comment and every unack
+the enrichment markers — and, the one that matters, **every human comment and every unack
 note. Those live nowhere else in oto and cannot be reconstructed from anything.** When the month is
 dropped, the writing goes with it.
 
@@ -761,31 +614,33 @@ change nothing — oto's defaults *are* the derivation for that case**, and this
 
 ```jsonc
 {
-  "refire_grace_s":       1200,    // for: 15m (corpus mode) + group_interval 5m
-  "resolve_grace_s":       300,    // above a typical EndsAt lease of 3-4 minutes
-  "group_close_delay_s":  1200,    // = refire_grace, or the grace buys nothing
+  "resolve_grace_s":       300     // above a typical EndsAt lease of 3-4 minutes
 
-  "flap_threshold":          5,    // ~42% of the observable ceiling below
-  "flap_window_s":        7200,    // 5 x the 20m observable cycle, rounded up
-  "flap_digest_interval_s": 900,   // 3 x group_interval
-
-  "storm_threshold":        25,    // suits group_by: [namespace]; check yours
-  "storm_window_s":         60,    // 2 x group_wait
-  "storm_cooldown_s":      600     // 2 x group_interval
+  // ⛔ The three flap keys are NOT here on purpose: flap detection is RETIRED and
+  // they decide nothing. Setting them is harmless and has no effect.
+  //
+  // ⛔ Nor are `refire_grace_s` and `group_close_delay_s`, which used to be the two
+  // headline numbers on this page. They are DELETED, not inert — the keys no longer
+  // exist (git-bug 7287b28, migration 00071). `resolve_grace_s` is the only
+  // lifecycle clock a tenant still sets.
 }
 ```
 
 **Two places where you should deviate, and the deviation is not small:**
 
 - **Rules with a long `for:`.** If your alerting is dominated by node-exporter-style predictive rules
-  (`for: 1h`), the observable cycle is 65 minutes: `refire_grace` would need to be ~`4000` and flap
-  damping is meaningless at any window. Leave the flap knobs alone and let them never trigger.
+  (`for: 1h`), the observable cycle is 65 minutes. ⛔ **There is no longer a setting that wants
+  widening to match it.** `refire_grace` and `group_close_delay_s` were the two that did, and both are
+  deleted; flap damping used to need a matching window and is retired. What the long cycle still bears
+  on is the case retention window W and any **digest window** you configure on a notification policy —
+  a digest narrower than the cycle summarises a span in which nothing could have happened twice.
 - **A fast `group_interval`.** oto's own dev compose runs `group_interval: 30s`, where the cycle for
-  an instantaneous rule is 60 seconds. There, the *rules* bind rather than the transport, and both
-  `flap_window_s` and `refire_grace_s` can come down a long way — `refire_grace_s` no lower than
-  `600`, which is a transport limit and not a preference.
+  an instantaneous rule is 60 seconds. There, the *rules* bind rather than the transport. Nothing on
+  this page needs lowering to suit it any more; the number is worth knowing because it is the floor
+  under every window you pick, including the 300s minimum on a digest.
 
 **And check one thing before adopting any of it:** does your `group_by` contain `instance`, `pod` or
-another per-replica label? If it does, storm collapse cannot engage at any threshold, and the fix is in
-`alertmanager.yml` rather than here. The Kubernetes ecosystem's `group_by: [namespace]` is coarse and
-storm collapse works against it; a `group_by` assembled by hand often is not.
+another per-replica label? If it does, every alert lands in a group of one, so every alert gets its own
+Slack root card and none of the grouping keys above changes anything — a flood by a different route,
+and the fix is in `alertmanager.yml` rather than here. The Kubernetes ecosystem's
+`group_by: [namespace]` is coarse and groups usefully; a `group_by` assembled by hand often is not.

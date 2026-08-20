@@ -173,7 +173,7 @@ Everything below crosses, brushes, or props open the line. Ruled `KEEP` / `CUT` 
 
 | Element | Ruling | Detail |
 |---|---|---|
-| `ackAlert`, `unackAlert`, `ackAlertGroup` (openapi); `POST /alerts/{id}/ack`, `/unack`, `/alert-groups/{id}/ack`; T9/T10 | **KEEP** | Ack is a receipt on a case, not a claim on a person. The orthogonal `ack_state` axis (B.1) and the openapi copy *"an acked alert is still firing… says 'a human has seen this', not 'this is over'"* are already exactly right. **Guard to add:** ack MUST NOT be presented in UI copy or docs as "take ownership", "I'm on it", or "assign to me". |
+| `ackCase`, `unackCase`, `ackAlertGroup` (openapi); `POST /cases/{id}/ack`, `/unack`, `/alert-groups/{id}/ack`; T9/T10 | **KEEP** | Ack is a receipt on a case, not a claim on a person. The orthogonal `ack_state` axis (B.1) and the openapi copy *"an acked alert is still firing… says 'a human has seen this', not 'this is over'"* are already exactly right. **Guard to add:** ack MUST NOT be presented in UI copy or docs as "take ownership", "I'm on it", or "assign to me". |
 | `alert_cases.acked_by`, `acked_by_label`, `acked_at`, `ack_note` | **KEEP** | Attribution as metadata on a signal row. |
 | `commentOnAlert`, `commentOnAlertGroup`, `comment.added`, T14 | **KEEP** | Immutable events on a signal timeline; the openapi already forbids edit and delete. **Guards to add:** (a) no `@mention` semantics that select a human recipient; (b) no comment threading or replies-to-comments — that is a conversation, and conversations are OUT; (c) the mirror is one-way oto→Slack (already implied by C9; state it). |
 | `alert_events.actor_kind = 'user'`, `actor_id`, `actor_label` | **KEEP** | The literal encoding of *actor, never subject*. This is the schema-level proof that FR-1 holds. |
@@ -264,6 +264,13 @@ status pages, postmortems, rotas — are not on this list, because nobody adds t
 - **What it drags in:** a stage ladder → per-stage targets → targets that are people → a rota to resolve
   the person → phone/SMS because Slack is not enough at 3am → telephony vendors, 24/7 reliability
   obligations, and compliance. This is the shortest path from oto to PagerDuty and it is four small PRs.
+- ⛔ **SUPERSEDED 2026-08-20 (git-bug `bd0fb1d`): the reminder is REMOVED, not merely renamed.** The
+  RESHAPE below was carried out and has now been overtaken — the owner withdrew the mechanism
+  entirely, and the mention keys went with it. This is a TIGHTENING of the boundary, not a retreat
+  from it: §5.2's restriction existed to stop oto naming a responder, and with no mention surface
+  there is nowhere left to cross that line. The `escalation` banned word STAYS. The argument below is
+  left as written, because it is the record of what was decided in August 2026 and the reasoning is
+  what makes the removal obviously right rather than arbitrary.
 - **Door decision:** §5.2. Rename the concept to `unacked_reminder`, and bind the scalar: *one stage,
   forever, same channels*. The rename is the load-bearing part — as long as the word "escalation" lives
   in the schema, stage two is a natural reading of the word rather than a scope violation.
@@ -338,7 +345,7 @@ consumer of incident state.*
 | **H-5** | **`getAlertRuleHistory` / `getCaseRule`** — the rule `expr` and `for` **as they were at fire time**, plus version history | **This is oto's unique contribution to someone else's incident workflow.** No incident management platform has it, and it is the single most valuable artefact at postmortem time. Lead the integration story with this, not with "we also have a timeline". |
 | **H-6** | **SSE with durable resume** — `streamEvents`, `Last-Event-ID`, 24h replay window | A downstream tails oto without polling and without losing events across its own restarts. |
 | **H-7** | **Stable deep links** | Every alert, case and group has a permanent URL an incident record can cite. |
-| **H-8** | **Exactly one inbound human verb: acknowledge** | `ackAlert` with a PAT is how an incident tool tells oto *"a human has this"*. oto accepts the **receipt**; it does not manage the responder. `commentOnAlert` is the second and last inbound verb, and it is an annotation, not a state change. |
+| **H-8** | **Exactly one inbound human verb: acknowledge** | `ackCase` with a PAT is how an incident tool tells oto *"a human has this"*. oto accepts the **receipt**; it does not manage the responder. `commentOnAlert` is the second and last inbound verb, and it is an annotation, not a state change. |
 
 ### What oto must NOT try to own
 
@@ -402,9 +409,19 @@ than a stated refusal, because absence is not a decision anyone can defend or re
 **Snooze is unambiguously IN under this document's own test.** "Suppress *oto's* notifications for this
 `alert_key` until T" is a fact about a signal's notification, stored only in oto's database, changing
 nothing in the cluster, auto-expiring, attributed, and visible in the UI as a state — exactly the shape
-of `is_flapping` and `storm_mode`, which the spec already ships as damping mechanisms with visible UI
-states (B.6). It passes FR-1 (subject = a signal), H-1 (no obligation on anyone), H-2 (dies with the
-alert), and H-3 (no external write). It is nearer to `channels.verbosity` than to a silence.
+of `is_flapping` and `storm_mode`, which the spec shipped at the time as damping mechanisms with
+visible UI states (B.6, and see the note below). It passes FR-1 (subject = a signal), H-1 (no
+obligation on anyone), H-2 (dies with the alert), and H-3 (no external write). It is nearer to
+`channels.verbosity` than to a silence.
+
+⚠️ **Neither comparison holds today, and the two went different ways.** `storm_mode` is DELETED:
+storm damping is removed outright (ADR 0042) and migration `00059` dropped `alert_groups.storm_mode`,
+`storm_since`, `groups_storm_ck` and `channels.storm_notice_at`. `alerts.is_flapping` still EXISTS as
+a column and is RETIRED IN PLACE (ADR 0041 Amendment 1): no writer remains, every read is intact, and
+it keeps the last value it was written — but its UI is gone, the flapping chip and the `?flapping=`
+facet having been removed from the web app. The comparison this section draws is therefore historical;
+the ruling it argues for is not, because snooze shipped as the first-class, auto-expiring, attributed
+alert state described below.
 
 The argument for shipping it in **v1, not v1.1**: the failure mode the memo identifies as fatal is users
 muting the Slack channel (§3.4). Storm collapse and flap damping are automatic defences against oto's

@@ -170,12 +170,32 @@ func NewGroupKey(s string) (GroupKey, error) {
 var GroupSplitAxes = []string{LabelAlertName, LabelNamespace}
 
 // SplitLabels projects an Alert's label set onto the axes an AlertGroup splits
-// on. It is the label half of ComputeGroupKey's pre-image and it is ALSO what is
-// stored as `alert_groups.group_labels`, which is what makes a notification
-// policy matching `namespace` work: every matcher in oto is fed the group's
-// labels, so under the old rule a matcher on `namespace` matched nothing unless
-// the operator happened to put `namespace` in `group_by`, and it failed quietly
-// as a `no_policy` suppression rather than as an error.
+// on. It is the label half of ComputeGroupKey's pre-image, and that is now the
+// WHOLE of what it is: a projection on its way into a hash.
+//
+// ⛔ IT IS NO LONGER "WHAT IS STORED AS `alert_groups.group_labels`" (git-bug
+// `7570090`, migration 00069). The column is gone and so is the table under it, so
+// nothing persists this map — it is computed, canonicalised, hashed into a GroupKey
+// and discarded. A reader looking for these axes in a row is looking for a table
+// that was dropped.
+//
+// ⭐ THE ARGUMENT THE OLD SENTENCE CARRIED IS SETTLED, AND SETTLED HARDER THAN
+// STORING THE MAP EVER SETTLED IT. It said this projection being stored is "what
+// makes a notification policy matching `namespace` work", because every matcher in
+// oto was fed the GROUP's labels — so a matcher on `namespace` matched nothing
+// unless the operator happened to put `namespace` in `group_by`, and it failed
+// quietly as a `no_policy` suppression rather than as an error. A policy is now
+// matched against the ALERT's own label set, which means a matcher on ANY label
+// works whether or not that label is one of these four axes. The same change
+// corrected `drill/domain.suppressionDetail`'s sentence from "this group's labels"
+// to "this alert's", for exactly this reason.
+//
+// ⭐ WHAT STILL READS THE AXES is `case_policy_config`, which keys the case
+// retention window on `(namespace, alertname)` so that an operator learns ONE set
+// of dimensions for grouping and for retention rather than two —
+// `alerts/repository/casepolicy.go` cites this function by name for that. The list
+// below is therefore still a live contract; it is a contract about a KEY and a
+// partition, not about a column.
 //
 // # WHAT IS DELIBERATELY ABSENT
 //

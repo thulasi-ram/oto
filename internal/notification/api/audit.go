@@ -17,8 +17,31 @@ import (
 // REJECTED, because a typo'd `?statuss=dead` that is silently ignored returns the
 // wrong page and looks right.
 var (
+	// ⛔ `conversation_id` WAS SPELLED `group_id`, AND THE OLD SPELLING IS NOW REJECTED
+	// RATHER THAN ALIASED (git-bug `7570090`, migration `00069`). The filter asks a
+	// DELIVERY-TARGET question — "show me every intent that landed on THIS
+	// conversation" — and the target did not disappear with `alert_groups`, it changed
+	// spelling to `(conversation_kind, conversation_id)` (migration 00064), which is
+	// what `listNotificationsSQL` predicates on. Publishing `group_id` on top of that
+	// predicate kept a dropped column's name alive on a public surface, which is a
+	// promise the schema cannot keep.
+	//
+	// ⭐ THE REJECTION IS THE POINT, AND IT IS §E.3 DOING ITS JOB. An unknown query
+	// parameter is a `400 unknown_parameter` (`httpx.NewParams`), so a caller still
+	// sending `?group_id=` is TOLD the name moved, in one round trip — where an
+	// accepted-and-ignored `group_id` would have returned the whole unfiltered audit
+	// page and looked right, and where an ALIAS would leave two spellings of one filter
+	// to drift, which is the defect the `suppressedReasons` note below is about
+	// arriving from the other direction.
+	//
+	// ⚠️ NOTHING DEPENDED ON THE OLD SPELLING, WHICH IS WHY IT COULD GO CLEANLY. The web
+	// client never sent it (`features/notifications/ActivitySection.tsx` records that
+	// the row's group link went with the group), no test names it, and the only other
+	// place it was published is the OpenAPI parameter this change renames with it. Two
+	// endpoints outside this package still declare a `group_id` — `GET /api/v1/cases`
+	// and `GET /api/v1/stream` — and this rename does not reach either.
 	notificationParams = []string{
-		"status", "reason", "suppressed_reason", "group_id", "alert_id", "policy_id",
+		"status", "reason", "suppressed_reason", "conversation_id", "alert_id", "policy_id",
 		"since", "until", "limit", "cursor",
 	}
 	deliveryParams = []string{
@@ -90,7 +113,14 @@ func (rt *Router) listNotifications(w http.ResponseWriter, r *http.Request) {
 	}
 
 	f := domain.NotificationFilter{
-		GroupID:  p.UUID("group_id"),
+		// ⚠️ THE WIRE NAME IS `conversation_id` AND THE FIELD IS STILL `GroupID`, which
+		// is a rename finished on the public side and not yet on the private one.
+		// `domain.NotificationFilter` belongs to the domain package; the parameter, the
+		// contract and the cursor hash are this layer's and are all `conversation_id`
+		// now. What the predicate compares has been `conversation_id` since `00069`
+		// (`repository/config.go`), so the only thing left mis-spelled is a Go field name
+		// nothing outside the module can read.
+		GroupID:  p.UUID("conversation_id"),
 		AlertID:  p.UUID("alert_id"),
 		PolicyID: p.UUID("policy_id"),
 		Since:    p.Time("since"),
@@ -397,7 +427,10 @@ func notificationFilterParts(f domain.NotificationFilter) []string {
 		parts = append(parts, "suppressed_reason="+string(v))
 	}
 	parts = append(parts,
-		"group_id="+f.GroupID.String(),
+		// The hash names the PARAMETER, so it moves with it: a cursor minted under
+		// `?conversation_id=A` must not replay against `?conversation_id=B`, and the part
+		// is spelled as the caller spelled the filter.
+		"conversation_id="+f.GroupID.String(),
 		"alert_id="+f.AlertID.String(),
 		"policy_id="+f.PolicyID.String(),
 		"since="+timeKey(f.Since),

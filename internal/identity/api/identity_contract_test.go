@@ -96,13 +96,15 @@ var contractIdentityEpoch = time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)
 // handler see BYTE-IDENTICAL input: a fixture validated in one shape and sent in
 // another proves nothing about either.
 const (
-	// contractSettingsPatchBody raises the group close delay and hands the flap
-	// threshold back to oto's default.
-	contractSettingsPatchBody = `{"group_close_delay_s":600,"reset":["flap_threshold"]}`
+	// contractSettingsPatchBody raises the flap digest interval and hands the flap
+	// threshold back to oto's default. ⛔ IT USED `group_close_delay_s` UNTIL
+	// git-bug 7287b28 DELETED THAT KEY; what the body has to exercise is one write
+	// plus one reset in one request, and any two integer keys do that.
+	contractSettingsPatchBody = `{"flap_digest_interval_s":600,"reset":["flap_threshold"]}`
 	// contractSettingsBadResetBody names a key that does not exist. It is a body
 	// the CONTRACT permits — `reset` is an array of bounded strings, with no enum —
 	// which is precisely why the server has to refuse it.
-	contractSettingsBadResetBody = `{"reset":["refire_grace"]}`
+	contractSettingsBadResetBody = `{"reset":["resolve_grace"]}`
 
 	// contractCreateTokenBody mints a token that expires.
 	contractCreateTokenBody = `{"name":"laptop CLI","expires_at":"2027-03-01T09:00:00.000Z"}`
@@ -471,12 +473,19 @@ func (s *contractIdentityService) unguardedWrites() int {
 // empty on an org that never configured anything — so a fixture of defaults would
 // only prove that the empty case validates. This org:
 //
-//   - WROTE `refire_grace_s`, `group_close_delay_s`, `flap_threshold` and the whole
-//     mention surface, so `origins` reports `org` and the enums are populated;
-//   - runs under a DEPLOYMENT that forces `refire_grace_s` and
+//   - WROTE `flap_window_s`, `flap_threshold` and `default_verbosity`, so
+//     `origins` reports `org` and the enums are populated;
+//   - runs under a DEPLOYMENT that forces `flap_window_s` and
 //     `raw_retention_days`, so `origins` reports `config`, `config_keys` names the
 //     env var and the file key, and `shadowed` carries the 1800 the org wrote and
 //     is not getting.
+//
+// ⛔ THE FORCED-AND-SHADOWED KEY WAS `refire_grace_s` AND THE SECOND OVERRIDE WAS
+// `group_close_delay_s`, BOTH DELETED (git-bug 7287b28). `flap_window_s` takes
+// over: it is an integer key with a bound wide enough for 1800 and 2400, which is
+// all the three-origin fixture ever needed of it. `resolve_grace_s` is
+// deliberately left untouched below, because the test also has to see a key whose
+// origin is `default`.
 func contractOrg(t *testing.T) (domain.Org, domain.Declarative) {
 	t.Helper()
 
@@ -487,8 +496,7 @@ func contractOrg(t *testing.T) (domain.Org, domain.Declarative) {
 	}
 
 	org.Overrides = domain.SettingsPatch{
-		RefireGraceS:     intPtrOf(1800),
-		GroupCloseDelayS: intPtrOf(600),
+		FlapWindowS:      intPtrOf(1800),
 		FlapThreshold:    intPtrOf(8),
 		DefaultVerbosity: strPtrOf("all"),
 	}
@@ -497,7 +505,7 @@ func contractOrg(t *testing.T) (domain.Org, domain.Declarative) {
 	}
 
 	decl, err := domain.NewDeclarative([]domain.DeclaredEntry{
-		{Key: string(domain.KeyRefireGrace), ConfigKey: "OTO_TUNING_REFIRE_GRACE_S", Value: 2400},
+		{Key: string(domain.KeyFlapWindow), ConfigKey: "OTO_TUNING_FLAP_WINDOW_S", Value: 2400},
 		{Key: string(domain.KeyRawRetention), ConfigKey: "tuning.raw_retention_days", Value: 45},
 	})
 	if err != nil {
@@ -742,18 +750,18 @@ func TestGetOrgSettingsAnswersTheEffectiveTuningWithItsOriginsAndItsShadowedOver
 	bounds := childObject(t, resp, data, "bounds")
 
 	// Configuration wins over the org's own 1800, and says so.
-	if got := numberAt(t, settings, "refire_grace_s"); got != 2400 {
-		t.Fatalf("effective refire_grace_s = %v, want the deployment's 2400", got)
+	if got := numberAt(t, settings, "flap_window_s"); got != 2400 {
+		t.Fatalf("effective flap_window_s = %v, want the deployment's 2400", got)
 	}
-	if got, _ := origins["refire_grace_s"].(string); got != "config" {
-		t.Fatalf("origins[refire_grace_s] = %q, want config", got)
+	if got, _ := origins["flap_window_s"].(string); got != "config" {
+		t.Fatalf("origins[flap_window_s] = %q, want config", got)
 	}
-	if got, _ := configKeys["refire_grace_s"].(string); got != "OTO_TUNING_REFIRE_GRACE_S" {
-		t.Fatalf("config_keys[refire_grace_s] = %q; a `config` badge with no key is a wall", got)
+	if got, _ := configKeys["flap_window_s"].(string); got != "OTO_TUNING_FLAP_WINDOW_S" {
+		t.Fatalf("config_keys[flap_window_s] = %q; a `config` badge with no key is a wall", got)
 	}
 	// ⭐ The override that is NOT in force is still visible, and it is the 1800.
-	if got := numberAt(t, shadowed, "refire_grace_s"); got != 1800 {
-		t.Fatalf("shadowed refire_grace_s = %v, want the org's own 1800", got)
+	if got := numberAt(t, shadowed, "flap_window_s"); got != 1800 {
+		t.Fatalf("shadowed flap_window_s = %v, want the org's own 1800", got)
 	}
 
 	// A key this org wrote and nothing is forcing reports `org`; one nobody touched
@@ -772,9 +780,9 @@ func TestGetOrgSettingsAnswersTheEffectiveTuningWithItsOriginsAndItsShadowedOver
 
 	// The bounds carry their REASON, because a caller told only "invalid" tries a
 	// different wrong number.
-	bound := childObject(t, resp, bounds, "refire_grace_s")
+	bound := childObject(t, resp, bounds, "flap_window_s")
 	if why, _ := bound["why"].(string); strings.TrimSpace(why) == "" {
-		t.Fatalf("bounds[refire_grace_s].why is empty; the form cannot explain the range: %s", resp)
+		t.Fatalf("bounds[flap_window_s].why is empty; the form cannot explain the range: %s", resp)
 	}
 	if got := f.svc.counts().getOrg; got != 1 {
 		t.Fatalf("the service was consulted %d time(s), want 1", got)
@@ -789,7 +797,7 @@ func TestGetOrgSettingsAnswersTheEffectiveTuningWithItsOriginsAndItsShadowedOver
 // the read returns, so a client never has to re-read to find out what it did.
 //
 // What broke: a settings API where an omitted key silently reverts to the default
-// reverts nine settings every time somebody changes one.
+// reverts seven settings every time somebody changes one.
 func TestUpdateOrgSettingsStoresThePartialWriteAndReturnsTheNewView(t *testing.T) {
 	t.Parallel()
 
@@ -806,8 +814,8 @@ func TestUpdateOrgSettingsStoresThePartialWriteAndReturnsTheNewView(t *testing.T
 	patched, cleared := f.svc.patched, f.svc.cleared
 	f.svc.mu.Unlock()
 
-	if patched.GroupCloseDelayS == nil || *patched.GroupCloseDelayS != 600 {
-		t.Fatalf("the service received group_close_delay_s %v, want 600", patched.GroupCloseDelayS)
+	if patched.FlapDigestIntervalS == nil || *patched.FlapDigestIntervalS != 600 {
+		t.Fatalf("the service received flap_digest_interval_s %v, want 600", patched.FlapDigestIntervalS)
 	}
 	if patched.ResolveGraceS != nil {
 		t.Fatalf("an omitted key arrived as a write (%v); omission means leave it alone",
@@ -821,11 +829,11 @@ func TestUpdateOrgSettingsStoresThePartialWriteAndReturnsTheNewView(t *testing.T
 	settings := childObject(t, resp, data, "settings")
 	origins := childObject(t, resp, data, "origins")
 
-	if got := numberAt(t, settings, "group_close_delay_s"); got != 600 {
-		t.Fatalf("group_close_delay_s = %v after the write, want 600", got)
+	if got := numberAt(t, settings, "flap_digest_interval_s"); got != 600 {
+		t.Fatalf("flap_digest_interval_s = %v after the write, want 600", got)
 	}
-	if got, _ := origins["group_close_delay_s"].(string); got != "org" {
-		t.Fatalf("origins[group_close_delay_s] = %q after the org wrote it, want org", got)
+	if got, _ := origins["flap_digest_interval_s"].(string); got != "org" {
+		t.Fatalf("origins[flap_digest_interval_s] = %q after the org wrote it, want org", got)
 	}
 	// ⛔ The reset key is back to oto's default, in the value AND in the origin. An
 	// origin that still said `org` would be a screen that cannot tell an operator
@@ -986,7 +994,7 @@ func TestAnApiTokenOutsideTheCallersTenantIsANotFound(t *testing.T) {
 // carrying a machine code a form can branch on.
 //
 // What broke: a typo'd key that is silently dropped is a reset the operator
-// believes happened and did not — they walk away thinking `refire_grace_s` is back
+// believes happened and did not — they walk away thinking `resolve_grace_s` is back
 // to oto's default while their old override is still in force. A refusal carrying
 // only prose is barely better: a form with nothing to highlight sends the caller
 // back to guess a different wrong value.
@@ -1007,7 +1015,7 @@ func TestUpdateOrgSettingsRefusesAResetNamingAKeyThatDoesNotExist(t *testing.T) 
 	if p.Code != "invalid_org_settings" {
 		t.Fatalf("code = %q, want invalid_org_settings", p.Code)
 	}
-	if !strings.Contains(violationMessage(t, p, "reset"), "refire_grace") {
+	if !strings.Contains(violationMessage(t, p, "reset"), "resolve_grace") {
 		t.Fatalf("the violation does not name the key that was rejected: %+v", p.Violations)
 	}
 	if got := f.svc.counts().update; got != 0 {

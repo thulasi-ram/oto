@@ -71,9 +71,11 @@ import type { Bound } from "~/test/contract";
  * reads the YAML off disk and is imported here for its `Bound` type only.
  */
 const NUMERIC_KEYS = [
-  "refire_grace_s",
+  // ⛔ `refire_grace_s` AND `group_close_delay_s` LED THIS LIST AND BOTH ARE
+  // DELETED (git-bug 7287b28). The contract has no bound for either any more, so
+  // leaving them would raise from `rangeOf` on every render — the same live break
+  // `unacked_reminder_after_s` caused below, for the same reason.
   "resolve_grace_s",
-  "group_close_delay_s",
   "flap_threshold",
   "flap_window_s",
   "flap_digest_interval_s",

@@ -19,6 +19,30 @@ type NotificationView struct {
 	Rule        *RuleView
 	RuleChange  *RuleChangeView
 	Enrichments map[string]EnrichmentView // keyed by enricher name
+	// Digest is set when this view is a PERIODIC SUMMARY rather than a fact about a
+	// signal, and it is non-nil on exactly those views. A renderer branches on it
+	// before it branches on anything else, because none of the fields above mean
+	// anything on one: there is no group, no member list, no case, no rule and no
+	// state to colour.
+	//
+	// ⛔ IT EXISTS BECAUSE THE HEADLINE USED TO RIDE `Group.Title` (git-bug
+	// `78388fb`). `notification/service.ViewService.digest` built one sentence with
+	// `DigestHeadline` and put it in the group's name slot, so a renderer that had
+	// never heard of a digest drew `*<sentence>* — <status>` and was accidentally
+	// truthful. Its own comment called that "a floor, not a design", and the floor
+	// had a shape a defect could grow in: `Group.Title` held something that was not
+	// a group's title and `Group.State` said "open" about a view with no group, so
+	// every GENERIC reader of either field — a fallback derivation, an audit surface,
+	// a second renderer — read a digest's prose as a group's name and was right by
+	// accident.
+	//
+	// ⭐ IT CARRIES FACTS AND NOT PROSE, WHICH IS THE WHOLE POINT. A count and a span
+	// can be laid out as fields, translated, re-ordered, or drawn as a chart by a
+	// renderer that wants to; a sentence can only be printed. §F.1's seam says the
+	// view contains no block, no colour and no provider name — a pre-composed
+	// headline is the same category of leak one level up, a LAYOUT decision made in
+	// the module that has no channel.
+	Digest *DigestView
 	// Actor is who did it, for human-caused reasons.
 	Actor   *ActorView
 	Comment string
@@ -98,6 +122,48 @@ type GroupView struct {
 	// it is unescaped, unbounded, and changes on every alertmanager.yml reload (C3).
 	SourceGroupKey string
 	ClusterKey     string
+}
+
+// DigestView is what a digest has INSTEAD OF a GroupView: a count and the span it
+// was counted over.
+//
+// A digest is one summary per window per policy, replacing per-event traffic. It is
+// not a Case, it is not a transition, and it names no signal — so it borrows none of
+// the Case-shaped fields above, and a renderer must not reach for them.
+//
+// ⚠️ THE SPAN IS HALF-OPEN — `[CoveredFrom, CoveredTo)` — AND A CARD MUST NOT PRINT
+// IT AS IF IT WERE CLOSED. `notifications_digcover_ck` enforces
+// `covered_from <= window_start < covered_to`, and `digest_covered_to`'s own column
+// comment names it "the EXCLUSIVE end". So the honest rendering is "from X up to Y",
+// never "from X to Y": the Case that opened at exactly `CoveredTo` belongs to the
+// NEXT digest, and a card claiming otherwise would double-count it in the reader's
+// head every window.
+type DigestView struct {
+	// Count is how many Cases OPENED inside the span. It is the number the digest
+	// asserts and the number the policy's floor was compared against, read off the
+	// stored row rather than recomputed: the window is closed so there is no newer
+	// truth, and `alert_cases` is reapable, so a recomputed count would shrink as the
+	// episodes aged out (migration 00058).
+	//
+	// It is at least 1 on anything oto sends — `notifications_digest_ck` requires
+	// `digest_count >= 1` on every digest row, and a window below its policy's floor
+	// writes no row at all.
+	Count int
+	// CoveredFrom is the INCLUSIVE start of the span, at or before the window's own
+	// start. It reaches back when the digest swept up a Case whose transaction
+	// committed too late for the previous window's read, so the honest sentence is
+	// "since the last digest, plus stragglers" (migration 00070).
+	//
+	// CoveredTo is the EXCLUSIVE end: the window's end, and therefore the instant
+	// coverage reached.
+	//
+	// ⛔ BOTH ARE ZERO ON A DIGEST WRITTEN BEFORE MIGRATION 00070, AND A RENDERER MUST
+	// DRAW THAT ABSENCE RATHER THAN FILL IT. The only way to invent the span is
+	// `window_start + the policy's CURRENT digest_window_s`, which is exactly the
+	// inference git-bug `342e071` is about: an operator who narrows a window would
+	// retroactively change the span every card oto has ever drawn claims to cover. A
+	// card that does not know its span says so.
+	CoveredFrom, CoveredTo time.Time
 }
 
 // AlertView is one Alert as a renderer sees it.
@@ -197,8 +263,8 @@ type TrailEntry struct {
 // Action is one interactive affordance on a card.
 type Action struct {
 	// ID is the stable action id: "oto.ack", "oto.unack", "oto.noop.runbook",
-	// "oto.noop.silence". Every URL button still delivers an interaction payload
-	// oto must acknowledge (§H.8).
+	// "oto.noop.silence", "oto.snooze", "oto.unsnooze". Every URL button still
+	// delivers an interaction payload oto must acknowledge (§H.8).
 	ID    string
 	Label string
 	Style string // "" | "primary" | "danger"
@@ -207,6 +273,110 @@ type Action struct {
 	// Value is an OPAQUE ID ONLY. Never a payload. Never trusted.
 	Value   string
 	Confirm bool
+	// Options turn this action into a MENU rather than a button, and they exist
+	// because §B.8.3's snooze is the first affordance on the card that asks the
+	// human a QUESTION — "for how long?" — rather than recording a single fact.
+	//
+	// ⛔ IT IS STILL CHANNEL-AGNOSTIC, which is the whole reason it is a list of
+	// label/value pairs and not a Block Kit element. `notification/service` decides
+	// that a snooze offers exactly the five §B.8.3 presets; each renderer decides
+	// what a five-way choice LOOKS like — Slack draws a select, and a renderer with
+	// no menu of its own is free to draw five buttons or nothing at all. A view that
+	// named `static_select` here would have made the seam a Slack seam.
+	//
+	// ⭐ ONE ACTION ID COVERS EVERY OPTION, exactly as Slack's own select does: the
+	// id says WHICH question was answered and the chosen option's `Value` says WHAT
+	// the answer was. The handler re-reads that answer against its own closed table
+	// (`channels/service`, snoozePresets) rather than trusting it, which is what
+	// keeps S8 true of a value that is no longer a bare id.
+	Options []ActionOption
+}
+
+// ActionOption is one choice inside a menu-shaped Action.
+//
+// ⛔ `Value` IS NOT A BARE ID, AND IT IS STILL NOT TRUSTED. A button's value is
+// one opaque uuid (S8) because a button asks nothing; a menu option has to say
+// which of the offered choices was taken, so its value is a SELECTOR — a short
+// token oto minted, sent, and will look up in its own closed table when the click
+// comes back. Nothing is decoded FROM it: an unrecognised token is refused, which
+// is the same posture as an unparseable uuid on a button.
+type ActionOption struct {
+	Label string
+	Value string
+}
+
+// SnoozeValueSeparator joins a preset token to the alert id inside one snooze
+// option's value.
+//
+// ⛔ IT LIVES BESIDE THE PRESETS BECAUSE THE TWO ENDS MUST AGREE. `notification/
+// service` mints the value and `channels/service` splits it, and a `|` written out
+// twice is a menu whose every option the handler refuses. It is a `|` because that
+// byte cannot occur in a uuid or in a preset token, so the split needs no escaping
+// and cannot be forged by a value that contains one.
+const SnoozeValueSeparator = "|"
+
+// SnoozePreset is one of the durations a card may offer to go quiet for.
+//
+// ⛔ THE FIVE ARE BINDING AND THERE IS NO SIXTH, LEAST OF ALL "INDEFINITELY"
+// (§B.8.3). "There is no indefinite snooze — an unexpiring snooze is a mute, and
+// mutes are how channels die." Every preset here is also inside the domain's own
+// 5-minute…30-day bounds, so a press can never be refused by the window check the
+// API shares with `alert_snoozes_min_ck` / `_max_ck`; a preset added outside them
+// would fail at the write, on the operator's card, at 03:00.
+type SnoozePreset struct {
+	// Token is what travels in the option's value and comes back on the press. It
+	// is short because an option's `value` is a far shorter field than a button's,
+	// and stable because a card posted last month still carries last month's token
+	// — the same durability argument the action ids themselves are under (§H.8).
+	Token string
+	// Label is what the human reads in the menu.
+	Label string
+	// For is how long the quiet lasts, measured from the moment oto acts on the
+	// press and never from the moment the card was rendered.
+	For time.Duration
+}
+
+// snoozePresets is the closed list, in the order §B.8.3 writes it.
+//
+// It lives in `channels/domain` rather than beside either user because it has TWO,
+// on opposite sides of the seam: `notification/service` builds the menu's options
+// from the tokens and labels, and `channels/service` turns a token that comes back
+// into a duration. Two copies of five tokens is two chances for the menu to offer a
+// choice the handler cannot decode — which presents as a button that does nothing,
+// the one defect the interaction surface is under standing orders to never ship.
+var snoozePresets = []SnoozePreset{
+	{Token: "30m", Label: "30 minutes", For: 30 * time.Minute},
+	{Token: "1h", Label: "1 hour", For: time.Hour},
+	{Token: "4h", Label: "4 hours", For: 4 * time.Hour},
+	{Token: "24h", Label: "24 hours", For: 24 * time.Hour},
+	{Token: "7d", Label: "7 days", For: 7 * 24 * time.Hour},
+}
+
+// SnoozePresets is the list a card offers, in §B.8.3's order.
+//
+// It returns a COPY. The slice is package state that two modules read on every
+// render, and a caller that sorted or truncated the original in place would change
+// what every card in every org offers.
+func SnoozePresets() []SnoozePreset {
+	out := make([]SnoozePreset, len(snoozePresets))
+	copy(out, snoozePresets)
+	return out
+}
+
+// SnoozeDuration decodes one token back into the duration oto offered.
+//
+// ⛔ THIS IS A LOOKUP AND NOT A PARSE, AND THE DIFFERENCE IS THE WHOLE POINT (S8).
+// The token arrives from a Slack payload, which is to say from the network; a
+// `time.ParseDuration` here would let a press ask for eleven weeks of silence on an
+// alert by editing four characters. An unknown token answers false and the surface
+// refuses the press, exactly as an unparseable uuid on a button does.
+func SnoozeDuration(token string) (time.Duration, bool) {
+	for _, p := range snoozePresets {
+		if p.Token == token {
+			return p.For, true
+		}
+	}
+	return 0, false
 }
 
 // Links are the deep links a card offers.

@@ -174,10 +174,9 @@ func TestADigestIsAbsentByDefault(t *testing.T) {
 		"a policy with no window digests. `ListWithDigest` selects on `digest_window_s`, "+
 			"so this is the value that decides whether the tick has anything to do")
 
-	windows, abandoned := p.Digest.DigestWindows(
+	windows := p.Digest.DigestWindows(
 		time.Date(2026, 8, 18, 13, 47, 0, 0, time.UTC), time.Time{})
 	assert.Empty(t, windows, "a policy with no window owes windows")
-	assert.Zero(t, abandoned)
 }
 
 // TestAnIncompleteDigestIsRefused covers the three ways a digest can be half-written.
@@ -284,26 +283,33 @@ func TestNothingIsSentForAWindowBelowItsFloor(t *testing.T) {
 // TestABrandNewPolicyDigestsExactlyOneWindow: enabling a digest must not replay last
 // week into a channel.
 //
-// The zero `lastCovered` means "never digested", and the honest reading of it is ONE
+// The zero `coveredTo` means "never examined", and the honest reading of it is ONE
 // window — the most recent closed one — rather than everything since the policy was
 // created. The latter would make turning the feature on an outage of its own.
+//
+// ⭐ IT IS ALSO THE UPGRADE PATH FOR MIGRATION 00070, WHICH IS WHY IT MATTERS MORE THAN
+// IT USED TO. `notification_digest_coverage` starts EMPTY: a coverage instant cannot be
+// backfilled from `digest_window_start` without the window length that was in force
+// when each digest was sent, which is the fact nothing stored (git-bug `342e071`). So
+// on the first tick after the upgrade every policy that has ever digested arrives here
+// with the zero time, and this assertion is what says that costs at most one digest
+// each rather than a replay of the whole history.
 func TestABrandNewPolicyDigestsExactlyOneWindow(t *testing.T) {
 	t.Parallel()
 
 	d := domain.Digest{Window: 10 * time.Minute}
 	now := time.Date(2026, 8, 18, 13, 47, 29, 0, time.UTC)
 
-	windows, abandoned := d.DigestWindows(now, time.Time{})
+	windows := d.DigestWindows(now, time.Time{})
 
 	require.Len(t, windows, 1,
-		"a policy that has never digested was offered %d windows. The cursor's zero value "+
-			"means `cover one window`, never `cover everything since the epoch` — enabling a "+
-			"digest would otherwise post a week of summaries in one second", len(windows))
+		"a policy that has never been examined was offered %d windows. The cursor's zero "+
+			"value means `cover one window`, never `cover everything since the epoch` — "+
+			"enabling a digest, or upgrading past 00070, would otherwise post a week of "+
+			"summaries in one second", len(windows))
 	assert.Equal(t, time.Date(2026, 8, 18, 13, 30, 0, 0, time.UTC), windows[0],
 		"the one window must be the most recent CLOSED one; 13:40 is still open and its "+
 			"count would be a partial answer")
-	assert.Zero(t, abandoned,
-		"a brand-new policy abandoned nothing: it was never owed the windows before it existed")
 }
 
 // TestAMissedTickCoversAtMostSixWindowsAndAbandonsTheOldest is the backfill decision,
@@ -315,27 +321,35 @@ func TestABrandNewPolicyDigestsExactlyOneWindow(t *testing.T) {
 // owes 288 digests, each with a thread reply, all arriving in the same second, which
 // is the flood a digest exists to prevent produced by the digest's own catch-up.
 //
-// ⚠️ WHEN MORE IS OWED, THE NEWEST WIN. A digest is a "what just happened" message
-// and a stale one is worse than none — so the gap is permanent, and the count of
-// what was dropped comes back so the caller can say so out loud.
+// ⚠️ WHEN MORE IS OWED, THE NEWEST WIN AND THE GAP IS PERMANENT. A digest is a "what
+// just happened" message and a stale one is worse than none.
+//
+// ⛔ HOW MANY WERE ABANDONED IS NO LONGER RETURNED, AND THIS TEST STOPPED ASSERTING IT
+// (git-bug `893cee4`). The second result used to be logged as `skipped_windows` under
+// the argument that a damper which cannot report itself is the silent suppression §B.6
+// refuses. The argument was sound; the number was not. Because an unsent window advanced
+// no cursor, a policy over a quiet namespace produced an "owed" span of thousands of
+// windows, so every tick logged a data-loss report about a backlog nothing was ever
+// owed. The §B.6 requirement is now met by a stronger fact — the abandoned windows'
+// episodes are the ones carrying NO mark, which `DigestService.ReconcileOrg` counts —
+// and that is a number over episodes nobody was told about rather than over windows.
+// The BOUND itself is unchanged and is still asserted here, because it is the reason
+// `MaxDigestBackfill` and the straggler budget had to stay two separate numbers.
 func TestAMissedTickCoversAtMostSixWindowsAndAbandonsTheOldest(t *testing.T) {
 	t.Parallel()
 
 	d := domain.Digest{Window: 10 * time.Minute}
 	now := time.Date(2026, 8, 18, 13, 47, 29, 0, time.UTC)
-	// 11:00 was covered; everything from 11:10 to 13:30 is owed — fifteen windows.
-	last := time.Date(2026, 8, 18, 11, 5, 0, 0, time.UTC)
+	// Examination reached 11:10; everything from 11:10 to 13:30 is owed — fifteen
+	// windows.
+	coveredTo := time.Date(2026, 8, 18, 11, 10, 0, 0, time.UTC)
 
-	windows, abandoned := d.DigestWindows(now, last)
+	windows := d.DigestWindows(now, coveredTo)
 
 	require.Len(t, windows, domain.MaxDigestBackfill,
 		"one tick offered %d windows for one policy. The bound is what stops a deploy that "+
 			"took an hour from becoming an hour of back-dated summaries arriving at once",
 		len(windows))
-	assert.Equal(t, 9, abandoned,
-		"fifteen windows were owed and six were covered, so nine were abandoned. The number "+
-			"is what the tick logs: a damper that cannot report itself is the silent "+
-			"suppression §B.6 refuses")
 
 	want := []time.Time{
 		time.Date(2026, 8, 18, 12, 40, 0, 0, time.UTC),
@@ -356,32 +370,135 @@ func TestAMissedTickCoversAtMostSixWindowsAndAbandonsTheOldest(t *testing.T) {
 // The window containing `now` is still open: its count is a partial answer, and
 // covering it would burn the idempotency key for a window whose contents have not
 // finished happening.
+//
+// ⭐⭐ AND THE CURSOR IS NOW AN INSTANT, SO THE BOUNDARY VALUE MOVED BY ONE WINDOW
+// (git-bug `342e071`, migration 00070). It used to be a window START — "the newest
+// window a digest was sent for" — and this test passed `13:30` to mean "13:30 is
+// covered". It is now the EXCLUSIVE instant coverage reached, so the same fact is
+// spelled `13:40`. That is not a cosmetic re-spelling: a start is a span only in
+// combination with the window LENGTH that was in force when it was written, so
+// re-flooring it under a NEW `digest_window_s` re-tiled a span an earlier digest had
+// already summarised and reported every episode in it again. An instant does not change
+// meaning when the tiling changes.
 func TestTheOpenWindowIsNeverDigested(t *testing.T) {
 	t.Parallel()
 
 	d := domain.Digest{Window: 10 * time.Minute}
 	now := time.Date(2026, 8, 18, 13, 47, 29, 0, time.UTC)
 
-	windows, abandoned := d.DigestWindows(now, time.Date(2026, 8, 18, 13, 20, 0, 0, time.UTC))
+	windows := d.DigestWindows(now, time.Date(2026, 8, 18, 13, 30, 0, 0, time.UTC))
 	require.Equal(t, []time.Time{time.Date(2026, 8, 18, 13, 30, 0, 0, time.UTC)}, windows,
 		"the open 13:40 window was offered. Its count is whatever has happened so far, and "+
 			"the row it would write is the one the real window can never replace")
-	assert.Zero(t, abandoned)
 
-	// The cursor already at the newest closed window: nothing is owed. This is the
-	// answer on all but the first tick of each window, and it is what makes a
-	// once-a-minute tick affordable.
-	windows, abandoned = d.DigestWindows(now, time.Date(2026, 8, 18, 13, 30, 0, 0, time.UTC))
+	// Coverage already at the END of the newest closed window: nothing is owed. This is
+	// the answer on all but the first tick of each window, and it is what makes a
+	// once-a-minute tick affordable — and, since 00070, what makes a policy over a
+	// namespace nobody has paged about for a week cost one comparison instead of six
+	// queries (git-bug `893cee4`).
+	windows = d.DigestWindows(now, time.Date(2026, 8, 18, 13, 40, 0, 0, time.UTC))
 	assert.Empty(t, windows, "a window already covered was offered again")
-	assert.Zero(t, abandoned)
 
-	// The cursor is a window START in the data, but an instant INSIDE the covered
-	// window must mean the same thing — otherwise a clock skew of one second would
-	// re-offer a window that had already been sent.
-	windows, _ = d.DigestWindows(now, time.Date(2026, 8, 18, 13, 35, 0, 0, time.UTC))
+	// ⭐ AN INSTANT STRICTLY INSIDE A WINDOW RE-OFFERS THAT WINDOW, AND THAT REVERSES
+	// WHAT THIS ASSERTION USED TO SAY. Under start semantics `13:35` had to mean the
+	// same thing as `13:30`, because a cursor one second off would otherwise re-send a
+	// window. Under instant semantics it means something else and something real:
+	// coverage stopped in the MIDDLE of `[13:30, 13:40)`, which is what a `digest_window_s`
+	// edit leaves behind, so that window is NOT fully covered and must be examined
+	// again. Re-examining it sends nothing — every episode in the part already covered
+	// carries a mark, so the fold is zero and the floor is not cleared — which is how
+	// `342e071`'s operator-visible clause is satisfied even though the spans do overlap.
+	windows = d.DigestWindows(now, time.Date(2026, 8, 18, 13, 35, 0, 0, time.UTC))
+	assert.Equal(t, []time.Time{time.Date(2026, 8, 18, 13, 30, 0, 0, time.UTC)}, windows,
+		"an instant strictly inside a window means coverage stopped there, so the window is "+
+			"only partly covered and has to be re-examined. Skipping it would leave the "+
+			"second half of a re-tiled window reported by nothing")
+}
+
+// TestNarrowingTheWindowDoesNotReReportWhatTheLongerDigestCovered is git-bug `342e071`
+// in one function, in both directions.
+//
+// ⛔ THE FAILURE WAS AS BAD AS A DIGEST BUG GETS. A policy on a one-hour window sends
+// the digest for `[12:00, 13:00)` at 13:01. An operator narrows it to ten minutes —
+// admissible, because `DigestWindowAligned` accepts any divisor of 24 h at or above
+// `MinDigestWindow`, and both 3600 and 600 qualify. On the next tick the stored cursor
+// `12:00` was re-floored under the NEW length, so `first` became `12:10`, and five
+// windows inside the hour that had already been summarised were all treated as
+// uncovered: five real thread replies about a span the operator had just read, at the
+// exact moment they were tuning the policy because it was already too noisy.
+//
+// Neither existing guard could catch it. `notif_digest_uniq` keys on the window start
+// and `12:10` is not `12:00`; `WindowOrdinal` divides by the current length so the §C.7
+// key differed too. Both were working exactly as designed against a repeated tick, and
+// a re-tiling is not one.
+func TestNarrowingTheWindowDoesNotReReportWhatTheLongerDigestCovered(t *testing.T) {
+	t.Parallel()
+
+	// The hourly digest for [12:00, 13:00) was sent at 13:01, so coverage reached the
+	// INSTANT 13:00 — which is the fact the old cursor could not hold.
+	coveredTo := time.Date(2026, 8, 18, 13, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 8, 18, 13, 5, 0, 0, time.UTC)
+
+	narrowed := domain.Digest{Window: 10 * time.Minute}
+	windows := narrowed.DigestWindows(now, coveredTo)
+
+	for _, w := range windows {
+		assert.Falsef(t, w.Before(coveredTo),
+			"the narrowed policy was offered window %s, which is inside the hour the 13:01 "+
+				"digest already summarised. Every Case in [12:10, 13:00) would be reported a "+
+				"second time, in five separate thread replies, and neither notif_digest_uniq "+
+				"nor the §C.7 key can refuse them because both are derived from the CURRENT "+
+				"window length", w.UTC())
+	}
 	assert.Empty(t, windows,
-		"an instant inside the last covered window re-offered that window; the cursor is "+
-			"read through WindowStart precisely so it cannot")
+		"nothing has closed since 13:00 under a ten-minute window — 12:50 is the newest "+
+			"closed window at 13:05 and it is behind the coverage instant — so the correct "+
+			"answer is that the narrowing owes nothing at all")
+
+	// ⚠️ WIDENING IS THE MILDER DIRECTION AND IS NOT SILENT EITHER. `WindowStart` floors
+	// BACKWARD onto the enclosing wide boundary, so a wide window whose earlier half was
+	// already covered by short digests is offered again. That is deliberate: it is the
+	// only way the LATER half gets reported at all. What stops it double-reporting is the
+	// per-Case mark, not the window arithmetic — every episode in the covered half folds
+	// to zero — which is why `342e071`'s done-when is satisfied in effect rather than in
+	// letter.
+	//
+	// ⚠️ `now` IS 13:05 AND THE HOUR MATTERS AS MUCH AS THE MINUTE. The claim being
+	// pinned is about the RE-OFFER, so `now` has to sit in the hour immediately after
+	// the one coverage stopped inside: at 13:05 the newest CLOSED hourly window is
+	// exactly `[12:00, 13:00)`, so a single-element answer is the re-offer and nothing
+	// else. Put `now` an hour later and `[13:00, 14:00)` has closed too and is genuinely
+	// owed — a correct two-element answer that says nothing about widening, which is the
+	// second assertion below rather than a weakening of this one.
+	widened := domain.Digest{Window: time.Hour}
+	windows = widened.DigestWindows(
+		time.Date(2026, 8, 18, 13, 5, 0, 0, time.UTC),
+		time.Date(2026, 8, 18, 12, 50, 0, 0, time.UTC))
+	require.Equal(t, []time.Time{time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)}, windows,
+		"widening must re-offer the enclosing wide window: coverage stopped at 12:50, so "+
+			"[12:50, 13:00) belongs to no digest yet and only the 12:00 hour contains it. "+
+			"Skipping it would lose ten minutes permanently")
+
+	// ⭐ AND THE RE-OFFER DOES NOT SWALLOW THE WINDOWS BEHIND IT, WHICH IS THE OTHER WAY
+	// THIS COULD HAVE BEEN IMPLEMENTED AND WOULD HAVE LOST AN HOUR. A tick that arrives
+	// at 14:05 with the same coverage instant owes TWO hours: `[12:00, 13:00)` because
+	// coverage stopped in the middle of it, and `[13:00, 14:00)` because it closed with
+	// no coverage in it at all. Returning only the enclosing wide window — treating the
+	// re-flooring as a replacement for the ordinary backfill rather than as its starting
+	// point — would drop the 13:00 hour permanently, and nothing downstream could notice:
+	// the marks that make the re-examination silent are exactly what a fully uncovered
+	// hour does not have.
+	windows = widened.DigestWindows(
+		time.Date(2026, 8, 18, 14, 5, 0, 0, time.UTC),
+		time.Date(2026, 8, 18, 12, 50, 0, 0, time.UTC))
+	require.Equal(t, []time.Time{
+		time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC),
+		time.Date(2026, 8, 18, 13, 0, 0, 0, time.UTC),
+	}, windows,
+		"the re-offered wide window is the OLDEST owed one, not the ONLY one. Every hour "+
+			"that closed between it and `now` is still owed, and an hour nobody covered is "+
+			"an hour whose episodes carry no mark, so dropping it is silent loss rather "+
+			"than a silent re-examination")
 }
 
 // TestOneWindowIsOneIntent is idempotency at the level this package owns: the §C.7
@@ -568,17 +685,29 @@ func TestNoWindowDigestWindowsProducesHasAnOrdinalBelowOne(t *testing.T) {
 		// `now` inside the SECOND window since the epoch: the exact position that
 		// used to make `newest` land on the epoch itself.
 		now := epoch.Add(w).Add(w / 2)
-		starts, abandoned := d.DigestWindows(now, time.Time{})
-		if abandoned != 0 {
-			t.Errorf("window %s: %d abandoned windows before 1970 has closed", w, abandoned)
+		// ⭐ BOTH ARMS, BECAUSE THE INSTANT CURSOR MADE THE EPOCH WINDOW REACHABLE FROM
+		// A SECOND DIRECTION (migration 00070). The zero cursor is the arm the original
+		// bug lived in. A NON-ZERO cursor inside the first window of 1970 is the new
+		// one: `first` used to be a start plus a whole window, so it could never BE the
+		// epoch window, and it is now `WindowStart(coveredTo)`, which floors straight
+		// onto it.
+		for _, coveredTo := range []time.Time{{}, epoch.Add(w / 3)} {
+			starts := d.DigestWindows(now, coveredTo)
+			assertOrdinals(t, d, w, starts)
 		}
-		for _, start := range starts {
-			if ord := d.WindowOrdinal(start); ord < 1 {
-				t.Errorf("window %s: DigestWindows produced start %s with ordinal %d, "+
-					"which notifications_sver_ck (>= 1) refuses — the insert fails as a "+
-					"23514 with no field name and takes the whole tick for that policy",
-					w, start.UTC(), ord)
-			}
+	}
+}
+
+// assertOrdinals is the shared half of the test above: every window it produced must
+// carry an ordinal `notifications_sver_ck` admits.
+func assertOrdinals(t *testing.T, d domain.Digest, w time.Duration, starts []time.Time) {
+	t.Helper()
+	for _, start := range starts {
+		if ord := d.WindowOrdinal(start); ord < 1 {
+			t.Errorf("window %s: DigestWindows produced start %s with ordinal %d, "+
+				"which notifications_sver_ck (>= 1) refuses — the insert fails as a "+
+				"23514 with no field name and takes the whole tick for that policy",
+				w, start.UTC(), ord)
 		}
 	}
 }

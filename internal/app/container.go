@@ -711,7 +711,14 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		Conversations: slackConversations{channels: channelRepo},
 		Actors:        slackActors{identity: c.Identity},
 		Cases:         slackCaseActions{alerts: c.Alerts},
-		Enqueuer:      c.enqueuer,
+		// ⭐ THE SNOOZE MENU'S OTHER HALF (§B.8.6, git-bug `0a8ca4a`). The port is
+		// nil-tolerant on purpose — a press at an unwired deployment is answered with
+		// an ephemeral saying so rather than with silence — and a nil here is
+		// therefore not a crash, which is exactly what made it possible to ship the
+		// handlers and the menu with nothing behind them. Wiring it is what turns
+		// "oto cannot snooze from Slack in this deployment yet" back into a snooze.
+		Snoozes:  slackSnoozeActions{alerts: c.Alerts},
+		Enqueuer: c.enqueuer,
 		// The ephemeral reply goes to Slack's own `response_url`, which needs no
 		// token and no scope — which is why oto can tell a user "that already
 		// resolved" without asking the operator for anything the manifest does

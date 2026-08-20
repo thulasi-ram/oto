@@ -1,0 +1,16 @@
+{
+  "schema": "oto.notification.v1",
+  "reason": "digest",
+  "mode": "post_root",
+  "delivered_at": "2026-08-07T17:57:29Z",
+  "org": {
+    "id": "",
+    "slug": "",
+    "name": ""
+  },
+  "digest": {
+    "count": 1
+  },
+  "alerts": [],
+  "summary": "[DIGEST] 1 new case in a window whose span was not recorded"
+}

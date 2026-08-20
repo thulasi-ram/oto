@@ -503,6 +503,7 @@ func TestSuppressorPrecedence_IsTheFixedB82Order(t *testing.T) {
 		"no_policy",
 		"snoozed",
 		"throttled",
+		"below_threshold",
 		"verbosity",
 		"duplicate_render",
 	}, SuppressorPrecedence())
@@ -517,6 +518,12 @@ func TestSuppressorPrecedence_IsTheFixedB82Order(t *testing.T) {
 	assert.Less(t, order[SuppressorNoPolicy], order[SuppressorSnoozed])
 	assert.Less(t, order[SuppressorSnoozed], order[SuppressorThrottled])
 	assert.Less(t, order[SuppressorThrottled], order[SuppressorVerbosity])
+
+	// The ceiling and its dual are adjacent, in that order, and both sit above the
+	// per-destination preference: an unmet floor is the resting state of every
+	// policy that carries one, so it may not mask an active cap (migration 00073).
+	assert.Less(t, order[SuppressorThrottled], order[SuppressorBelowThreshold])
+	assert.Less(t, order[SuppressorBelowThreshold], order[SuppressorVerbosity])
 
 	// The returned slice is a fresh one; a caller cannot re-order the SPEC.
 	got := SuppressorPrecedence()

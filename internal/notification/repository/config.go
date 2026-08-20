@@ -174,9 +174,10 @@ func (r *ConfigRepository) GetPolicy(
 const insertPolicySQL = `
 INSERT INTO notification_policies (
   id, org_id, name, priority, enabled, matchers, reasons, channel_ids,
-  throttle, digest_window_s, digest_floor,
+  throttle, subject_kinds, digest_window_s, digest_floor,
+  count_min, count_window_s,
   created_at, updated_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$15)
 RETURNING id`
 
 // CreatePolicy writes one routing rule.
@@ -213,6 +214,16 @@ func (r *ConfigRepository) CreatePolicy(
 	for _, k := range in.Reasons {
 		reasons = append(reasons, string(k))
 	}
+	// ⚠️ THE EMPTY SLICE IS ALLOCATED HERE AND NOT LEFT NIL, which is the opposite of
+	// what `policyRow.toDomain` does on the way back and is correct in both
+	// directions. `subject_kinds` is `NOT NULL DEFAULT '{}'`, and pgx encodes a nil
+	// `[]string` as SQL NULL — so a draft that names no binding would violate the NOT
+	// NULL rather than take the default. On the read side nil and empty are the same
+	// domain value; on the write side only one of them is a legal parameter.
+	subjectKinds := make([]string, 0, len(in.Subjects))
+	for _, k := range in.Subjects {
+		subjectKinds = append(subjectKinds, string(k))
+	}
 
 	// A supplied id is the caller naming the row before it exists, which is what
 	// lets `notification/service` record it in an `Idempotency-Key` claim taken in
@@ -225,11 +236,14 @@ func (r *ConfigRepository) CreatePolicy(
 	var stored uuid.UUID
 	err = r.db(ctx).QueryRow(ctx, insertPolicySQL,
 		newID, s.OrgID(), in.Name, priority, enabled, matchers, reasons,
-		in.ChannelIDs, throttle,
+		in.ChannelIDs, throttle, subjectKinds,
 		// NULL is "no digest", which is the default and the state of every row
 		// written before migration 00058. Nothing is defaulted here: a caller that
 		// asked for no window must not acquire one from the repository.
 		secondsPtr(in.DigestWindow), in.DigestFloor,
+		// The same rule for the count condition (migration 00072): NULL on both is
+		// "no condition", and a caller that asked for none must not acquire one.
+		in.CountMin, secondsPtr(in.CountWindow),
 		r.clock.Now().UTC(),
 	).Scan(&stored)
 	if err != nil {
@@ -258,22 +272,37 @@ UPDATE notification_policies SET
     throttle    = CASE WHEN $9  THEN $10 ELSE throttle END,
     digest_window_s = CASE WHEN $11 THEN $12 ELSE digest_window_s END,
     digest_floor    = CASE WHEN $13 THEN $14 ELSE digest_floor END,
-    updated_at  = GREATEST(updated_at, $15)
+    subject_kinds   = COALESCE($15, subject_kinds),
+    count_min       = CASE WHEN $16 THEN $17 ELSE count_min END,
+    count_window_s  = CASE WHEN $18 THEN $19 ELSE count_window_s END,
+    updated_at  = GREATEST(updated_at, $20)
  WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL
 RETURNING id`
 
 // UpdatePolicy applies a partial change.
 //
-// `throttle`, `digest_window_s` and `digest_floor` are
-// written through a CASE rather than a COALESCE because all three are nullable and
-// clearing them is a real operation: COALESCE cannot express "set this to NULL",
-// and an operator turning a throttle or a digest off must be able to say so.
+// `throttle`, `digest_window_s`, `digest_floor`, `count_min` and `count_window_s`
+// are written through a CASE rather than a COALESCE because all five are nullable
+// and clearing them is a real operation: COALESCE cannot express "set this to
+// NULL", and an operator turning a throttle, a digest or a count condition off
+// must be able to say so.
+//
+// ⭐ `subject_kinds` IS THE ONE THAT GOES BACK TO COALESCE, and it is not an
+// inconsistency — it is the column being `NOT NULL DEFAULT '{}'`. There is no NULL
+// to set, so COALESCE's one limitation does not bite: a nil parameter means "leave
+// it alone" and an EMPTY ARRAY means "claim every altitude", which is a real
+// instruction the CASE machinery is not needed to express. Reaching for the CASE
+// here anyway would add a boolean nothing reads.
 //
 // ⭐ THE TWO DIGEST COLUMNS MOVE IN ONE STATEMENT, which is what keeps
 // `policies_digest_pair_ck` satisfiable. Clearing the window and clearing the
 // floor arrive as two independent CASEs of the same UPDATE, so a patch that turns
 // the whole digest off never passes through the momentary "floor without window"
-// the constraint refuses.
+// the constraint refuses. ⭐ THE SAME PROPERTY IS LOAD-BEARING FOR THE COUNT
+// CONDITION AND MORE SO, because `policies_count_pair_ck` is SYMMETRIC: turning a
+// condition off means clearing both halves, and either half alone is a violation.
+// Two CASEs in one statement is the only shape in which "clear the whole
+// condition" is a single legal transition.
 func (r *ConfigRepository) UpdatePolicy(
 	ctx context.Context, s db.TenantScope, policyID uuid.UUID, p domain.PolicyPatch,
 ) (domain.Policy, error) {
@@ -291,6 +320,11 @@ func (r *ConfigRepository) UpdatePolicy(
 		windowVal   *int
 		setFloor    bool
 		floorVal    *int
+		subjects    *[]string
+		setCountMin bool
+		countMinVal *int
+		setCountWin bool
+		countWinVal *int
 	)
 	if p.Matchers != nil {
 		b, err := encodeMatchers(*p.Matchers)
@@ -325,12 +359,35 @@ func (r *ConfigRepository) UpdatePolicy(
 		setFloor = true
 		floorVal = *p.DigestFloor
 	}
+	if p.Subjects != nil {
+		// Allocated even when the binding is empty, for the reason CreatePolicy
+		// allocates it: pgx encodes a nil `[]string` as SQL NULL, and NULL is the one
+		// value this NOT NULL column cannot take. An empty array is `{}`, which is
+		// "claim every altitude" — the instruction an operator sends to remove a
+		// binding.
+		out := make([]string, 0, len(*p.Subjects))
+		for _, k := range *p.Subjects {
+			out = append(out, string(k))
+		}
+		subjects = &out
+	}
+	if p.CountMin != nil {
+		setCountMin = true
+		countMinVal = *p.CountMin
+	}
+	if p.CountWindow != nil {
+		setCountWin = true
+		countWinVal = secondsPtr(*p.CountWindow)
+	}
 
 	var stored uuid.UUID
 	err := r.db(ctx).QueryRow(ctx, updatePolicySQL,
 		s.OrgID(), policyID, p.Name, p.Priority, p.Enabled, matchers, reasons, channels,
 		setThrottle, throttleVal,
-		setWindow, windowVal, setFloor, floorVal, r.clock.Now().UTC(),
+		setWindow, windowVal, setFloor, floorVal,
+		subjects,
+		setCountMin, countMinVal, setCountWin, countWinVal,
+		r.clock.Now().UTC(),
 	).Scan(&stored)
 	if err != nil {
 		return domain.Policy{}, mapErr(err, "policy_not_found", "notification policy")

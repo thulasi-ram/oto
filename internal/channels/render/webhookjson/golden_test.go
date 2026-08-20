@@ -7,6 +7,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -128,11 +129,145 @@ func TestTheAckedEnvelopeIsFrozen(t *testing.T) {
 	golden(t, "acked.golden.json", render(t, v).Payload)
 }
 
+// digestView is what `notification/service.ViewService.digest` builds, reproduced
+// field-for-field: a Reason, a `DigestView` and a render time, and NOTHING else. No
+// org, no group, no member list, no case, no action and no link.
+//
+// ⛔ THE EMPTINESS IS THE FIXTURE'S POINT, so it must not be "helpfully" filled in. A
+// digest view really does arrive here with a zero `GroupView`, and the whole defect
+// this file now guards was the renderer projecting that zero as a group.
+func digestView(count int, from, to time.Time) *domain.NotificationView {
+	return &domain.NotificationView{
+		Reason:     "digest",
+		Digest:     &domain.DigestView{Count: count, CoveredFrom: from, CoveredTo: to},
+		RenderedAt: renderedAt,
+	}
+}
+
+// TestTheDigestEnvelopeIsFrozen is the arm that did not exist (git-bug `78388fb`).
+//
+// ⭐⭐ IT IS THE ASSERTION WHOSE ABSENCE COST A RELEASE'S WORTH OF DIGESTS. `78388fb`
+// moved the digest headline out of `Group.Title` into `NotificationView.Digest` and
+// taught the Slack renderer a digest arm. This renderer was not taught one, kept
+// reading `v.Group.Title`, and every digest went to every webhook consumer as
+// `"summary": "[UNKNOWN] alert group (digest)"` over a `group` object of zeros and
+// `0001-01-01T00:00:00Z` timestamps. Nothing failed, because — exactly as the note at
+// the top of this file says about the `occurrence` rename — nothing looked. This
+// fixture is the looking.
+func TestTheDigestEnvelopeIsFrozen(t *testing.T) {
+	t.Parallel()
+	// A span deliberately LONGER than any plausible policy window, because a digest's
+	// coverage reaches back for stragglers and the fixture must not imply that
+	// `covered_to - covered_from` equals `digest_window_s`.
+	from := renderedAt.Add(-70 * time.Minute)
+	to := renderedAt.Add(-5 * time.Minute)
+	golden(t, "digest.golden.json", render(t, digestView(4, from, to)).Payload)
+}
+
+// TestTheSpanlessDigestEnvelopeIsFrozen is the pre-00070 row: a count oto is sure of
+// over a window it cannot name.
+//
+// ⛔ IT EXISTS TO FREEZE AN ABSENCE. The failure mode it guards is not a wrong number,
+// it is a PLAUSIBLE one — a zero `time.Time` marshals as `0001-01-01T00:00:00Z`, which
+// is well-formed, UTC, and passes the envelope's own W2 check, so a consumer would
+// store a span in the year 1 and never know. The keys must be missing, and `count`
+// must still be there: the count is recorded on every digest row ever written and is
+// not in doubt.
+func TestTheSpanlessDigestEnvelopeIsFrozen(t *testing.T) {
+	t.Parallel()
+	golden(t, "digest_no_span.golden.json", render(t, digestView(1, time.Time{}, time.Time{})).Payload)
+}
+
+// TestADigestAssertsNoGroup reads the KEYS, which is where the regression lived.
+//
+// A `summary` assertion alone would not have caught it: the old output's summary was
+// wrong but non-empty, and the `group` object beside it was a well-formed lie. What
+// makes a digest envelope correct is a `digest` key present and a `group` key ABSENT —
+// the two are alternatives, and a consumer branches on exactly that.
+func TestADigestAssertsNoGroup(t *testing.T) {
+	t.Parallel()
+	from := renderedAt.Add(-70 * time.Minute)
+	payload := render(t, digestView(4, from, renderedAt.Add(-5*time.Minute))).Payload
+
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if _, ok := envelope["digest"]; !ok {
+		t.Error("a digest envelope has no `digest` key — the renderer is not reading " +
+			"`NotificationView.Digest`, which is the whole of git-bug `78388fb`")
+	}
+	if _, ok := envelope["group"]; ok {
+		t.Errorf("a digest envelope carries a `group` key: %s. A digest view has no group "+
+			"(`ViewService.digest`), so anything under that key is a zero `GroupView` "+
+			"projected as fact — `state: \"\"`, every count 0, and two timestamps in the "+
+			"year 1", envelope["group"])
+	}
+	// The span is read as a HALF-OPEN pair rather than as prose, because the convention
+	// is what a consumer's arithmetic depends on: `covered_to` is EXCLUSIVE
+	// (`notifications_digcover_ck`), so consecutive windows abut and never overlap. It
+	// is checked against the two instants the view was given, so a renderer that
+	// rounded, re-derived or swapped them fails here.
+	var digest struct {
+		Count       int        `json:"count"`
+		CoveredFrom *time.Time `json:"covered_from"`
+		CoveredTo   *time.Time `json:"covered_to"`
+		SpanSeconds *float64   `json:"span_seconds"`
+	}
+	if err := json.Unmarshal(envelope["digest"], &digest); err != nil {
+		t.Fatalf("unmarshal digest: %v", err)
+	}
+	if digest.Count != 4 {
+		t.Errorf("digest count is %d, want 4 — the number a digest asserts is the one fact "+
+			"it cannot get wrong", digest.Count)
+	}
+	if digest.CoveredFrom == nil || !digest.CoveredFrom.Equal(from) {
+		t.Errorf("covered_from is %v, want %v", digest.CoveredFrom, from)
+	}
+	if digest.CoveredTo == nil || !digest.CoveredTo.Equal(renderedAt.Add(-5*time.Minute)) {
+		t.Errorf("covered_to is %v, want %v", digest.CoveredTo, renderedAt.Add(-5*time.Minute))
+	}
+	// 65 minutes, SUBTRACTED FROM THE TWO ENDS and never read from the policy — that is
+	// the point of storing both, and it is why the span here is longer than any window
+	// a policy is likely to declare.
+	if digest.SpanSeconds == nil || *digest.SpanSeconds != 65*60 {
+		t.Errorf("span_seconds is %v, want %v — it must be `covered_to - covered_from` and "+
+			"never a policy's current window", digest.SpanSeconds, 65*60)
+	}
+	// `summary` must not fall through to `summarise`'s group defaults. The exact
+	// sentence is frozen in the fixture; this checks the one substring whose presence
+	// proved the digest arm ran at all.
+	var summary string
+	if err := json.Unmarshal(envelope["summary"], &summary); err != nil {
+		t.Fatalf("unmarshal summary: %v", err)
+	}
+	if !strings.HasPrefix(summary, "[DIGEST] ") {
+		t.Errorf("summary is %q — a digest that reads `[UNKNOWN] alert group` is "+
+			"`summarise` running on a view with no group, which is the regression", summary)
+	}
+	// Every " to " in the sentence must be an "up to " — that is the whole assertion,
+	// and it is written as a count rather than as a substring search because "up to "
+	// itself contains " to ".
+	if !strings.Contains(summary, "up to ") ||
+		strings.Count(summary, " to ") != strings.Count(summary, "up to ") {
+		t.Errorf("summary is %q — the span is HALF-OPEN, so prose says \"up to\" and never "+
+			"\"to\": the Case that opened at exactly `covered_to` is in the NEXT digest", summary)
+	}
+}
+
 // TestEveryFixtureValidates runs the renderer's own validator over each frozen
 // payload, so a golden that was updated on purpose still has to be legal.
 func TestEveryFixtureValidates(t *testing.T) {
 	t.Parallel()
-	for _, name := range []string{"root_firing.golden.json", "all_resolved.golden.json", "acked.golden.json"} {
+	for _, name := range []string{
+		"root_firing.golden.json", "all_resolved.golden.json", "acked.golden.json",
+		// The two digest fixtures are here for a reason of their own: the spanless one
+		// is the fixture most likely to be "fixed" by filling in a zero `time.Time`,
+		// and W2 would happily pass `0001-01-01T00:00:00Z`. Running the validator over
+		// it proves only that it is legal — that the keys are absent is the golden's
+		// job — but a legal digest is the precondition for the golden meaning anything.
+		"digest.golden.json", "digest_no_span.golden.json",
+	} {
 		raw, err := os.ReadFile(filepath.Join("testdata", name))
 		if err != nil {
 			t.Fatalf("read %s (run with -update first): %v", name, err)

@@ -86,13 +86,23 @@ func (r *Renderer) Render(
 		fallback string
 		summary  string
 	)
-	switch o.Mode {
-	case domain.ModeThreadReply:
-		payload, fallback, summary = r.renderReply(v, o)
-	case domain.ModePostRoot, domain.ModeUpdateRoot:
-		payload, fallback = r.renderRoot(v, o)
+	switch {
+	// ⭐ THE DIGEST IS DECIDED BEFORE THE MODE IS, because a digest is not a
+	// transition and the mode table has nothing to say about it (§H.6 does not list
+	// it; `notification/service.digestModes` is its whole rule). Its first window
+	// arrives as `post_root` and every later one as `thread_reply`, and both are the
+	// same fact in the same shape — so one layout serves both and neither may fall
+	// through to a Case-shaped arm. Branching on `v.Digest` rather than on the Reason
+	// is what makes that structural: the view says what it IS, and the only view that
+	// carries a `Digest` is one built by `ViewService.digest` (git-bug `78388fb`).
+	case v.Digest != nil:
+		payload, fallback = r.renderDigest(v, o)
 		summary = fallback
+	case o.Mode == domain.ModeThreadReply:
+		payload, fallback, summary = r.renderReply(v, o)
 	default:
+		// `post_root`, `update_root`, and anything a future mode adds: the root card
+		// is the safe answer, because it is the complete one.
 		payload, fallback = r.renderRoot(v, o)
 		summary = fallback
 	}

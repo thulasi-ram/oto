@@ -340,8 +340,10 @@ lifetimes.
 job. You should rarely see this, because oto's whole delivery model is built to
 avoid it: `chat.update` (Tier 3, 50+/min) instead of `chat.postMessage` (~1
 message/second/channel). If it is persistent, something is posting far more root
-messages than expected — look at flap and storm damping in
-[tuning.md](/setup/tuning/).
+messages than expected — look at flap damping and at your Alertmanager
+`group_by` in [tuning.md](/setup/tuning/). oto damps nothing else: storm collapse was
+removed ([ADR 0042](/adr/0042-storm-damping-is-removed/)) and a burst of real
+firings is reported in full, by design.
 
 ### The Acknowledge button does nothing
 
@@ -389,13 +391,28 @@ Two of those are worth knowing about individually.
 > **Read this if you have a Slack workspace and thirty minutes. You are the only
 > person who can close it.**
 
-**Nothing in this repository has ever been rendered by Slack.** No Slack
-credential has ever been used by oto's code. Every rule oto obeys about Block Kit
-lives in `internal/channels/render/slack/validate.go` and is checked by oto
-against oto — a closed loop that cannot detect a wrong belief. Two ADRs rest on
-that loop: [0008](/adr/0008-slack-update-in-place-primary/) (update in place)
-and [0020](/adr/0020-broadcast-the-transitions-that-must-be-seen/)
-(broadcast).
+> ⭐ **There is now a step-by-step run sheet:
+> [slack-live-verification.md](/setup/slack-live-verification/).** Eleven numbered steps,
+> each naming the exact observation it needs and which ADR unknown it discharges,
+> ending in what to write down and where. Use it instead of the tables below if you
+> are actually sitting down to do this; the tables here are the reasoning, and that
+> document is the procedure. It covers the four behaviours that remain unobserved
+> after the first live run (git-bug `2078a07`): the in-place `chat.update`, a mention
+> that reaches a locked phone, the resolved and snoozed cards, and client parity
+> across desktop, web, iOS and Android.
+
+**A real workspace has been connected exactly once**, on 2026-08-09 — `a7cdec3`,
+*"the Slack card defects found by running it for real"*. That run settled one
+rendering question (what an in-channel `thread_broadcast` does with attachments,
+colour and buttons; ADR 0020 Amendment 4) and found four card defects that no
+offline check had caught. **Everything else oto claims about Slack's behaviour is
+still checked by oto against oto** — every rule lives in
+`internal/channels/render/slack/validate.go`, a closed loop that cannot detect a
+wrong belief. Two ADRs rest on that loop:
+[0008](/adr/0008-slack-update-in-place-primary/) (update in place, never
+watched happening) and
+[0020](/adr/0020-broadcast-the-transitions-that-must-be-seen/) (broadcast,
+one client, one observer).
 
 Two things have been done to make your thirty minutes count.
 
@@ -424,7 +441,9 @@ file paste its contents over the sample payload.
 | 4 | `root_silenced.blockkit.json` | The rule expression renders inside a code span with a literal **`>`**, not `&gt;`. | `&gt;` on screen means oto is double-escaping mrkdwn. |
 | 5 | `thread_reply_acked.blockkit.json` | One section. Emoji `:eyes:` renders as a glyph. | A literal `:eyes:` means shortcodes are not resolved in `mrkdwn`. |
 | 6 | `broadcast_unacked_reminder.blockkit.json` | One section. | — |
-| 7 | `storm_notice.blockkit.json` | One section with a working `see them all` link. | — |
+
+> A seventh file, `storm_notice.blockkit.json`, was deleted with storm damping
+> ([ADR 0042](/adr/0042-storm-damping-is-removed/)).
 
 ⛔ **What this cannot check, and it is a lot.** Block Kit Builder renders
 `blocks` only. It cannot render `attachments`, and *every* oto block lives inside
@@ -448,21 +467,24 @@ an oto channel at that conversation id, and fire a synthetic alert.
 | 2 | **The push notification is a sentence** | Lock your phone. Fire the alert. Read the banner **without unlocking**. | A complete sentence: severity, what, where, since when. Compare with `"text"` in `root_firing.message.json`. | The banner shows only the app name, or a fragment, or ends `…​.` — the top-level `text` is not doing its job, and it is the only thing a screen reader reads. |
 | 3 | **`chat.update` edits in place** (ADR 0008) | Acknowledge, then resolve. Watch the channel — do not open the thread. | **One** message, changing colour and content: red → amber → green. No new message. The `ts` in oto's `channel_threads` row never changes. | A second card appears → the update path fell back to posting. A card that stops changing → check for `cant_update_message`, which is what a **rotated bot token** produces: only the token that posted a message may edit it. |
 | 4 | **Threads carry the detail** | Open the thread on the card. | Replies are threaded under the root, in order, and no reply ever appears as a top-level channel message. | A reply in the channel body → `thread_ts` was omitted. Replies nested under each other → oto threaded off a reply's `ts` instead of the root's. |
-| 5 | **`reply_broadcast` surfaces a reply** (ADR 0020) | Let an alert go unacknowledged past the reminder threshold with `unacked_reminder_mention` set to an explicit list. | The reminder appears **in the channel** as well as in the thread, and the mentioned people get a **notification on their phone**. | Only in the thread → `reply_broadcast` is not being set. Visible but nobody notified → confirms Amendment 3's suspicion that mentions from a thread reply do not notify, and `unacked_reminder_mention` should stay defaulted to `none`. |
+| 5 | **`reply_broadcast` surfaces a reply** (ADR 0020) | Let a resolved alert re-fire so `refired` is delivered. | The reply appears **in the channel** as well as in the thread. | Only in the thread → `reply_broadcast` is not being set. ⛔ This step used to use the unacked reminder and its mention audience; both were removed (git-bug `bd0fb1d`) and the mention half was **never once observed working** (`2078a07`), which is part of why it went. |
 | 6 | **The in-channel broadcast copy** | Look at the broadcast **in the channel body**, not in the thread. | Record exactly three things: does the **colour bar** show? do the **buttons** show? does the **top-level text** show in full? | Slack documents the `thread_broadcast` reference as carrying neither attachments nor buttons. ADR 0020 Amendment 4 claims the attachment survives and the buttons do not. **That claim is currently unverifiable from this repository** — see 8.3. Whatever you observe, write it down; it is the evidence Amendment 4 is missing. |
 
 ### 8.3 One thing to settle while you are there
 
 ADR 0020 **Amendment 4** and several code comments in
-`internal/channels/render/slack/` describe observations from a *"first live
-Slack run"* — a `conversations.history` read, and a human looking at a message in
-a client. git-bug **edb670f** states that no workspace has ever been connected.
-**Both cannot be true**, and no offline check can tell you which is: the claimed
-evidence is an observation, and observations leave no trace in a repository.
+`internal/channels/render/slack/` describe observations from the *"first live
+Slack run"* — a `conversations.history` read, and a human looking at a message in a
+client. That run is `a7cdec3` (2026-08-09), and git-bug **edb670f** — which said no
+workspace had ever been connected — was closed against it. The ambiguity that used
+to sit here is settled.
 
-If your run contradicts Amendment 4, say so in the ADR. If it confirms it,
-Amendment 4 gains the citation it needs. Either way the ambiguity is worth
-ending, because three ⛔ comments and two of ADR 0020's binding rules point at it.
+What is not settled is how far that one run reaches. **It is one client and one
+observer**, and it is the half of the evidence that *contradicts* Slack's own
+documentation, which is the half most likely to differ between clients or revert in
+a release. Amendment 4 records that as an open unknown in its own words. If your run
+contradicts it, say so in the ADR; if it confirms it, say on which clients. Two of
+ADR 0020's binding rules point here.
 
 ### 8.4 What is still unverifiable after all of the above
 

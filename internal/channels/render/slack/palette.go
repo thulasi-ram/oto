@@ -56,6 +56,27 @@ func (s CardState) Colour() string {
 	}
 }
 
+// neutralColour is the bar on a card that is not a reading of a signal's state at
+// all. Today that is exactly one card: the digest (git-bug `78388fb`).
+//
+// ⛔ IT MINTS NO SIXTH HUE, AND THAT IS THE POINT. §H.2 spends five colours on five
+// readings of a group and `TestSlackPaletteUnchanged` pins each one to the SPEC's own
+// table, refusing any hex in this file the table does not list — so a colour of the
+// digest's own is a SPEC change with a provenance argument behind it (§M.6), not a
+// literal a renderer may add. A digest is a reading of none of the five: it counts
+// what happened in a closed window and asks nobody to act.
+//
+// So it takes what `Colour()`'s own `default:` arm already returns for a state there
+// is no reading for, which is precisely this case, rather than writing
+// `CardExpired.Colour()` and borrowing "oto stopped hearing about this" along with the
+// grey.
+//
+// ⚠️ IT IS THE SAME GREY `expired` CARRIES, which is a real collision and the honest
+// name for it is "unresolved". Peripherally a digest and a lost signal look alike; the
+// card says which it is in its first two words, and nothing else on either is
+// confusable. Fixing it properly means a sixth row in §H.2 and an owner's ruling.
+func neutralColour() string { return CardState("").Colour() }
+
 // Emoji is the state emoji shown in the Status field (§H.2).
 func (s CardState) Emoji() string {
 	switch s {

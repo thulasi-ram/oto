@@ -30,6 +30,9 @@ func materialise(scope db.TenantScope, d domain.PolicyDraft) domain.Policy {
 		Matchers:   d.Matchers,
 		Reasons:    d.Reasons,
 		ChannelIDs: d.ChannelIDs,
+		// The binding is not a pointer and has no default to apply: an empty binding
+		// IS the column default, so materialising is a copy.
+		Subjects: d.Subjects,
 	}
 	if d.Priority != nil {
 		p.Priority = *d.Priority
@@ -49,6 +52,17 @@ func materialise(scope db.TenantScope, d domain.PolicyDraft) domain.Policy {
 	}
 	if d.DigestFloor != nil {
 		p.Digest.Floor = *d.DigestFloor
+	}
+	// The count condition's four rules — the two ranges, the symmetric pair rule and
+	// the unit rule that ties it to a one-element binding — are all
+	// `Policy.Validate`'s, so materialising the two halves is the whole of this
+	// layer's job. A hand-written range check here would be the second copy that
+	// drifts from `policies_count_min_ck`.
+	if d.CountMin != nil {
+		p.Count.Min = *d.CountMin
+	}
+	if d.CountWindow != nil {
+		p.Count.Window = *d.CountWindow
 	}
 	return p
 }
@@ -109,6 +123,31 @@ func validateMerged(existing domain.Policy, p domain.PolicyPatch) error {
 			merged.Digest.Floor = *v
 		} else {
 			merged.Digest.Floor = 0
+		}
+	}
+	// ⭐ AND THE SUBJECT BINDING IS THE STRONGEST CASE YET FOR MERGING RATHER THAN
+	// VALIDATING THE PATCH. It is cross-checked against BOTH of the other two axes:
+	// `validateSubjects` refuses a binding that admits none of the policy's Reasons,
+	// and `policies_count_subject_ck` refuses a count condition without exactly one
+	// kind. So `{"subject_kinds": ["alert"]}` alone is valid, and it is fatal against
+	// a stored policy whose reasons are all case-scoped, and fatal again against one
+	// carrying a count condition — three requests that are each individually
+	// well-formed and only the merged row knows which of them is being made.
+	if p.Subjects != nil {
+		merged.Subjects = *p.Subjects
+	}
+	if p.CountMin != nil {
+		if v := *p.CountMin; v != nil {
+			merged.Count.Min = *v
+		} else {
+			merged.Count.Min = 0
+		}
+	}
+	if p.CountWindow != nil {
+		if v := *p.CountWindow; v != nil {
+			merged.Count.Window = *v
+		} else {
+			merged.Count.Window = 0
 		}
 	}
 	return merged.Validate()

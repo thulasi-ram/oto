@@ -853,20 +853,30 @@ func (l orgLister) LiveScope(ctx context.Context, orgID uuid.UUID) (db.TenantSco
 // ---------------------------------------------------------------- ingestion
 
 // alertObserver is `ingestion/service.AlertObserver` — THE ONLY WRITE PATH INTO
-// `alerts` (§G.4, C18) — and it is THE INGEST ORCHESTRATOR: the one place that
-// may know both `alerts` and `grouping`.
+// `alerts` (§G.4, C18).
 //
-// ⭐ IT RESOLVES THE GROUP. §G.4 step 4 sits between the alert upsert and the
-// state machine, and it belongs here rather than inside `alerts` because a module
-// that records a signal must not depend on `grouping` to do it (depguard enforces
-// exactly that). The Observation carries the §C.4 inputs; this resolves them into
-// a generation and hands the id back in through `ObserveOptions.GroupID`.
+// ⭐⭐ IT IS NOW A PASS-THROUGH, AND THE SHRINKING IS THE POINT (git-bug
+// `7570090`). It used to be THE INGEST ORCHESTRATOR — "the one place that may know
+// both `alerts` and `grouping`" — and it held §G.4 step 4 between the alert upsert
+// and the state machine: split the batch by the §C.4 axes, resolve or open an
+// `alert_groups` generation per partition, hand the id down through
+// `ObserveOptions.GroupID`, then recompute the container's counts. The `grouping`
+// package is DELETED and a Case IS the conversation, so there is no container to
+// resolve, no id to hand down, and no second module for this adapter to know. What
+// is left is one call and one count.
+//
+// ⛔ THE ARGUMENT FOR THE SEAM OUTLIVES THE WORK IT WAS MADE FOR, so it is kept
+// rather than deleted with the code: whatever `ingestion` needs done between the
+// upsert and the state machine belongs HERE and not inside `alerts`, because a
+// module that records a signal must not depend on a module that decides where the
+// signal is delivered. depguard enforces exactly that, and it is what stops step 4
+// growing back on the wrong side of the line the next time something has to happen
+// mid-observation.
 //
 // ⭐ IT IS ALL ONE TRANSACTION. `ingestion` has already opened one on the ingest
-// pool before calling, and `db.Tx` nests, so the group, the case, its
-// membership, the events and the `notify.evaluate` job commit together or not at
-// all. An alert whose group rolled back would own a Slack thread nobody could
-// find.
+// pool before calling, and `db.Tx` nests, so the case, the events and the
+// `notify.evaluate` job commit together or not at all. A Case whose events rolled
+// back would own a Slack thread nobody could find.
 // ⛔ `log *slog.Logger` WAS A FIELD HERE AND IS DELETED (git-bug `7570090`). It was
 // written by `container.go` and read by exactly one statement — the warning
 // `resolveGroup` emitted when a partition's generation could not be resolved and
@@ -1243,4 +1253,70 @@ func (a slackCaseActions) UnacknowledgeCase(
 		return errs.Unavailable("alerts_unavailable", "alerts are not wired", 0)
 	}
 	return a.alerts.UnacknowledgeAs(ctx, s, caseID, actorKind, actorID, actorLabel, "")
+}
+
+// slackSnoozeActions is `channels/service.Snoozes` — the two verbs a Snooze menu
+// needs, adapted onto `alerts/service`.
+//
+// ⭐ IT IS A SECOND ADAPTER RATHER THAN TWO MORE METHODS ON ITS NEIGHBOUR, and the
+// subject is why. `slackCaseActions` is addressed by CASE id throughout; a snooze is
+// "a fact about a signal's notification behaviour" (§B.8.7) and is addressed by
+// ALERT id. Hanging both subjects off one adapter would make the type's one field
+// stop explaining what its methods take, and `channels/service` declares them as two
+// ports for exactly that reason — see the Snoozes doc comment.
+//
+// ⛔ NO TENANCY PROBE, UNLIKE `CaseExists`. Both verbs open by reading the alert
+// under the scope, so an alert belonging to another org comes back
+// `errs.KindNotFound` on its own and the human gets a sentence; a probe here would
+// be a second round trip to re-answer a question the verb already answers. That
+// asymmetry is deliberate and is argued in full on `channels/service.Snoozes`.
+type slackSnoozeActions struct {
+	alerts *alertsservice.Service
+}
+
+// SnoozeAlert makes oto quiet about one alert until `until`.
+//
+// ⛔ THE NOTE IS EMPTY, for the reason `AcknowledgeCase` gives about `ack_note`: a
+// Slack menu carries no text, and inventing one would put oto's words in a human's
+// mouth on a field an operator reads as theirs. `actorLabel` still lands on the
+// `alert_snoozes` row and in the `alert.snoozed` event, so the timeline says who
+// went quiet and until when.
+//
+// ⛔ THE INTENT IS THE ZERO VALUE, AND THAT IS THE HONEST ANSWER RATHER THAN A GAP.
+// `Idempotency` is the caller's `Idempotency-Key`, and a Slack button has no such
+// header to send — an unkeyed intent (`Keyed == false`) is precisely what the
+// protocol defines for that case, so no claim is taken and the verb behaves exactly
+// as it did before the header existed. Minting a key HERE would be worse than none:
+// it would have to be derived from something, and every candidate is either the
+// press (which makes a double-click idempotent — a human pressing 4h after 30m means
+// it, §B.8.3 says a snooze supersedes its own incumbent) or the clock (which is the
+// `a6cc834` defect verbatim). The convergence a retry needs is already in the
+// domain, not in a key.
+//
+// The `replayed` flag is therefore always false and is dropped: it is the fan-out
+// signal `SnoozeAs` returns so a group gesture can stop at member one, and this
+// press has exactly one member.
+func (a slackSnoozeActions) SnoozeAlert(
+	ctx context.Context, s db.TenantScope, alertID uuid.UUID,
+	actorKind, actorID, actorLabel string, until time.Time,
+) error {
+	if a.alerts == nil {
+		return errs.Unavailable("alerts_unavailable", "alerts are not wired", 0)
+	}
+	_, err := a.alerts.SnoozeAs(ctx, s, alertID, actorKind, actorID, actorLabel,
+		until, "", alertsservice.Idempotency{})
+	return err
+}
+
+// UnsnoozeAlert ends the quiet early, with `ended_reason='manual'` — a deliberate
+// wake-up, never the automatic expiry the reaper's tick performs. Same empty note,
+// same reason.
+func (a slackSnoozeActions) UnsnoozeAlert(
+	ctx context.Context, s db.TenantScope, alertID uuid.UUID,
+	actorKind, actorID, actorLabel string,
+) error {
+	if a.alerts == nil {
+		return errs.Unavailable("alerts_unavailable", "alerts are not wired", 0)
+	}
+	return a.alerts.UnsnoozeAs(ctx, s, alertID, actorKind, actorID, actorLabel, "")
 }

@@ -128,15 +128,19 @@ func (c *Container) handlers() jobs.Handlers {
 		StatsRollup: statsworker.StatsRollup(c.Stats, c.orgs, c.enqueuer, c.Clock, c.Logger),
 	}
 
-	// notification fills its own three fields (notify.evaluate, deliver.dispatch,
-	// notify.digest). It MUTATES the set rather than returning one, so composing
-	// modules is one call each and nothing has to know the full list. The digest
-	// tick is the module's one per-tenant periodic, so it takes the same live-org
-	// pager and outbox every other fan-out here is handed — the tenant list is this
-	// container's to give, never a module's to read for itself.
+	// notification fills its own four fields (notify.evaluate, deliver.dispatch,
+	// notify.digest and notify.digest.reconcile). It MUTATES the set rather than
+	// returning one, so composing modules is one call each and nothing has to know
+	// the full list. The digest tick and the digest detector are the module's two
+	// per-tenant periodics, so they take the same live-org pager and outbox every
+	// other fan-out here is handed — the tenant list is this container's to give,
+	// never a module's to read for itself.
 	//
 	// ⛔ IT WAS FOUR FIELDS AND TWO PERIODICS UNTIL git-bug bd0fb1d removed
-	// `notify.unacked_reminder`.
+	// `notify.unacked_reminder`, and it is four and two again for an unrelated
+	// reason: `notify.digest.reconcile` (git-bug `893cee4`) DETECTS and never
+	// delivers, so it does not reopen the "oto sends nothing unprompted" ruling
+	// the reminder was withdrawn under.
 	if c.NotifyWorkers != nil {
 		c.NotifyWorkers.Register(&h, c.orgs, c.enqueuer)
 	}

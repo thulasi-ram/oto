@@ -2,7 +2,8 @@ package domain
 
 // SuppressedReason is why oto communicated nothing — the closed set of
 // `notifications.suppressed_reason` (notifications_suppmap_ck, as widened by
-// migration 00018 and narrowed to SIX by migration 00059).
+// migration 00018, narrowed to SIX by migration 00059 and widened to SEVEN by
+// migration 00073).
 //
 // This is OTO'S OWN notification-suppression vocabulary. It is NOT
 // Alertmanager's `alert_cases.suppression_reason`, which mirrors the four
@@ -28,6 +29,27 @@ const (
 	SuppressedSnoozed SuppressedReason = "snoozed"
 	// SuppressedThrottled: the policy's per-subject rate cap was reached.
 	SuppressedThrottled SuppressedReason = "throttled"
+	// SuppressedBelowThreshold: the policy's count condition (`count_min` over
+	// `count_window_s`, migration 00072) is not met yet — fewer subjects of the
+	// bound kind have been seen inside the sliding window than the operator asked
+	// for.
+	//
+	// ⭐ IT IS `throttled`'S DUAL AND IT IS THE SAME POLICY COLUMNS WITH THE
+	// OPPOSITE SENSE. `throttled` says "you have already been told this many times
+	// in this window"; this says "this has not happened enough times in this window
+	// yet". A policy may carry both and a single evaluation may be refused by
+	// either.
+	//
+	// ⛔ IT IS NOT `flapping` COMING BACK, AND THE DIFFERENCE IS THE WHOLE REASON
+	// THIS VALUE IS ADMISSIBLE. `flapping` and `storm` were deleted because they
+	// were OTO'S OWN OPINION that a real firing was not worth mentioning, taken
+	// against a threshold welded into Go (`DefaultFlapThreshold = 5` over
+	// `DefaultFlapWindow = 7200 s`) that no operator could see or change. The
+	// number here comes from a column an operator wrote, on a policy they can read
+	// back, and the silence it produces is the one they asked for by name — which
+	// is exactly the replacement git-bug `7570090` names for hardcoded flap
+	// detection. Same shape of quiet; a different author.
+	SuppressedBelowThreshold SuppressedReason = "below_threshold"
 	// SuppressedVerbosity: every destination's verbosity dropped this fact.
 	SuppressedVerbosity SuppressedReason = "verbosity"
 	// SuppressedDuplicateRender: the rendered payload was byte-identical to what
@@ -35,19 +57,47 @@ const (
 	SuppressedDuplicateRender SuppressedReason = "duplicate_render"
 )
 
-// suppressorOrder is the §B.8.2 precedence chain, BINDING AND IN THIS ORDER.
+// suppressorOrder is the precedence chain: when several suppressors apply, the FIRST
+// MATCH wins and is the one recorded.
 //
-// When several suppressors apply, the FIRST MATCH wins and is the one recorded.
-// The order is not arbitrary and is not a performance decision:
+// ⚠️ SIX OF THE SEVEN RANKS ARE SPEC §B.8.2's AND THE SEVENTH CAME FROM ADR 0044 §5,
+// WHICH IS SAID PLAINLY BECAUSE BORROWED AUTHORITY IS WORSE THAN NONE. §B.8.2 as
+// originally written fixed `channel_disabled → no_policy → snoozed → throttled →
+// verbosity → duplicate_render` — six values, and `below_threshold` was not among
+// them, because the value did not exist when that section was written. Its rank below
+// was an IMPLEMENTATION DECISION MADE HERE AND IN MIGRATION 00073, and the owner
+// ratified it on 2026-08-20 (ADR 0044 §5), which is where its authority now lives —
+// not in this comment, and not in the §B.8.2 line that records it. The order of the
+// other six is unchanged and is the spec's.
+//
+// The reasoning, the spec's for six and ADR 0044 §5's for the seventh:
 //
 //	channel_disabled  there is nowhere to send; nothing else can even be asked
 //	no_policy         nothing routed it; still nowhere to send
 //	snoozed           a DELIBERATE HUMAN ACT, and therefore the most actionable
 //	                  explanation a reader can be given. It outranked every
 //	                  automatic damper below it for that reason alone.
-//	throttled         a policy rate cap
+//	throttled         a policy rate cap — the CEILING was hit
+//	below_threshold   a policy count condition — the FLOOR is not reached yet
 //	verbosity         a per-destination volume preference
 //	duplicate_render  nothing changed; the cheapest and least interesting answer
+//
+// ⭐ `below_threshold` SITS DIRECTLY BELOW `throttled`, RATIFIED BY ADR 0044 §5
+// (owner, 2026-08-20). That ADR is the authority for this one rank; SPEC §B.8.2
+// records it and this slice implements it. The order shipped as a PROPOSAL -- the
+// question "does a ceiling outrank a floor" existed nowhere before this axis did --
+// and the history is kept here because a reader who finds only the ruling cannot
+// tell a considered answer from an inherited one. The argument, now ruled: the two
+// are the same two policy columns read with opposite senses, so they belong adjacent
+// and above `verbosity`, which is a property of a DESTINATION rather than of the
+// policy. The ceiling is ranked
+// first of the two because a spent cap is the ACTIVE fact — oto has been speaking
+// about this conversation and stopped, against a number the operator has already
+// been hit by — whereas an unmet floor is the ordinary RESTING state of every
+// policy that carries one: for most of its window a count condition is unmet by
+// design. A resting state that outranked an active damper would mask it on every
+// policy carrying both, which is the same argument that puts `verbosity` below
+// `throttled`.
 //
 // ⭐⭐ TWO RANKS WERE DELETED FROM BETWEEN `snoozed` AND `throttled`, AND THE CHAIN
 // IS WORTH READING TWICE FOR WHAT IS LEFT. `storm` and `flapping` were the only
@@ -55,9 +105,18 @@ const (
 // firing not worth mentioning, which is the one suppression an operator cannot
 // distinguish from a signal that never fired. Every value that remains is either
 // the ABSENCE OF A DESTINATION (`channel_disabled`, `no_policy`), A HUMAN'S
-// EXPLICIT REQUEST (`snoozed`, `verbosity`), THE WORLD'S CONSTRAINT (`throttled`),
-// or NOTHING TO SAY (`duplicate_render`). Not one of them is a judgement, and
+// EXPLICIT REQUEST (`snoozed`, `verbosity`, `throttled`, `below_threshold`), or
+// NOTHING TO SAY (`duplicate_render`). Not one of them is a judgement, and
 // nothing may add one back.
+//
+// ⚠️ `below_threshold` JOINED THE SECOND GROUP AND NOT A NEW ONE, WHICH IS THE
+// TEST IT HAD TO PASS. It produces the same silence `flapping` produced — "this
+// keeps happening, say nothing yet" — so the only thing separating it from the
+// value this file spent two paragraphs deleting is WHERE THE NUMBER COMES FROM. It
+// comes from `notification_policies.count_min`, which an operator wrote, can read
+// back and can delete. `flapping`'s came from a constant in Go. A damper whose
+// threshold is the operator's is their request; one whose threshold is ours is our
+// opinion, and that is the line this vocabulary is held to.
 //
 // ⛔ THEY ARE DELETED RATHER THAN RETIRED, WHICH IS A CHANGE OF MIND THIS FILE
 // USED TO ARGUE THE OTHER WAY. The retirement bargain — keep the value declared so
@@ -74,12 +133,14 @@ var suppressorOrder = []SuppressedReason{
 	SuppressedNoPolicy,
 	SuppressedSnoozed,
 	SuppressedThrottled,
+	SuppressedBelowThreshold,
 	SuppressedVerbosity,
 	SuppressedDuplicateRender,
 }
 
-// SuppressorOrder returns the §B.8.2 precedence chain. The slice is freshly
-// built so the order cannot be mutated by a caller.
+// SuppressorOrder returns the precedence chain — §B.8.2's six ranks plus the
+// `below_threshold` rank this release proposes; see suppressorOrder. The slice is
+// freshly built so the order cannot be mutated by a caller.
 func SuppressorOrder() []SuppressedReason {
 	out := make([]SuppressedReason, len(suppressorOrder))
 	copy(out, suppressorOrder)

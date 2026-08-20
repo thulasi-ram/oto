@@ -60,6 +60,18 @@ const (
 	// reference states none, where an older revision required two — so oto does
 	// not enforce one.
 	maxOverflowOptions = 5
+	// DOCUMENTED: static select element, "maximum number of options is 100".
+	//
+	// ⚠️ IT IS TWENTY TIMES THE OVERFLOW'S AND THE TWO ARE NOT INTERCHANGEABLE.
+	// §B.8.3 offers five presets, so oto is nowhere near this number — the constant
+	// is here so the V9 branch checks a static select against the STATIC SELECT's
+	// limit, for the reason the maxButtonValue / maxOptionValue pair states: the
+	// easiest Block Kit mistake to make is enforcing one element's number on
+	// another's.
+	maxSelectOptions = 100
+	// DOCUMENTED: placeholder text object, "maximum length for the text in this
+	// field is 150 characters".
+	maxPlaceholderText = 150
 	// DOCUMENTED: image block, "maximum length for this field is 2000
 	// characters". alt_text is REQUIRED on an image block.
 	maxAltText = 2000
@@ -362,6 +374,14 @@ func plainClock(t time.Time) string {
 // "oto quiet until 22:02 UTC" on a seven-day snooze reads as tonight. That is a
 // false statement to the one person guaranteed to read the card: whoever asked for
 // the quiet.
+//
+// ⭐ IT HAS A SECOND USER NOW, AND IT IS BACKWARD-LOOKING (git-bug `78388fb`). A
+// digest's covered span is the one past timestamp on any card that need not be near
+// the render: a recovered tick emits up to `MaxDigestBackfill` windows in one pass,
+// and a long `digest_window_s` is admissible, so "from 17:56 UTC" can mean last
+// Tuesday. The rule that actually governs is therefore not "forward-looking" but
+// "MAY NOT BE ON THE READER'S OWN DAY" — which is what this function tests. Snooze
+// was simply the first case of it.
 //
 // The same-day case keeps `plainClock`'s exact output on purpose, so the common
 // snooze reads as tersely as everything beside it.

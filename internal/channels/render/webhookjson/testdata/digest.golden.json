@@ -1,0 +1,19 @@
+{
+  "schema": "oto.notification.v1",
+  "reason": "digest",
+  "mode": "post_root",
+  "delivered_at": "2026-08-07T17:57:29Z",
+  "org": {
+    "id": "",
+    "slug": "",
+    "name": ""
+  },
+  "digest": {
+    "count": 4,
+    "covered_from": "2026-08-07T16:47:29Z",
+    "covered_to": "2026-08-07T17:52:29Z",
+    "span_seconds": 3900
+  },
+  "alerts": [],
+  "summary": "[DIGEST] 4 new cases in 1h5m0s from 2026-08-07T16:47:29Z up to 2026-08-07T17:52:29Z"
+}

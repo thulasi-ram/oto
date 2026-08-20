@@ -31,15 +31,15 @@ func TestTheZeroDeclarativeChangesNothing(t *testing.T) {
 	if !zero.Empty() {
 		t.Fatal("the zero value claims to manage keys")
 	}
-	if zero.Manages(domain.KeyRefireGrace) || zero.ConfigKey(domain.KeyRefireGrace) != "" {
+	if zero.Manages(domain.KeyResolveGrace) || zero.ConfigKey(domain.KeyResolveGrace) != "" {
 		t.Fatal("the zero value manages a key")
 	}
 
 	org := domain.Org{Settings: domain.DefaultSettings()}.WithDeclarative(zero)
-	if org.Settings.RefireGrace != domain.DefaultRefireGrace {
-		t.Fatalf("refire_grace = %v, want the shipped default", org.Settings.RefireGrace)
+	if org.Settings.ResolveGrace != domain.DefaultResolveGrace {
+		t.Fatalf("resolve_grace = %v, want the shipped default", org.Settings.ResolveGrace)
 	}
-	if got := org.Origin(domain.KeyRefireGrace); got != domain.OriginDefault {
+	if got := org.Origin(domain.KeyResolveGrace); got != domain.OriginDefault {
 		t.Fatalf("origin %q, want default", got)
 	}
 }
@@ -50,56 +50,63 @@ func TestPrecedenceIsDefaultThenOrgThenConfig(t *testing.T) {
 
 	// 1. Nothing set: the shipped default, origin `default`.
 	plain := domain.Org{}.WithDeclarative(domain.Declarative{})
-	if plain.Settings.RefireGrace != domain.DefaultRefireGrace {
-		t.Fatalf("default layer: %v", plain.Settings.RefireGrace)
+	if plain.Settings.ResolveGrace != domain.DefaultResolveGrace {
+		t.Fatalf("default layer: %v", plain.Settings.ResolveGrace)
 	}
-	if got := plain.Origin(domain.KeyRefireGrace); got != domain.OriginDefault {
+	if got := plain.Origin(domain.KeyResolveGrace); got != domain.OriginDefault {
 		t.Fatalf("default layer origin %q", got)
 	}
 
 	// 2. The org writes 900: 900 wins over the default, origin `org`.
 	nine := 900
-	withOrg := domain.Org{Overrides: domain.SettingsPatch{RefireGraceS: &nine}}.
+	withOrg := domain.Org{Overrides: domain.SettingsPatch{ResolveGraceS: &nine}}.
 		WithDeclarative(domain.Declarative{})
-	if withOrg.Settings.RefireGrace != 900*time.Second {
-		t.Fatalf("org layer: %v", withOrg.Settings.RefireGrace)
+	if withOrg.Settings.ResolveGrace != 900*time.Second {
+		t.Fatalf("org layer: %v", withOrg.Settings.ResolveGrace)
 	}
-	if got := withOrg.Origin(domain.KeyRefireGrace); got != domain.OriginOrg {
+	if got := withOrg.Origin(domain.KeyResolveGrace); got != domain.OriginOrg {
 		t.Fatalf("org layer origin %q", got)
 	}
 
 	// 3. Configuration says 600: 600 wins over BOTH, origin `config`.
 	withCfg := withOrg.WithDeclarative(mustDeclarative(t,
-		entry("refire_grace_s", "OTO_TUNING_REFIRE_GRACE_S", "600")))
-	if withCfg.Settings.RefireGrace != 600*time.Second {
+		entry("resolve_grace_s", "OTO_TUNING_RESOLVE_GRACE_S", "600")))
+	if withCfg.Settings.ResolveGrace != 600*time.Second {
 		t.Fatalf("config layer: %v, want 600s — declarative must beat the org override",
-			withCfg.Settings.RefireGrace)
+			withCfg.Settings.ResolveGrace)
 	}
-	if got := withCfg.Origin(domain.KeyRefireGrace); got != domain.OriginConfig {
+	if got := withCfg.Origin(domain.KeyResolveGrace); got != domain.OriginConfig {
 		t.Fatalf("config layer origin %q, want config", got)
 	}
-	if got := withCfg.ConfigKey(domain.KeyRefireGrace); got != "OTO_TUNING_REFIRE_GRACE_S" {
+	if got := withCfg.ConfigKey(domain.KeyResolveGrace); got != "OTO_TUNING_RESOLVE_GRACE_S" {
 		t.Fatalf("config key %q", got)
 	}
-	if s := withCfg.Shadowed(); s.RefireGraceS == nil || *s.RefireGraceS != 900 {
-		t.Fatalf("the shadowed org value is not visible: %+v", s.RefireGraceS)
+	if s := withCfg.Shadowed(); s.ResolveGraceS == nil || *s.ResolveGraceS != 900 {
+		t.Fatalf("the shadowed org value is not visible: %+v", s.ResolveGraceS)
 	}
 }
 
 // TestADeclarativeValueIsBoundedLikeAnyOther. Configuration is authoritative
 // about WHICH value is in force; it is not privileged about which values are
-// legal. `refire_grace_s: 0` is a Slack thread per transition from any source.
+// legal. `resolve_grace_s: 0` lets one missed scrape expire a live case, from any
+// source.
+//
+// ⚠️ THIS FILE USED `refire_grace_s` AS ITS VEHICLE THROUGHOUT, AND THE KEY IS
+// DELETED (git-bug 7287b28). `resolve_grace_s` replaces it because it is the
+// other second-valued grace with a 60s floor, so every number here — 0, 600, 900
+// — keeps the same relationship to the same bound and no assertion changed
+// meaning. Nothing in this file was ever about re-firing.
 func TestADeclarativeValueIsBoundedLikeAnyOther(t *testing.T) {
 	t.Parallel()
 
 	_, err := domain.NewDeclarative([]domain.DeclaredEntry{
-		entry("refire_grace_s", "OTO_TUNING_REFIRE_GRACE_S", 0),
+		entry("resolve_grace_s", "OTO_TUNING_RESOLVE_GRACE_S", 0),
 	})
 	if err == nil {
-		t.Fatal("a refire_grace of 0 was accepted from configuration")
+		t.Fatal("a resolve_grace of 0 was accepted from configuration")
 	}
 	vs := errs.ViolationsOf(err)
-	if len(vs) != 1 || vs[0].Field != "OTO_TUNING_REFIRE_GRACE_S" {
+	if len(vs) != 1 || vs[0].Field != "OTO_TUNING_RESOLVE_GRACE_S" {
 		t.Fatalf("violations %+v: the field must be the key the operator can act on, "+
 			"not the settings key they cannot find", vs)
 	}
@@ -114,7 +121,7 @@ func TestAnUnknownKeyFailsTheBoot(t *testing.T) {
 	t.Parallel()
 
 	_, err := domain.NewDeclarative([]domain.DeclaredEntry{
-		entry("refire_grace", "OTO_TUNING_REFIRE_GRACE", "600"),
+		entry("resolve_grace", "OTO_TUNING_RESOLVE_GRACE", "600"),
 	})
 	if err == nil {
 		t.Fatal("a misspelled tuning key booted silently")
@@ -123,7 +130,7 @@ func TestAnUnknownKeyFailsTheBoot(t *testing.T) {
 	if len(vs) != 1 || vs[0].Code != "unknown_key" {
 		t.Fatalf("violations %+v", vs)
 	}
-	if !strings.Contains(vs[0].Message, "refire_grace_s") {
+	if !strings.Contains(vs[0].Message, "resolve_grace_s") {
 		t.Fatalf("the error does not say what should have been typed: %q", vs[0].Message)
 	}
 }
@@ -143,18 +150,18 @@ func TestValuesArriveAsStringsOrAsTypes(t *testing.T) {
 	// boolean setting comes back, the pair comes back with it — `asBool`'s
 	// `case string` arm is reachable only from the environment.
 	fromEnv := mustDeclarative(t,
-		entry("refire_grace_s", "OTO_TUNING_REFIRE_GRACE_S", "900"),
+		entry("resolve_grace_s", "OTO_TUNING_RESOLVE_GRACE_S", "900"),
 		entry("flap_threshold", "OTO_TUNING_FLAP_THRESHOLD", "7"),
 	)
 	fromFile := mustDeclarative(t,
-		entry("refire_grace_s", "tuning.refire_grace_s", 900),
+		entry("resolve_grace_s", "tuning.resolve_grace_s", 900),
 		entry("flap_threshold", "tuning.flap_threshold", 7),
 	)
 
 	env := domain.Org{}.WithDeclarative(fromEnv).Settings
 	file := domain.Org{}.WithDeclarative(fromFile).Settings
-	if env.RefireGrace != file.RefireGrace || env.RefireGrace != 900*time.Second {
-		t.Fatalf("env %v, file %v", env.RefireGrace, file.RefireGrace)
+	if env.ResolveGrace != file.ResolveGrace || env.ResolveGrace != 900*time.Second {
+		t.Fatalf("env %v, file %v", env.ResolveGrace, file.ResolveGrace)
 	}
 	if env.FlapThreshold != file.FlapThreshold || env.FlapThreshold != 7 {
 		t.Fatalf("env %d, file %d", env.FlapThreshold, file.FlapThreshold)
@@ -166,13 +173,13 @@ func TestAValueOfTheWrongTypeFailsByName(t *testing.T) {
 	t.Parallel()
 
 	_, err := domain.NewDeclarative([]domain.DeclaredEntry{
-		entry("refire_grace_s", "tuning.refire_grace_s", "ten minutes"),
+		entry("resolve_grace_s", "tuning.resolve_grace_s", "ten minutes"),
 	})
 	if err == nil {
 		t.Fatal("an unparseable duration was accepted")
 	}
 	vs := errs.ViolationsOf(err)
-	if len(vs) != 1 || vs[0].Field != "tuning.refire_grace_s" {
+	if len(vs) != 1 || vs[0].Field != "tuning.resolve_grace_s" {
 		t.Fatalf("violations %+v", vs)
 	}
 }

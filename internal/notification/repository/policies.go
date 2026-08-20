@@ -36,15 +36,18 @@ type policyRow struct {
 	reasons          []string
 	channelIDs       []uuid.UUID
 	throttle         []byte
+	subjectKinds     []string
 	digestWindowSecs *int
 	digestFloor      *int
+	countMin         *int
+	countWindowSecs  *int
 	createdAt        time.Time
 	updatedAt        time.Time
 	deletedAt        *time.Time
 }
 
 // scanInto is the ONE argument list for `policyColumns`, and it exists because
-// there are now four queries in this file reading the same thirteen columns.
+// there are now four queries in this file reading the same seventeen columns.
 //
 // ⚠️ THE DUPLICATION IT REPLACED WAS A LIVE HAZARD, not a style problem. Each
 // query spelled its own `Scan(&row.a, &row.b, …)` in the column order, so adding
@@ -56,7 +59,9 @@ func (r *policyRow) scanInto() []any {
 	return []any{
 		&r.id, &r.orgID, &r.name, &r.priority, &r.enabled,
 		&r.matchers, &r.reasons, &r.channelIDs, &r.throttle,
+		&r.subjectKinds,
 		&r.digestWindowSecs, &r.digestFloor,
+		&r.countMin, &r.countWindowSecs,
 		&r.createdAt, &r.updatedAt, &r.deletedAt,
 	}
 }
@@ -103,6 +108,19 @@ func (r policyRow) toDomain() (domain.Policy, error) {
 		}
 	}
 
+	// ⭐ AN EMPTY ARRAY MEANS "EVERY SUBJECT KIND" AND IT IS LEFT NIL, NOT
+	// MATERIALISED. `subject_kinds` is `NOT NULL DEFAULT '{}'` so this is never NULL,
+	// and `SubjectBinding.Unrestricted` is `len(b) == 0` — which a nil slice and an
+	// empty slice both satisfy. Allocating a zero-length slice here would be a
+	// distinction the domain deliberately does not draw, on the hottest read in the
+	// notification path: `ListLive` runs on every lifecycle transition.
+	if len(r.subjectKinds) > 0 {
+		p.Subjects = make(domain.SubjectBinding, 0, len(r.subjectKinds))
+		for _, s := range r.subjectKinds {
+			p.Subjects = append(p.Subjects, domain.SubjectKind(s))
+		}
+	}
+
 	// NULL means "no digest", which is the shipped default and the state of every
 	// row written before migration 00058. The zero Duration says the same thing in
 	// Go, so there is nothing to translate and nothing to default.
@@ -111,6 +129,19 @@ func (r policyRow) toDomain() (domain.Policy, error) {
 	}
 	if r.digestFloor != nil {
 		p.Digest.Floor = *r.digestFloor
+	}
+
+	// NULL on either half means "no count condition", the shipped default and the
+	// state of every row written before migration 00072. `policies_count_pair_ck`
+	// makes the two move together, so a half-populated pair cannot be read back —
+	// but each half is translated independently anyway, because a repository that
+	// silently drops one column when the other is NULL would hide the day the
+	// constraint is the thing that broke.
+	if r.countMin != nil {
+		p.Count.Min = *r.countMin
+	}
+	if r.countWindowSecs != nil {
+		p.Count.Window = time.Duration(*r.countWindowSecs) * time.Second
 	}
 
 	return p, nil
@@ -133,7 +164,8 @@ func (r *PolicyRepository) db(ctx context.Context) db.Querier { return db.FromCo
 
 const policyColumns = `
   id, org_id, name, priority, enabled, matchers, reasons, channel_ids,
-  throttle, digest_window_s, digest_floor,
+  throttle, subject_kinds, digest_window_s, digest_floor,
+  count_min, count_window_s,
   created_at, updated_at, deleted_at`
 
 const listLivePoliciesSQL = `
@@ -194,9 +226,11 @@ func (r *PolicyRepository) Get(ctx context.Context, s db.TenantScope, id uuid.UU
 //
 // ⭐ THE WINDOW IS THE WHOLE PREDICATE, AND THE REASON IS NOT REPEATED HERE.
 // `policies_digest_reason_ck` (00058) already guarantees that a row with a window
-// lists `digest` in `reasons`, so filtering on the array as well would be a second
-// spelling of a constraint the database holds — and one that would silently return
-// nothing if the constraint were ever the thing that broke. `Policy.Digests()`
+// lists `digest` in `reasons`, and `policies_digest_subject_ck` (00072) that its
+// `subject_kinds` binds the `digest` altitude — the two halves `Policy.Handles` asks
+// about — so filtering on either array as well would be a second spelling of a
+// constraint the database holds, and one that would silently return nothing if the
+// constraint were ever the thing that broke. `Policy.Digests()`
 // re-asks the coherent question in Go for the benefit of unstored PREVIEW
 // candidates, which no query can vouch for.
 //

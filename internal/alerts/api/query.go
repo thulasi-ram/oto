@@ -51,6 +51,23 @@ var listRollupsParams = []string{
 // `snoozed` are absent on purpose and a caller sending one gets
 // `400 unknown_parameter` rather than a silently unfiltered page — see
 // ListCasesQuery for why each of them belongs on the alert list instead.
+//
+// ⛔ `group_id` IS STILL ADMITTED HERE AND IT IS INERT, WHICH IS A CHOICE AND NOT
+// AN OVERSIGHT (git-bug `7570090`). `alert_cases.group_id` is dropped, so
+// `repository.ListCases` short-circuits to an EMPTY page the moment
+// `CaseFilter.GroupIDs` is non-empty — see the comment on `listCasesHead` — and
+// this allow-list plus `p.CSV("group_id")` below are what still get it there.
+// Dropping either one would turn `?group_id=…` into "every case in the org",
+// which is a SILENT WIDENING of a filtered read and the one failure nothing
+// reports. Empty is the truthful answer: no Case is a member of anything now.
+//
+// ⛔ AND IT IS NOT RENAMED TO `conversation_id` the way `GET /notifications` was.
+// That parameter had a successor — a notification still has a delivery target to
+// narrow by. This one has none, because the Case IS the conversation: filtering
+// Cases by conversation id is `GET /cases/{id}`. The parameter and
+// `ListCasesQuery.GroupID` behind it come out together, at which point an old
+// caller gets `400 unknown_parameter` from `httpx.NewParams` and is told rather
+// than served. `openapi.yaml` marks it `deprecated: true` and says all of this.
 var listCasesParams = []string{
 	"state", "ack", "group_id",
 	"severity", "cluster", "namespace", "alertname",

@@ -1,5 +1,5 @@
 /**
- * The nine `guide()` closures — the arithmetic behind a one-click button.
+ * The `guide()` closures — the arithmetic behind a one-click button.
  *
  * ⛔ WHY THIS FILE EXISTS AT ALL, GIVEN ADR 0021 EXEMPTS THE UI. `guide()` is not
  * form code. It reads the operator's own `alertmanager.yml` timings, computes a
@@ -10,7 +10,8 @@
  * with the same button, in the same confident prose. `tuningCopy.ts:365-369`
  * records that an earlier version of exactly this arithmetic shipped: it called
  * the old 600s `refire_grace` default "comfortably fine" while the modal
- * `for: 15m` rule could never reach it.
+ * `for: 15m` rule could never reach it. (That knob is itself deleted — git-bug
+ * 7287b28 — but it is the reason this file exists, so the story stays.)
  *
  * ⭐ WHAT IS ASSERTED, AND WHAT DELIBERATELY IS NOT. `guide(x) === 7` because 7 is
  * what it returns today pins nothing. So the assertions below are properties with
@@ -114,8 +115,9 @@ const AM = amRef();
  * than a second source of truth.
  */
 const SHIPPED: Readonly<Partial<Record<KnobKey, number>>> = {
-  refire_grace_s: 1200,
-  group_close_delay_s: 1200,
+  // ⛔ `refire_grace_s: 1200` AND `group_close_delay_s: 1200` LED THIS OBJECT AND
+  // BOTH ARE DELETED (git-bug 7287b28) — `platform/tuning` no longer writes
+  // either, so a number here would be this file inventing one.
   resolve_grace_s: 300,
   flap_threshold: 5,
   flap_window_s: 7200,
@@ -158,7 +160,7 @@ function probe(key: KnobKey): number {
  *
  * Dense matters: every transition these closures make sits within a few thousand
  * of the minimum, and a sampled sweep can step straight over a band — the
- * `refire_grace` "tight" band is 300 wide out of an 85 800 range. Above the dense
+ * `refire_grace` "tight" band was 300 wide out of an 85 800 range. Above the dense
  * region every closure is monotone and flat, so 1000-second steps plus the exact
  * maximum are enough to catch a verdict that changes up there.
  */
@@ -189,14 +191,20 @@ function shapeOf(key: KnobKey, am: AmRef = AM, num: Num = N): readonly GuidanceL
 /* -------------------------------------------------------------------------- */
 
 describe("the guided knobs as a set", () => {
-  it("is the six the screen computes for, and the other four are the ones the doc declines to rule on", () => {
+  it("is the four the screen computes for, and the other three are the ones the doc declines to rule on", () => {
     // The count is asserted rather than trusted because `KnobKey` is derived from
     // the write contract: the day the contract grows a setting, this number is the
     // thing that should be reconsidered. It was nine and eight until ADR 0042
     // deleted `storm_threshold`, `storm_window_s` and `storm_cooldown_s`, then
     // seven and seven until git-bug bd0fb1d deleted `unacked_reminder_after_s`
-    // and the three mention keys with the reminder itself.
-    expect(GUIDED).toHaveLength(6);
+    // and the three mention keys with the reminder itself, then six and three when
+    // that same change took `broadcast_on_resolved` out of the unguided list with
+    // Slack thread-broadcast (git-bug 7570090). It is four now: git-bug 7287b28 and
+    // migration `00071` deleted `refire_grace_s` and `group_close_delay_s`, which
+    // were guided knobs derived from the Alertmanager corpus and are the pair whose
+    // mechanism ADR 0040 had already retired — the settings outlived the thing they
+    // decided, which is exactly why they went.
+    expect(GUIDED).toHaveLength(4);
 
     const unguided = (Object.keys(KNOBS) as KnobKey[]).filter(
       (k) => KNOBS[k].guide === undefined,
@@ -249,8 +257,10 @@ describe("the guided knobs as a set", () => {
     // claim the screen already makes once at the foot of the panel, and would be
     // untestable from its inputs. The Proxy makes the dependency observable.
     const expected: Readonly<Record<string, readonly string[]>> = {
-      refire_grace_s: ["groupInterval"],
-      group_close_delay_s: ["groupInterval"],
+      // ⛔ `refire_grace_s` AND `group_close_delay_s` — the only two entries that
+      // named an upstream timing — are deleted with their knobs (git-bug 7287b28).
+      // Every surviving guide is retired and argues from no timing at all, which
+      // is why the Proxy now expects an empty set for all of them.
       resolve_grace_s: [],
       // Retired (git-bug 235f347): their verdict is about the retirement, not the
       // value, so they argue from no upstream timing at all.
@@ -300,14 +310,14 @@ describe("the guided knobs as a set", () => {
       }
     }
 
-    // This rule has now outlived two of its demonstrators. `flap_digest_interval_s`
-    // was retired and reads no reference at all (git-bug 235f347);
-    // `unacked_reminder_after_s` went with the unacked reminder (git-bug bd0fb1d).
-    // `refire_grace_s` argues from a real timing and is where the rule is
-    // demonstrated now — the rule outranks any one knob that happens to show it.
-    const worded = guideOf("refire_grace_s")(60, asDefault, N);
-    expect(worded?.text).toContain("Alertmanager's default group_interval");
-    expect(guideOf("refire_grace_s")(60, AM, N)?.text).toContain("your group_interval");
+    // ⚠️ THE `toContain` PAIR THAT DEMONSTRATED THIS RULE IS GONE WITH ITS LAST
+    // DEMONSTRATOR, AND THE RULE IS KEPT ANYWAY. `flap_digest_interval_s` was
+    // retired and reads no reference (git-bug 235f347); `unacked_reminder_after_s`
+    // went with the unacked reminder (bd0fb1d); `refire_grace_s` was the last knob
+    // whose text named a timing, and it went with git-bug 7287b28. The invariant
+    // asserted above — same verdict for a defaulted timing as for a configured one
+    // — still runs over every GUIDED knob, so it will hold the day a knob argues
+    // from a timing again.
   });
 
   it("calls every shipped default consistent against Alertmanager's own defaults", () => {
@@ -355,7 +365,8 @@ describe("the guided knobs as a set", () => {
     // A `use {N}` button whose value the same closure then calls "Tight" is a fix
     // that does not fix. There were two, and both were the FIRST branch of a
     // two-branch guide suggesting the floor it had just checked while ignoring the
-    // floor it was about to check — `group_close_delay_s` offering `group_interval`
+    // floor it was about to check — `group_close_delay_s` (deleted since, git-bug
+    // 7287b28) offering `group_interval`
     // with no regard for the re-fire grace, and `flap_window_s` offering an
     // undocumented `cycle x 3` with no regard for the threshold. Each cost the
     // operator two clicks for one fix, and the first click was known-insufficient
@@ -439,122 +450,22 @@ describe("the observable cycle", () => {
 /* Threads and lifecycle                                                      */
 /* -------------------------------------------------------------------------- */
 
-describe("refire_grace_s", () => {
-  const g = guideOf("refire_grace_s");
+/* ⛔⛔ `describe("refire_grace_s")` AND `describe("group_close_delay_s")` STOOD
+   HERE — nine `it` blocks and ~120 lines — AND BOTH ARE DELETED WITH THEIR KNOBS
+   (git-bug 7287b28).
 
-  it("degrades in one direction only: unreachable, then tight, then consistent", () => {
-    expect(shapeOf("refire_grace_s")).toEqual(["inert", "tight", "ok"]);
-  });
+   They were the densest tests in this file, and worth recording what they held:
+   `refire_grace_s` was where the RULE-floor regression was pinned (the old
+   closure compared only against `group_interval`, so 600s read as fine while the
+   modal `for: 15m` rule could never reach it), and `group_close_delay_s` was the
+   only knob whose guidance read ANOTHER knob's live value — including the
+   NaN-guard for a mid-edit grace box and the "one suggestion clears both floors"
+   rule.
 
-  it("requires the RULE floor, not just the transport floor — the regression that shipped", () => {
-    // ⛔ THE BUG NAMED AT `tuningCopy.ts:365-369`. The old closure compared the
-    // value only against `group_interval`, so 600s — twice the 5m transport floor
-    // — read as comfortably fine, while the modal `for: 15m` rule could never
-    // reach it. 600 is also this knob's minimum, so an operator can still type it.
-    expect(boundsOf("refire_grace_s").min).toBe(600);
-    const verdict = g(600, AM, N);
-    expect(verdict?.level).toBe("inert");
-    expect(verdict?.text).toMatch(/Unreachable for an ordinary rule/);
-  });
-
-  it("clears both floors at once, and takes whichever is larger", () => {
-    // Rule floor binds while group_interval ≤ for:. 15m + 5m = 20m.
-    const slow = g(1199, AM, N);
-    expect(slow?.level).toBe("tight");
-    expect(slow?.suggest).toBe(ASSUMED_RULE_FOR_S + AM_GROUP_INTERVAL_S);
-    expect(g(1200, AM, N)?.level).toBe("ok");
-
-    // Transport floor binds once group_interval exceeds for:, and then the
-    // suggestion is 2 × group_interval rather than for: + group_interval.
-    const wide = amRef({ groupInterval: observed(1800) });
-    const w = g(2500, wide, N);
-    expect(w?.level).toBe("tight");
-    expect(w?.suggest).toBe(3600);
-    expect(g(3600, wide, N)?.level).toBe("ok");
-  });
-
-  it("suggests one number regardless of how wrong the current value is, and it clears both floors", () => {
-    // The suggestion is a property of the cluster, not of the mistake. Three
-    // different failing values, one answer — and that answer is the smallest
-    // value the closure itself accepts.
-    const suggestions = [600, 700, 899, 900, 1000, 1199].map((v) => g(v, AM, N)?.suggest);
-    expect(new Set(suggestions).size).toBe(1);
-    const want = suggestions[0]!;
-    expect(want).toBeGreaterThanOrEqual(ASSUMED_RULE_FOR_S + AM_GROUP_INTERVAL_S);
-    expect(want).toBeGreaterThanOrEqual(2 * AM_GROUP_INTERVAL_S);
-    expect(g(want, AM, N)?.level).toBe("ok");
-    expect(g(want - 1, AM, N)?.level).not.toBe("ok");
-  });
-
-  it("scales with the operator's own group_interval rather than a constant", () => {
-    let prev = 0;
-    for (const gi of [30, 60, 300, 600, 900, 1800]) {
-      const s = g(boundsOf("refire_grace_s").min, amRef({ groupInterval: observed(gi) }), N)
-        ?.suggest;
-      expect(s, `group_interval ${gi}`).toBeGreaterThanOrEqual(prev);
-      prev = s!;
-    }
-  });
-});
-
-describe("group_close_delay_s", () => {
-  const g = guideOf("group_close_delay_s");
-
-  it("degrades in one direction only: unreachable, then tight, then consistent", () => {
-    expect(shapeOf("group_close_delay_s")).toEqual(["inert", "tight", "ok"]);
-  });
-
-  it("calls a value consistent only when it clears BOTH stated inequalities", () => {
-    // `amRule`: at or above group_interval, AND at or above the re-fire grace —
-    // "the second one is not a suggestion". oto shipped 5m against a 10m grace and
-    // defeated half its own grace that way.
-    const b = boundsOf("group_close_delay_s");
-    for (const refire of [600, 1200, 3600]) {
-      const num = nums({ ...SHIPPED, refire_grace_s: refire });
-      for (const v of sweep(b.min, b.max)) {
-        if (g(v, AM, num)?.level !== "ok") continue;
-        expect(v, `ok at ${v} below group_interval`).toBeGreaterThanOrEqual(AM_GROUP_INTERVAL_S);
-        expect(v, `ok at ${v} below a ${refire}s grace`).toBeGreaterThanOrEqual(refire);
-      }
-    }
-  });
-
-  it("accepts equality with the re-fire grace, because the two clocks start at different moments", () => {
-    // ⭐ Equal is safe rather than racy: this clock runs from the group's last
-    // ACTIVITY (the resolve as oto observed it) while the grace runs from the
-    // upstream `ended_at`, which is the same instant or earlier. So the group
-    // always closes at or after the grace expires. The shipped pair is equal.
-    const num = nums({ ...SHIPPED, refire_grace_s: 1200 });
-    expect(g(1200, AM, num)?.level).toBe("ok");
-    expect(g(1199, AM, num)?.level).toBe("tight");
-  });
-
-  it("withholds the grace comparison when the grace field does not parse", () => {
-    // An empty or mid-edit `refire_grace_s` box hands this closure NaN
-    // (`TuningSection.tsx:335-338`). It guards with `Number.isFinite` and falls
-    // back to the group_interval floor alone rather than comparing against NaN.
-    const blank = nums({ flap_window_s: 7200, flap_threshold: 5 });
-    expect(g(600, AM, blank)?.level).toBe("ok");
-    expect(g(299, AM, blank)?.level).toBe("inert");
-  });
-
-  it("suggests a number that clears both floors, not the one branch it happens to be in", () => {
-    // `amRule` calls the grace floor "not a suggestion", so the first branch must
-    // not offer `group_interval` alone: with the shipped pair (group_interval 5m,
-    // grace 20m) that button read "use 300", and clicking it landed the operator in
-    // the very next branch — a second warning and a second button, from a fix that
-    // was known-insufficient when it was offered. `Math.max(gi, refire)` is what the
-    // stated rule asks for, and the same number serves both failing branches because
-    // the button writes one value.
-    const want = Math.max(AM_GROUP_INTERVAL_S, SHIPPED.refire_grace_s!);
-    for (const v of [100, 299, AM_GROUP_INTERVAL_S, 600, want - 1]) {
-      const verdict = g(v, AM, N);
-      expect(verdict?.level, `at ${v}`).not.toBe("ok");
-      expect(verdict?.suggest, `at ${v}`).toBe(want);
-    }
-    expect(g(want, AM, N)?.level).toBe("ok");
-  });
-});
+   ⭐ NEITHER PROPERTY IS ORPHANED. The rule-floor lesson survives as this file's
+   header paragraph and as the `notFixed` sweep above, which still walks every
+   GUIDED knob and refuses a `use {N}` the same closure would then call "Tight".
+   What is gone is the two knobs, not the two rules. */
 
 describe("resolve_grace_s", () => {
   const g = guideOf("resolve_grace_s");

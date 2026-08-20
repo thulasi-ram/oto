@@ -13,11 +13,11 @@ import (
 // ⭐ THE TWO RULES THIS FILE EXISTS FOR:
 //
 //  1. **Bounds are enforced HERE, on the server, not in the settings form.** A UI
-//     is a convenience for the common case; it is not a boundary. `refire_grace`
-//     of zero would put a Slack thread on every transition of every alert, and
-//     the request that sets it will arrive from `curl` long before it arrives
-//     from a form. Every bound below is checked on the WRITE path and clamped on
-//     the READ path.
+//     is a convenience for the common case; it is not a boundary. A
+//     `resolve_grace` of zero would let one missed Prometheus scrape look like an
+//     expiry, and the request that sets it will arrive from `curl` long before it
+//     arrives from a form. Every bound below is checked on the WRITE path and
+//     clamped on the READ path.
 //
 //  2. **An effective value is useless without its origin.** The worst version of
 //     configurability is a screen showing `600` with no way to tell whether the
@@ -25,10 +25,13 @@ import (
 //     answers behave identically today and diverge the moment the default moves.
 //     `SettingsPatch` keeps the org's OWN writes, so `Origin` can answer.
 //
-// ⚠️ Every bound here is one of THREE copies of the same rule (CONTEXT.md R9):
-// this table, the OpenAPI schema in `api/openapi/openapi.yaml`, and — for
-// `unacked_reminder_after_s` — the `policies_reminder_ck` DDL CHECK. Changing one
-// without the others is what turns a 422 into a 500.
+// ⚠️ Every bound here is one of TWO copies of the same rule (CONTEXT.md R9):
+// this table and the OpenAPI schema in `api/openapi/openapi.yaml`. There used to
+// be a third — `policies_reminder_ck`, the DDL CHECK on
+// `unacked_reminder_after_s` — and it went with the reminder (git-bug bd0fb1d,
+// migration 00068). No surviving key here is also a column, so no key here has a
+// DDL copy. Changing one of the two without the other is what turns a 422 into a
+// 500.
 
 // SettingKey is the closed set of org-tunable keys, spelled exactly as
 // `orgs.settings` stores them.
@@ -36,9 +39,7 @@ type SettingKey string
 
 // The tunable keys.
 const (
-	KeyRefireGrace        SettingKey = "refire_grace_s"
 	KeyResolveGrace       SettingKey = "resolve_grace_s"
-	KeyGroupCloseDelay    SettingKey = "group_close_delay_s"
 	KeyFlapThreshold      SettingKey = "flap_threshold"
 	KeyFlapWindow         SettingKey = "flap_window_s"
 	KeyFlapDigestInterval SettingKey = "flap_digest_interval_s"
@@ -46,6 +47,32 @@ const (
 	KeyEventRetention     SettingKey = "event_retention_months"
 	KeyDefaultVerbosity   SettingKey = "default_verbosity"
 
+	// ⛔⛔ `refire_grace_s` AND `group_close_delay_s` WERE HERE AND BOTH ARE DELETED
+	// (git-bug 7287b28, migration 00071). They were org-facing, bounds-validated,
+	// patchable, origin-reporting settings that DECIDED NOTHING:
+	//
+	//   - `refire_grace_s` picked T8 over T7 until ADR 0040 retired T8. Every live
+	//     reference had become settings plumbing — `routingCommand` passes
+	//     `ResolveGrace`, and there were zero reads in `alerts/`, `notification/`,
+	//     `ingestion/` or `app/`.
+	//   - `group_close_delay_s` closed an `alert_groups` GENERATION. Generations
+	//     are gone (git-bug 7570090) and so is its one consumer,
+	//     `app/adapters.go`'s `LifecyclePolicy{CloseDelay}`.
+	//
+	// ⭐ THIS IS `tools/lintreach`'s DEFECT CLASS, IN THE ONE PLACE LINTREACH
+	// CANNOT LOOK. It walks Go declarations for a field with no reader; a settings
+	// key's only reader IS its own CRUD, so the round trip looks perfectly wired
+	// while nothing downstream consults the number. The two keys therefore had to
+	// be found by reading, and the tuning derivation had become an argument about
+	// the correct value of a number nothing read.
+	//
+	// DELETED, NOT RETIRED, on the same standing ruling as the reminder's five
+	// keys (bd0fb1d) and storm's three: oto is unreleased, `git tag` is empty, and
+	// a knob that clamps, validates and reports an origin while changing no
+	// outcome is a vocabulary entry the next person has to rule out. No ghosts at
+	// launch. `NewDeclarative` now refuses a values file naming either with
+	// `unknown_key`, which is the loud failure rather than a regression.
+	//
 	// ⛔ `broadcast_on_resolved` WAS HERE AND IS DELETED (git-bug 7570090). It was
 	// ADR 0020's ONE configurable broadcast, and it governed nothing once Slack
 	// thread-broadcast was removed outright: with no `reply_broadcast` call left in
@@ -115,87 +142,49 @@ func (b Bound) Clamp(v int) int {
 	}
 }
 
-// MinRefireGraceSeconds is `refire_grace_s`'s floor, and it is DERIVED rather
-// than chosen: it is twice the §C.5 ingest replay window
-// (`ingestion/domain.DedupTTL`, 5 minutes).
+// ⛔⛔ `MinRefireGraceSeconds` WAS HERE AND IS DELETED WITH THE KEY IT FLOORED
+// (git-bug 7287b28). It was `2 × ingestion/domain.DedupTTL`, and the pair was
+// tied by `TestTheReplayWindowIsStrictlyInsideRefireGrace` rather than by a
+// compile error, because a settings vocabulary must not import the ingest path.
 //
-// Twice, not once, so that the reachable band is as wide as the window it has to
-// clear. At the floor a re-fire between 5 and 10 minutes after a resolve is both
-// visible to ingest and inside the grace; below the floor that band is empty.
-//
-// ⚠️ THE BAND NO LONGER SELECTS A TRANSITION (ADR 0040) — every re-fire opens a
-// new episode whatever the clock says — so what an empty band costs today is
-// smaller than it was: a control with no effect rather than a reopen nobody could
-// reach. The arithmetic is kept intact because the floor is what stops the two
-// numbers being edited into contradiction, and because ADR 0040 §6 keeps
-// `refire_grace` under this name, in `orgs.settings`, with these bounds: rename,
-// re-home and removal are all refused.
-//
-// ⛔ It is not imported from `ingestion` — a settings vocabulary must not depend
-// on the ingest path — so the two numbers are tied by a test that imports both
-// (`TestTheReplayWindowIsStrictlyInsideRefireGrace`) rather than by a compile
-// error. Change one and that test tells you about the other.
-const MinRefireGraceSeconds = 600
+// ⚠️ THE DERIVATION RAN THIS WAY ROUND, AND THAT IS WHY DELETING IT COSTS THE
+// INGEST BOUND NOTHING. `DedupTTL` was NEVER computed from this constant: it is a
+// TRANSPORT window, justified by Alertmanager's own three-peer gossip settling
+// time and its retry backoff ceiling, and this floor was derived FROM it so the
+// grace could not be configured underneath it. The dependent half is the half
+// being deleted. `DedupTTL`'s own floor is asserted on its own terms by
+// `ingestion/domain.TestTheReplayWindowStillCoversHAAndRetries`, which is the
+// surviving half of the file that used to hold both.
 
 // settingBounds is the table. Every integer key has an entry; a key with no entry
 // is a key nothing can validate, so `Validate` treats a miss as a bug rather than
 // as permission.
 var settingBounds = map[SettingKey]Bound{
-	// ⛔ THE FLOOR IS `2 × ingest_dedup`'s REPLAY WINDOW, AND THE COUPLING IS THE
-	// POINT OF THE NUMBER.
-	//
-	// §C.5 suppresses a replayed batch — an HA sibling, a retry — for
-	// `ingestion/domain.DedupTTL`. A re-fire whose alert set is unchanged produces
-	// a byte-identical dedup key, so a `refire_grace` at or below that window puts
-	// every re-fire oto can still observe OUTSIDE the grace by arithmetic, which
-	// made the setting a control with no reachable effect.
-	//
-	// ⚠️ SINCE ADR 0040 THAT IS ALL IT COSTS. The grace no longer decides whether a
-	// re-fire reopens the closed episode — nothing reopens one — so an unreachable
-	// band no longer hides an edge, it merely makes a knob inert. The floor stays
-	// because it is what stops the two numbers being edited into contradiction.
-	//
-	// They WERE equal (both ten minutes) and the first live tester had to alter the
-	// alert set to exercise re-fire at all. `MinRefireGrace` is derived from the
-	// replay window rather than picked, so raising one without the other cannot
-	// silently re-close the gap; `TestTheReplayWindowIsStrictlyInsideRefireGrace`
-	// pins the relationship. Zero remains forbidden outright: it is a Slack thread
-	// per transition. See docs/setup/tuning.md.
-	//
-	// ⭐ THE FLOOR IS NOT THE DEFAULT, AND IT USED TO BE. `DefaultRefireGrace` sat
-	// exactly ON this floor, which meant oto shipped the lowest value it was
-	// willing to accept and called it a recommendation. It is now 1200 (ADR 0026),
-	// derived from the RULES rather than from the transport: the grace clock starts
-	// at the upstream `ended_at`, so a re-fire must pay the rule's whole `for:`
-	// dwell before oto can see it, and the modal real rule's `for:` is 15m. This
-	// bound is untouched — it is a statement about what oto can physically observe,
-	// and a real cluster with a 30s `group_interval` still cannot use a grace below
-	// it, because the §C.5 replay window is a property of Alertmanager's retry
-	// budget rather than of anybody's route timing.
-	KeyRefireGrace: {Min: MinRefireGraceSeconds, Max: 86400,
-		Why: "seconds, 600..86400: the floor is twice the §C.5 ingest replay window, because a re-fire inside that window is dropped as a duplicate delivery and the grace can never be reached; above a day two separate incidents share one Slack thread, because group_close_delay is pinned at or above this"},
+	// ⛔⛔ `refire_grace_s` AND `group_close_delay_s` HAD THE TWO ENTRIES ABOVE THIS
+	// ONE AND BOTH ARE DELETED (git-bug 7287b28). Between them they carried the
+	// longest bound rationale in the table — a floor derived from the §C.5 replay
+	// window, and a cross-key rule keeping the close delay at or above the grace —
+	// and every clause of it argued about the correct value of a number nothing
+	// read. A bound is only worth stating for a key that changes an outcome.
 	KeyResolveGrace: {Min: 60, Max: 86400,
 		Why: "seconds, 60..86400: must exceed the EndsAt lease Prometheus refreshes (typically 3-4 minutes) or one missed scrape looks like an expiry"},
-	// The SECOND relationship, and the one the shipped defaults used to break:
-	// keep it at or above `refire_grace`. A closed generation is never rejoined —
-	// the next observation opens N+1 and a new generation is a NEW thread — so a
-	// re-fire that oto classified as "the same problem coming back" still gets
-	// a brand-new root card when the generation closed first. It is not enforced as a cross-key
-	// bound because a cross-key bound would reject a legal partial PATCH that
-	// merely arrives in the wrong order; the settings screen warns instead.
-	KeyGroupCloseDelay: {Min: 60, Max: 86400,
-		Why: "seconds, 60..86400: keep at or above group_interval, or a generation closes between two batches of the same incident, and at or above refire_grace, or a re-fire inside the grace finds a closed generation and gets a new root message anyway"},
 
 	// ⛔ THE THREE FLAP KEYS ARE PERMANENTLY INERT, AND THE DECISION IS RECORDED
-	// ONCE — ADR 0042 Amendment 3, restated in SPEC §B.3 beside the `refire_grace`
-	// ruling it follows. They STAY under their own names with these bounds, on the
-	// standing rule that deleting a settings key is a contract change of its own.
+	// ONCE — ADR 0042 Amendment 3, restated in SPEC §B.3. They STAY under their
+	// own names with these bounds, on the standing rule that deleting a settings
+	// key is a contract change of its own.
 	//
 	// Do not re-argue it here. The state that amendment ends is four files each
 	// observing that the keys decide nothing and none of them being the decision;
-	// a fifth observation is the thing it was written to stop. What differs from
-	// `refire_grace` — that one still PINS two numbers and these pin nothing — is
-	// recorded there too.
+	// a fifth observation is the thing it was written to stop.
+	//
+	// ⚠️ AND THE COMPARISON THAT USED TO SIT IN THIS PARAGRAPH IS GONE WITH ITS
+	// SUBJECT. It read: what differs from `refire_grace` is *"that one still PINS
+	// two numbers and these pin nothing"*. `refire_grace` pinned
+	// `group_close_delay` and the ingest replay floor, and git-bug 7287b28 deleted
+	// all three, so the distinction no longer separates anything. These keys are
+	// now the ONLY inert ones left, and they are inert by a recorded ruling rather
+	// than by attrition — which is the whole difference.
 	//
 	// The bounds below are still ENFORCED, so they still have to be right: a write
 	// outside them is refused whatever the mechanism does. Their arithmetic is the
@@ -297,9 +286,7 @@ var channelVerbosities = map[string]bool{
 // It is also the exact shape of the `orgs.settings` JSONB, which is why a partial
 // write is expressible at all: PATCHing one key rewrites one key.
 type SettingsPatch struct {
-	RefireGraceS        *int
 	ResolveGraceS       *int
-	GroupCloseDelayS    *int
 	FlapThreshold       *int
 	FlapWindowS         *int
 	FlapDigestIntervalS *int
@@ -308,6 +295,9 @@ type SettingsPatch struct {
 	// DefaultVerbosity is the org's fallback for a Channel that names no verbosity.
 	DefaultVerbosity *string
 
+	// ⛔⛔ `RefireGraceS` AND `GroupCloseDelayS` WERE HERE AND BOTH ARE DELETED
+	// (git-bug 7287b28). See the key block above for why neither decided anything.
+	//
 	// ⛔ `BroadcastOnResolved` WAS HERE AND IS DELETED (git-bug 7570090), with the
 	// broadcast it configured. See the key block above.
 	//
@@ -320,16 +310,12 @@ type SettingsPatch struct {
 // not integer-valued.
 //
 // One switch serves validation, merging, clearing and origin reporting, so the
-// nine keys are enumerated ONCE. A per-key copy of each of those loops is how
+// seven keys are enumerated ONCE. A per-key copy of each of those loops is how
 // a table like this acquires a key that can be written but not validated.
 func (p *SettingsPatch) intPtr(k SettingKey) **int {
 	switch k {
-	case KeyRefireGrace:
-		return &p.RefireGraceS
 	case KeyResolveGrace:
 		return &p.ResolveGraceS
-	case KeyGroupCloseDelay:
-		return &p.GroupCloseDelayS
 	case KeyFlapThreshold:
 		return &p.FlapThreshold
 	case KeyFlapWindow:
@@ -390,7 +376,7 @@ func (p SettingsPatch) Validate() error {
 // the keys it is clearing, because a JSON body cannot distinguish "I omitted this"
 // from "I meant null" without a tri-state on every field — and a settings API
 // where an omitted key silently reverts to the default is an API that reverts
-// nine settings every time somebody changes one.
+// seven settings every time somebody changes one.
 func (p SettingsPatch) Merge(next SettingsPatch) SettingsPatch {
 	out := p
 	for _, k := range IntKeys() {
@@ -498,9 +484,7 @@ func (p SettingsPatch) Settings() Settings {
 		return settingBounds[k].Clamp(**ptr)
 	}
 
-	s.RefireGrace = time.Duration(pick(KeyRefireGrace, int(d.RefireGrace/time.Second))) * time.Second
 	s.ResolveGrace = time.Duration(pick(KeyResolveGrace, int(d.ResolveGrace/time.Second))) * time.Second
-	s.GroupCloseDelay = time.Duration(pick(KeyGroupCloseDelay, int(d.GroupCloseDelay/time.Second))) * time.Second
 	s.FlapThreshold = pick(KeyFlapThreshold, d.FlapThreshold)
 	s.FlapWindow = time.Duration(pick(KeyFlapWindow, int(d.FlapWindow/time.Second))) * time.Second
 	s.FlapDigestInterval = time.Duration(pick(KeyFlapDigestInterval, int(d.FlapDigestInterval/time.Second))) * time.Second
@@ -524,12 +508,8 @@ func (p SettingsPatch) EffectiveInt(k SettingKey) (int, Origin, bool) {
 	s := p.Settings()
 	var v int
 	switch k {
-	case KeyRefireGrace:
-		v = int(s.RefireGrace / time.Second)
 	case KeyResolveGrace:
 		v = int(s.ResolveGrace / time.Second)
-	case KeyGroupCloseDelay:
-		v = int(s.GroupCloseDelay / time.Second)
 	case KeyFlapThreshold:
 		v = s.FlapThreshold
 	case KeyFlapWindow:

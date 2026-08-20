@@ -247,6 +247,33 @@ type Notification struct {
 	// recomputed count would shrink as the episodes aged out and the row would say a
 	// different thing every time it was read.
 	DigestCount *int
+	// DigestCoveredFrom and DigestCoveredTo are THE SPAN THIS DIGEST ACTUALLY
+	// COVERED, and they are the fact the row was missing (git-bug `342e071`,
+	// migration 00070).
+	//
+	// ⭐⭐ `DigestWindowStart` ALONE IS MEANINGLESS AND THAT IS NOT A STYLE
+	// COMPLAINT. A start is only a span in combination with the LENGTH that was in
+	// force when the digest was sent, and no column stored the length — so every
+	// reader that wanted a span inferred one from the policy's CURRENT
+	// `digest_window_s`, which is exactly the inference that re-reported an hour as
+	// six ten-minute digests the moment somebody narrowed the window.
+	// `service.DigestHeadline` still takes the current window as a parameter for the
+	// same reason, and these two columns are what let it stop.
+	//
+	// `From` is at or before `DigestWindowStart`: it is pulled back when the digest
+	// swept up a straggler that committed too late for the previous window's read
+	// (see domain.DigestLookback), so the honest sentence is "since the last digest,
+	// plus stragglers". `To` is the window's exclusive end, which is the instant
+	// coverage reached and the value the next tick's cursor is derived from.
+	//
+	// ⚠️ BOTH ARE NIL ON EVERY DIGEST WRITTEN BEFORE MIGRATION 00070, and they stay
+	// nil. Backfilling them would mean multiplying the stored start by the policy's
+	// window as it is TODAY — the one arithmetic this pair exists to retire — so a
+	// row that does not know its span says so. `notifications_digcover_ck` therefore
+	// permits the absence, and a policy whose newest digest is one of those is read
+	// as "never digested", which covers one window rather than replaying a history.
+	DigestCoveredFrom *time.Time
+	DigestCoveredTo   *time.Time
 
 	CreatedAt time.Time
 	UpdatedAt time.Time

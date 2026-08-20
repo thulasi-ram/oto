@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 69 {
-		t.Fatalf("latest migration is %d, want 69 — this test pins the number so that a "+
+	if latest != 73 {
+		t.Fatalf("latest migration is %d, want 73 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1201,6 +1201,19 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 		return nullable
 	}
 
+	// countOrgsCarrying reports how many `orgs` rows hold ANY of the named
+	// `settings` keys. `?|` is the jsonb "any of these keys exists" operator, which
+	// is the same predicate 00071's own guard uses — so this reads the migration's
+	// postcondition rather than a re-derivation of it.
+	countOrgsCarrying := func(keys ...string) int {
+		var n int
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT count(*) FROM orgs WHERE settings ?| $1::text[]`, keys).Scan(&n); err != nil {
+			t.Fatalf("count orgs carrying %v: %v", keys, err)
+		}
+		return n
+	}
+
 	// ⭐⭐⭐ 00069 DELETES AN ENTITY, AND IT IS THE FIRST STEP OF THE ROLLBACK RATHER
 	// THAN THE FOURTH FOR A STRUCTURAL REASON: EVERYTHING BELOW IT NEEDS
 	// `alert_groups` TO EXIST. 00066's Down runs `COMMENT ON COLUMN
@@ -1221,6 +1234,197 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// The Up half is asserted by ABSENCE, which is the only reading that catches what
 	// this migration is for. A `DROP TABLE` that ran and a `DROP TABLE` that was
 	// forgotten are indistinguishable at the exit code.
+	// ⭐ 00071 IS ASSERTED BEFORE `down(69)` BECAUSE IT IS PURELY A DATA MIGRATION AND
+	// HAS NO STRUCTURE TO READ. It strips `refire_grace_s` and `group_close_delay_s`
+	// from every `orgs.settings` document (git-bug 7287b28) and restates the column
+	// comment; the seed below writes neither key, so the ABSENCE reading is the only
+	// one available, exactly as it is for 00069's DROP TABLE. A `-` that ran and a `-`
+	// that was forgotten are indistinguishable at the exit code.
+	//
+	// ⚠️ THE COLUMN COMMENT IS THE HALF THAT DOES HAVE A REVERSE, so it is read on
+	// BOTH sides of `down(71)`. The Up narrows the enumerated key set to the seven
+	// keys `settingsJSON` reads; the Down puts 00003's eleven-key text back verbatim,
+	// storm keys and all, because down-then-up has to be a round trip and not an
+	// improvement.
+	// ⭐ 00073 IS THE TOP OF THE STACK AND IT IS THE HALF THAT MAKES 00072'S COLUMNS
+	// DECIDE SOMETHING: `notifications_suppmap_ck` gains `below_threshold`, the reason
+	// a policy's count condition records when it is not met yet, and `notif_policy_idx`
+	// arrives to serve the count that produces it.
+	//
+	// ⚠️ THE CONSTRAINT IS READ FOR THE NEW VALUE RATHER THAN COUNTED, because it KEEPS
+	// ITS NAME across every widening and narrowing since 00011 — so `count(*)` over
+	// `pg_constraint` cannot tell 00073's seven-value predicate from 00059's six-value
+	// one. The value is the only observable difference, and a `suppressed_reason` the
+	// evaluator writes and the column refuses is a 23514 on the notification path: the
+	// fact is not merely unsent, it is unrecorded, which is the silent suppression
+	// §B.6 exists to forbid.
+	if def := constraintDef("notifications_suppmap_ck", "notifications"); !strings.Contains(def, "'below_threshold'") {
+		t.Fatalf("notifications_suppmap_ck does not admit 'below_threshold' at the top of the "+
+			"stack: %s — 00073 widens the six-value domain to seven, and the evaluator in "+
+			"internal/notification/service/notify.go writes that value the moment a policy "+
+			"carries count_min. Without the widening every fact below the floor dies as a "+
+			"23514 instead of being recorded as a suppression", def)
+	}
+	// ⚠️ AND THE INDEX IS COUNTED, because it is a SEPARATE STATEMENT whose absence is
+	// invisible: the count query works without it and reads the org's day per fact.
+	// 00072 deliberately added no index — its columns are read off a row already in
+	// hand — and this migration adds a QUERY, which is what changes the answer.
+	if n := countIndexes("notif_policy_idx"); n != 1 {
+		t.Fatalf("notif_policy_idx does not exist at the top of the stack (%d) — 00073 adds it "+
+			"for the count condition's windowed count of distinct subjects, which runs on the "+
+			"evaluation path once per fact. notifications.policy_id has had an FK and no index "+
+			"since 00011, and a foreign key creates none on the referencing side", n)
+	}
+
+	// ⭐ 00072 IS ASSERTED BY PRESENCE TOO, which is the opposite reading from 00069's
+	// and 00071's below and is the right one for an ADD. It gives
+	// `notification_policies` a subject-kind binding and a count-over-window condition
+	// (git-bug 7570090, done-when 8).
+	//
+	// ⚠️ THE SEVEN CONSTRAINTS ARE COUNTED AND NOT JUST THE THREE COLUMNS, because a
+	// column without its CHECK is the failure this migration is most likely to ship:
+	// `ALTER TABLE ... ADD COLUMN` and `ALTER TABLE ... ADD CONSTRAINT` are separate
+	// statements, and a column that arrived without `policies_count_subject_ck` would
+	// admit a count over no unit — a threshold whose number is about nothing —
+	// while passing every column-shaped assertion.
+	//
+	// ⭐ TWO OF THE SEVEN CONSTRAIN COMBINATIONS RATHER THAN VALUES, which is why they
+	// are named here as well as counted. `policies_count_case_ck` refuses a count
+	// condition on any binding but `{case}`: an alert-subject `subject_id` is the alert
+	// IDENTITY, unchanged across every firing, so a count over it can never exceed one
+	// and the policy mutes itself as `below_threshold` forever, while a digest-bound
+	// count is read by nothing at all. `policies_digest_subject_ck` refuses a digest
+	// window on a binding that omits `digest`, which since 00072 makes
+	// `Policy.Handles` reject the very reason `policies_digest_reason_ck` forced into
+	// `reasons` — a policy that routes nothing while looking configured, warns once per
+	// tick forever in `SweepOrg` and is skipped by the reconciler that would otherwise
+	// report the resulting gap.
+	if n := countColumns("notification_policies",
+		"subject_kinds", "count_min", "count_window_s"); n != 3 {
+		t.Fatalf("only %d of 00072's three notification_policies columns exist at the top of "+
+			"the stack — subject_kinds is which altitude a policy is about, and count_min/"+
+			"count_window_s are the floor to throttle's ceiling", n)
+	}
+	if n := countConstraints("policies_subjkinds_ck", "policies_count_min_ck",
+		"policies_count_window_ck", "policies_count_pair_ck", "policies_count_subject_ck",
+		"policies_count_case_ck", "policies_digest_subject_ck"); n != 7 {
+		t.Fatalf("only %d of 00072's seven CHECK constraints exist at the top of the stack — "+
+			"the columns can arrive without them, and the two that matter most are "+
+			"policies_count_subject_ck and policies_count_case_ck: without the first a count "+
+			"condition can name no subject kind or two, and a count with no unit is a number "+
+			"about nothing; without the second it can name `alert`, whose subject_id is the "+
+			"alert identity and never climbs, so the policy suppresses everything it routes "+
+			"as below_threshold forever", n)
+	}
+	// ⚠️ THE DEFAULT IS READ AS WELL AS THE COLUMN, because it is the entire safety
+	// argument of the migration. `subject_kinds` is `NOT NULL DEFAULT '{}'` and the
+	// empty array is read as "every altitude", so every row this migration rewrote
+	// keeps claiming what it claimed yesterday. A column that arrived NOT NULL with no
+	// default would make every pre-00072 policy unwritable; one that arrived without
+	// the NOT NULL would give NULL a second spelling of the empty array, which every
+	// reader would then have to handle.
+	if nullable := columnNullability("notification_policies", "subject_kinds"); nullable != "NO" {
+		t.Fatalf("notification_policies.subject_kinds is_nullable=%q at the top of the stack, "+
+			"want NO — 00072 declares it NOT NULL DEFAULT '{}' precisely so that NULL is not a "+
+			"second spelling of the empty binding", nullable)
+	}
+
+	// ⭐ 00070 IS ASSERTED BY PRESENCE, LIKE 00072 AND FOR THE SAME REASON: it is an
+	// ADD, and an ADD's characteristic defect is a statement that never ran. It gives a
+	// digest a SPAN it can prove instead of a start it has to multiply — two columns and
+	// a CHECK on `notifications`, plus the tick's coverage cursor and the mark table
+	// that make a bounded lookback safe (git-bug 893cee4, a8a4010, 342e071).
+	//
+	// ⚠️ FIVE OBJECT CLASSES ARE COUNTED SEPARATELY BECAUSE THEY ARE FIVE STATEMENTS.
+	// `ADD COLUMN`, `ADD CONSTRAINT`, two `CREATE TABLE`s and a `CREATE INDEX` each
+	// succeed or vanish on their own, and the two that are silent when missing are the
+	// ones that matter most: a span pair without `notifications_digcover_ck` admits a
+	// digest whose coverage does not contain its own window — a card rendering a span it
+	// did not cover — and a mark table without `digest_case_span_idx` puts the tail
+	// subtraction and the retention sweep onto sequential scans, which does not fail,
+	// it just gets slower every day.
+	if n := countColumns("notifications", "digest_covered_from", "digest_covered_to"); n != 2 {
+		t.Fatalf("only %d of 00070's two notifications columns exist at the top of the stack — "+
+			"`digest_window_start` is a span only in combination with the window length in "+
+			"force when the digest was sent, and 00058 stored the start and never the length", n)
+	}
+	if n := countConstraints("notifications_digcover_ck"); n != 1 {
+		t.Fatalf("notifications_digcover_ck does not exist at the top of the stack (%d) — the "+
+			"two columns can arrive without it, and without it nothing stops a half-written "+
+			"span (a `from` with no `to` is a span that never ends) or a span that misses its "+
+			"own window", n)
+	}
+	// ⚠️ THE CHECK IS READ FOR THE HALF-OPEN CLAUSE AND NOT MERELY COUNTED, because that
+	// clause is the one two renderers now depend on. `covered_to` is the EXCLUSIVE end,
+	// so consecutive digests from one policy ABUT rather than overlap; a CHECK that
+	// admitted `to <= from` would let a zero-length span assert that a digest covered no
+	// time at all while carrying a count of episodes that happened inside it. The
+	// substring is deliberately anchored on the RIGHT operand only, because
+	// `pg_get_constraintdef` chooses its own parenthesisation and this test is not about
+	// Postgres's formatter.
+	if def := constraintDef("notifications_digcover_ck", "notifications"); !strings.Contains(
+		def, "> digest_covered_from") {
+		t.Fatalf("notifications_digcover_ck does not order the span at the top of the stack: "+
+			"%s — the span is HALF-OPEN, `[from, to)`, and the strict ordering is what makes "+
+			"`to` an exclusive END rather than a second name for the start", def)
+	} else if !strings.Contains(def, "'digest'") {
+		t.Fatalf("notifications_digcover_ck does not confine the span to digests: %s — a "+
+			"non-digest row carrying a coverage span is a fact no reader knows how to read", def)
+	}
+	// ⚠️ NULLABLE, AND THE NULLABILITY IS THE MIGRATION'S SAFETY ARGUMENT — the mirror
+	// image of 00072's NOT NULL above. Every pre-00070 digest row stays NULL forever,
+	// because the only way to invent a span is the stored start times the policy's
+	// CURRENT `digest_window_s`, which is precisely the inference git-bug 342e071 is
+	// about. A column that arrived NOT NULL could only have been backfilled with that
+	// arithmetic, so a "YES" here is load-bearing rather than incidental.
+	if nullable := columnNullability("notifications", "digest_covered_from"); nullable != "YES" {
+		t.Fatalf("notifications.digest_covered_from is_nullable=%q at the top of the stack, "+
+			"want YES — a row that does not know its span has to be able to say so, and a NOT "+
+			"NULL column could only have been filled by the multiplication 00070 exists to "+
+			"retire", nullable)
+	}
+	// ⭐ THE COLUMN COMMENT IS READ BECAUSE IT IS THE ONLY PLACE THE EXCLUSIVITY IS
+	// WRITTEN DOWN FOR AN OPERATOR. A comment lives in the database, so `\d+` is where
+	// somebody debugging a digest at 03:00 learns whether the end is inclusive — and
+	// both renderers cite this comment as their authority for printing "up to" and never
+	// "to". A span whose convention is documented in Go and not in the schema is one
+	// SQL query away from being read closed.
+	if c := columnComment("notifications", "digest_covered_to"); !strings.Contains(c, "EXCLUSIVE") {
+		t.Fatalf("notifications.digest_covered_to does not describe itself as the EXCLUSIVE "+
+			"end at the top of the stack: %q — the Case that opened at exactly this instant "+
+			"belongs to the NEXT digest, and a reader who takes the span as closed "+
+			"double-counts one boundary per window", c)
+	}
+	if n := countTables("notification_digest_coverage", "notification_digest_cases"); n != 2 {
+		t.Fatalf("only %d of 00070's two tables exist at the top of the stack — the coverage "+
+			"cursor is how far each policy has been EXAMINED (not how far it has SENT, which "+
+			"is the whole of 893cee4) and the marks are which episodes it has accounted for, "+
+			"without which a bounded lookback re-reports its own tail every window", n)
+	}
+	// ⛔ `digest_coverage_pk` and `digest_case_pk` are deliberately NOT read: they are
+	// declared inside their own `CREATE TABLE`, so they arrive and depart with it and
+	// asserting them would be asserting Postgres. `digest_case_span_idx` IS read,
+	// because it is a separate statement that can go missing on its own.
+	if n := countIndexes("digest_case_span_idx"); n != 1 {
+		t.Fatalf("digest_case_span_idx does not exist at the top of the stack (%d) — one index "+
+			"serves both readers of the mark table (the tail subtraction as an index-only scan, "+
+			"the retention sweep on its two-column prefix), and a missing index does not fail, "+
+			"it just gets slower on every mark ever written", n)
+	}
+
+	if n := countOrgsCarrying("refire_grace_s", "group_close_delay_s"); n != 0 {
+		t.Fatalf("%d org(s) still carry refire_grace_s or group_close_delay_s in settings at "+
+			"the top of the stack — 00071 strips both, and a surviving key is a knob an "+
+			"operator can read back out of the API while no code path reads it", n)
+	}
+	if c := columnComment("orgs", "settings"); strings.Contains(c, "storm_threshold") {
+		t.Fatalf("orgs.settings still enumerates the storm keys at the top of the stack: %q — "+
+			"00003 listed eleven keys, 00059 deleted three of them and left the comment, and "+
+			"00071 is the migration that restates the set. A schema comment naming a closed "+
+			"set that is no longer closed is the most authoritative-looking wrong answer "+
+			"`psql \\d+` can print", c)
+	}
+
 	if n := countTables("alert_groups"); n != 0 {
 		t.Fatalf("alert_groups still exists at the top of the stack (%d) — 00069 drops the "+
 			"entity, and a surviving table is twenty-six columns of grouping decision that "+
@@ -1336,6 +1540,182 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 			"a dropped table is the defect 00066 made this same argument about one table over",
 			c)
 	}
+
+	// ⚠️ 00071 IS PURELY A DATA-AND-COMMENT MIGRATION, so its Down is one COMMENT ON
+	// and nothing else — see its own ⛔ block for why an `UPDATE` restoring a grace
+	// nobody wrote would be worse than restoring nothing.
+	//
+	// ⛔ THE STEPS BELOW ARE CONTIGUOUS AND MUST STAY THAT WAY: 73, 72, 71, 70, 69, and then
+	// every migration under 69 in turn. `down` asserts the top applied version before it
+	// rolls anything back, so a skipped step does not silently roll back an unasserted
+	// migration — it fails as "about to roll back 00069, but the top applied migration is
+	// 00070", which is the whole reason `down` takes the version it believes it is
+	// undoing. That is a good failure and it is still a failure: 00070, 00071 and 00072
+	// landed from three concurrent branches and the loop went 72 → 71 → 69 for a while,
+	// which meant 00070's Down — two `RAISE EXCEPTION` guards, a `RAISE NOTICE` over four
+	// aggregates, and five drops — was never once executed by this suite.
+	//
+	// ⚠️ A NEW MIGRATION IS THEREFORE TWO EDITS AND NOT ONE: the pin at the top of this
+	// function, AND a `down(N)` step here with assertions on both sides of it. Bumping
+	// only the pin is how this test quietly shrinks.
+	// ⭐ 00073'S DOWN IS THE FIRST STEP, AND ITS ASSERTION IS THE ONE READING THAT
+	// CANNOT BE FAKED: the constraint keeps its NAME across the narrowing, so what has
+	// to be read is the PREDICATE — `below_threshold` gone, and the other six still
+	// there. A Down that dropped the constraint and forgot to re-add it, or re-added it
+	// with a predicate assembled from memory, is green on every count-shaped assertion
+	// and leaves the release this rolls back to unable to record a suppression it still
+	// evaluates. That is the exact defect 00059's own step below tests for in the
+	// widening direction.
+	//
+	// ⛔ ITS DOWN CARRIES A `RAISE EXCEPTION` GUARD THAT IS DELIBERATELY NOT EXERCISED,
+	// and the reason is worth stating because it is the opposite of 00072's. 00072's
+	// guards need a row that violates an installed CHECK, which no seed can produce.
+	// This one needs a row that SATISFIES the installed CHECK — a stored
+	// `below_threshold` suppression — and such a row is trivially writable, so the
+	// guard is reachable. It is still not seeded here: this test rolls the WHOLE stack
+	// back and then forward again, and a guard that fires would abort the rollback and
+	// take every step below it with it. Recording a real suppression and watching the
+	// Down refuse belongs in a test that owns its own database.
+	//
+	// ⚠️ WHICH MEANS WHAT IS PROVEN HERE IS THE CLEAN PATH: with no such row, the Down
+	// runs, the index goes, the predicate narrows and 00059's comment comes back. A
+	// `DO $$` block with a syntax error or a wrong column name fails HERE, which is
+	// the failure mode a Down nobody runs actually has.
+	down(73)
+
+	if def := constraintDef("notifications_suppmap_ck", "notifications"); strings.Contains(def, "'below_threshold'") {
+		t.Fatalf("notifications_suppmap_ck still admits 'below_threshold' after 00073's Down: "+
+			"%s — the constraint KEEPS ITS NAME across this migration, so a Down that dropped "+
+			"it and forgot the narrow predicate leaves a value admitted that the release it "+
+			"rolls back to has no producer for", def)
+	}
+	for _, want := range []string{
+		"'channel_disabled'", "'no_policy'", "'snoozed'", "'throttled'", "'verbosity'",
+		"'duplicate_render'",
+	} {
+		if def := constraintDef("notifications_suppmap_ck", "notifications"); !strings.Contains(def, want) {
+			t.Fatalf("notifications_suppmap_ck did not come back as 00059's six-value domain "+
+				"after 00073's Down (missing %s): %s — narrowing by one value must not take a "+
+				"second with it, and every one of the six has a live producer in "+
+				"internal/notification/service", want, def)
+		}
+	}
+	if n := countIndexes("notif_policy_idx"); n != 0 {
+		t.Fatalf("notif_policy_idx survived 00073's Down (%d) — it is dropped BY NAME rather "+
+			"than left behind, and an index over a query no release runs any more is the dead "+
+			"weight 00072 refused to add in the first place", n)
+	}
+	if c := columnComment("notifications", "suppressed_reason"); strings.Contains(c, "below_threshold") {
+		t.Fatalf("notifications.suppressed_reason still documents below_threshold after "+
+			"00073's Down: %q — the Down owes 00059's text verbatim. A column comment naming a "+
+			"value the constraint refuses is the most authoritative-looking wrong answer "+
+			"`psql \\d+` can print", c)
+	}
+
+	// ⭐ 00072'S DOWN IS THE SECOND STEP, AND ITS ASSERTION IS THE MIRROR OF THE
+	// PRESENCE READING ABOVE: five constraints and three columns go, and none of the
+	// eight may survive. A `DROP COLUMN` that was forgotten is invisible at the exit
+	// code, and a surviving `subject_kinds` under a release that no longer reads it is
+	// a binding an operator can still write and nothing will honour.
+	//
+	// ⛔ ITS DOWN ALSO CARRIES TWO GUARDS THAT ARE NOT EXERCISED HERE, and that is
+	// recorded rather than left to be discovered. Both `RAISE EXCEPTION`s fire only
+	// against a row that violates a CHECK which is still installed — a state only a
+	// disabled or bypassed constraint can produce — so no seed this test could write
+	// would reach them without first defeating the constraint the guard exists to
+	// outlive. What IS exercised is that the Down runs at all with the guards in
+	// place: a `DO $$` block with a syntax error, a wrong column name or a
+	// `string_agg` over a dropped column fails HERE, which is the failure mode a Down
+	// nobody runs actually has.
+	down(72)
+
+	if n := countColumns("notification_policies",
+		"subject_kinds", "count_min", "count_window_s"); n != 0 {
+		t.Fatalf("%d of 00072's three notification_policies columns survived its Down — a "+
+			"binding or a count condition an operator can still write under a release that no "+
+			"longer reads either is the ghost 00071 deleted two of", n)
+	}
+	if n := countConstraints("policies_subjkinds_ck", "policies_count_min_ck",
+		"policies_count_window_ck", "policies_count_pair_ck", "policies_count_subject_ck",
+		"policies_count_case_ck", "policies_digest_subject_ck"); n != 0 {
+		t.Fatalf("%d of 00072's seven CHECK constraints survived its Down — they are dropped BY "+
+			"NAME rather than left to DROP COLUMN's cascade, which is 00065's rule and 00068's: "+
+			"a migration that depends on drop order is not depending on being right", n)
+	}
+
+	down(71)
+
+	if c := columnComment("orgs", "settings"); !strings.Contains(c, "storm_threshold") {
+		t.Fatalf("orgs.settings did not get 00003's text back on 00071's Down: %q — the Down "+
+			"owes the comment the Up replaced, verbatim, including the three storm keys 00059 "+
+			"deleted. A Down that tidied the comment on the way past would leave the schema "+
+			"in a state no Up ever produced", c)
+	}
+
+	// ⭐⭐ 00070'S DOWN IS THE STEP THAT WAS MISSING, AND IT IS THE HEAVIEST DOWN IN THE
+	// STACK. Everything above it is drops and comments; this one runs THREE
+	// `RAISE EXCEPTION` guards over four aggregates BEFORE it drops anything, inside
+	// `DO $$` blocks that only a real Postgres will compile. Getting it executed here is
+	// most of the value of the step: a `DO` block with a typo, a wrong column name, or a
+	// `string_agg` over a column the previous statement dropped fails HERE, which is the
+	// only failure mode a Down that nobody runs actually has.
+	//
+	// ⚠️ THE THIRD GUARD IS THE ONE THAT USED TO BE A `RAISE NOTICE`, and it is the
+	// reason this step still runs at all: it stops the rollback only when
+	// `notification_digest_cases` HOLDS marks, because those are the sole evidence
+	// `ReconcileOrg` reads and dropping them is unrecoverable. This suite seeds no
+	// marks, so the table is empty here, the guard does not fire, and what is proved is
+	// that its `DO` block compiles and that the quiet path still reports the two
+	// recoverable losses.
+	//
+	// ⛔ NONE OF THE THREE GUARDS IS EXERCISED, AND THAT IS RECORDED RATHER THAN LEFT TO
+	// BE DISCOVERED — the same limitation 00072's Down carries above. The first two fire
+	// only against a row that violates a CHECK which is still installed (a mark naming a
+	// notification that is not a digest of its own policy; a coverage span that does not
+	// contain its own window), so no seed this test can write reaches them without first
+	// defeating `notifications_digcover_ck`; the third fires only against a non-empty
+	// mark table, and this suite seeds none. What is proved is that the Down runs to
+	// completion with the guards in place and a populated `notifications` table under it.
+	//
+	// ⚠️ AND IT IS A ONE-WAY DOOR THE DOWN ITSELF SHOUTS ABOUT. The spans and the cursor
+	// are recoverable — release N re-derives a window-start cursor from the digest rows,
+	// reinstating all three bugs but losing no message — and THE MARKS ARE NOT: they are
+	// the only evidence `DigestService.ReconcileOrg` reads, so an unreported gap becomes
+	// permanently unfindable. That is why the third guard BLOCKS the rollback while any
+	// mark is outstanding — a `RAISE NOTICE` reached the operator only in the past tense,
+	// which is what it used to do — and why the operator's escape hatch is one statement
+	// they have to type (`TRUNCATE notification_digest_cases`) rather than a log line
+	// they have to have read. This step asserts the drops and does not ask for the rows
+	// back.
+	down(70)
+
+	// The mirror of the presence readings above: two columns, one CHECK and two tables,
+	// and none of the five may survive.
+	if n := countColumns("notifications", "digest_covered_from", "digest_covered_to"); n != 0 {
+		t.Fatalf("%d of 00070's two notifications columns survived its Down — a nullable "+
+			"timestamptz under a release that does not write it is not harmless: the next Up "+
+			"re-adds it and fails with a 42701 on a column that was never rolled back", n)
+	}
+	// Dropped BY NAME rather than left to `DROP COLUMN`'s cascade, which is 00065's rule
+	// and 00068's and 00072's: a migration that depends on drop order is not depending on
+	// being right. The constraint names both columns, so the cascade WOULD have taken it
+	// — which is exactly why the explicit statement has to be the thing that is asserted.
+	if n := countConstraints("notifications_digcover_ck"); n != 0 {
+		t.Fatalf("notifications_digcover_ck survived 00070's Down (%d) — it is dropped by name "+
+			"before the two columns it constrains, so a survivor means the statement never ran "+
+			"and the cascade was doing the work", n)
+	}
+	if n := countTables("notification_digest_coverage", "notification_digest_cases"); n != 0 {
+		t.Fatalf("%d of 00070's two tables survived its Down — a coverage cursor that outlives "+
+			"the release that reads it is worse than absent: release N re-derives its own "+
+			"window-start cursor from the digest rows, so a stale instant sitting in a table "+
+			"nothing reads is a fact that will be believed the next time the stack goes up", n)
+	}
+	// ⛔ `digest_case_span_idx` IS NOT READ HERE, for the reason the `grp_*` indexes are
+	// not read after `down(69)`: it is an index ON a dropped table, so `DROP TABLE` takes
+	// it either way and asserting its absence would be asserting Postgres. Its PRESENCE at
+	// the top of the stack is a different claim — `CREATE INDEX` is its own statement —
+	// and that is where it is asserted.
 
 	down(69)
 
@@ -3749,7 +4129,7 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 // the value in force. Plus the 409, which is what stops the screen from offering
 // an edit that would silently revert on the next deploy.
 func TestDeclarativeTuningOverTheWire(t *testing.T) {
-	t.Setenv("OTO_TUNING_REFIRE_GRACE_S", "600")
+	t.Setenv("OTO_TUNING_RESOLVE_GRACE_S", "600")
 
 	env := newEnvWith(t, func(c *config.Config) {
 		loaded, err := config.Load("")
@@ -3772,7 +4152,7 @@ func TestDeclarativeTuningOverTheWire(t *testing.T) {
 	// The org already had an override of 900 — written before the deployment
 	// started stating a value, which is the whole scenario.
 	if _, err := env.pool.Exec(env.ctx,
-		`UPDATE orgs SET settings = '{"refire_grace_s": 900}'::jsonb WHERE slug = 'acme'`); err != nil {
+		`UPDATE orgs SET settings = '{"resolve_grace_s": 900}'::jsonb WHERE slug = 'acme'`); err != nil {
 		t.Fatalf("seed the override: %v", err)
 	}
 
@@ -3786,16 +4166,16 @@ func TestDeclarativeTuningOverTheWire(t *testing.T) {
 	}
 	env.do(t, http.MethodGet, "/api/v1/org/settings", boot.Token, nil, http.StatusOK, &view)
 
-	if got := view.Data.Settings["refire_grace_s"]; got != float64(600) {
-		t.Fatalf("effective refire_grace_s = %v, want 600: configuration must beat the override", got)
+	if got := view.Data.Settings["resolve_grace_s"]; got != float64(600) {
+		t.Fatalf("effective resolve_grace_s = %v, want 600: configuration must beat the override", got)
 	}
-	if got := view.Data.Origins["refire_grace_s"]; got != "config" {
+	if got := view.Data.Origins["resolve_grace_s"]; got != "config" {
 		t.Fatalf("origin %q, want config", got)
 	}
-	if got := view.Data.ConfigKeys["refire_grace_s"]; got != "OTO_TUNING_REFIRE_GRACE_S" {
-		t.Fatalf("config_keys[refire_grace_s] = %q, want the env var an operator can edit", got)
+	if got := view.Data.ConfigKeys["resolve_grace_s"]; got != "OTO_TUNING_RESOLVE_GRACE_S" {
+		t.Fatalf("config_keys[resolve_grace_s] = %q, want the env var an operator can edit", got)
 	}
-	if got := view.Data.Shadowed["refire_grace_s"]; got != float64(900) {
+	if got := view.Data.Shadowed["resolve_grace_s"]; got != float64(900) {
 		t.Fatalf("shadowed = %v, want the org's own 900 — hiding it is how somebody spends "+
 			"an afternoon on a number they can see in the database and never in force", got)
 	}
@@ -3812,11 +4192,11 @@ func TestDeclarativeTuningOverTheWire(t *testing.T) {
 	session := login(t, env, "ops@acme.example", "correct-horse-battery-staple")
 
 	// ⛔ The write is REFUSED, and the refusal names the key to edit.
-	status, raw := session.patch(t, map[string]any{"refire_grace_s": 1200})
+	status, raw := session.patch(t, map[string]any{"resolve_grace_s": 1200})
 	if status != http.StatusConflict {
 		t.Fatalf("PATCH on a config-managed key → %d, want 409: %s", status, raw)
 	}
-	if !strings.Contains(string(raw), "OTO_TUNING_REFIRE_GRACE_S") {
+	if !strings.Contains(string(raw), "OTO_TUNING_RESOLVE_GRACE_S") {
 		t.Fatalf("the 409 does not name the config key: %s", raw)
 	}
 
@@ -3832,8 +4212,8 @@ func TestDeclarativeTuningOverTheWire(t *testing.T) {
 	if got := view.Data.Settings["flap_threshold"]; got != float64(40) {
 		t.Fatalf("flap_threshold = %v after a legal write", got)
 	}
-	if got := view.Data.Settings["refire_grace_s"]; got != float64(600) {
-		t.Fatalf("the write dropped the declarative overlay: refire_grace_s = %v", got)
+	if got := view.Data.Settings["resolve_grace_s"]; got != float64(600) {
+		t.Fatalf("the write dropped the declarative overlay: resolve_grace_s = %v", got)
 	}
 	if got := view.Data.Origins["flap_threshold"]; got != "org" {
 		t.Fatalf("origin of a freshly written unmanaged key = %q, want org", got)
