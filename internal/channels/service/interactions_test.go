@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 
+	"github.com/thulasiram/oto/internal/channels/domain"
 	"github.com/thulasiram/oto/internal/platform/clock"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
@@ -123,6 +125,31 @@ func (f *fakeCases) record(
 	return f.err
 }
 
+// fakeLabels stands in for the read-only labels port.
+//
+// It is scoped like the real thing: a Case in another org answers NotFound rather
+// than handing over a label set, because that is the only property of this port
+// that could leak one tenant's alert into another tenant's channel.
+type fakeLabels struct {
+	byCase map[uuid.UUID]map[string]string
+	orgOf  map[uuid.UUID]uuid.UUID
+	err    error
+	calls  int
+}
+
+func (f *fakeLabels) CaseLabels(
+	_ context.Context, s db.TenantScope, caseID uuid.UUID,
+) (map[string]string, error) {
+	f.calls++
+	if f.err != nil {
+		return nil, f.err
+	}
+	if org, ok := f.orgOf[caseID]; !ok || org != s.OrgID() {
+		return nil, errs.NotFound("alert_case_not_found", "no such case in this tenant")
+	}
+	return f.byCase[caseID], nil
+}
+
 type fakeNotice struct {
 	mu   sync.Mutex
 	sent []string
@@ -175,21 +202,29 @@ func newService(t *testing.T, conv SlackConversations, actors SlackActors, cases
 	enq db.Enqueuer, notice SlackNotice,
 ) *InteractionService {
 	t.Helper()
-	if enq == nil {
-		enq = &fakeEnqueuer{}
-	}
-	s, err := NewInteractionService(InteractionOptions{
+	return newServiceWith(t, InteractionOptions{
 		Conversations: conv,
 		Actors:        actors,
 		Cases:         cases,
 		Enqueuer:      enq,
 		Notice:        notice,
-		// A real counter on no registry: the increments are observable without
-		// any test having to own a registry or worry about duplicate registration.
-		Metrics: NewInteractionMetrics(nil),
-		Clock:   clock.NewFake(time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)),
-		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
+}
+
+// newServiceWith is the same wiring with every port in reach, for the ports the
+// positional helper above does not name. The defaults it fills in are the ones no
+// test wants an opinion about.
+func newServiceWith(t *testing.T, o InteractionOptions) *InteractionService {
+	t.Helper()
+	if o.Enqueuer == nil {
+		o.Enqueuer = &fakeEnqueuer{}
+	}
+	// A real counter on no registry: the increments are observable without
+	// any test having to own a registry or worry about duplicate registration.
+	o.Metrics = NewInteractionMetrics(nil)
+	o.Clock = clock.NewFake(time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC))
+	o.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	s, err := NewInteractionService(o)
 	if err != nil {
 		t.Fatalf("NewInteractionService: %v", err)
 	}
@@ -1022,5 +1057,355 @@ func TestApplyWithNoResponseURLStillAcknowledges(t *testing.T) {
 	}
 	if len(cases.calls) != 1 {
 		t.Fatal("a press with no response_url was dropped")
+	}
+}
+
+// ------------------------------------------------- the links overflow's one verb
+
+// labelsValue is what the renderer mints for `Show all labels`. It is built from
+// the shared constant rather than typed out, because a literal here would pass
+// while the two ends disagreed — which is the defect the constant exists to
+// prevent.
+func labelsValue(id uuid.UUID) string {
+	return domain.ShowLabelsValuePrefix + id.String()
+}
+
+func labelsArgs() jobs.SlackInteractionArgs {
+	a := ackArgs()
+	a.ActionID = ActionOverflow
+	a.Value = labelsValue(caseOne)
+	return a
+}
+
+// TestHandleRoutesShowAllLabelsAndLeavesTheLinksInert is the split arm.
+//
+// ⛔ THIS IS THE REGRESSION TEST FOR git-bug `60e6e10`. `oto.more` was inert for
+// every option in the menu, which is right for the four url destinations — Slack
+// navigates those itself — and wrong for `Show all labels`, the one option that
+// asks oto to render something. A press of it enqueued nothing, so nothing was
+// logged, nothing errored, and the operator was answered with silence.
+//
+// ⭐ EVERY ROW ASSERTS THE JOB COUNT, in both directions. "Enqueues nothing" is
+// the defect for one option and the design for the other four, and only the value
+// tells them apart.
+func TestHandleRoutesShowAllLabelsAndLeavesTheLinksInert(t *testing.T) {
+	tests := []struct {
+		name     string
+		actionID string
+		value    string
+		wantJobs int
+	}{
+		{
+			name:     "a Show all labels press becomes exactly one job",
+			actionID: ActionOverflow,
+			value:    labelsValue(caseOne),
+			wantJobs: 1,
+		},
+		{
+			// A url option. Slack sends no value for one, and it is the absence of a
+			// value that keeps the four links inert.
+			name:     "a link option in the same menu stays inert",
+			actionID: ActionOverflow,
+			value:    "",
+			wantJobs: 0,
+		},
+		{
+			name:     "a link button stays inert",
+			actionID: "oto.noop.runbook",
+			value:    "",
+			wantJobs: 0,
+		},
+		{
+			// ⛔ THE NAMESPACE DECIDES, NOT THE VALUE. `oto.noop.*` means "there is
+			// nothing here to do"; a labels-shaped value on one is a card oto never
+			// rendered, and honouring it would make the namespace stop being true.
+			name:     "a link button carrying a labels value stays inert",
+			actionID: "oto.noop.silence",
+			value:    labelsValue(caseOne),
+			wantJobs: 0,
+		},
+		{
+			name:     "a labels value naming nothing enqueues nothing",
+			actionID: ActionOverflow,
+			value:    domain.ShowLabelsValuePrefix,
+			wantJobs: 0,
+		},
+		{
+			// A value oto did not mint is not one to interpret charitably — the rule
+			// snoozeSubject states and labelsSubject is held to.
+			name:     "a labels value with a third field enqueues nothing",
+			actionID: ActionOverflow,
+			value:    labelsValue(caseOne) + "|drop-tables",
+			wantJobs: 0,
+		},
+		{
+			name:     "a bare uuid on the overflow enqueues nothing",
+			actionID: ActionOverflow,
+			value:    caseOne.String(),
+			wantJobs: 0,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			enq := &fakeEnqueuer{}
+			s := newService(t, alphaConversations(), nil, &fakeCases{}, enq, nil)
+
+			if err := s.Handle(context.Background(), envelope(tc.actionID, tc.value)); err != nil {
+				t.Fatalf("Handle returned %v; a payload it cannot act on must not become a retry", err)
+			}
+			if len(enq.reqs) != tc.wantJobs {
+				t.Fatalf("enqueued %d jobs, want %d", len(enq.reqs), tc.wantJobs)
+			}
+			// ⛔ NOT ONE OF THESE PRESSES IS AN UNKNOWN ACTION. The whole menu is
+			// known and routed; a counter that ticked here would put a permanent
+			// floor under a series that means "oto is broken".
+			if got := counterValue(t, s.metrics.UnknownAction); got != 0 {
+				t.Fatalf("oto_slack_unknown_action_total = %v; the links overflow is known and routed", got)
+			}
+			if tc.wantJobs == 0 {
+				return
+			}
+			args, ok := enq.reqs[0].Args.(jobs.SlackInteractionArgs)
+			if !ok {
+				t.Fatalf("enqueued %T, want jobs.SlackInteractionArgs", enq.reqs[0].Args)
+			}
+			if args.ActionID != ActionOverflow || args.Value != tc.value {
+				t.Fatalf("enqueued action %q value %q, want %q / %q",
+					args.ActionID, args.Value, ActionOverflow, tc.value)
+			}
+			// ⛔ NO UNIQUENESS WINDOW ON THIS ONE. The four writing actions collapse a
+			// byte-identical replay as a convenience over an idempotent write; here the
+			// outcome IS the reply, so a second press collapsed onto the first would be
+			// answered with silence — the defect, restored by an optimisation.
+			if len(enq.reqs[0].Opts) != 0 {
+				t.Fatalf("a Show all labels press carried %d job options; a collapsed replay is an unanswered press",
+					len(enq.reqs[0].Opts))
+			}
+		})
+	}
+}
+
+// TestApplyShowAllLabelsNamesEveryLabel is the owner's ruling, asserted.
+//
+// The press is answered with an ephemeral listing the labels — no modal, no
+// `views.open`, nothing on §H.8's three-second path — and EVERY label is in it.
+// A list that quietly drops one is a card that lies about a label set, which is
+// the failure mode this product exists not to have.
+func TestApplyShowAllLabelsNamesEveryLabel(t *testing.T) {
+	labels := map[string]string{
+		"alertname": "HighErrorRate",
+		"severity":  "critical",
+		"namespace": "observability",
+		"service":   "checkout",
+		"team":      "payments",
+		// ⛔ UPSTREAM TEXT, AND IT MUST NOT BECOME MARKUP. A label value is
+		// Alertmanager's, never oto's: one containing a broadcast must arrive as
+		// characters, and one containing a backtick must not break out of its span.
+		"note": "<!channel> `oops` & more",
+	}
+	fake := &fakeLabels{
+		byCase: map[uuid.UUID]map[string]string{caseOne: labels},
+		orgOf:  map[uuid.UUID]uuid.UUID{caseOne: orgAlpha},
+	}
+	notice := &fakeNotice{}
+	cases := &fakeCases{live: map[uuid.UUID]uuid.UUID{caseOne: orgAlpha}}
+	s := newServiceWith(t, InteractionOptions{
+		Conversations: alphaConversations(),
+		Actors:        &fakeActors{},
+		Cases:         cases,
+		Labels:        fake,
+		Notice:        notice,
+	})
+
+	if err := s.Apply(context.Background(), labelsArgs()); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	said := notice.only()
+	if said == "" {
+		t.Fatal("a Show all labels press was answered with silence; SPEC §B.8.6: buttons are never no-ops")
+	}
+	for name, value := range labels {
+		if !strings.Contains(said, name) {
+			t.Fatalf("the reply %q does not name the label %q", said, name)
+		}
+		if name == "note" {
+			continue
+		}
+		if !strings.Contains(said, value) {
+			t.Fatalf("the reply %q does not carry the value of %q", said, name)
+		}
+	}
+	if strings.Contains(said, "<!channel>") || strings.Contains(said, "`oops`") {
+		t.Fatalf("the reply %q passed upstream markup through unescaped", said)
+	}
+	if !strings.Contains(said, "(6)") {
+		t.Fatalf("the reply %q does not say how many labels there are", said)
+	}
+	// ⛔ IT IS A READ AND NOTHING ELSE. No receipt, no snooze, no timeline entry:
+	// the day this press writes something is the day a menu of places to look grew
+	// a verb.
+	if len(cases.calls) != 0 {
+		t.Fatalf("a Show all labels press made %d case writes; listing labels changes nothing", len(cases.calls))
+	}
+	// ⭐ ONE READ, NOT TWO. There is no `CaseExists` probe in front of this port —
+	// the read is scoped and answers the tenancy question itself — so a second call
+	// here would be a round trip re-asking what the first one already answered.
+	if fake.calls != 1 {
+		t.Fatalf("the labels port was called %d times, want exactly 1", fake.calls)
+	}
+}
+
+// TestApplyShowAllLabelsIsNeverSilent is the edge-case table, and it is the whole
+// point of the ticket rather than a completeness exercise.
+//
+// Every row is a press that cannot produce a label list, and every row must
+// produce a SENTENCE. "Nothing happened and nobody said so" is the defect being
+// fixed; a row that ends in silence has reintroduced it through a different door.
+func TestApplyShowAllLabelsIsNeverSilent(t *testing.T) {
+	tests := []struct {
+		name     string
+		labels   Labels
+		args     jobs.SlackInteractionArgs
+		wantSaid string
+	}{
+		{
+			// ⚠️ THE UNWIRED DEPLOYMENT. The renderer is a pure function of the view,
+			// so the option is on the card whether or not the port was injected; the
+			// only thing left to decide is whether the human finds out.
+			name:     "a deployment with no labels port",
+			labels:   nil,
+			args:     labelsArgs(),
+			wantSaid: "cannot list labels from Slack in this deployment yet",
+		},
+		{
+			name: "a Case that belongs to another organisation",
+			labels: &fakeLabels{
+				byCase: map[uuid.UUID]map[string]string{caseOne: {"alertname": "HighErrorRate"}},
+				orgOf:  map[uuid.UUID]uuid.UUID{caseOne: orgBeta},
+			},
+			args:     labelsArgs(),
+			wantSaid: "no longer find that alert",
+		},
+		{
+			// Reachable across a deploy: an older binary enqueued a value this one
+			// cannot parse. It is answered, not dropped.
+			name:     "a menu value oto did not mint",
+			labels:   &fakeLabels{},
+			args:     func() jobs.SlackInteractionArgs { a := labelsArgs(); a.Value = "labels|nope"; return a }(),
+			wantSaid: "could not read that menu choice",
+		},
+		{
+			name: "a Case with no labels at all",
+			labels: &fakeLabels{
+				byCase: map[uuid.UUID]map[string]string{caseOne: {}},
+				orgOf:  map[uuid.UUID]uuid.UUID{caseOne: orgAlpha},
+			},
+			args:     labelsArgs(),
+			wantSaid: "no labels recorded",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			notice := &fakeNotice{}
+			s := newServiceWith(t, InteractionOptions{
+				Conversations: alphaConversations(),
+				Actors:        &fakeActors{},
+				Cases:         &fakeCases{live: map[uuid.UUID]uuid.UUID{caseOne: orgAlpha}},
+				Labels:        tc.labels,
+				Notice:        notice,
+			})
+
+			if err := s.Apply(context.Background(), tc.args); err != nil {
+				t.Fatalf("Apply returned %v; a press that cannot apply is an outcome, not a retry", err)
+			}
+			said := notice.only()
+			if said == "" {
+				t.Fatal("the press was answered with silence")
+			}
+			if !strings.Contains(said, tc.wantSaid) {
+				t.Fatalf("said %q, want it to contain %q", said, tc.wantSaid)
+			}
+		})
+	}
+}
+
+// TestApplyShowAllLabelsRetriesOnlyWhatIsWorthRetrying.
+//
+// A database that is down IS worth twelve retries, and the retry is free here:
+// the job writes nothing, so running it again produces the same sentence and no
+// second effect.
+func TestApplyShowAllLabelsRetriesOnlyWhatIsWorthRetrying(t *testing.T) {
+	notice := &fakeNotice{}
+	s := newServiceWith(t, InteractionOptions{
+		Conversations: alphaConversations(),
+		Actors:        &fakeActors{},
+		Cases:         &fakeCases{live: map[uuid.UUID]uuid.UUID{caseOne: orgAlpha}},
+		Labels:        &fakeLabels{err: errors.New("connection refused")},
+		Notice:        notice,
+	})
+	if err := s.Apply(context.Background(), labelsArgs()); err == nil {
+		t.Fatal("a transient label read failure must be retried, not swallowed")
+	}
+}
+
+// TestShowAllLabelsFitsInsideSlacksLimit.
+//
+// ⛔ THE LIMIT IS REACHED IN PRACTICE, NOT IN THEORY. An Alert may carry 64 labels
+// (B3), each value up to 4 KiB (B5), and a whole label set up to 16 KiB (B6) —
+// five times what one Slack message may say. An unbounded list is REFUSED by
+// Slack, which turns "here are the labels" back into the silence this ticket is
+// about.
+//
+// ⭐ AND THE CUT MUST SAY SO (§H.7). A reader told that nine labels are not listed
+// knows to open oto; a reader shown 55 of 64 with no note believes they have seen
+// the label set.
+func TestShowAllLabelsFitsInsideSlacksLimit(t *testing.T) {
+	labels := map[string]string{}
+	for i := range 64 {
+		labels["label_"+strconv.Itoa(i)] = strings.Repeat("x", 4096)
+	}
+	said := labelListText(labels)
+
+	if len(said) > maxNoticeText {
+		t.Fatalf("the reply is %d bytes, over Slack's %d: a payload over the limit is rejected, "+
+			"which answers the press with nothing", len(said), maxNoticeText)
+	}
+	if !strings.Contains(said, "(64)") {
+		t.Fatalf("the reply %q does not say how many labels the alert carries", said)
+	}
+	if !strings.Contains(said, "not listed") {
+		t.Fatalf("the reply was cut without saying so: %q", said)
+	}
+	// Every line that IS listed must be whole — a value cut mid-rune, or a code
+	// span left open, is the mojibake that makes an operator distrust the screen.
+	if strings.Contains(said, "�") {
+		t.Fatalf("the reply contains a broken rune: %q", said)
+	}
+	if strings.Count(said, "`")%2 != 0 {
+		t.Fatalf("the reply left a code span open: %q", said)
+	}
+}
+
+// TestOneEnormousLabelStillLeavesRoomForTheRest.
+//
+// The pathological single label: one 4 KiB value must not eat the whole message
+// and leave the other labels unlisted. Both cuts are visible, and both are
+// counted or ellipsised rather than silent.
+func TestOneEnormousLabelStillLeavesRoomForTheRest(t *testing.T) {
+	said := labelListText(map[string]string{
+		"alertname": "HighErrorRate",
+		"aaa_huge":  strings.Repeat("y", 4096),
+		"zzz_last":  "still here",
+	})
+	if len(said) > maxNoticeText {
+		t.Fatalf("the reply is %d bytes, over %d", len(said), maxNoticeText)
+	}
+	for _, want := range []string{"alertname", "HighErrorRate", "zzz_last", "still here", "…"} {
+		if !strings.Contains(said, want) {
+			t.Fatalf("the reply %q dropped %q: one long value must not cost the other labels", said, want)
+		}
 	}
 }

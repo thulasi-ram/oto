@@ -7,8 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -101,12 +104,26 @@ const (
 	// `views.open` modal. Filing a container of mixed options under the link-only
 	// namespace would make the namespace stop being true.
 	//
-	// ⚠️ SO IT IS INERT TODAY AND THAT IS A GAP, NOT THE DESIGN. The url half is
-	// complete — Slack navigates, oto acks, done (S9). The `Show all labels` half has
-	// no modal behind it yet, so pressing it does nothing and says nothing. That is
-	// worth fixing and it is NOT what the unknown-action counter is for: the action
-	// is known and routed, one of its options is unbuilt, and conflating the two
-	// would put a permanent floor under the series that says oto is broken.
+	// ⭐⭐ IT IS THE ONE ACTION ID WHOSE ARM IS INERT FOR SOME OF ITS OPTIONS AND NOT
+	// FOR OTHERS, and the value is what tells them apart. The four url options are
+	// inert by design — Slack navigates, oto acks, done (S9) — and `Show all labels`
+	// is answered with an ephemeral listing them, because it is the one option that
+	// asks oto to RENDER something. See labelsSubject and applyShowLabels.
+	//
+	// ⛔ IT WAS INERT FOR EVERY OPTION AND THAT WAS THE DEFECT (git-bug `60e6e10`).
+	// `Show all labels` carried a value §H.8 designates for a `views.open` modal and
+	// no modal was ever built, so the press was answered with silence — no error, no
+	// log, nothing — against §B.8.6's "buttons are never no-ops". The owner's ruling
+	// is an EPHEMERAL and explicitly not a modal: `views.open` needs a `trigger_id`
+	// on §H.8's three-second synchronous path (the same constraint that made
+	// git-bug `0a8ca4a` choose a `static_select` over a modal for the snooze
+	// presets), and it is a second interaction type `parseSlackEnvelope` refuses by
+	// design. The labels are read-only, so an ephemeral is the whole feature.
+	//
+	// ⛔ NEITHER HALF IS WHAT THE UNKNOWN-ACTION COUNTER IS FOR. The action is known
+	// and routed; conflating "one option does nothing" with "oto could not route
+	// this" would put a permanent floor under a series whose whole meaning is that
+	// oto is broken.
 	ActionOverflow = "oto.more"
 	// ActionNoopPrefix marks the URL buttons. Slack delivers an interaction for
 	// every one of them and oto must acknowledge it; there is nothing to do
@@ -186,6 +203,19 @@ type SlackActor struct {
 	UserID uuid.UUID
 	// Label is the immutable display name recorded on the timeline.
 	Label string
+	// Shadow is true when UserID names a SHADOW member — a row minted by migration
+	// `00074` so that a press by someone who never onboarded has a claim principal.
+	//
+	// ⛔ IT EXISTS TO KEEP `actor_kind` HONEST, AND THE TWO FACTS ARE ORTHOGONAL.
+	// `actor_kind` says which directory the actor id belongs to, and a shadow is not
+	// a member of oto's directory in any sense a reader would mean — nobody signed
+	// up, there is no address, and nothing can log in. Reporting `user` for one would
+	// make a Slack press indistinguishable from a web click on the timeline, which is
+	// the distinction the `slack` kind exists to draw. So a shadow is recorded as
+	// `slack` WITH its uuid: `ev_actor_ck` constrains only `kind = 'user'`, and
+	// `alerts/service.actorUUID` parses the id whatever the kind, so `acked_by` still
+	// names the row and the claim still has its principal.
+	Shadow bool
 }
 
 // Cases is one human verb over ONE Case.
@@ -317,6 +347,37 @@ type Snoozes interface {
 // acts on more than one Case again, this comment is the reason it needs an account
 // before it needs copy.
 
+// Labels reads back the label set of the Alert one Case is an episode of.
+//
+// ⛔ IT IS THE ONLY READ-ONLY PORT ON THIS SURFACE, and that shapes everything
+// about it. There is no verb, no actor, no refusal code and nothing to record: the
+// human asked what the labels are and the answer is a sentence. The four writing
+// ports return "only an error, and the refusal is in its code" because a write can
+// be refused; a read either resolves or it does not.
+//
+// ⛔ NO EXPLICIT TENANCY PROBE, FOR THE REASON `Snoozes` GIVES. The read is made
+// under the scope, so a Case belonging to another org comes back
+// `errs.KindNotFound` on its own and the human gets a sentence. A `CaseExists`
+// call first would be a second round trip to re-answer a question this call
+// already answers — and unlike the ack, there is no write here that could
+// silently touch nothing.
+//
+// ⛔ IT MUST NOT GROW A SECOND METHOD FOR ANNOTATIONS OR A RULE. An annotation
+// value is bounded at 16 KiB (B8) — five times what one Slack message may
+// carry — and a rule expression belongs on the card, not in a reply to a menu
+// press. `Show all labels` says what it lists.
+type Labels interface {
+	// CaseLabels returns the labels of the Alert this Case belongs to, keyed by
+	// label name. `errs.KindNotFound` means this tenant cannot see that Case.
+	//
+	// ⚠️ AN EMPTY MAP IS A SUCCESS AND STILL NEEDS A SENTENCE. `alertname` is
+	// required on every label set oto ingests (B4), so an empty answer means the
+	// port found the Case and nothing to show for it — and `Notice.Ephemeral`
+	// DROPS an empty text, so the caller that forgot to say so would ship the
+	// silence this whole file exists to abolish.
+	CaseLabels(ctx context.Context, s db.TenantScope, caseID uuid.UUID) (map[string]string, error)
+}
+
 // SlackNotice sends a message only the person who pressed the button can see.
 //
 // It posts to the interaction's `response_url`, which is Slack's own one-shot
@@ -339,7 +400,20 @@ type InteractionOptions struct {
 	// function of the view and cannot see this field. A press therefore has to be
 	// answered by a sentence saying so, which `applySnooze` does; the one thing it
 	// must never be answered with is the silence this file exists to abolish.
-	Snoozes  Snoozes
+	Snoozes Snoozes
+	// Labels is OPTIONAL for the same reason `Snoozes` is, and the nil case is
+	// louder here than it looks. The `Show all labels` option is on every card that
+	// has a Case id — the renderer is a pure function of the view and cannot see
+	// this field — so a deployment that has not wired it must ANSWER the press with
+	// a sentence saying so. That is `applyShowLabels`' first branch, and it is the
+	// difference between "not in this deployment yet" and the silence git-bug
+	// `60e6e10` was filed about.
+	//
+	// The concrete adapter is `app.slackLabelReads`, wired in `app.container` beside
+	// `slackSnoozeActions` and pinned by a line in `app.assertions` — which that file
+	// earns here, because a nil port degrades to the ephemeral above instead of
+	// failing a build, so nothing else would notice the wiring being dropped.
+	Labels   Labels
 	Enqueuer db.Enqueuer
 	Notice   SlackNotice
 	// Metrics is optional. A nil one costs the `oto_slack_unknown_action_total`
@@ -363,6 +437,7 @@ type InteractionService struct {
 	actors        SlackActors
 	cases         Cases
 	snoozes       Snoozes
+	labels        Labels
 	enqueuer      db.Enqueuer
 	notice        SlackNotice
 	metrics       *InteractionMetrics
@@ -389,6 +464,7 @@ func NewInteractionService(o InteractionOptions) (*InteractionService, error) {
 		actors:        o.Actors,
 		cases:         o.Cases,
 		snoozes:       o.Snoozes,
+		labels:        o.Labels,
 		enqueuer:      o.Enqueuer,
 		notice:        o.Notice,
 		metrics:       o.Metrics,
@@ -464,10 +540,38 @@ func (s *InteractionService) Handle(ctx context.Context, payload json.RawMessage
 				Opts: []db.JobOption{db.WithUniquePeriod(slackReplayWindow)},
 			})
 		case id == ActionOverflow:
-			// The links overflow. It is a CONTAINER of places to look, so pressing
-			// the container is not a verb and enqueues nothing — see ActionOverflow
-			// for why it is admitted here rather than renamed into the no-op
-			// namespace, and for the one option inside it that is still unbuilt.
+			// The links overflow, and the ONE ARM ON THIS SWITCH THAT BRANCHES ON THE
+			// VALUE. Four of its five options are places to look: they carry a `url`,
+			// Slack navigates them itself, and pressing them is not a verb — so they
+			// enqueue nothing, exactly as before. `Show all labels` carries a value and
+			// asks oto to render something, so it does.
+			//
+			// ⛔ THE TEST IS A PARSE, NOT A PREFIX MATCH. `labelsSubject` is the same
+			// discipline `snoozeSubject` is under: a value oto did not mint — a
+			// `labels|` with no id behind it, or one with a second separator — is
+			// refused HERE and never becomes a job, which keeps the queue free of work
+			// no handler could complete. Handle still reads no database (see `Handle`);
+			// deciding this is pure string work.
+			//
+			// ⛔ NO UNIQUENESS WINDOW, UNLIKE THE FOUR WRITING ACTIONS. Collapsing a
+			// byte-identical replay is a convenience when the outcome is a durable
+			// write that is idempotent anyway; here the outcome IS the reply, and a
+			// second press whose job was collapsed onto the first would be answered
+			// with the silence this arm exists to abolish.
+			if _, ok := labelsSubject(a.value()); ok {
+				reqs = append(reqs, db.JobRequest{
+					Args: jobs.SlackInteractionArgs{
+						ActionID:      id,
+						Value:         a.value(),
+						TeamID:        env.Team.ID,
+						ChannelID:     env.Channel.ID,
+						SlackUserID:   env.User.ID,
+						SlackUserName: env.User.handle(),
+						MessageTS:     env.messageTS(),
+						ResponseURL:   env.ResponseURL,
+					},
+				})
+			}
 		case strings.HasPrefix(id, ActionNoopPrefix):
 			// A URL button. Slack delivered an interaction oto is REQUIRED to
 			// acknowledge and there is nothing else to do; the explicit namespace
@@ -559,6 +663,13 @@ func (s *InteractionService) Apply(ctx context.Context, args jobs.SlackInteracti
 		return s.applySnooze(ctx, logger, scope, args)
 	case ActionUnsnooze:
 		return s.applyUnsnooze(ctx, logger, scope, args)
+	case ActionOverflow:
+		// ⭐ THE ONLY READ ON THIS SWITCH. `Handle` enqueues an overflow press only
+		// when its value is a `labels|<case id>`, so an arm reached here has already
+		// been told apart from the four url options — but it parses the value again
+		// rather than trusting the enqueue, because a job payload is durable and
+		// crosses deploys.
+		return s.applyShowLabels(ctx, logger, scope, args)
 	default:
 		// Reachable only across a deploy: `Handle` enqueues nothing it cannot
 		// route, so a job carrying an unserved action is one an OLDER binary
@@ -882,6 +993,235 @@ func (s *InteractionService) applyUnsnooze(
 	}
 }
 
+// applyShowLabels answers the links overflow's one non-link option: it lists the
+// labels of the Alert whose episode this Case is, in a message only the person who
+// pressed the menu can see (git-bug `60e6e10`).
+//
+// ⛔ IT IS AN EPHEMERAL AND NOT A MODAL, BY THE OWNER'S RULING. SPEC §H.8
+// designates this option's value for `views.open`; a modal needs a `trigger_id`
+// spent inside three seconds on the synchronous path, and this handler runs on the
+// QUEUE, minutes later if the queue is deep. The `trigger_id` would be dead by
+// then. `response_url` has no such clock — it is good for thirty minutes and five
+// uses — which is what makes an honest answer possible at all here.
+//
+// ⭐ THE FOUR NUMBERED STEPS OF THE WRITING VERBS BECOME THREE, AND WHAT IS MISSING
+// IS MISSING FOR A REASON. Tenant, subject, answer. There is no step for THE
+// HUMAN — nothing is recorded, so there is nobody to attribute and no timeline
+// entry to name — and the last step READS where every other verb on this surface
+// writes. Reading a label set changes nothing, which is exactly why this option may
+// live on a chat card at all (§E.1.1).
+func (s *InteractionService) applyShowLabels(
+	ctx context.Context, logger *slog.Logger, scope db.TenantScope, args jobs.SlackInteractionArgs,
+) error {
+	// ---- 2. THE SUBJECT ------------------------------------------------
+	caseID, ok := labelsSubject(args.Value)
+	if !ok {
+		// Reachable across a deploy and by forgery inside an authentic envelope, and
+		// answered the same way either: a sentence. `Handle` refuses to enqueue a
+		// value it cannot parse, so a job carrying one was written by an older binary.
+		logger.Warn("channels: a Show all labels press carried a value oto did not mint")
+		s.tell(ctx, args, "oto could not read that menu choice. It may have been posted by an older "+
+			"version — open the alert in oto to see its labels.")
+		return nil
+	}
+	logger = logger.With(slog.String("case_id", caseID.String()))
+
+	// ⚠️ AN UNWIRED PORT IS ANSWERED WITH A SENTENCE, NEVER WITH NOTHING — the rule
+	// `applySnooze` states and the one this whole ticket is about. The renderer is a
+	// pure function of the view, so the option is on the card whether or not this
+	// deployment injected a labels port; the only thing this branch still controls
+	// is whether the human finds out.
+	if s.labels == nil {
+		logger.Warn("channels: a Show all labels press arrived at a deployment with no labels port")
+		s.tell(ctx, args, "oto cannot list labels from Slack in this deployment yet. "+
+			"Open the alert in oto to see them all.")
+		return nil
+	}
+
+	// ---- 3. THE ANSWER -------------------------------------------------
+	//
+	// The read is scoped, so a Case in another org comes back NotFound and gets the
+	// same sentence a Case that has been removed gets; see the `Labels` port for why
+	// there is no `CaseExists` probe in front of it.
+	labels, err := s.labels.CaseLabels(ctx, scope, caseID)
+	switch {
+	case errs.IsKind(err, errs.KindNotFound):
+		logger.Info("channels: a Show all labels press named a case this tenant cannot see")
+		s.tell(ctx, args, "oto can no longer find that alert from this channel. "+
+			"It may have been removed, or it belongs to a different oto organisation.")
+		return nil
+	case err != nil:
+		// A database that is down IS worth retrying, and the retry costs nothing: the
+		// job writes nothing, so running it again produces the same reply and no
+		// second effect.
+		return err
+	}
+	if len(labels) == 0 {
+		// `alertname` is required on every label set oto ingests, so this is not the
+		// ordinary case — and it still must not be silence. `Notice.Ephemeral` drops
+		// an empty text, so the press would go unanswered.
+		logger.Warn("channels: a Show all labels press found a case with no labels")
+		s.tell(ctx, args, "oto has no labels recorded for that alert.")
+		return nil
+	}
+
+	logger.Info("channels: listed an alert's labels in Slack", slog.Int("labels", len(labels)))
+	s.tell(ctx, args, labelListText(labels))
+	return nil
+}
+
+// The two budgets `labelListText` writes inside.
+const (
+	// maxNoticeText is what one ephemeral may carry.
+	//
+	// ⛔ IT IS OTO'S OWN NUMBER AND IT IS DELIBERATELY THE TIGHTEST ONE IN SIGHT.
+	// Slack's cap on a message's top-level `text` is 4 000 (`msg_too_long`), and 3 000
+	// is the TEXT OBJECT limit — the same borrowing `render/slack.maxTopLevelText`
+	// documents. Restated here rather than imported because `channels/service` does
+	// not import the renderer: this is a sentence sent to a `response_url`, not a
+	// card, and the two must not learn each other's layout.
+	//
+	// ⛔ IT IS REACHED IN PRACTICE, WHICH IS WHY IT IS ENFORCED AND NOT ASSERTED. An
+	// Alert may carry 64 labels (B3), a value may be 4 KiB (B5) and a whole label set
+	// may be 16 KiB (B6) — five times what one message may say. A payload over the
+	// limit is REJECTED by Slack, so an unbounded list would turn "here are the
+	// labels" back into silence.
+	maxNoticeText = 3000
+	// maxNoticeLabelName and maxNoticeLabelValue bound ONE label, in runes, so that
+	// no single pathological label can eat the whole message and leave the other
+	// sixty-three unlisted. Both cuts are VISIBLE — an ellipsis — for §H.7's reason:
+	// a reader who can see that something was cut has been told the truth, and one
+	// who cannot has been told a smaller one.
+	//
+	// The name's budget is the larger of the two on purpose: a label's name is its
+	// identity and a cut one may be unrecognisable, while a cut value is still
+	// recognisably that label's value.
+	maxNoticeLabelName  = 160
+	maxNoticeLabelValue = 128
+)
+
+// labelListText renders one alert's labels as the ephemeral's whole body, sorted
+// by name and bounded by maxNoticeText.
+//
+// ⭐ THE ORDER IS ALPHABETICAL BECAUSE A MAP HAS NO ORDER. Two presses on the same
+// card must produce the same list, or the reader is left wondering what changed
+// between them.
+//
+// ⭐ THE OMISSION IS COUNTED, WHICH IS THE WHOLE DIFFERENCE BETWEEN THIS AND A
+// SILENT CUT. §H.7's rule is that a message which was truncated says so; a reader
+// told "9 more labels are not listed" knows to open oto, and one shown 55 of 64
+// labels with no note believes they have seen the label set.
+func labelListText(labels map[string]string) string {
+	names := make([]string, 0, len(labels))
+	for name := range labels {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var b strings.Builder
+	b.WriteString("*All labels* (" + strconv.Itoa(len(names)) + ")")
+
+	// ⛔ THE ROOM FOR THE SUFFIX IS RESERVED BEFORE THE FIRST LINE IS WRITTEN, and
+	// it is measured from the suffix that would be built for the WORST case — every
+	// label omitted — so the reservation cannot be short by a digit. That is the
+	// lesson of git-bug `1cd496f`, where a truncation helper reserved a fixed
+	// allowance for a suffix it never measured and returned 3 013 against a hard
+	// limit of 3 000.
+	reserve := len(labelsOmittedSuffix(len(names)))
+	for i, name := range names {
+		line := "\n• " + noticeCode(clipRunes(name, maxNoticeLabelName)) +
+			" = " + noticeCode(clipRunes(labels[name], maxNoticeLabelValue))
+		if b.Len()+len(line)+reserve > maxNoticeText {
+			b.WriteString(labelsOmittedSuffix(len(names) - i))
+			break
+		}
+		b.WriteString(line)
+	}
+	return b.String()
+}
+
+// labelsOmittedSuffix says how many labels did not fit. It is a sentence and not
+// an ellipsis because a count is actionable and a "…" is not.
+//
+// ⛔ IT MUST NOT SAY "SHOWN". The word contains "own", and the copy sweep in
+// `TestNothingOtoSaysImpliesOwnership` bans that substring across everything this
+// surface says — for a good reason that costs one synonym here.
+func labelsOmittedSuffix(n int) string {
+	return "\n… " + strconv.Itoa(n) + " more " + plural(n, "label", "labels") +
+		" not listed — open the alert in oto to see them all."
+}
+
+// plural picks the singular or the plural form. It is `render/slack.plural`'s twin
+// and is restated for the same reason maxNoticeText is: this file sends sentences,
+// not cards, and does not import the renderer.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
+}
+
+// noticeCode renders one label name or value as an inline code span.
+//
+// ⛔ IT ESCAPES, AND THE VALUE IT ESCAPES IS UPSTREAM'S. A label value arrives from
+// Alertmanager and is never oto's own text: one containing `<!channel>` must not
+// become a broadcast, and one containing a backtick must not break out of the span
+// and turn the rest of the list into markup. This is `render/slack.escape` plus
+// `render/slack.code`, restated for a path that sends a sentence rather than a
+// block — the renderer's V-checks do not run on a `response_url` body, so the
+// escaping cannot be inherited from them.
+func noticeCode(s string) string {
+	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "`", "'")
+	if s = r.Replace(s); s == "" {
+		// An empty label value is legal upstream, and "``" renders as two literal
+		// backticks. `(empty)` says what oto actually knows.
+		return "(empty)"
+	}
+	return "`" + s + "`"
+}
+
+// clipRunes cuts a short string on a RUNE boundary with a visible ellipsis, never
+// mid-character: a half-written rune is the mojibake that makes an operator
+// distrust everything else on the screen.
+func clipRunes(s string, maxLen int) string {
+	if utf8.RuneCountInString(s) <= maxLen {
+		return s
+	}
+	if maxLen <= 1 {
+		return "…"
+	}
+	return strings.TrimRight(string([]rune(s)[:maxLen-1]), " \t") + "…"
+}
+
+// labelsSubject reads the Case id out of the `Show all labels` option's value.
+//
+// ⭐ IT IS `snoozeSubject`'S SIBLING AND IS UNDER THE SAME DISCIPLINE (S8). The
+// value is two SELECTORS and nothing else — which question was answered, and which
+// row to look up — and neither half is decoded into behaviour: the prefix is
+// matched against the one constant both ends share (domain.ShowLabelsValuePrefix)
+// and the id is resolved in oto's own database under the tenant scope, so a forged
+// value can name another org's Case and be refused on the read.
+//
+// ⭐ IT ALSO ANSWERS THE FOUR LINK OPTIONS, and answering false about them is the
+// whole reason `Handle` can share one arm between them. A url option's value is
+// empty, so it is not a `labels|` and enqueues nothing; the two halves of the menu
+// are told apart HERE and nowhere else.
+//
+// ⛔ IT REFUSES A THIRD FIELD RATHER THAN IGNORING ONE, exactly as its sibling
+// does: `labels|<uuid>|anything` is not a value oto minted, and a value oto did not
+// mint is not one to interpret charitably.
+func labelsSubject(value string) (uuid.UUID, bool) {
+	rest, found := strings.CutPrefix(strings.TrimSpace(value), domain.ShowLabelsValuePrefix)
+	if !found || strings.Contains(rest, snoozeValueSeparator) {
+		return uuid.Nil, false
+	}
+	caseID, err := uuid.Parse(rest)
+	if err != nil || caseID == uuid.Nil {
+		return uuid.Nil, false
+	}
+	return caseID, true
+}
+
 // snoozeSubject splits one snooze option's value into the alert it names and the
 // duration oto offered for it.
 //
@@ -1108,6 +1448,16 @@ func (s *InteractionService) actor(
 	}
 	if a.UserID == uuid.Nil || a.Label == "" {
 		return unlinked()
+	}
+	if a.Shadow {
+		// A shadow is a principal, not a member: `slack` for the kind, its uuid for
+		// the id so the claim and `acked_by` both have one, and the handle for the
+		// label. See `SlackActor.Shadow`.
+		l := a.Label
+		if l == "" {
+			l = args.SlackUserID
+		}
+		return "slack", a.UserID.String(), l
 	}
 	return "user", a.UserID.String(), a.Label
 }

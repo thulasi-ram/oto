@@ -62,6 +62,14 @@ func (u SlackUserID) IsZero() bool { return u.v == "" }
 // it still acks, and the timeline records the Slack handle as the actor label.
 // Requiring a link before an ack could be recorded would mean the product
 // silently loses acknowledgements from anybody who has not onboarded.
+//
+// ⚠️ SINCE MIGRATION 00074 IT IS ALSO A SHORT-LIVED STATE FOR ANYBODY WHO PRESSES
+// A BUTTON. The first press mints a SHADOW member and links this row to it, because
+// `idempotency_claims.principal_id` is NOT NULL and a press with no principal takes
+// no claim — so a Slack redelivery applied it twice (git-bug `a74d6b2`). `UserID`
+// zero therefore means "has never acted", not "has no account": a shadow carries no
+// email and cannot log in, and a later genuine link ADOPTS it rather than minting a
+// second member. The label above is still what the timeline shows.
 type SlackIdentity struct {
 	ID          uuid.UUID
 	OrgID       uuid.UUID

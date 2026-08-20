@@ -95,11 +95,21 @@ func (k Key) IsZero() bool { return k.v == "" }
 // ⭐⭐ IT EXISTS FOR THE WRITES THAT MUST TELL TWO ATTEMPTS APART EVEN WHERE NO
 // CLAIM CAN BE TAKEN. A claim needs a principal — `idempotency_claims.principal_id`
 // is NOT NULL and `Claim.validate` refuses a zero one — while merely NAMING an
-// attempt needs nothing but the key. A Slack member who never linked an oto
-// account has the second and not the first, and `alerts/service.Snooze` reads this
-// as its §C.7 occasion so a REDELIVERED press re-mints the announcement key it
-// already minted instead of a fresh one. See `Intent.KeyID`, which is the field
-// that carries it, for the whole argument.
+// attempt needs nothing but the key. `alerts/service.Snooze` reads this as its
+// §C.7 occasion so a REDELIVERED press re-mints the announcement key it already
+// minted instead of a fresh one. See `Intent.KeyID`, which is the field that
+// carries it, for the whole argument.
+//
+// ⚠️ THE CASE THIS WAS ADDED FOR HAS SINCE ACQUIRED A PRINCIPAL, AND THE FIELD IS
+// NOT REDUNDANT. It was a Slack member who had never linked an oto account: they
+// had the key and no principal, so their press could be named and not claimed.
+// git-bug a74d6b2 gave them one — a SHADOW MEMBER, a `users` row with no email
+// (migration 00074) — so that press is now CLAIMED as well as named. What still
+// arrives named and unclaimable is the degraded press, where the identity lookup
+// itself failed and `channels/service.actor` fell back to the raw Slack member id
+// rather than let a directory failure cost an acknowledgement. That fallback is
+// permanent, so this remains the only thing standing between one gesture and two
+// cards on it.
 //
 // ⛔ IT IS A DIGEST, NOT AN ENCODING, and that is not tidiness. Whatever holds a
 // derived id stores it: this path's key is a sha256 over a Slack `response_url`

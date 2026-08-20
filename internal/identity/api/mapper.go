@@ -48,11 +48,22 @@ func toOrgDTO(o domain.Org) OrgDTO {
 // toUserDTO renders a user. slackUserID is passed in rather than read off the
 // user because the link lives on a different table and is a display fact, not a
 // property of the human.
+//
+// ⭐ A SHADOW MEMBER RENDERS `email: null` AND NOT `email: ""`, and the difference
+// is the only thing a client can act on. `IsShadow()` is asked rather than
+// comparing `Email.String()` against "", so this mapper and every other reader
+// decide the absence of an address the same way (`identity/domain.User.IsShadow`).
+// A shadow member cannot reach `GET /me` — nothing can authenticate as one — so
+// today this branch is exercised by the members read; it is written on the mapper
+// because the mapper is what the contract is checked against.
 func toUserDTO(u domain.User, slackUserID string) UserDTO {
 	dto := UserDTO{
 		ID:          u.ID,
-		Email:       u.Email.String(),
 		DisplayName: u.DisplayName,
+	}
+	if !u.IsShadow() {
+		email := u.Email.String()
+		dto.Email = &email
 	}
 	if slackUserID != "" {
 		v := slackUserID

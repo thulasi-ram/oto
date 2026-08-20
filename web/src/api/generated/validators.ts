@@ -1872,11 +1872,11 @@ export const OrgDTOSchema = v.looseObject({
 
 export const UserDTOSchema = v.looseObject({
   "id": UuidSchema,
-  "email": v.pipe(
+  "email": v.nullable(v.pipe(
     v.string(),
     v.email(),
     v.maxLength(254),
-  ),
+  )),
   "display_name": v.pipe(
     v.string(),
     v.minLength(1),

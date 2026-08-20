@@ -283,11 +283,23 @@ type NotificationSummary struct {
 // stale version could not mint a duplicate intent. There is no generation, no
 // version column to read, and `internal/grouping` no longer exists to implement it.
 //
-// ⚠️ THE GUARANTEE IT SERVED IS STILL OWED AND IS CURRENTLY UNMET, which is why
-// this note is longer than a deletion needs. A Case carries no monotonic version,
-// so every `enriched` evaluation for one Case now hashes IDENTICALLY forever — the
-// first amendment is minted and every later one collides on the unique index and
-// is swallowed as the mechanism working (§L.9). `enrichment/service.Loaded.StateVersion`
+// ⚠️ THE GUARANTEE IT SERVED IS PARTLY OWED, AND THE ⛔ CLAIM THAT USED TO STAND
+// HERE WAS FALSE IN BOTH HALVES. It said "A Case carries no monotonic version, so
+// every `enriched` evaluation for one Case now hashes IDENTICALLY forever". A Case
+// DOES carry one — `alert_cases.state_version`, added by migration `00023` and
+// documented by `00052` as the optimistic lock every transition compare-and-sets —
+// and the enriched path DOES read it: enrichment leaves the payload version at 0,
+// `notification/service.mint` treats a non-positive version as unpinned and falls
+// back to `Snapshot.Group.StateVersion`, which is that column, selected at
+// `notification/repository/snapshot.go:164` and scanned at `:645`. So an `enriched`
+// amendment is pinned to the state it was minted against, which is the guarantee.
+//
+// What IS still owed is agreement between the two producers of that key: this
+// package's `enqueueNotify` hard-codes `StateVersion: 1` for every evaluation it
+// enqueues, so the pin is unenforced for the lifecycle reasons — and the two agree
+// at `fired` only because a fresh Case's lock is the column's DEFAULT 1. That is
+// git-bug `7b4adfd`, ruled to stay as it is for now and recorded in SPEC §C.7;
+// wiring it re-keys five reasons and wants a golden vector first (§L.9). `enrichment/service.Loaded.StateVersion`
 // carries the full account with the numbers on it. Restoring this needs a version
 // on `alert_cases`, which is a migration; re-adding a port here would only move the
 // missing column somewhere it is harder to see.

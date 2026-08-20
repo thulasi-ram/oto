@@ -13,13 +13,21 @@ import (
 // duplicate card came through.
 //
 // `slackIdempotency` answers TWO questions about one press and they have different
-// answers. Can the press be CLAIMED? Only if the presser has a linked oto user:
+// answers. Can the press be CLAIMED? Only if `actorID` is a uuid:
 // `idempotency_claims.principal_id` is NOT NULL, `Claim.validate` refuses
-// `uuid.Nil`, and an unlinked member's `actorID` is a Slack handle like `U024BE7LH`
-// that does not parse as a uuid — with no defined source for a `slack` principal's
-// uuid (migration 00041 anticipates the kind and leaves it open), nothing here may
-// invent one. Can the press be NAMED? Yes, whenever Slack sent a `response_url`,
-// because a name needs no principal at all.
+// `uuid.Nil`, and a raw Slack handle like `U024BE7LH` does not parse. Can the press
+// be NAMED? Yes, whenever Slack sent a `response_url`, because a name needs no
+// principal at all.
+//
+// ⚠️ WHICH PRESSES REACH HERE WITHOUT A UUID CHANGED WITH git-bug a74d6b2 AND THIS
+// FUNCTION DID NOT. An unlinked Slack member used to be the ordinary case — nothing
+// could invent a principal for them, and migration 00041 left open where a `slack`
+// principal's uuid comes from. It now comes from a SHADOW MEMBER, minted by
+// `slackActors.SlackActor` on first press (migration 00074), so an unlinked presser
+// arrives WITH a uuid and is claimed. A handle still arrives on the DEGRADED path,
+// when the identity lookup failed or the link is stale, and that is what the
+// `U024BE7LH` cases below now describe. The function's rule — "the principal is a
+// uuid or nothing" — is unchanged, which is why the fix needed no edit here.
 //
 // ⛔ IT USED TO RETURN THE UNKEYED ZERO FOR BOTH, throwing the name away with the
 // claim, and that is what let a redelivered press mint a second §C.7 occasion and

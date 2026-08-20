@@ -208,14 +208,31 @@ func TestSlackAcknowledgeCannotCrossTenants(t *testing.T) {
 	}
 }
 
-// TestSlackAcknowledgeAttributesAnUnlinkedMemberHonestly.
+// TestSlackAcknowledgeAttributesAnUnlinkedMemberToItsShadow.
 //
 // ⛔ A Slack member with no oto account STILL ACKS. Refusing would silently lose
 // every acknowledgement from anybody who has not linked an account, which is a
-// worse failure than the one being fixed. What is recorded is the truth about
-// what happened: `actor_kind = 'slack'`, the Slack member id, the handle they
-// had at press time, and `acked_by` NULL because there is no oto user to name.
-func TestSlackAcknowledgeAttributesAnUnlinkedMemberHonestly(t *testing.T) {
+// worse failure than the one being fixed. That half has never changed.
+//
+// ⚠️ WHAT CHANGED IS WHO IS NAMED, AND IT REVERSES WHAT THIS TEST USED TO ASSERT
+// (owner ruling 2026-08-20, git-bug `a74d6b2`, migration `00074`). It read:
+// "`acked_by` NULL because there is no oto user to name", and it failed the build
+// if oto "invented an oto user". oto now DOES mint one — a SHADOW member, on first
+// press — because `idempotency_claims.principal_id` is NOT NULL, so without a
+// principal a Slack redelivery took no claim and wrote the press twice.
+//
+// The honesty this test is named for is therefore relocated, not dropped: the
+// shadow carries NO email (oto never reads Slack back, C9, so it cannot know one
+// and does not fabricate one), cannot log in, and `acked_by_label` is still the
+// handle the member had at press time — which is what makes the timeline readable
+// and is asserted below unchanged.
+//
+// ⭐ NOTE FOR ANYONE RESTORING THE OLD ASSERTION: attribution never needed the row.
+// `actor_kind = 'slack'` plus the member id and handle already told the truth, which
+// is why the previous stance was defensible. The row exists for the CLAIM. If a
+// future change gives Slack presses a principal without a `users` row, this test
+// should go back to asserting NULL.
+func TestSlackAcknowledgeAttributesAnUnlinkedMemberToItsShadow(t *testing.T) {
 	env := newEnvWith(t, func(c *config.Config) {
 		c.Slack.Enabled = true
 		c.Slack.Mode = "http"
@@ -236,8 +253,16 @@ func TestSlackAcknowledgeAttributesAnUnlinkedMemberHonestly(t *testing.T) {
 	if ackState != "acked" {
 		t.Fatalf("an unlinked Slack member's press left the case %q; the acknowledgement was lost", ackState)
 	}
-	if ackedBy != nil {
-		t.Fatalf("acked_by = %v for an unlinked member; oto invented an oto user", *ackedBy)
+	if ackedBy == nil {
+		t.Fatal("acked_by is NULL for an unlinked member. Since migration 00074 the press " +
+			"mints a shadow member and names it, because a claim needs a principal and " +
+			"`idempotency_claims.principal_id` is NOT NULL — a NULL here means the shadow " +
+			"was not created, so a Slack redelivery of this press would write the ack twice")
+	}
+	if email, canLogin := env.userEmailAndLogin(t, *ackedBy); email != nil || canLogin {
+		t.Fatalf("the shadow named by acked_by has email=%v canLogin=%v; want a NULL email and "+
+			"no login. oto never reads Slack back (C9), so it cannot know an address, and by "+
+			"ruling it holds none rather than a fabricated one", email, canLogin)
 	}
 	if label != "@newcomer" {
 		t.Fatalf("acked_by_label = %q, want @newcomer: the display name is what makes the timeline readable", label)
@@ -479,6 +504,23 @@ func (e *env) caseAck(t *testing.T, caseID uuid.UUID) (state string, by *uuid.UU
 		label = *lbl
 	}
 	return state, by, label
+}
+
+// userEmailAndLogin reads the two facts that make a shadow member a shadow: it has
+// no address, and it cannot be logged into. Read from the DB rather than through the
+// domain so the test pins what is STORED — a shadow whose email column held a
+// synthetic address would satisfy any Go-level `IsShadow()` that keyed off something
+// else, and the ruling this guards is specifically about the column.
+func (e *env) userEmailAndLogin(t *testing.T, userID uuid.UUID) (email *string, canLogin bool) {
+	t.Helper()
+	var hash *string
+	err := e.pool.QueryRow(e.ctx,
+		`SELECT email, password_hash FROM users WHERE id = $1`,
+		userID).Scan(&email, &hash)
+	if err != nil {
+		t.Fatalf("read user %s: %v", userID, err)
+	}
+	return email, hash != nil
 }
 
 func (e *env) caseAckedAt(t *testing.T, caseID uuid.UUID) time.Time {

@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 73 {
-		t.Fatalf("latest migration is %d, want 73 — this test pins the number so that a "+
+	if latest != 74 {
+		t.Fatalf("latest migration is %d, want 74 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1246,7 +1246,56 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// keys `settingsJSON` reads; the Down puts 00003's eleven-key text back verbatim,
 	// storm keys and all, because down-then-up has to be a round trip and not an
 	// improvement.
-	// ⭐ 00073 IS THE TOP OF THE STACK AND IT IS THE HALF THAT MAKES 00072'S COLUMNS
+	// ⭐ 00074 IS THE TOP OF THE STACK. `users.email` becomes NULLABLE so that a Slack
+	// workspace member who presses a button without ever linking an oto account can have
+	// a `users` row — a SHADOW MEMBER — and therefore a principal uuid to take an
+	// idempotency claim under (git-bug a74d6b2). Without it a redelivered press executed
+	// the snooze twice and the Case timeline carried two
+	// `alert.unsnoozed(superseded)`/`alert.snoozed` pairs for one human gesture.
+	//
+	// ⛔⛔ THE NULLABILITY IS THE ONLY READING THAT PROVES ANYTHING HERE, AND THE
+	// CONSTRAINT IS THE ONE THAT WOULD FOOL A READER. `users_email_ck` KEEPS ITS NAME
+	// across this migration, so `count(*)` over `pg_constraint` cannot tell the widened
+	// predicate from 00003's — and worse, the widening is SEMANTICALLY REDUNDANT: a
+	// CHECK passes when its predicate is NULL, so 00003's `email ~ '…' AND length(email)
+	// <= 254` already admitted a NULL email all by itself. A Down that restored the old
+	// predicate and FORGOT the `SET NOT NULL` would therefore be green on every
+	// constraint-shaped assertion while leaving the column nullable — which is exactly
+	// the state the release below this cannot handle, because its `userRow.email` and
+	// `subjectCols.email` were plain `string` scan targets and a NULL there is a 500 on
+	// the authenticated read path of every request. So both are read: the nullability
+	// because it is the fact, and the predicate because it is the sentence an operator
+	// sees at `\d+`.
+	if got := columnNullability("users", "email"); got != "YES" {
+		t.Fatalf("users.email is is_nullable=%q at the top of the stack, want YES — 00074 drops "+
+			"the NOT NULL so that a shadow member can exist. Without it identity/service."+
+			"ResolveSlackPresser cannot insert the row a Slack presser's idempotency claim "+
+			"names, and every redelivered press by an unlinked member is applied twice", got)
+	}
+	if def := constraintDef("users_email_ck", "users"); !strings.Contains(def, "IS NULL") {
+		t.Fatalf("users_email_ck does not state its NULL disjunct at the top of the stack: %s — "+
+			"00074 widens it to `email IS NULL OR (…)`. The disjunct is redundant to Postgres "+
+			"and is written for the READER: as 00003 spelled it the constraint appeared to "+
+			"forbid the very row 00074 introduces, which is a false prohibition that costs a "+
+			"reviewer a correct change", def)
+	}
+	// ⚠️ AND `users_email_uniq` IS READ TO PROVE IT WAS **NOT** TOUCHED. Postgres treats
+	// NULLs as distinct in a unique constraint, so `UNIQUE (org_id, email)` already
+	// admits as many shadow members per org as an org has Slack pressers — and the one
+	// edit that would break that is `NULLS NOT DISTINCT`, which would cap an org at ONE
+	// and turn the second presser's first press into a 23505. The predicate is asserted
+	// rather than trusted because that edit is a five-character addition to a line
+	// nobody would re-read.
+	if def := constraintDef("users_email_uniq", "users"); def != "UNIQUE (org_id, email)" {
+		t.Fatalf("users_email_uniq is %q at the top of the stack, want exactly "+
+			"\"UNIQUE (org_id, email)\" — 00074 leaves it alone on purpose. NULLS NOT DISTINCT "+
+			"would cap an org at one shadow member and reject every subsequent Slack presser's "+
+			"first press with a 23505; a partial unique index over WHERE email IS NOT NULL "+
+			"would admit the same rows while costing the constraint its NAME, which §L.9 "+
+			"publishes as an API error code and as a metric label", def)
+	}
+
+	// ⭐ 00073 IS THE HALF THAT MAKES 00072'S COLUMNS
 	// DECIDE SOMETHING: `notifications_suppmap_ck` gains `below_threshold`, the reason
 	// a policy's count condition records when it is not met yet, and `notif_policy_idx`
 	// arrives to serve the count that produces it.
@@ -1545,7 +1594,7 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// and nothing else — see its own ⛔ block for why an `UPDATE` restoring a grace
 	// nobody wrote would be worse than restoring nothing.
 	//
-	// ⛔ THE STEPS BELOW ARE CONTIGUOUS AND MUST STAY THAT WAY: 73, 72, 71, 70, 69, and then
+	// ⛔ THE STEPS BELOW ARE CONTIGUOUS AND MUST STAY THAT WAY: 74, 73, 72, 71, 70, 69, and then
 	// every migration under 69 in turn. `down` asserts the top applied version before it
 	// rolls anything back, so a skipped step does not silently roll back an unasserted
 	// migration — it fails as "about to roll back 00069, but the top applied migration is
@@ -1558,7 +1607,53 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// ⚠️ A NEW MIGRATION IS THEREFORE TWO EDITS AND NOT ONE: the pin at the top of this
 	// function, AND a `down(N)` step here with assertions on both sides of it. Bumping
 	// only the pin is how this test quietly shrinks.
-	// ⭐ 00073'S DOWN IS THE FIRST STEP, AND ITS ASSERTION IS THE ONE READING THAT
+	// ⭐ 00074'S DOWN IS THE FIRST STEP, AND ITS GUARD IS THE ONE AN OPERATOR WILL
+	// ACTUALLY MEET. Re-adding `NOT NULL` is the CONTRACT direction: it can fail, and it
+	// fails on real data rather than on a schema mistake. The Down carries a `DO $$`
+	// block that counts the NULL-email rows, names what they are — Slack pressers oto
+	// minted a member row for — and tells the operator how to inspect them, because the
+	// bare `SET NOT NULL` would refuse the rollback with a 23502 that names a column and
+	// explains nothing.
+	//
+	// ⛔ THE GUARD IS DELIBERATELY NOT EXERCISED HERE, for the reason 00073's is not:
+	// this test rolls the WHOLE stack back and then forward again, and a guard that fired
+	// would abort the rollback and take every step below it with it. Seeding a shadow
+	// member and watching the Down refuse belongs in a test that owns its own database.
+	// What is proven here is the CLEAN path — no shadow rows, so the block runs, the
+	// predicate narrows and the NOT NULL comes back — and that is the failure mode a Down
+	// nobody runs actually has: a `DO $$` with a syntax error or a wrong column name
+	// fails on the first execution, which is this one.
+	//
+	// ⚠️ THE NULLABILITY IS ASSERTED AND THE CONSTRAINT IS ASSERTED SEPARATELY, because
+	// the widening this rolls back was semantically redundant — a CHECK passes when its
+	// predicate is NULL — so the constraint reading ALONE cannot distinguish a Down that
+	// restored both halves from one that restored the predicate and forgot the column.
+	// Only the second of those leaves the release below unable to read its own `users`
+	// table, and only `is_nullable` can see it.
+	down(74)
+
+	if got := columnNullability("users", "email"); got != "NO" {
+		t.Fatalf("users.email is is_nullable=%q after 00074's Down, want NO — the Down owes the "+
+			"`SET NOT NULL`, and the constraint half of the same migration is redundant to "+
+			"Postgres, so a Down that re-added only the narrow predicate passes every "+
+			"pg_constraint reading while leaving the column nullable. The release this rolls "+
+			"back to scans users.email into a plain Go string: a NULL there is a 500 on the "+
+			"authenticated read path of every request, not a validation error", got)
+	}
+	if def := constraintDef("users_email_ck", "users"); strings.Contains(def, "IS NULL") {
+		t.Fatalf("users_email_ck still carries its NULL disjunct after 00074's Down: %s — the "+
+			"constraint KEEPS ITS NAME across this migration, so a Down that dropped it and "+
+			"forgot to re-add 00003's predicate leaves the name pointing at the wrong "+
+			"sentence, which is the only thing an operator reading a 23514 has to go on", def)
+	}
+	if c := columnComment("users", "email"); c != "" {
+		t.Fatalf("users.email still carries a comment after 00074's Down: %q — 00003 put none "+
+			"on this column, so the Down takes 00074's off rather than leaving text that "+
+			"describes a nullable column on a column that is NOT NULL again. A comment naming "+
+			"a state the schema no longer has is the defect 00062 was written to fix", c)
+	}
+
+	// ⭐ 00073'S DOWN IS THE NEXT STEP, AND ITS ASSERTION IS THE ONE READING THAT
 	// CANNOT BE FAKED: the constraint keeps its NAME across the narrowing, so what has
 	// to be read is the PREDICATE — `below_threshold` gone, and the other six still
 	// there. A Down that dropped the constraint and forgot to re-add it, or re-added it

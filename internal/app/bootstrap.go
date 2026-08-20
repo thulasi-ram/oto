@@ -212,6 +212,15 @@ const bootstrapLockKey int64 = 0x0704_0B00_7570_0001
 // user is not an operation the RUNNING product has, and adding repository
 // methods for it would put "create a tenant" and "create a user" one call away
 // from any service that already holds those repositories.
+//
+// ⭐ THAT ARGUMENT SURVIVED A GENUINE COUNTER-EXAMPLE AND IS WORTH RE-READING WITH
+// IT IN HAND. `identity/repository.InsertShadowUser` DOES write a `users` row from
+// a repository, on the Slack button-press path (git-bug a74d6b2), and it does not
+// weaken the rule above because its statement names neither `email` nor
+// `password_hash` — there is no parameter through which a caller could supply
+// either, so it cannot produce a row that authenticates. The write below can:
+// it takes an address and an argon2id hash, which is exactly the capability that
+// must stay in a CLI command that runs once per deployment.
 const insertOrgSQL = `
 INSERT INTO orgs (id, slug, name, settings, created_at, updated_at)
 VALUES ($1, $2, $3, $4, $5, $5)`

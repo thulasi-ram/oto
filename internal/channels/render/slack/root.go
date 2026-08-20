@@ -624,8 +624,21 @@ func withActionEmoji(id, label string, limit int) string {
 
 // overflowMenu is built from the view's links, not from its actions: every entry
 // is a place to look, never a thing to change. Each option still delivers an
-// interaction payload that the handler must ack with a 200 (S9), which is why the
-// action id is in the oto.noop.* family.
+// interaction payload that the handler must ack with a 200 (S9).
+//
+// ⛔ ITS ACTION ID IS `oto.more` AND NOT `oto.noop.more`, AND THIS COMMENT USED TO
+// SAY OTHERWISE. The claim was never true of the emitted card — five goldens pin
+// the literal `oto.more` — and it was wrong on the design as well: `oto.noop.*`
+// means "a URL button, there is nothing here to do", and this menu is NOT
+// link-only. `Show all labels` carries a value (domain.ShowLabelsValuePrefix) and
+// asks oto to render something, so filing the container under the link-only
+// namespace would make the namespace stop being true. See
+// `channels/service.ActionOverflow`, which routes both halves.
+//
+// ⭐ THE MENU IS STILL PURE (§F.1). It mints a value the handler will resolve
+// server-side; it does not decide what the answer looks like, and nothing here
+// knows whether the deployment can list labels at all — that is the handler's
+// honest-ephemeral problem, not the renderer's.
 func overflowMenu(v *domain.NotificationView) (Action, bool) {
 	// FIVE, because Slack's overflow element is documented as "an array of up to
 	// five option objects". A sixth is `invalid_blocks` and takes the card with it.
@@ -666,7 +679,11 @@ func overflowMenu(v *domain.NotificationView) (Action, bool) {
 		addOpt(":scroll: Rule history", v.Links.Group, "")
 	}
 	if v.Group.ID != "" {
-		addOpt(":label: Show all labels", "", "labels|"+v.Group.ID)
+		// ⭐ THE PREFIX IS `channels/domain`'s AND NOT A LITERAL HERE. The module that
+		// mints this value and the module that splits it have to agree; see
+		// domain.ShowLabelsValuePrefix. The bytes are unchanged, which is why no
+		// golden moves.
+		addOpt(":label: Show all labels", "", domain.ShowLabelsValuePrefix+v.Group.ID)
 	}
 
 	if len(opts) == 0 {

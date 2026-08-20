@@ -709,9 +709,23 @@ a wiring bug. A Slack member who has never linked an oto account **has no user u
 recorded as `actor_kind = 'slack'` with the Slack member id, which is a string and not a uuid — so
 there is no principal to claim under. **A `slack` principal uuid is NOT invented to close this**: where
 such a uuid would come from is a platform question migration `00041` explicitly leaves open, and
-answering it from an adapter would be minting platform semantics in the wrong module. So a **linked**
-presser converges and an **unlinked** one keeps the pre-existing duplicate-event exposure described
-above. That asymmetry is the gap; it is recorded here rather than papered over.
+answering it from an adapter would be minting platform semantics in the wrong module.
+
+✅ **RESOLVED (git-bug `a74d6b2`, migration `00074`): the unlinked presser gets a SHADOW MEMBER**, so
+both pressers now converge and neither keeps the duplicate-event exposure. The principal is a real
+`users` row rather than a synthetic uuid, which is why no platform semantics had to be invented: the
+row is created on first press, `display_name` is the Slack handle, `password_hash` is NULL and
+`email` is **NULL** — oto never reads Slack back (C9), so it cannot know an address, and by ruling it
+holds none rather than a fabricated one (§D's `users` DDL). Three independent refusals keep it out of
+the login path: `resolveByEmail` compares `email = $1`, which is never TRUE for NULL; there is no
+password hash; and `CanPasswordLogin` ANDs `!IsShadow()`. A later genuine link ADOPTS the shadow and
+retires it rather than minting a second member.
+
+⚠️ **Operator-visible consequence, stated because it changes a screen:** the members list gains one
+row per Slack member who has pressed a button, showing their handle and a null email. It is
+deliberately not hidden — `users_org_idx` serves both the members list *and* every "who acked this"
+lookup, and the shadow **is** that answer now that `acked_by`/`snoozed_by` point at it, so hiding it
+would blank the actor on the very rows it was added to attribute.
 
 #### B.8.4 What snooze suppresses
 
@@ -1077,6 +1091,77 @@ idempotency_key := hex( sha256(
 
 `UNIQUE (org_id, idempotency_key)`. The `state_version` hashed in is `alert_cases.state_version`, the episode's optimistic lock (migration `00052`), which advances on every state transition. "all_resolved at state_version 7" can therefore exist exactly once. ⛔ **It WAS `alert_groups.state_version`, "incremented on every material group change"** — the table is deleted (git-bug `7570090`, migration `00069`) and the Case's own lock is the only version left; `all_resolved` survives the deletion because a Case resolving is a fact about the Case, while the plurality Reasons `new_alerts` and `some_resolved` did not.
 
+> **⚠️ RULING (git-bug `7b4adfd`, 2026-08-20): `state_version` IS A DECLARED COMPONENT OF THE KEY
+> AND IS A HARD-CODED `1` ON THE MAIN CASE PATH. IT STAYS HARD-CODED FOR NOW, AND THIS IS WHERE A
+> READER LEARNS IT** — rather than from a duplicate card.
+>
+> The paragraph above states the pin the key is DESIGNED to have. It is not what the code supplies.
+> Two producers reach `mint` (`internal/notification/service/notify.go`) and they disagree:
+>
+> - **`alerts` writes the literal.** `enqueueNotify` (`internal/alerts/service/service.go:471`)
+>   sets `StateVersion: 1` in every `jobs.NotifyEvaluateArgs` it enqueues, for every Reason it
+>   enqueues — `fired`, `acked`, `unacked`, `comment`, `snoozed`, `unsnoozed`, `expired`,
+>   `all_resolved`. The column is never read. For these facts the component is a CONSTANT and
+>   therefore **discriminates nothing**: two facts about one Case at genuinely different states are
+>   told apart only by their Reason, and (for the two Reasons of §C.7.1) by their occasion. "all
+>   resolved at state_version 7" does not exist; every one of them is at 1.
+> - **`enrichment` writes nothing, and reaches the real column by fallback.**
+>   `enrichment/service.Loaded.StateVersion` has no writer and arrives as `0`; `mint` reads a
+>   non-positive version as "the payload pinned none" and falls back to
+>   `Snapshot.Group.StateVersion`, which IS `alert_cases.state_version` as read by
+>   `conversationFactsSQL`. So `enriched` and the pre-notification `fired` DO carry the episode's
+>   real lock. `mint`'s final floor — a non-positive version becomes `1` — is unreachable, because
+>   the column is `NOT NULL DEFAULT 1` under `CHECK (state_version >= 1)` (migrations `00023`,
+>   `00052`). The two producers therefore key the same Reason two different ways, and that is
+>   harmless only by arithmetic: a Case is at lock 1 when it fires, so the early `fired` and the
+>   backstop `fired` still collapse onto one key.
+>
+> ⭐ **THE COLUMN IS NOT MISSING; THE WIRE IS.** `alert_cases.state_version` exists and is
+> maintained: added by `00023`, documented by `00052` as *"Optimistic lock. Every state transition
+> is a compare-and-set on this value; a lost CAS is a conflict, never a silent overwrite."*, read by
+> `Case.StateVersion()`, and `CaseRepository.Transition` REFUSES a compare-and-set that does not
+> name it. What the deletion of `alert_groups` took was the WIRE — `alert_groups.state_version` was
+> the value handed to the notification path (git-bug `7570090`, migration `00069`).
+>
+> ⭐ **THE DIGEST PATH IS DISCRIMINATED AND IS NOT AFFECTED.** `digest.go` passes
+> `Digest.WindowOrdinal(start)` as the subject's version, so every window is already a distinct key
+> without an occasion. This gap is specific to Cases.
+>
+> ⛔ **WHY IT IS NOT SIMPLY WIRED: THE BLAST RADIUS, NOT THE DIFFICULTY.** `state_version` is a
+> component of EVERY §C.7 key, so reading the real column re-keys every `fired`, `acked`,
+> `all_resolved` and every other Case-path fact at once — and what that changes is **which pairs of
+> facts collapse into one card**. A re-evaluation swallowed today as a duplicate becomes a SECOND
+> card the moment any transition bumped the lock in between. That is a product behaviour change
+> across the whole notification surface, not a bug fix, and it needs a ruling on what collapse
+> behaviour is wanted per Reason.
+>
+> ⛔ **AND WIRING IT WOULD NOT HAVE FIXED THE RE-SNOOZE, WHICH IS WHY §C.7.1 EXISTS.** A snooze is
+> taken on the **Alert** (`StartSnooze`), is neither a `state` nor a `suppression_reason`, and moves
+> no Case lock — so the real column would have read the same value for both presses. The occasion is
+> the discriminator that fact needed; the version never was.
+>
+> ⛔ **THE PREREQUISITE FOR EVER WIRING IT IS A GOLDEN VECTOR, AND IT COMES FIRST.** Nothing in this
+> repository pins a **literal** §C.7 digest. `TestIdempotencyKeyPreImageIsLengthPrefixed`
+> reconstructs the pre-image byte by byte and would catch a FRAMING change;
+> `TestIdempotencyKeyAgreesWithTheKernel`, `…IsInjective` and `…EveryInputParticipates` are all
+> relational — they assert that two keys differ, never what either one IS. §C.6 has
+> `TestFingerprintGolden` with two frozen hex digests; §C.7 has no equivalent, and that asymmetry is
+> the gap. **A change to §C.7's pre-image is therefore silent, and silence is what makes it
+> expensive: every notification already sent would miss its row in `notifications_idem_uniq` and be
+> RE-SENT**, because the stored key is no longer the key the same fact computes. That is the reason
+> the order is not negotiable — pin the literal digest, THEN read the column, THEN decide the
+> collapse behaviour per Reason.
+>
+> ⭐ **NO ADR IS OWED FOR THE GAP, AND ONE IS OWED FOR THE WIRING.** [ADR
+> 0022](../adr/0022-length-prefixed-identity-preimages.md) governs how a §C pre-image is FRAMED, and
+> a constant input changes no byte layout, forges no field boundary and touches neither bound its
+> Amendment 1 declared binding (a fixed-width appended field, a decimal tail). Which VALUE a caller
+> supplies is this section's subject, so this section is the whole record. The day the column is
+> actually read is a different matter: it re-keys live notifications, and that decision — including
+> whether any pre-image shape moves with it — is worth its own ADR then.
+>
+> git-bug `7b4adfd` is the standing record of the unwired pin and stays open.
+
 > **⭐ RULING (issue 0988640): ONE IMPLEMENTATION, IN THE KERNEL.**
 >
 > `internal/alerts/domain.ComputeIdempotencyKey` is the only implementation.
@@ -1100,6 +1185,15 @@ idempotency_key := hex( sha256(
 for a digest it is the **window ordinal**. Two Reasons have neither, and for them the five
 components above are constant across genuinely different facts:
 
+⚠️ **THE FIRST CLAUSE IS THE DESIGN, NOT TODAY'S CODE, AND THE DIFFERENCE MATTERS HERE.** On the
+Case path `alerts` hard-codes `state_version` to `1` for every Reason it enqueues (see §C.7's ruling
+on git-bug `7b4adfd`), so for those facts the version discriminates nothing either — only the digest
+path's window ordinal actually varies. **This does not widen the table below**, and reading it as a
+reason to add occasions elsewhere would be wrong: the two Reasons here need an occasion even with
+the column wired, because a snooze moves no Case lock at all. Everywhere else the version is a pin
+that is currently unenforced, which is a wire to restore under §C.7's stated order — not a missing
+occasion.
+
 | Reason | The fact | Why `state_version` cannot tell two apart |
 |---|---|---|
 | `snoozed` | a quiet period beginning | a snooze is taken on the **Alert** (`StartSnooze`), is neither a `state` nor a `suppression_reason` (§B.8.2), and moves no Case lock |
@@ -1120,14 +1214,20 @@ broken that.
 
 ⚠️ **BUT WHEN THE PRESS CANNOT BE CLAIMED, THE OCCASION IS THE REQUEST'S ID INSTEAD**, and that
 substitution is what keeps the guarantee above true. A Slack press is claimed against the presser's
-oto user, and an **unlinked** member has none (`slack_identities.user_id` is nullable and unlinked is
-a first-class state — requiring a link would silently lose acks from anyone not onboarded), while
-`idempotency_claims.principal_id` is `NOT NULL`. Such a press is therefore *named but not claimable*:
+oto user. An **unlinked** member had none until migration `00074` gave them a shadow one (§B.8.3), and
+`idempotency_claims.principal_id` is `NOT NULL` — so before that, such a press was *named but not
+claimable*:
 no claim stops the redelivery re-executing, so it supersedes again and mints a **new** snooze row. If
 the occasion were that new row's id the redelivery would mint a new key and the channel would get a
 second card for one human press — which is exactly what happened before this clause existed, because
 the old constant-`state_version` key was accidentally absorbing it. So where a request carries an id,
 the occasion is that id, which is stable across redelivery and distinct between two genuine presses.
+
+⭐ **This clause is now belt AND braces for a Slack press, and deliberately kept.** With a shadow
+principal the claim refuses the redelivery before it reaches the key, so the occasion no longer has to
+carry that weight for Slack. It still does for any future caller that is named but cannot be claimed,
+and the two mechanisms guard different things — a claim stops a duplicate ACT, the occasion stops a
+duplicate CARD. Removing either because the other covers today's callers is how this defect returns.
 
 ⛔ **Residual, stated rather than implied:** an interaction that carries no request identity at all
 has nothing stable to name, so it falls back to the snooze row's id and a redelivery of *that* does
@@ -1257,15 +1357,24 @@ CREATE TABLE orgs (
 CREATE TABLE users (
   id             UUID        PRIMARY KEY,
   org_id         UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
-  email          CITEXT      NOT NULL,
+  -- NULLABLE since 00074: a SHADOW member has no address. A Slack presser who has
+  -- never onboarded gets a `users` row so `acked_by`/`snoozed_by` can attribute the
+  -- press, and oto never reads Slack back (C9) so it cannot know their email. NULL
+  -- rather than a synthetic address, by ruling (git-bug `a74d6b2`).
+  email          CITEXT,
   display_name   TEXT        NOT NULL,
   password_hash  TEXT,                            -- argon2id; NULL disables password login
-  -- no DEFAULT now() (§D conventions); `app.Bootstrap`, the only writer, stamps both.
+  -- no DEFAULT now() (§D conventions); `app.Bootstrap` and `InsertShadow` stamp both.
   created_at     TIMESTAMPTZ NOT NULL,
   updated_at     TIMESTAMPTZ NOT NULL,
   disabled_at    TIMESTAMPTZ,
   CONSTRAINT users_email_uniq UNIQUE (org_id, email),
-  CONSTRAINT users_email_ck   CHECK (email ~ '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$' AND length(email) <= 254),
+  -- ⚠️ The `email IS NULL OR` arm is semantically REDUNDANT -- a CHECK passes when its
+  -- predicate is NULL, so the conjunction alone already admitted a shadow row -- and it
+  -- is spelled anyway because the predicate is read by PEOPLE, and as 00003 wrote it the
+  -- constraint appeared to forbid the row 00074 adds. `users_email_uniq` needs no change:
+  -- Postgres treats NULLs as distinct, so many shadows per org are legal.
+  CONSTRAINT users_email_ck   CHECK (email IS NULL OR (email ~ '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$' AND length(email) <= 254)),
   CONSTRAINT users_name_ck    CHECK (length(btrim(display_name)) BETWEEN 1 AND 120),
   CONSTRAINT users_pw_ck      CHECK (password_hash IS NULL OR password_hash LIKE '$argon2id$%'),
   CONSTRAINT users_time_ck    CHECK (updated_at >= created_at)
@@ -4658,7 +4767,7 @@ func (h *InteractionHandler) Handle(ctx context.Context, cb slack.InteractionCal
 
 Use `slack.NewSecretsVerifier`. **Do not hand-roll this.** Pin `github.com/slack-go/slack` to an exact version, floor **v0.23.1** — earlier versions accept an empty signing secret and therefore accept forged requests.
 
-**The 3-second rule.** Verify → write 200 → hand off to a worker. `trigger_id` expires in 3 seconds and is single-use, so any `views.open` happens synchronously before the ack.
+**The 3-second rule.** Verify → write 200 → hand off to a worker. `trigger_id` expires in 3 seconds and is single-use, so any `views.open` happens synchronously before the ack. ⭐ **oto opens no modal at all today, and that is a design choice rather than a gap**: this rule is what makes a modal expensive, so both places that reached for one chose otherwise — the snooze presets are a `static_select` (git-bug `0a8ca4a`, ADR 0043) and `Show all labels` answers with an ephemeral (git-bug `60e6e10`). A future modal must be argued against this paragraph, not merely added.
 
 **Action routing.**
 
@@ -4666,7 +4775,7 @@ Use `slack.NewSecretsVerifier`. **Do not hand-roll this.** Pin `github.com/slack
 |---|---|
 | `oto.ack` | Resolve the Slack user via `slack_identities` (by `slack_user_id`, falling back to email match, else an unlinked identity recording the handle). Call **`AlertService.Ack` — the same service the REST API calls. There is exactly one ack code path.** Respond via `response_url` with `replace_original: true` for the optimistic update, then let `notify.evaluate(reason=acked)` do the durable `chat.update`. |
 | `oto.unack` | Same, inverse. |
-| `oto.more` | Overflow. If the chosen option carries a `url`, ack with 200 and do nothing else. If it carries a `value`, open a modal via `views.open` synchronously. |
+| `oto.more` | Overflow. If the chosen option carries a `url`, ack with 200 and do nothing else. If it carries a `value` (`labels|<case_id>`, the `Show all labels` option), **answer with an ephemeral listing every label** — sorted by name, bounded to the notice limit, and stating how many it dropped when it drops any. ⛔ **NOT a modal.** `views.open` needs a `trigger_id` on the 3-second synchronous path this split exists to keep clear, and it is a second interaction type `parseSlackEnvelope` refuses by design; the option carried that value for a modal nobody ever built, so pressing it did nothing at all (git-bug `60e6e10`). |
 | `oto.noop.*` | **Explicit no-op branch. Ack 200. Do nothing.** Required for every URL button and every URL overflow option (S9). |
 | *(unknown)* | Ack 200, log at warn, emit `slack_unknown_action_total`. Never 4xx — Slack disables event subscriptions when >95 % of deliveries fail in a 60-minute window. |
 

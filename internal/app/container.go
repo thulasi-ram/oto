@@ -718,6 +718,7 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		// handlers and the menu with nothing behind them. Wiring it is what turns
 		// "oto cannot snooze from Slack in this deployment yet" back into a snooze.
 		Snoozes:  slackSnoozeActions{alerts: c.Alerts},
+		Labels:   slackLabelReads{alerts: c.Alerts},
 		Enqueuer: c.enqueuer,
 		// The ephemeral reply goes to Slack's own `response_url`, which needs no
 		// token and no scope — which is why oto can tell a user "that already

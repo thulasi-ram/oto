@@ -292,6 +292,40 @@ func (s *Service) ResolveSlackActor(ctx context.Context, rawTeam, rawMember stri
 }
 
 // LinkSlackIdentity binds a Slack member to an oto user within the caller's org.
+//
+// ⭐⭐ IT ADOPTS A SHADOW MEMBER RATHER THAN ORPHANING ONE, which is the half of
+// git-bug a74d6b2 that is about what happens LATER. Since 00074 a Slack member who
+// has pressed a button is already linked — to a SHADOW MEMBER, the row oto minted so
+// that the press had a principal uuid to claim under. So the genuine link an
+// operator eventually performs is no longer "bind an unbound identity"; it is
+// "re-point an identity from oto's stand-in onto the real person". Left alone, that
+// leaves a live `users` row nothing points at any more, sitting on the members list
+// as a second copy of somebody who just linked. This retires it in the same
+// transaction.
+//
+// ⛔ RETIRED MEANS SOFT-DISABLED, NEVER DELETED, and that is not squeamishness.
+// `cases.acked_by`, `alert_snoozes.snoozed_by`, `alert_snoozes.ended_by` and
+// `delivery_drills.started_by` all reference `users(id)` as `ON DELETE SET NULL`, so
+// a DELETE here would succeed quietly and strip the acknowledgement off every
+// timeline that shadow ever appeared on. 00003 says what a soft disable is for in as
+// many words: *"A disabled user keeps their acked_by rows so the timeline stays
+// honest."*
+//
+// ⚠️⚠️ WHAT THIS DOES **NOT** DO IS MERGE THE HISTORY, AND THAT IS A SEPARATE
+// TICKET RATHER THAN AN OVERSIGHT. Every ack, snooze and drill the shadow performed
+// still points at the shadow's id, so a Case acked from Slack in March and one acked
+// from the UI in May read as two different members even after the link. Re-pointing
+// them means rewriting four foreign keys plus the denormalised `*_by_label` columns
+// beside them and the `alert_events` payloads that name the actor — a data migration
+// with an audit trail to preserve, not a service method. It is deliberately not
+// bundled here: this function's job is to stop a SECOND LIVE MEMBER existing from
+// the moment of the link, and it does that completely.
+//
+// ⚠️ AND IT HAS NO PRODUCTION CALLER YET. There is no route in the contract that
+// links a Slack identity — `identity/api` exposes none — so this path is LATENT.
+// The adoption is written now anyway because the alternative is a correct-looking
+// one-line `Link` waiting for whoever wires the route, and the duplicate member it
+// would leave behind is invisible until an operator asks why they appear twice.
 func (s *Service) LinkSlackIdentity(
 	ctx context.Context, scope db.TenantScope, identityID, userID uuid.UUID,
 ) (domain.SlackIdentity, error) {
@@ -299,12 +333,83 @@ func (s *Service) LinkSlackIdentity(
 		return domain.SlackIdentity{}, errs.Validation("invalid_slack_link",
 			"linking needs a slack identity and a user")
 	}
-	return s.slack.Link(ctx, scope, identityID, userID, s.clk.Now())
+	if s.tx == nil {
+		// Degraded wiring: the read, the re-point and the retirement become three
+		// statements. A crash between them leaves the identity linked and the shadow
+		// live, which is the same state this method started from and is repaired by
+		// running it again. Refusing the link instead would be worse.
+		return s.linkSlackIdentity(ctx, scope, identityID, userID)
+	}
+	var linked domain.SlackIdentity
+	if err := s.tx.InTx(ctx, func(ctx context.Context) error {
+		var err error
+		linked, err = s.linkSlackIdentity(ctx, scope, identityID, userID)
+		return err
+	}); err != nil {
+		return domain.SlackIdentity{}, err
+	}
+	return linked, nil
+}
+
+// linkSlackIdentity re-points the identity, then retires the shadow it used to
+// point at.
+//
+// ⛔ THE INCUMBENT IS READ FIRST BECAUSE THE WRITE DESTROYS IT. `Link`'s RETURNING
+// gives the row AFTER the update, so once it has run there is nothing left that
+// names the user this identity used to resolve to — and a shadow member is
+// reachable ONLY through that link, so a shadow whose id was not captured here can
+// never be found again by anything but a full-table scan for NULL emails.
+func (s *Service) linkSlackIdentity(
+	ctx context.Context, scope db.TenantScope, identityID, userID uuid.UUID,
+) (domain.SlackIdentity, error) {
+	incumbent, err := s.slack.GetByID(ctx, scope, identityID)
+	if err != nil {
+		return domain.SlackIdentity{}, err
+	}
+
+	linked, err := s.slack.Link(ctx, scope, identityID, userID, s.clk.Now())
+	if err != nil {
+		return domain.SlackIdentity{}, err
+	}
+
+	// Nothing was displaced: an identity that was never linked, or a re-link onto the
+	// same user, which is idempotent and adopts nothing.
+	if !incumbent.Linked() || incumbent.UserID == userID {
+		return linked, nil
+	}
+
+	// ⭐ WHETHER THE DISPLACED ROW IS A SHADOW IS DECIDED BY THE SQL, NOT HERE.
+	// `RetireShadow` matches only `email IS NULL AND password_hash IS NULL`, so
+	// calling it with a REAL user's id disables nothing and reports false — which
+	// means this method cannot become a back door to "disable a member", an
+	// RBAC-shaped operation v1 deliberately does not have (R2). Reading the user row
+	// first to make the same decision in Go would be a check that a concurrent write
+	// can invalidate between the read and the update; the WHERE clause cannot.
+	retired, err := s.users.RetireShadow(ctx, scope, incumbent.UserID, s.clk.Now())
+	if err != nil {
+		return domain.SlackIdentity{}, err
+	}
+	if retired {
+		s.log.InfoContext(ctx, "identity: retired a shadow member adopted by a genuine link",
+			"org_id", scope.OrgID(), "shadow_user_id", incumbent.UserID,
+			"adopted_by_user_id", userID, "slack_identity_id", linked.ID)
+	}
+	return linked, nil
 }
 
 // RecordSlackIdentity notes a sighting of a Slack member, refreshing the
 // denormalised handle. It never touches the link, because
 // `slack_identities_link_ck` makes that pair all-or-nothing.
+//
+// ⚠️ IT HAS NO CALLER SINCE git-bug a74d6b2 AND IS KEPT DELIBERATELY. The button
+// press path — its one caller, `app.slackActors.SlackActor` — now calls
+// `ResolveSlackPresser`, which does this AND mints the shadow member the press needs
+// a principal from. The two are not the same operation and collapsing them would be
+// wrong: this one records that oto SAW somebody, and creating a `users` row for
+// every sighting would mint members for people who have done nothing. A sighting
+// that is not an act — a future slash command listing a workspace's members, an
+// `app_mention` — wants exactly this and must not want the other. Deleting it would
+// mean the next such caller re-derives the distinction from scratch.
 func (s *Service) RecordSlackIdentity(
 	ctx context.Context, scope db.TenantScope, rawTeam, rawMember, handle string,
 ) (domain.SlackIdentity, error) {

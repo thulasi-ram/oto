@@ -17,10 +17,17 @@ import (
 // reason: it is read only by the login path and is never carried past
 // toDomain(), which wraps it in a domain.PasswordHash whose String() is a
 // redaction.
+//
+// ⛔ `email` IS A POINTER BECAUSE THE COLUMN IS NULLABLE (00074), AND A `string`
+// HERE WAS A RUNTIME ERROR RATHER THAN A TYPE ERROR. pgx scanning SQL NULL into a
+// `*string` destination fails with "cannot scan NULL into *string" — a 500 on
+// whichever read happened to touch the first shadow member, discovered in
+// production and not by the compiler. Every scan target for a nullable column in
+// this package is a pointer for exactly this reason.
 type userRow struct {
 	id           uuid.UUID
 	orgID        uuid.UUID
-	email        string
+	email        *string
 	displayName  string
 	passwordHash *string
 	createdAt    time.Time
@@ -29,11 +36,24 @@ type userRow struct {
 }
 
 func (r userRow) toDomain() (domain.User, error) {
-	email, err := domain.NewEmail(r.email)
-	if err != nil {
-		// A stored address that no longer parses is a schema-drift bug, not a
-		// caller error: users_email_ck should have made it unreachable.
-		return domain.User{}, errs.Internal("user_row_invalid", err)
+	var (
+		email domain.Email
+		err   error
+	)
+	// ⭐ A NULL EMAIL IS A SHADOW MEMBER AND NOT A DRIFT BUG (00074). It is the row
+	// oto minted for a Slack workspace member who pressed a button without ever
+	// linking an account, so that the press has a principal uuid to claim under.
+	// The zero domain.Email carries that absence; nothing downstream may read it as
+	// "not loaded yet", which is why domain.User.IsShadow() exists to be asked.
+	if r.email != nil {
+		email, err = domain.NewEmail(*r.email)
+		if err != nil {
+			// A stored address that no longer parses is a schema-drift bug, not a
+			// caller error: users_email_ck should have made it unreachable. The
+			// constraint admits NULL and admits well-shaped addresses; it admits
+			// nothing in between, so anything that lands here is oto's bug.
+			return domain.User{}, errs.Internal("user_row_invalid", err)
+		}
 	}
 
 	hash := domain.NoPassword()
@@ -172,11 +192,31 @@ func (r *UserRepository) GetByEmail(ctx context.Context, s db.TenantScope, email
 // either carry the join or be named, with a reason, as not-a-resolver or as a
 // known gap. A sixth resolver written tomorrow fails that test on the day it is
 // written. If this list and that test ever disagree, the test is right.
+// ⛔⛔ `u.email IS NOT NULL` IS REDUNDANT AND IS WRITTEN ANYWAY, and this is the
+// paragraph that says why rather than leaving it to be "simplified" out.
+//
+// Since 00074 `users.email` is NULLABLE: a SHADOW MEMBER is the row oto mints for a
+// Slack workspace member who presses a button without ever linking an oto account,
+// so that the press has a principal uuid to take an idempotency claim under. Such
+// a row must never be authenticable, and in SQL it already cannot be — `u.email =
+// $1` is `NULL = 'someone@example.com'`, which evaluates to NULL, which is not
+// TRUE, so the row is not a candidate. `domain.NewEmail("")` also fails, so
+// `Login` cannot even reach this query with an empty address.
+//
+// The predicate is here because "it follows from three-valued logic" is the kind of
+// reasoning that is correct today and is quietly broken by the next edit — a
+// `COALESCE`, an `IS NOT DISTINCT FROM`, a rewrite into an `IN` over a subquery, or
+// a future resolver copied from this one against a column somebody made NOT NULL
+// again. Costing one always-true test on a query that runs once per login buys a
+// refusal a reader can SEE, on the one statement in this package whose failure mode
+// is "somebody logged in as a Slack presser who never had an account". It also
+// keeps the `LIMIT 2` ambiguity check honest: a shadow row that DID reach the
+// result set would lock a real user out of their own org by counting towards it.
 const resolveByEmailSQL = `
 SELECT ` + userColumns + `
   FROM users u
   JOIN orgs o ON o.id = u.org_id AND o.deleted_at IS NULL
- WHERE u.email = $1 AND u.disabled_at IS NULL
+ WHERE u.email = $1 AND u.email IS NOT NULL AND u.disabled_at IS NULL
  ORDER BY u.id
  LIMIT 2`
 
@@ -214,6 +254,97 @@ func (r *UserRepository) ResolveByEmail(ctx context.Context, email domain.Email)
 	return found[0].toDomain()
 }
 
+// insertShadowUserSQL is the ONLY INSERT on `users` in the running product, and
+// its column list is the whole of its safety argument.
+//
+// ⛔ IT NAMES NEITHER `email` NOR `password_hash`, so both take the column default
+// — NULL — and there is no parameter through which a caller could supply either.
+// That is not economy: it means this statement CANNOT create a row that
+// authenticates. A shadow member is refused by `resolveByEmailSQL` (a NULL email
+// never equals a presented address), by `users_pw_ck`'s NULL hash (which this
+// table documents as password login disabled) and by `User.CanPasswordLogin`, and
+// the statement that writes the row cannot reach past any of the three.
+//
+// ⚠️ `internal/app/bootstrap.go` STILL OWNS THE OTHER ONE, and the two are
+// deliberately not merged. Bootstrap writes the FIRST user of a deployment, with
+// an address and an argon2id hash, from a CLI command that runs once; its own
+// comment argues that a repository method for that would put "create a user" one
+// call away from every service holding this repository. That argument survives
+// intact here precisely because this method cannot do what bootstrap's INSERT does.
+//
+// `created_at`/`updated_at` are NAMED and passed in: 00034 removed this table's
+// DEFAULT now() so that the application owns the row's time, and a service that
+// let the database fill it in would be writing a row the injected clock cannot
+// reproduce (CONTEXT.md §5.2).
+const insertShadowUserSQL = `
+INSERT INTO users (id, org_id, display_name, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $4)`
+
+// InsertShadow writes a SHADOW MEMBER: a user row with no address and no password
+// (git-bug a74d6b2, migration 00074).
+//
+// It refuses a user that carries either, rather than silently dropping them. A
+// caller holding a `domain.User` with an email is holding something this statement
+// would write a DIFFERENT row for than the one they are looking at, and a
+// repository that quietly narrows its argument is how a password gets lost between
+// two layers that each believed the other stored it.
+func (r *UserRepository) InsertShadow(ctx context.Context, s db.TenantScope, u domain.User, now time.Time) error {
+	if u.OrgID != s.OrgID() {
+		return errs.Internal("user_scope_mismatch", nil)
+	}
+	if !u.IsShadow() || !u.PasswordHash.IsZero() {
+		// A wiring bug, not a caller error: the only constructor that produces the
+		// argument this method accepts is domain.NewShadowUser.
+		return errs.Internal("user_not_shadow", nil)
+	}
+	if _, err := r.db(ctx).Exec(ctx, insertShadowUserSQL,
+		u.ID, u.OrgID, u.DisplayName, now.UTC()); err != nil {
+		return mapErr(err, "user_not_created", "user")
+	}
+	return nil
+}
+
+// retireShadowSQL soft-disables a shadow member, and its WHERE clause is the
+// enforcement rather than a filter.
+//
+// ⛔ `email IS NULL AND password_hash IS NULL` MEANS THIS STATEMENT CAN ONLY EVER
+// DISABLE A SHADOW ROW. There is no other write path to `users.disabled_at` in the
+// running product, and this one must not become the general one: "disable a member"
+// is an RBAC-shaped operation v1 deliberately does not have (R2), and a method that
+// could reach a real account would be that operation arriving through the back
+// door. A caller that names a real user gets zero rows updated and finds out.
+//
+// `updated_at` moves with `disabled_at` because `users_time_ck` requires
+// `updated_at >= created_at` and because a row whose state changed without its
+// timestamp moving is a row no reader can order against anything.
+const retireShadowSQL = `
+UPDATE users
+   SET disabled_at = $3, updated_at = $3
+ WHERE org_id = $1 AND id = $2
+   AND email IS NULL AND password_hash IS NULL
+   AND disabled_at IS NULL`
+
+// RetireShadow soft-disables a shadow member, reporting whether it found one.
+//
+// ⚠️ IT IS THE ADOPTION PATH'S SECOND HALF AND IS CALLED NOWHERE ELSE. When a
+// Slack identity that oto had bound to a shadow member is LINKED to a genuine oto
+// user, the shadow stops being the answer to "who is this Slack member" — and a
+// live row that nothing points at any more would keep appearing on the members list
+// as a duplicate of the person who just linked. Retiring it says "this stopped
+// being a distinct member on this date" while keeping every `cases.acked_by` and
+// `alert_snoozes.snoozed_by` row it earned, which is exactly what 00003 says a soft
+// disable is for: *"A disabled user keeps their acked_by rows so the timeline stays
+// honest."*
+func (r *UserRepository) RetireShadow(
+	ctx context.Context, s db.TenantScope, id uuid.UUID, at time.Time,
+) (bool, error) {
+	tag, err := r.db(ctx).Exec(ctx, retireShadowSQL, s.OrgID(), id, at.UTC())
+	if err != nil {
+		return false, mapErr(err, "user_not_found", "user")
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
 const listMembersSQL = `
 SELECT ` + userColumns + `
   FROM users u
@@ -227,6 +358,17 @@ SELECT ` + userColumns + `
 //
 // Keyset, never OFFSET (CONTEXT.md §5.8): the ordering tuple is
 // (created_at DESC, id DESC) and the uuidv7 breaks ties deterministically.
+//
+// ⭐ SHADOW MEMBERS ARE IN IT, AND THAT IS THE DECISION RATHER THAN AN OVERSIGHT
+// (00074). `users_org_idx ON users (org_id) WHERE disabled_at IS NULL` serves, in
+// 00003's own words, "the members list and every 'who acked this' lookup" — and a
+// shadow row IS the answer to the second one for every Slack-only presser, since
+// `cases.acked_by` and `alert_snoozes.snoozed_by` now point at it. Filtering them
+// out here, or hiding them behind `disabled_at`, would make the one lookup this
+// index exists for return nothing for the very rows it was added to attribute, and
+// it would do so silently: a missing member renders as a blank actor, not as an
+// error. They are distinguishable by `User.IsShadow()` — a NULL email — and named
+// by their Slack handle, and that is what a caller renders them as.
 func (r *UserRepository) ListMembers(ctx context.Context, s db.TenantScope, k db.Keyset) ([]domain.User, db.Cursor, error) {
 	limit := pageLimit(k.Limit)
 

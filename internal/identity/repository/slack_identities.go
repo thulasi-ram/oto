@@ -135,6 +135,30 @@ func (r *SlackIdentityRepository) GetByUser(
 	return row.toDomain()
 }
 
+const selectSlackIdentityByIDSQL = `
+SELECT ` + slackIdentityColumns + `
+  FROM slack_identities si
+ WHERE si.org_id = $1 AND si.id = $2`
+
+// GetByID returns one identity by its own id, within the caller's org.
+//
+// ⚠️ IT EXISTS FOR THE ADOPTION READ AND ITS TIMING IS THE WHOLE POINT.
+// `Service.LinkSlackIdentity` must know which user this identity resolved to
+// BEFORE it re-points it, because `Link`'s RETURNING gives the row after the
+// update and a displaced SHADOW MEMBER (00074) is reachable only through the link
+// that named it. A shadow whose id was not captured before the write can afterwards
+// be found only by scanning `users` for a NULL email.
+func (r *SlackIdentityRepository) GetByID(
+	ctx context.Context, s db.TenantScope, id uuid.UUID,
+) (domain.SlackIdentity, error) {
+	var row slackIdentityRow
+	err := scanSlackIdentity(&row, r.db(ctx).QueryRow(ctx, selectSlackIdentityByIDSQL, s.OrgID(), id).Scan)
+	if err != nil {
+		return domain.SlackIdentity{}, mapErr(err, "slack_identity_not_found", "slack identity")
+	}
+	return row.toDomain()
+}
+
 const selectSlackIdentitySQL = `
 SELECT ` + slackIdentityColumns + `
   FROM slack_identities si

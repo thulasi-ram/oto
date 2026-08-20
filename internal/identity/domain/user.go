@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -41,6 +42,12 @@ var userEmailRe = regexp.MustCompile(PatternUserEmail)
 // is CITEXT and `users_email_uniq` is therefore case-insensitive. Normalising in
 // the constructor is what stops `Priya@example.com` and `priya@example.com` from
 // looking like two accounts in Go and one row in Postgres.
+//
+// ⚠️ THE ZERO VALUE IS MEANINGFUL SINCE 00074: it is `users.email IS NULL`, which
+// is a SHADOW MEMBER — somebody who has never given oto an address. It is not
+// "unset because we have not read it yet", and no reader may treat the empty
+// string as a lookup key: `Email.IsZero()` is the question, and `NewEmail("")`
+// still fails, so a zero Email cannot be produced by parsing anything.
 type Email struct{ v string }
 
 // NewEmail parses and normalises an address, enforcing users_email_ck.
@@ -110,8 +117,11 @@ func (h PasswordHash) String() string { return "[redacted]" }
 // nothing on this type carries a workload, a rota or an obligation
 // (CONTEXT.md §1b, FR-1).
 type User struct {
-	ID          uuid.UUID
-	OrgID       uuid.UUID
+	ID    uuid.UUID
+	OrgID uuid.UUID
+	// Email is ZERO for a SHADOW MEMBER (`users.email IS NULL`, migration 00074).
+	// Every reader of this field must tolerate that; `IsShadow` is the question to
+	// ask rather than comparing against "".
 	Email       Email
 	DisplayName string
 	// PasswordHash is zero when password login is disabled.
@@ -149,6 +159,84 @@ func NewUser(id, orgID uuid.UUID, email Email, displayName string, hash Password
 	}, nil
 }
 
+// NewShadowUser builds a SHADOW MEMBER: a real `users` row, in a real org, that
+// carries NO EMAIL and NO PASSWORD (git-bug a74d6b2, migration 00074).
+//
+// ⭐⭐ WHAT IT IS FOR IS A PRINCIPAL UUID, AND NOTHING ELSE. A Slack workspace
+// member who has never linked an oto account presses `Snooze 1h`; Slack's ack
+// times out and redelivers the interaction. `idempotency_claims.principal_id` is
+// NOT NULL and `idempotency.Claim.validate` refuses `uuid.Nil`, so with no user
+// row there was no principal, no claim, and `alerts/service.Snooze` executed the
+// snooze TWICE — two `alert_snoozes` rows and two
+// `alert.unsnoozed(superseded)`/`alert.snoozed` pairs for one human press. This
+// row is what gives that press a principal, so the redelivery is refused.
+//
+// ⛔ IT IS NOT AN ACCOUNT, AN INVITATION OR A CLAIM ABOUT A PERSON. It cannot log
+// in — no password hash, and a NULL email that `resolveByEmailSQL`'s `u.email = $1`
+// can never match — it has no session, no PAT and no way to acquire either. And it
+// is deliberately NOT given a synthetic address: an invented mailbox is
+// indistinguishable from a real one at every reader, while a zero Email answers
+// "has this person given oto an address" exactly once, for all of them. See 00074's
+// header for the whole argument.
+//
+// ⚠️ `displayName` IS THE SLACK HANDLE, and it is the one field with no fallback in
+// the schema: `users_name_ck` is `length(btrim(display_name)) BETWEEN 1 AND 120`, so
+// an empty label is refused here rather than turned into a 23514 at the INSERT.
+// `SlackIdentity.ActorLabel()` is what callers pass, because it already answers
+// "handle, or the member id when even that is unknown" and is never empty for a
+// well-formed identity.
+func NewShadowUser(id, orgID uuid.UUID, displayName string) (User, error) {
+	if id == uuid.Nil {
+		return User{}, errs.Validation("invalid_user_id", "a user needs an id")
+	}
+	if orgID == uuid.Nil {
+		return User{}, errs.Validation("invalid_user_org", "a user belongs to exactly one org")
+	}
+	displayName = strings.TrimSpace(TruncateDisplayName(displayName))
+	if l := len(displayName); l < MinDisplayNameBytes || l > MaxDisplayNameBytes {
+		return User{}, errs.Validation("invalid_display_name",
+			"display_name must be 1..120 characters")
+	}
+	return User{
+		ID:          id,
+		OrgID:       orgID,
+		DisplayName: displayName,
+		// Both zero, and both load-bearing. See the doc comment.
+		Email:        Email{},
+		PasswordHash: PasswordHash{},
+	}, nil
+}
+
+// TruncateDisplayName clips a label to `users_name_ck`'s ceiling ON A RUNE
+// BOUNDARY.
+//
+// ⚠️ THE BOUNDARY IS THE POINT. `MaxDisplayNameBytes` is measured in BYTES, like
+// every other bound in this package, while the DDL's `length(btrim(display_name))`
+// counts CHARACTERS — so a byte ceiling is the stricter of the two and cannot
+// admit a row the CHECK would refuse. What a naive `s[:120]` CAN do is split a
+// multi-byte rune and hand Postgres a byte sequence that is not valid UTF-8, which
+// a UTF8 database rejects with a 22021 that names no column. A Slack handle is
+// usually ASCII and this is usually a no-op; "usually" is not a bound.
+func TruncateDisplayName(s string) string {
+	if len(s) <= MaxDisplayNameBytes {
+		return s
+	}
+	cut := MaxDisplayNameBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
+}
+
+// IsShadow reports whether this row is a SHADOW MEMBER: a user oto minted for a
+// Slack presser who has never given it an address (00074).
+//
+// ⭐ IT IS THE QUESTION EVERY EMAIL READER SHOULD ASK, rather than comparing
+// `Email.String()` against "". The absence of an address is a FACT about the
+// person, not a missing field, and naming it here means a renderer, a mapper and a
+// log line all decide it the same way.
+func (u User) IsShadow() bool { return u.Email.IsZero() }
+
 // Active reports whether the user has not been soft disabled.
 func (u User) Active() bool { return u.DisabledAt == nil }
 
@@ -157,4 +245,18 @@ func (u User) Active() bool { return u.DisabledAt == nil }
 // It is deliberately AND-ed with Active(): a disabled user with a hash still on
 // the row must not be able to log in, and expressing that here rather than at
 // each call site is what stops the third caller from forgetting.
-func (u User) CanPasswordLogin() bool { return u.Active() && !u.PasswordHash.IsZero() }
+//
+// ⛔ IT IS ALSO AND-ED WITH `!IsShadow()`, AND THAT CONJUNCT IS DELIBERATELY
+// REDUNDANT. A shadow member (00074) is already refused twice over: the row's
+// `password_hash` is NULL so `PasswordHash.IsZero()` is true, and
+// `resolveByEmailSQL` compares `u.email = $1`, which is never TRUE for a NULL
+// email, so `Login` never even holds the row. This third refusal costs one
+// comparison and removes a whole class of future defect: the day something wants
+// to WRITE a password onto an existing row — an invite flow, an SSO shim, a repair
+// script — the two refusals it would defeat are both about the hash and the query,
+// and neither of them is about whether this person ever gave oto an address. A
+// credential is only ever proof of an identity somebody claimed; a shadow row is
+// oto's own record of a Slack press, and nobody claimed it.
+func (u User) CanPasswordLogin() bool {
+	return u.Active() && !u.IsShadow() && !u.PasswordHash.IsZero()
+}

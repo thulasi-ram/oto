@@ -5119,14 +5119,31 @@ export interface components {
             event_retention_months: number;
             default_verbosity: components["schemas"]["Verbosity"];
         };
-        /** @description A human principal. Password hashes and token material never appear in any response. */
+        /**
+         * @description A human principal. Password hashes and token material never appear in any response.
+         *
+         *     `email` is nullable — see its own description. A member with no address is one oto has
+         *     only ever seen act in Slack.
+         */
         UserDTO: {
             id: components["schemas"]["Uuid"];
             /**
              * Format: email
+             * @description The member's address, or **null** when they have never given oto one.
+             *
+             *     A null email means this is a **shadow member**: somebody oto knows only as a Slack
+             *     workspace member who has pressed a button on one of its messages. The row exists so
+             *     that the press is attributable and so that a redelivered press can be recognised as
+             *     the same act rather than performed twice; it cannot sign in, and oto will never mail
+             *     it. The member's `display_name` is their Slack handle.
+             *
+             *     It stays **required** and becomes nullable rather than optional, so a client is typed
+             *     for the absence instead of for a key that may or may not be there. A synthetic
+             *     address is never substituted: an invented mailbox would be indistinguishable from a
+             *     real one on every screen that shows this field.
              * @example priya@example.com
              */
-            email: string;
+            email: string | null;
             /** @example Priya R. */
             display_name: string;
             /**

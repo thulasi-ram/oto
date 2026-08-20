@@ -31,20 +31,33 @@ interaction for and oto must acknowledge with nothing to do).
 > as designed. **It is now admitted to the closed set, deliberately rather than renamed to
 > `oto.noop.more`**: cards already sitting in Slack carry the literal `oto.more`, so a rename would
 > turn every one of those menus into a silent no-op — the defect relocated, not fixed — and the
-> overflow is not link-only anyway (see the gap below). A press of it enqueues nothing, because
-> pressing a container of places to look is not a verb. **If you are reading this runbook because of a
+> overflow is not link-only anyway (see below). **If you are reading this runbook because of a
 > historical spike, `oto.more` is the first thing to rule out.**
 >
-> ⚠️ **KNOWN GAP — `Show all labels` is routed but inert, and that is NOT what this counter is for.**
-> The overflow's URL options are complete: Slack navigates, oto acks, done. The `Show all labels`
-> option instead carries a `value` (`labels|<case id>`) that SPEC §H.8 designates for a `views.open`
-> modal, **and no modal is built**, so pressing that one option does nothing and says nothing. A press
-> of it is **known-and-routed, not unroutable**: it does not and must not increment
-> `oto_slack_unknown_action_total`. Conflating the two would put a permanent floor under a series whose
-> whole meaning is "oto is broken", and would hide the real renderer/router mismatches this metric
-> exists to catch. The inert option is a gap to close in the renderer's own right; it is not an
-> unknown action, and an operator seeing zero here while a user reports that `Show all labels` did
-> nothing is looking at exactly this gap.
+> ⭐ **`oto.more` IS THE ONE ID WHOSE ARM IS INERT FOR SOME OPTIONS AND NOT OTHERS, AND THE VALUE IS
+> WHAT TELLS THEM APART.** Its four URL options (Timeline, Prometheus, Alertmanager, Rule history)
+> carry a `url`, so Slack navigates them itself: oto acks and does nothing else, and a press of one
+> enqueues no job. `Show all labels` carries a `value` — `labels|<case id>` — and is the one option
+> that asks oto to render something, so a press of it **enqueues a `slack.interaction` job and is
+> answered with an ephemeral message listing the alert's labels** (`applyShowLabels` in
+> `internal/channels/service/interactions.go`). Neither half touches this counter.
+>
+> The reply is an **ephemeral, deliberately not a modal** (git-bug `60e6e10`, owner's ruling). SPEC
+> §H.8 designates that value for `views.open`; a modal needs a `trigger_id` spent inside Slack's
+> three-second synchronous window, and this work runs on the queue, so the `trigger_id` would already
+> be dead. `response_url` has no such clock. **It was inert for every option until `60e6e10`** — the
+> value was minted, routed, and answered with silence, against §B.8.6's "buttons are never no-ops" —
+> and that press never incremented this counter either, correctly: it was known-and-routed, and
+> conflating "one option does nothing" with "oto could not route this" would have put a permanent
+> floor under a series whose whole meaning is "oto is broken".
+>
+> ⚠️ **A `Show all labels` press that answers "oto cannot list labels from Slack in this deployment
+> yet" is a WIRING gap, not an unknown action.** The labels port
+> (`channels/service.Labels`) is optional and nil-tolerant: an unwired deployment answers the press
+> with that sentence rather than with silence. It is honest and it is not this metric's subject —
+> zero here is correct while that sentence is what users see. Wire the adapter in
+> `internal/app/container.go` beside `Cases` and `Snoozes`; the compile-time proof belongs in
+> `internal/app/assertions.go` with its neighbours, because a nil port fails at no injection site.
 
 ## Why it exists, and why it is a counter rather than a log line
 

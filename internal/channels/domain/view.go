@@ -315,6 +315,24 @@ type ActionOption struct {
 // and cannot be forged by a value that contains one.
 const SnoozeValueSeparator = "|"
 
+// ShowLabelsValuePrefix opens the value of the links overflow's `Show all
+// labels` option; what follows it is the Case id whose labels are wanted.
+//
+// ⛔ IT LIVES HERE FOR THE REASON ITS NEIGHBOUR DOES: THE TWO ENDS MUST AGREE.
+// `channels/render/slack` MINTS this value (`overflowMenu`) and
+// `channels/service` SPLITS it (`labelsSubject`), and the prefix spelt out twice
+// is a menu option whose every press the handler refuses — which is the silent
+// no-op git-bug `60e6e10` exists to abolish, arriving through a typo instead of
+// through a missing branch. Cards already sitting in Slack carry the literal
+// `labels|<uuid>`, so this constant is a DURABLE WIRE CONTRACT and not a
+// spelling: changing it turns every menu already posted inert.
+//
+// ⭐ THE OPTION IS THE ONE ENTRY IN THAT MENU THAT IS NOT A LINK. The other four
+// carry a `url` and Slack navigates them itself (S9); this one asks oto to render
+// something, which is why it needs a value at all and why the handler must be able
+// to tell the two apart from the value alone.
+const ShowLabelsValuePrefix = "labels" + SnoozeValueSeparator
+
 // SnoozePreset is one of the durations a card may offer to go quiet for.
 //
 // ⛔ THE FIVE ARE BINDING AND THERE IS NO SIXTH, LEAST OF ALL "INDEFINITELY"

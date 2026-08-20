@@ -97,8 +97,12 @@ var (
 	// The first is the one that was NIL for the product's whole life. If it stops
 	// compiling, every Acknowledge button in every Slack workspace goes back to
 	// showing a tick and doing nothing, and nothing else in the build would say so.
-	_ channelsapi.SlackInteractions      = (*channelsservice.InteractionService)(nil)
-	_ channelsservice.SlackNotice        = (*slackprovider.Notice)(nil)
+	_ channelsapi.SlackInteractions = (*channelsservice.InteractionService)(nil)
+	_ channelsservice.SlackNotice   = (*slackprovider.Notice)(nil)
+	// Optional like `Snoozes`: a nil `Labels` answers a press with an honest
+	// ephemeral rather than failing a build, so only this line catches the drift
+	// that would quietly revert `Show all labels` to that ephemeral forever.
+	_ channelsservice.Labels             = slackLabelReads{}
 	_ channelsservice.SlackActors        = slackActors{}
 	_ channelsservice.Cases              = slackCaseActions{}
 	_ channelsservice.SlackConversations = slackConversations{}

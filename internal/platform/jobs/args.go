@@ -357,7 +357,13 @@ type SlackInteractionArgs struct {
 	Payload
 	// ActionID is the button's stable id, e.g. `oto.ack`. It is the dispatch key.
 	ActionID string `json:"action_id"`
-	// Value is the button's opaque identifier — an alert group id for `oto.ack`.
+	// Value is the option's opaque identifier, and it is the OVERFLOW's dispatch
+	// key rather than the button's: `oto.ack` and its siblings carry a case id in
+	// `Payload`, and `oto.more` is the one action whose behaviour depends on this
+	// field — `labels|<case_id>` answers with an ephemeral label list, while a
+	// url-bearing option leaves it empty and is inert (git-bug `60e6e10`).
+	// ⛔ IT USED TO READ "an alert group id for `oto.ack`", and there is no alert
+	// group (git-bug `7570090`, migration `00069`).
 	Value string `json:"value"`
 	// TeamID and ChannelID are the Slack workspace and conversation the press
 	// came from. TOGETHER THEY RESOLVE THE TENANT, and nothing else may.

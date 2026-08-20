@@ -55,7 +55,16 @@ type TxRunner interface {
 	InTx(ctx context.Context, fn func(ctx context.Context) error) error
 }
 
-// UserReader reads `users`.
+// UserReader reads `users`, and — since 00074 — writes exactly two things, both of
+// which are about SHADOW MEMBERS and neither of which can touch a real account.
+//
+// ⚠️ THE NAME IS KEPT DESPITE THE TWO WRITES, the way OrgReader's is despite
+// UpdateSettings. What both names are really claiming is that this port has no
+// general write surface: there is no `Create`, no `Update`, no `Disable` and no
+// password write, because "create a member" and "disable a member" are
+// RBAC-shaped operations v1 deliberately does not have (R2). The two methods below
+// are each narrower than an operation — one can only write a row with no address
+// and no password, the other can only disable a row that already has neither.
 type UserReader interface {
 	Get(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.User, error)
 	GetByEmail(ctx context.Context, s db.TenantScope, email domain.Email) (domain.User, error)
@@ -64,6 +73,17 @@ type UserReader interface {
 	// ResolveByEmail is UNSCOPED: the login request carries no org, so this is
 	// what produces one. It reports not-found for an ambiguous address.
 	ResolveByEmail(ctx context.Context, email domain.Email) (domain.User, error)
+
+	// InsertShadow writes a user with NO EMAIL and NO PASSWORD, minted so that a
+	// Slack presser who never linked an account has a principal uuid to take an
+	// idempotency claim under (git-bug a74d6b2). It refuses anything else.
+	InsertShadow(ctx context.Context, s db.TenantScope, u domain.User, now time.Time) error
+
+	// RetireShadow soft-disables a shadow member and reports whether it found one.
+	// Its SQL can only ever match a row with a NULL email AND a NULL password hash,
+	// so it is not a general "disable a member" write. Called only when a Slack
+	// identity is re-linked from a shadow onto a genuine oto user.
+	RetireShadow(ctx context.Context, s db.TenantScope, id uuid.UUID, at time.Time) (bool, error)
 }
 
 // TokenStore reads and writes `api_tokens`.
@@ -95,6 +115,11 @@ type SessionStore interface {
 // SlackIdentityStore reads and writes `slack_identities`.
 type SlackIdentityStore interface {
 	Upsert(ctx context.Context, s db.TenantScope, si domain.SlackIdentity, now time.Time) (domain.SlackIdentity, error)
+
+	// GetByID reads one identity by its own id. It exists for the adoption read in
+	// LinkSlackIdentity, which must know which user the identity resolved to BEFORE
+	// re-pointing it: Link's RETURNING gives the row after the update.
+	GetByID(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.SlackIdentity, error)
 	GetByUser(ctx context.Context, s db.TenantScope, userID uuid.UUID) (domain.SlackIdentity, error)
 	GetBySlackUser(ctx context.Context, s db.TenantScope, team domain.SlackTeamID, member domain.SlackUserID) (domain.SlackIdentity, error)
 	Link(ctx context.Context, s db.TenantScope, id, userID uuid.UUID, at time.Time) (domain.SlackIdentity, error)

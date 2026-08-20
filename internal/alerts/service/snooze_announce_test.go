@@ -296,11 +296,28 @@ func namedPress(t *testing.T, interaction string) Idempotency {
 //
 // An unlinked Slack member is a FIRST-CLASS state, not an edge case: requiring a
 // link before oto accepts a button press would silently lose the acknowledgements
-// of everyone who has not been onboarded (`identity/domain.SlackIdentity`). Such a
-// press cannot be claimed — there is no principal uuid, and inventing one is an
-// owner decision migration 00041 anticipates and does not settle — so a redelivered
-// interaction genuinely runs `Snooze` a SECOND time: the incumbent is superseded, a
-// new row is inserted, and a second `notify.evaluate` is enqueued.
+// of everyone who has not been onboarded (`identity/domain.SlackIdentity`).
+//
+// ⛔⛔ THE PRESS THIS TEST DESCRIBES IS NO LONGER THE UNLINKED MEMBER'S NORMAL PATH,
+// AND THE TEST IS KEPT BECAUSE THE PATH IS. git-bug a74d6b2 settled the question
+// migration 00041 left open — where a Slack principal's uuid comes from — by minting
+// a SHADOW MEMBER on first press (`identity/service.ResolveSlackPresser`, migration
+// 00074), so an unlinked presser now HAS a principal, `app.slackIdempotency` returns
+// a KEYED intent, and a redelivery is refused before it can execute. What still
+// arrives here UNKEYED BUT NAMED is the DEGRADED press: the identity write or read
+// failed, or the link points at a user row that is gone, and
+// `channels/service.actor` fell back to the raw Slack member id rather than let a
+// directory lookup cost an acknowledgement. That fallback is deliberate and
+// permanent, so this layer's behaviour on an unclaimable-but-named intent is a live
+// contract and not a historical curiosity.
+//
+// Such a press cannot be claimed — `idempotency_claims.principal_id` is NOT NULL and
+// `Claim.validate` refuses `uuid.Nil` — so a redelivered interaction genuinely runs
+// `Snooze` a SECOND time: the incumbent is superseded, a new row is inserted, and a
+// second `notify.evaluate` is enqueued. That the CARD nevertheless converges is what
+// this test is about; that the ACT converges for the normal path is
+// `internal/app`'s `TestARedeliveredPressByAnUnlinkedMemberIsAppliedOnce`, which
+// needs a claim store and a database and therefore cannot live here.
 //
 // ⛔ THAT USED TO BE HARMLESS BY ACCIDENT AND THE OCCASION BROKE IT. The second
 // intent hashed byte-identically — nothing in the §C.7 key distinguished two
@@ -334,7 +351,9 @@ func TestARedeliveredPressByAnUnlinkedMemberAnnouncesOnce(t *testing.T) {
 	press := namedPress(t, "slack:0000000000000000000000000000000000000000000000000000000000000001")
 
 	// The press. `U024BE7LH` is a Slack member id and not a uuid, which is precisely
-	// why nothing can be claimed for it.
+	// why nothing can be claimed for it — and since a74d6b2 that is what `actor()`
+	// reports only when the identity lookup FAILED, the shadow member having removed
+	// it from the ordinary path.
 	replayed, err := svc.SnoozeAs(ctx, f.scope, alertID, "slack", "U024BE7LH", "@ada",
 		now.Add(1*time.Hour), "", press)
 	if err != nil {

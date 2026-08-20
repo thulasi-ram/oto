@@ -149,6 +149,11 @@ type fakeUsers struct {
 
 	mu       sync.Mutex
 	resolves int
+	// shadows and retired record the two writes this port gained with 00074, so a
+	// test can assert that a path minted a shadow member rather than only that it
+	// returned one.
+	shadows []domain.User
+	retired []uuid.UUID
 }
 
 func newFakeUsers() *fakeUsers {
@@ -197,6 +202,49 @@ func (f *fakeUsers) GetByEmail(_ context.Context, _ db.TenantScope, email domain
 
 func (f *fakeUsers) ListMembers(context.Context, db.TenantScope, db.Keyset) ([]domain.User, db.Cursor, error) {
 	return nil, db.Cursor{}, nil
+}
+
+// InsertShadow stores a shadow member BY ID ONLY, which is the property the
+// repository's own statement has: `insertShadowUserSQL` names neither `email` nor
+// `password_hash`, so there is no address to index it under and no credential to
+// authenticate it with. A fake that also filed it under `byEmail[""]` would make
+// `ResolveByEmail("")` findable and hide exactly the defect this fake exists to
+// rule out — except that `domain.NewEmail("")` fails, so the service can never
+// build the key. Both halves matter, so neither is relied on alone.
+func (f *fakeUsers) InsertShadow(_ context.Context, s db.TenantScope, u domain.User, now time.Time) error {
+	if u.OrgID != s.OrgID() {
+		return errs.Internal("user_scope_mismatch", nil)
+	}
+	if !u.IsShadow() || !u.PasswordHash.IsZero() {
+		return errs.Internal("user_not_shadow", nil)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	u.CreatedAt, u.UpdatedAt = now.UTC(), now.UTC()
+	f.byID[u.ID] = u
+	f.shadows = append(f.shadows, u)
+	return nil
+}
+
+// RetireShadow mirrors `retireShadowSQL`'s WHERE clause rather than its effect:
+// the predicate — a NULL email AND a NULL password hash AND not already disabled —
+// is what makes the method unable to touch a real account, so a fake that just set
+// `DisabledAt` would pass while the SQL had lost its guard.
+func (f *fakeUsers) RetireShadow(
+	_ context.Context, _ db.TenantScope, userID uuid.UUID, at time.Time,
+) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	u, ok := f.byID[userID]
+	if !ok || !u.IsShadow() || !u.PasswordHash.IsZero() || u.DisabledAt != nil {
+		return false, nil
+	}
+	t := at.UTC()
+	u.DisabledAt = &t
+	u.UpdatedAt = t
+	f.byID[userID] = u
+	f.retired = append(f.retired, userID)
+	return true, nil
 }
 
 // ------------------------------------------------------------- session store

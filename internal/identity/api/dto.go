@@ -104,9 +104,22 @@ type OrgDTO struct {
 // there is no per-person response-time field — those are unrepresentable in the
 // schema beneath this DTO, not merely omitted from it (R8).
 type UserDTO struct {
-	ID          uuid.UUID `json:"id"`
-	Email       string    `json:"email"`
-	DisplayName string    `json:"display_name"`
+	ID uuid.UUID `json:"id"`
+	// Email is NULL for a SHADOW MEMBER (migration 00074): somebody oto knows only
+	// as a Slack workspace member who has pressed a button, and who has never given
+	// it an address. It is a POINTER rather than an omitted-when-empty string because
+	// the distinction a client needs is "absent" versus "present", and `omitempty`
+	// would render the same absence as a missing key on one response and an empty
+	// string on the next depending on which encoder ran. The contract marks it
+	// `['string','null']` and keeps it REQUIRED, so a client is typed for the null
+	// rather than for a key that may not be there.
+	//
+	// ⛔ THERE IS NO SYNTHETIC ADDRESS HERE OR ANYWHERE ELSE. Rendering
+	// `U024BE7LH@slack.invalid` would make an invented mailbox indistinguishable
+	// from a real one at every consumer of this field, which is precisely what the
+	// owner's ruling on git-bug a74d6b2 rejected.
+	Email       *string `json:"email"`
+	DisplayName string  `json:"display_name"`
 	// SlackUserID is the linked Slack identity, null when unlinked.
 	SlackUserID *string `json:"slack_user_id"`
 }

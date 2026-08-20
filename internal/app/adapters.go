@@ -985,13 +985,25 @@ func (c slackConversations) ResolveSlackConversation(
 
 // slackActors adapts `identity/service` onto the actor port.
 //
-// ⭐ IT RECORDS THE SIGHTING AS WELL AS READING IT. `RecordSlackIdentity` upserts
+// ⭐ IT RECORDS THE SIGHTING AS WELL AS READING IT. `ResolveSlackPresser` upserts
 // on `slack_identities_uniq (org_id, team_id, slack_user_id)` and refreshes the
 // denormalised handle — which is exactly what that table's own comment says it is
 // for: "a repeat sighting of the same Slack member is not a conflict, it is the
 // same person pressing a button again". The row is what a settings screen later
 // offers to LINK, so an install where nobody has linked anything still
 // accumulates the identities that make linking a one-click job.
+//
+// ⭐⭐ AND SINCE git-bug a74d6b2 IT MINTS A PRINCIPAL FOR A PRESSER WHO HAS NONE.
+// A Slack member who had never linked an oto account had no user uuid, so
+// `slackIdempotency` below could take no claim, `alerts/service.Snooze` skipped
+// `idempotency.Resolve` entirely, and Slack's redelivery of one press executed the
+// snooze TWICE — two `alert_snoozes` rows and two
+// `alert.unsnoozed(superseded)`/`alert.snoozed` pairs for one human gesture.
+// `ResolveSlackPresser` creates a SHADOW MEMBER on first press — a real `users` row
+// with NO EMAIL and NO PASSWORD (migration 00074) — and links the identity to it,
+// so every press this adapter reports now carries a uuid a claim can name. The
+// press is still never refused for want of a link: the two degraded returns below
+// are unchanged and still record the ack against the Slack member.
 //
 // ⛔ IT IS ORG-SCOPED, and never the unscoped ResolveBySlackUser. One workspace
 // may be connected to two oto tenants; resolving across them would attribute a
@@ -1009,30 +1021,47 @@ func (a slackActors) SlackActor(
 		return channelsservice.SlackActor{}, nil
 	}
 
-	si, err := a.identity.RecordSlackIdentity(ctx, s, teamID, slackUserID, handle)
+	p, err := a.identity.ResolveSlackPresser(ctx, s, teamID, slackUserID, handle)
 	if err != nil {
+		// The directory write failed. Returning the zero actor here would be a lie —
+		// `channels/service.actor` reads it as "unlinked" — so the error goes up and
+		// THAT function decides, which it does by logging and recording the ack
+		// against the Slack member. The decision to spend an acknowledgement or not
+		// belongs to the layer that owns the press.
 		return channelsservice.SlackActor{}, err
 	}
-	if !si.Linked() {
-		// The normal state for anybody who has not linked their account, and a
-		// SUCCESS: the caller records the ack against the Slack member.
+	if p.User.ID == uuid.Nil {
+		// A link this org can no longer read — the user was disabled or removed. The
+		// link is stale, not the press: fall back to the Slack handle rather than
+		// losing the acknowledgement. This is the one remaining path on which a press
+		// reaches `alerts/service` with no principal, and therefore the one on which a
+		// redelivery can still be applied twice; minting a second shadow for somebody
+		// who already has a user would be the worse trade.
 		return channelsservice.SlackActor{}, nil
 	}
 
-	user, err := a.identity.GetUser(ctx, s, si.UserID)
-	if err != nil {
-		// Linked to a user this org can no longer read — disabled, or removed. The
-		// link is stale, not the press: fall back to the Slack handle rather than
-		// losing the acknowledgement.
-		if errs.IsKind(err, errs.KindNotFound) {
-			return channelsservice.SlackActor{}, nil
-		}
-		return channelsservice.SlackActor{}, err
+	// ⭐ THE LABEL FALLS BACK TO THE SLACK HANDLE FOR A SHADOW MEMBER, AND IT MUST.
+	// A linked human's label is their EMAIL, because that is what every other human
+	// actor's label is on this timeline — the UI ack path labels by principal email
+	// — and two spellings of the same person would read as two people. A shadow
+	// member HAS no email (00074), so `Email.String()` is "" — and an empty label
+	// sends `channels/service.actor` down its `unlinked()` fallback, which would
+	// discard the very uuid this call just minted and reinstate the double execution
+	// this whole change removes. `Identity.ActorLabel()` is the same "@handle" the
+	// unlinked path used to show, so the timeline reads exactly as it did before and
+	// the claim is taken anyway.
+	label := p.User.Email.String()
+	if p.User.IsShadow() {
+		label = p.Identity.ActorLabel()
 	}
-	// The email, because that is what every other human actor's label is on this
-	// timeline — the UI ack path labels by principal email — and two spellings of
-	// the same person would read as two people.
-	return channelsservice.SlackActor{UserID: user.ID, Label: user.Email.String()}, nil
+	// `Shadow` travels with it so `channels/service.actor` can keep `actor_kind` at
+	// `slack`: a shadow is a claim principal, not a member of oto's directory, and
+	// reporting `user` for one would make a Slack press read as a web click.
+	return channelsservice.SlackActor{
+		UserID: p.User.ID,
+		Label:  label,
+		Shadow: p.User.IsShadow(),
+	}, nil
 }
 
 // -------------------------------------------------------------------- drills
@@ -1208,6 +1237,49 @@ func (f ingestFeeds) ListFailedBatches(
 // the dependency direction (SPEC §I.1) and an inbound button press is the one thing
 // that runs the other way, so the ports are declared in primitives and adapted HERE
 // — the one place allowed to know both sides. Only the shape of the subject moved.
+// slackLabelReads answers the overflow's `Show all labels` option.
+//
+// It is a READ adapter and deliberately the only one in the interaction set: the
+// other three exist because a press CHANGES something, and this one exists because
+// a press ASKS something. That difference is why it carries no idempotency —
+// answering twice is the correct response to being asked twice, whereas the writing
+// verbs mint a claim so that a Slack redelivery cannot apply a change twice.
+//
+// ⛔ IT RESOLVES THE ALERT THROUGH THE CASE RATHER THAN TAKING AN ALERT ID, because
+// the card names a Case and labels live on the Alert (`alerts/domain.Alert.Labels`).
+// The two-hop read is also the tenancy check: `GetCase` scopes by org, so a case id
+// from another workspace answers NotFound and the presser gets a sentence rather
+// than another org's labels.
+type slackLabelReads struct {
+	alerts *alertsservice.Service
+}
+
+// CaseLabels returns the labels of the Alert the Case belongs to.
+//
+// An empty map is a SUCCESS the caller must still narrate — `alertname` is required
+// on every label set oto ingests, so an empty answer means the Case was found and
+// had nothing to show, and the ephemeral must say so rather than being dropped.
+func (a slackLabelReads) CaseLabels(
+	ctx context.Context, s db.TenantScope, caseID uuid.UUID,
+) (map[string]string, error) {
+	if a.alerts == nil {
+		return nil, errs.Unavailable("alerts_unavailable", "alerts are not wired", 0)
+	}
+	c, err := a.alerts.GetCase(ctx, s, caseID)
+	if err != nil {
+		return nil, err
+	}
+	alert, err := a.alerts.GetAlert(ctx, s, c.AlertID())
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, alert.Labels().Len())
+	for _, l := range alert.Labels().Sorted() {
+		out[l.Name] = l.Value
+	}
+	return out, nil
+}
+
 type slackCaseActions struct {
 	alerts *alertsservice.Service
 }
@@ -1312,32 +1384,39 @@ type slackSnoozeActions struct {
 // no body — so the same key against a DIFFERENT alert is `Conflicted` rather than a
 // replay naming a snooze the presser never asked about.
 //
-// ⚠️⚠️ AN UNLINKED SLACK MEMBER IS STILL UNKEYED, AND THAT IS A REPORTED GAP RATHER
-// THAN A CHOICE. `idempotency_claims`' primary key is
+// ⭐⭐ AN UNLINKED SLACK MEMBER NOW HAS A PRINCIPAL, AND THAT IS git-bug a74d6b2.
+// `idempotency_claims`' primary key is
 // (org_id, principal_id, operation, idempotency_key) with `principal_id` NOT NULL,
 // and `idempotency.Claim.validate` refuses a zero one as a wiring bug. A Slack
-// member who has never linked an oto account HAS no user uuid — `actor()` records
-// them as `actor_kind = 'slack'` with the Slack member id, which is a string and not
-// a uuid — so there is no principal to claim under and nothing here may invent one.
-// (Migration 00041 anticipates the case in as many words: `principal_id` is
-// "Deliberately NOT a FK to users … a Principal is not always a user row (SPEC §E.1
-// also has ingest, slack and system kinds)". What it does not define is where a
-// Slack principal's uuid comes from, and defining that from an adapter would be
-// inventing platform semantics in the wrong module.) Until it is defined, a linked
-// presser converges and an unlinked one is applied twice.
+// member who has never linked an oto account used to HAVE no user uuid — `actor()`
+// recorded them as `actor_kind = 'slack'` with the Slack member id, a string and not
+// a uuid — so there was no principal to claim under, `Snooze` skipped its claim
+// (`if idem.Keyed`) and a redelivered press was APPLIED TWICE: two `alert_snoozes`
+// rows and two `alert.unsnoozed(superseded)`/`alert.snoozed` pairs for one gesture.
+// (Migration 00041 anticipated the case in as many words — `principal_id` is
+// "Deliberately NOT a FK to users … a Principal is not always a user row" — and left
+// open where a Slack principal's uuid comes from.) It comes from a SHADOW MEMBER:
+// `slackActors.SlackActor` mints a `users` row with no email and no password on
+// first press (00074) and links the identity to it, so `actorID` is a uuid, this
+// adapter returns a KEYED intent, and the redelivery is refused rather than served.
 //
-// ⭐⭐ BUT IT IS NOT UNNAMED, AND THAT IS THE HALF THAT MATTERS TO THE CHANNEL.
-// `Idempotency.KeyID` carries the interaction's identity down even with no claim to
-// go with it, and `Snooze` uses it as the §C.7 occasion — so the redelivered press
-// re-mints the announcement key it already minted, `notifications_idem_uniq`
-// swallows the intent, and the human sees ONE "snoozed for 1h" amendment for the
-// one gesture they made. The timeline still carries the duplicate
-// `alert.unsnoozed(superseded)` / `alert.snoozed` pair, because only a claim can
-// undo the ACT; what the name removes is the SECOND CARD. Before the §C.7 occasion
-// existed this was accidental — the second intent hashed byte-identically because
-// nothing in the key distinguished two snoozes at all — and naming the interaction
-// is what makes it deliberate: two GENUINE presses still name two occasions and
-// still amend the card twice.
+// ⚠️ ONE UNKEYED PATH SURVIVES ON PURPOSE. If the identity write or read fails, or
+// the identity resolves to a user this org can no longer see, `actor()` falls back to
+// the Slack member id — because a directory lookup that fails must never cost an
+// acknowledgement. Such a press is named and unclaimed, and can still be applied
+// twice. That is a degraded path rather than the normal one, which is the whole
+// change.
+//
+// ⭐⭐ AND THE NAME IS STILL THE HALF THAT MATTERS TO THE CHANNEL, on that path and
+// on every other. `Idempotency.KeyID` carries the interaction's identity down even
+// with no claim to go with it, and `Snooze` uses it as the §C.7 occasion — so the
+// redelivered press re-mints the announcement key it already minted,
+// `notifications_idem_uniq` swallows the intent, and the human sees ONE "snoozed for
+// 1h" amendment for the one gesture they made. Before the §C.7 occasion existed this
+// was accidental — the second intent hashed byte-identically because nothing in the
+// key distinguished two snoozes at all — and naming the interaction is what makes it
+// deliberate: two GENUINE presses still name two occasions and still amend the card
+// twice.
 //
 // The `replayed` flag is dropped rather than returned: it is the fan-out signal
 // `SnoozeAs` gives so a group gesture can stop at member one, this press has exactly
@@ -1361,12 +1440,20 @@ func (a slackSnoozeActions) SnoozeAlert(
 // one, and that asymmetry is the whole of this function.
 //
 // ⭐⭐ NAMING THE INTERACTION AND CLAIMING IT ARE TWO DIFFERENT ANSWERS. A claim
-// needs a principal; a name needs only the key. So an unlinked presser — who has no
-// principal and never will until the owner rules on §E.1's `slack` kind — still
-// gets `KeyID` set, and the intent goes down UNKEYED BUT NAMED. Only an interaction
-// that carried no `response_url` at all is anonymous, because then there is nothing
-// to name it with. Both cases are argued on `SnoozeAlert`; what the name is FOR is
-// argued on `idempotency.Intent.KeyID`.
+// needs a principal; a name needs only the key. So a presser whose `actorID` is not
+// a uuid still gets `KeyID` set, and the intent goes down UNKEYED BUT NAMED. Only an
+// interaction that carried no `response_url` at all is anonymous, because then there
+// is nothing to name it with. Both cases are argued on `SnoozeAlert`; what the name
+// is FOR is argued on `idempotency.Intent.KeyID`.
+//
+// ⚠️ NOTHING IN THIS FUNCTION CHANGED FOR git-bug a74d6b2 AND THAT IS THE POINT.
+// It always returned a keyed intent for a uuid `actorID`; what it never had was a
+// uuid for an unlinked Slack member. The fix is upstream, in
+// `slackActors.SlackActor`, which now mints a SHADOW MEMBER so that the uuid exists
+// — so this adapter keeps its one rule ("the principal is a uuid or nothing") and
+// stops being the place the gap shows. The `uuid.Parse` failure below is therefore
+// no longer the normal path for an unlinked presser; it is the DEGRADED path, taken
+// when the identity lookup itself failed.
 func slackIdempotency(
 	s db.TenantScope, alertID uuid.UUID, actorID, key string,
 ) alertsservice.Idempotency {
@@ -1389,12 +1476,13 @@ func slackIdempotency(
 	// nor the bearer token inside the URL the key was made from.
 	idem := alertsservice.Idempotency{KeyID: k.ID()}
 
-	// ⛔ THE PRINCIPAL IS THE LINKED OTO USER OR NOTHING. `actorID` is a uuid string
-	// only when `channels/service.actor` resolved the Slack member to one; an
-	// unlinked member's id is a Slack handle like `U024BE7LH`, which does not parse
-	// — and `uuid.Nil` would be refused by the claim store as a wiring bug. Such a
-	// press keeps the name and goes unclaimed: it will still be APPLIED twice, and
-	// it will be ANNOUNCED once.
+	// ⛔ THE PRINCIPAL IS AN OTO USER OR NOTHING. `actorID` is a uuid string only
+	// when `channels/service.actor` resolved the Slack member to one — which, since
+	// 00074, it does for an unlinked member too, via the shadow. What still does not
+	// parse is a Slack handle like `U024BE7LH`, and `actor()` only reports one of
+	// those when the identity lookup failed or the link is stale. `uuid.Nil` would be
+	// refused by the claim store as a wiring bug, so such a press keeps the name and
+	// goes unclaimed: it will still be APPLIED twice, and it will be ANNOUNCED once.
 	userID, err := uuid.Parse(actorID)
 	if err != nil || userID == uuid.Nil {
 		return idem
