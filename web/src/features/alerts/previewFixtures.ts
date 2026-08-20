@@ -1278,7 +1278,6 @@ export const PREVIEW_ROLLUPS: readonly AlertRollup[] = [
 
 const DETAIL_ID = "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d3801";
 const CASE_ID = "0f8fad5b-d9cb-469f-a165-708677289501";
-const GROUP_ID = "5e2b8c1d-4a6f-4b8c-9d0e-1f2a3b4c5d6e";
 
 /**
  * The alert the detail section is drawn for: unacknowledged, critical and
@@ -1323,7 +1322,6 @@ export const PREVIEW_DETAIL: AlertDetail = {
   current_case: {
     id: CASE_ID,
     alert_id: DETAIL_ID,
-    group_id: GROUP_ID,
     seq: 19,
     state: "open",
     ack_state: "unacked",
@@ -1486,7 +1484,6 @@ export const PREVIEW_CASES: readonly Case[] = [
   {
     id: CASE_ID,
     alert_id: DETAIL_ID,
-    group_id: GROUP_ID,
     seq: 19,
     state: "open",
     ack_state: "unacked",
@@ -1498,7 +1495,6 @@ export const PREVIEW_CASES: readonly Case[] = [
   {
     id: "0f8fad5b-d9cb-469f-a165-708677289502",
     alert_id: DETAIL_ID,
-    group_id: GROUP_ID,
     seq: 18,
     state: "closed",
     resolve_reason: "upstream",
