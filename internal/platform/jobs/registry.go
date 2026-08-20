@@ -218,7 +218,11 @@ func RegisterAll(r *Registry, h Handlers) error {
 		// swept open generations idle past `group_close_delay_s` and closed them, which
 		// is what made the next fire post a brand-new Slack root. A conversation is a
 		// Case now: it ends when the Case ends, so there is no idle generation to
-		// close and no periodic sweep to run.
+		// close and no periodic sweep to run. ⚠️ `KindGroupClose` AND `GroupCloseArgs`
+		// SURVIVED THIS LINE BY TWO COMMITS and are now gone as well — an
+		// un-registered kind is invisible to every gate in `test/arch`, because they
+		// all discover through `Handlers`, so nothing failed while the declarations
+		// sat here unreachable. Their tombstones are in kinds.go and args.go.
 		func() error {
 			// Two minutes, like every other per-tenant lifecycle sweep, and per TENANT
 			// for the same reason: the fan-out tick does a page read and one batch
@@ -279,7 +283,7 @@ func RegisterAll(r *Registry, h Handlers) error {
 // AND a nil org id, and both expansions happen in the handler.
 //
 // ⭐ THE PER-TENANT PERIODICS ARE STILL HERE, AND THE ZERO ARGS BELOW ARE WHY.
-// `case.reap`, `group.close`,
+// `case.reap`,
 // `notify.digest`, `notify.digest.reconcile`, `retention.prune` and `stats.rollup`
 // are all fanned out per tenant now
 // (jobs.TenantFanOut), but their SCHEDULE still needs no list: an args struct

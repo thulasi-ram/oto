@@ -685,6 +685,35 @@ Slack and UI presets: 30 m · 1 h · 4 h · 24 h · 7 d.
 
 **Exactly one active snooze per alert**, enforced by a partial unique index, not by application code.
 
+⭐ **A SLACK SNOOZE PRESS CARRIES AN IDEMPOTENCY KEY OTO MINTS FOR ITSELF, AND IT IS NOT AN
+`Idempotency-Key` HEADER** (§E.1's header is a *client's* private handle on its own retry; no Slack
+payload sends one). The problem it solves is **not** a double-click: a human who presses `30 m` and
+then `4 h` means both, and the table above answers that by superseding. The duplication is **one press
+executed twice** — the worker crashes after the snooze transaction commits but before River marks the
+job done, the job is rescued and re-run, and the replay supersedes the snooze *that same press* had
+just created, leaving `alert.unsnoozed(superseded)` **and** `alert.snoozed` in the timeline twice for a
+gesture that happened once. The timeline is append-only and both pairs are individually true, so
+nothing in the domain converges it. The key is a **sha256 over the interaction's `response_url`** —
+the one per-interaction identity Slack already sends, byte-identical on a redelivery of the same
+interaction and different for every new press, which is exactly the distinction the two paragraphs
+above require. It is hashed because a `response_url`'s last path segment is a one-shot bearer token and
+a credential belongs in no column. It is claimed under the **same** operation as
+`POST /api/v1/alerts/{id}/snooze`, because a press and a call are the same act on the same row and two
+key spaces would let them collide on neither. A replay whose snooze has since ended answers
+`idempotency_key_reuse`, which the Slack path reports as a sentence and **no second write** — an
+outcome, not a fault.
+
+⚠️ **AN UNLINKED SLACK MEMBER'S PRESS STAYS UNKEYED, AND THIS IS A KNOWN GAP RATHER THAN A CHOICE.**
+`idempotency_claims`' primary key is `(org_id, principal_id, operation, idempotency_key)` with
+`principal_id` **NOT NULL** (migration `00041`), and `idempotency.Claim.validate` refuses `uuid.Nil` as
+a wiring bug. A Slack member who has never linked an oto account **has no user uuid** — they are
+recorded as `actor_kind = 'slack'` with the Slack member id, which is a string and not a uuid — so
+there is no principal to claim under. **A `slack` principal uuid is NOT invented to close this**: where
+such a uuid would come from is a platform question migration `00041` explicitly leaves open, and
+answering it from an adapter would be minting platform semantics in the wrong module. So a **linked**
+presser converges and an **unlinked** one keeps the pre-existing duplicate-event exposure described
+above. That asymmetry is the gap; it is recorded here rather than papered over.
+
 #### B.8.4 What snooze suppresses
 
 Snooze suppresses **every** notification `Reason` for that `alert_key` — including `rule_changed`,
@@ -881,12 +910,24 @@ card's subject to `alert_sources`, which is why the Alertmanager Silence deep li
 its restoration spec — a `source_id` on `alert_cases` plus a `kind == alertmanager` check — is
 recorded in `GroupFacts.AlertmanagerURL` rather than here.
 
-⛔ **AND ONE CONSEQUENCE IS OPERATOR-VISIBLE AND NOT YET RULED ON: 500 alerts now open 500 Slack
-threads, by construction.** The group was the only mechanism that collapsed many firing alerts into
-one conversation. The surviving collapse mechanism is the **digest** — policy-keyed, needs no group
-row, §H — and it is opt-in. `test/load`'s `O(groups)` bound, its *"chatter ≤ alerts/10"* ratio and its
-`SlackRoots != 1` assertion are deleted with tombstones. This needs a product ruling and is recorded
-here because this is the section a reader comes to for it.
+✅ **ONE CONSEQUENCE IS OPERATOR-VISIBLE, AND THE OWNER RULED ON IT: `N` firing alerts now open `N`
+Slack threads, by construction, AND THAT IS ACCEPTED** (ruled 2026-08-20,
+[ADR 0045](/adr/0045-a-case-is-a-conversation-and-a-thread-per-alert-is-accepted/)). The reasoning
+that made this worth ruling on is unchanged by the ruling, and is kept because it is what a reader
+comes to this section for: **the group was the only mechanism that collapsed many firing alerts into
+one conversation.** The surviving collapse mechanism is the **digest** — policy-keyed, needs no group
+row, §H — and it is **opt-in**, so an org that has configured no `digest_window_s` gets one root card
+per Case and nothing damps the rest (ADR 0042 removed storm damping and nothing replaced it).
+`test/load`'s `O(groups)` bound, its *"chatter ≤ alerts/10"* ratio and its `SlackRoots != 1` assertion
+are **deleted with tombstones rather than retargeted**, because each measured the fan-in the ruling
+removed and a bound refitted to what the code now does is not a budget. This block asked for a product
+ruling until 2026-08-20; it records one now, and §J's AC-14 is the testable form.
+
+> **The `300` in AC-14 and the `500` here are the same phenomenon at two sizes, not two claims.** §J's
+> AC-14 states it at **300** because that is the burst that criterion has always described;
+> `test/load` and this section state it at **500** because 500 is the load driver's batch. The
+> relationship is **`N` alerts → `N` conversations → `N` root cards for every `N`**; neither number is
+> a threshold, and nothing in the code reads either.
 
 **Also amended by ADR 0038**, which is what made the key **derived from the alert's own labels**
 rather than a function of anything Alertmanager chose. That amendment stands; it is the entity above
@@ -2608,7 +2649,12 @@ RETURNING *, (xmax = 0) AS was_inserted;
     "request_id": "01JD…", "errors": [ { "field": "severity", "code": "enum" } ] }
   ```
 - **Pagination is keyset only.** Cursor = base64url of `{"k":<sort key>,"id":"<uuid>","h":"<filter hash>"}`. A cursor whose `h` does not match the current filter set is rejected `400 cursor_filter_mismatch`. `limit` default 50, max 200. There is **no `total`** on unbounded collections.
-- Every mutating endpoint accepts `Idempotency-Key`.
+- Every mutating endpoint accepts `Idempotency-Key`. ⭐ **The header is a CLIENT's handle on its own
+  retry, and it is not the only source of a claim.** A Slack button press is not an HTTP request a
+  caller controls, so oto mints its own key for the interaction and claims it under the *same*
+  operation as the equivalent endpoint — today only the snooze press does this (§B.8.3, which also
+  records the one presser for whom it cannot). Such a key is never read from, nor reported to, a
+  caller.
 
 #### E.1.1 ⛔ No human writes a signal's state (BINDING, PERMANENT)
 
@@ -2761,7 +2807,6 @@ and the Alert outlives that firing.
 ```
 ?state=open                  -> ended_at IS NULL         -- ⭐ THE LIVE QUEUE. maxItems 2
 &ack=unacked                 -> alert_cases.ack_state     -- the facet the endpoint exists for
-&group_id=<uuid>             -> the notification grouping an episode joined
 &severity=critical,warning   -\
 &cluster=prod-eu              |  the four IDENTITY facets, reached through `alerts`
 &namespace=payments           |  by a correlated EXISTS (never a JOIN: the two tables
@@ -2814,6 +2859,30 @@ indexes on `alerts` and reaching them once per case row turns a keyset page into
 identity table; the last two are properties of the identity that say nothing about which of its
 episodes you are looking at. `GET /api/v1/alerts` is where those questions are asked, and
 `GET /api/v1/alerts/{id}/cases` is how one identity's history is opened.
+
+⛔ **`?group_id=` WAS A PARAMETER HERE AND IT IS DELETED, NOT DEPRECATED — IT IS NOW
+`400 unknown_parameter`** (git-bug `7570090`, migration `00069`). Its row read *"`&group_id=<uuid>` →
+the notification grouping an episode joined"*, and for one interim it was `deprecated: true` and
+**returned an empty page**. Both endings are now history: `alert_groups` and `alert_cases.group_id`
+are gone, so there is no membership to select on, and an unlisted parameter lands in
+`httpx.NewParams`' `unknown` slice — an old caller is **told in one round trip** rather than served a
+page that has quietly stopped showing anything. There were only three possible endings and the third
+is the one that must never happen: *accepted and unbound* — declared here, read by nothing — serves
+**every case in the org** under a filtered request, a silent widening of a filtered read and the one
+failure nothing reports. The allow-list entry and `ListCasesQuery.GroupID` are therefore a **pair**
+and came out together (`alerts/api/query.go`, `dto.go`). It is **not** renamed to `conversation_id` the
+way `GET /notifications`' was: that parameter had a successor because a notification still has a
+delivery target, and this one has none, because **the Case IS the conversation** — filtering Cases by
+conversation id is `GET /api/v1/cases/{id}`.
+
+⚠️ **AND THIS INVALIDATES EVERY CASE-LIST CURSOR MINTED BEFORE THE CHANGE, WHICH IS CLIENT-VISIBLE.**
+`group_id` was a component of the case-list **filter hash** — `caseFilterHash` emitted
+`"group_id=" + joinSorted(q.GroupID)` alongside `state`, `ack` and the four identity facets, and every
+field except `limit` and `cursor` is in that digest by design (§E.1). Dropping the parameter drops its
+component, so the digest changes for **all** filter combinations, including the empty one. A cursor
+issued by an older build therefore carries an `h` that no longer matches and is rejected
+`400 cursor_filter_mismatch`. **The fix is to re-request the first page**, which is what that code has
+always meant; nothing stored is affected, because a cursor is derived state carried by the client.
 
 ### E.4 SSE stream contract (`GET /api/v1/stream`)
 
@@ -3809,7 +3878,6 @@ The response **body is ignored by Alertmanager on 2xx**. There is no back-channe
 | `reconcile` | 8 | `source.reconcile` | `{source_id}` | Periodic, `reconcile_interval_s` (default 30 s) |
 | `reconcile` | 8 | `silences.sync` | `{source_id}` | Periodic, 60 s |
 | `lifecycle` | 4 | `case.reap` | `{}` | Periodic, 60 s |
-| `lifecycle` | 4 | `group.close` | `{}` | Periodic, 60 s |
 | `lifecycle` | 4 | `snooze.expire` | `{}` | Periodic, 60 s |
 | `lifecycle` | 4 | `notify.digest` | `{}` | Periodic, 60 s, `RunOnStart` — the tick only; the WINDOW is `notification_policies.digest_window_s`, aligned to the UTC day. **Added latency: none.** A digest for `[T, T+W)` goes out on the first tick at or after `T+W`, so at most **60 s** late, and the bounded lookback `DigestLookback` = **2 min** widens the READ to `[T − 2 min, T+W)` rather than delaying the send (git-bug `a8a4010`) |
 | `lifecycle` | 4 | `notify.digest.reconcile` | `{}` | Periodic, 3600 s, `RunOnStart` — the digest **DETECTOR** (git-bug `893cee4`), `PriorityBackground`. Folds `Policy.Matches` over a day-wide candidate span per policy and counts matched Cases no digest ever reported. **It is forbidden from delivering anything** (`notification/service.ReconcileOrg`) |
@@ -3817,6 +3885,20 @@ The response **body is ignored by Alertmanager on 2xx**. There is no back-channe
 | `maintenance` | 1 | `retention.prune` | `{}` | Periodic, 3600 s |
 | `maintenance` | 1 | `stats.rollup` | `{day}` | Periodic, 900 s |
 | `maintenance` | 1 | `cache.expire` | `{}` | Periodic, 600 s |
+
+⛔ **`group.close` WAS A ROW IN THIS TABLE — `lifecycle`, 4 workers, `{}`, periodic 60 s — AND IT IS
+DELETED, KIND AND SCHEDULE TOGETHER** (git-bug `7570090`, migration `00069`). It swept `alert_groups`
+generations whose members had all ended and closed them past `group_close_delay_s`; the entity, the
+column and the delay are all gone, and a conversation is a Case, so there is no idle generation to
+close. `KindGroupClose` and `GroupCloseArgs` are removed from `internal/platform/jobs` with
+tombstones, and `registry.go` registers no handler — so nothing can create a row of this kind, and a
+row that somehow exists is answered with River's `UnknownJobKindError` and discarded at its stored
+`MaxAttempts`. **There is no replacement kind and none is needed.**
+
+⚠️ **ITS DOC COMMENT CLAIMED §G.7.3 GAP RECOVERY AND THE CLAIM WAS FALSE.** Advancing
+`channel_threads.last_sent_seq` past a dead delivery is `ordering.Gate.Recover` on the **delivery**
+path, under the thread advisory lock, at the moment the wedge is observed — never a minute-granularity
+sweep. §G.7.3 is the authority and nothing about it changed here.
 
 Queue implementation: **River** (`riverqueue.com`), Postgres-backed, `SELECT … FOR UPDATE SKIP LOCKED`, `river.InsertTx` inside the domain transaction. Workers reach it only through `db.Enqueuer` (F.5).
 
@@ -4053,6 +4135,17 @@ Recovery never skips a slot that is still in play — doing so would send a repl
 4. If **nothing moved and nothing owns the head**, there is no state left another pass could find, and another snooze would be the wedge wearing liveness as a costume. The delivery is **dead-lettered**: `status='dead'`, `error_class='permanent'`, error text *"the thread could not make progress and recovery had nothing to advance (`<reason>`)"*, the head is advanced past its slot, a `delivery.dead` event is appended and the notification's aggregate status is recomputed. An operator reading "oto gave up" on the alert page is the whole point of §H.9, and it is strictly better than a destination that has been silently quiet for a week.
 
 **A poisoned message can never wedge a thread forever.** That sentence is binding, and §G.7.2's terminal-states-first order, `MaxWait`, and this dead-letter are jointly what make it true.
+
+⛔ **NO PERIODIC SWEEP OWNS ANY OF THIS, AND `group.close` NEVER DID.** Gap recovery lives in
+`platform/jobs/ordering.Gate.Recover`, is called from `deliver.dispatch` on the **delivery path**, and
+runs under the thread's advisory lock **at the moment the wedge is observed** — which is both earlier
+and more precise than a 60 s tick could be. The deleted `GroupCloseArgs` doc comment claimed this work
+("*performs the §G.7.3 gap recovery that advances `channel_threads.last_sent_seq` past a dead
+delivery*"), and the claim was already false when it was written: it was a leftover from a design in
+which the sweep owned recovery. `group.close` is deleted (§G.3) and **nothing was lost with it**;
+`platform/jobs/ordering/doc.go` is the code-side authority. Re-attributing recovery to a periodic is
+the mistake this note exists to stop — a sweep that runs once a minute cannot hold the lock the
+decision needs.
 
 **§G.7.4 Coalescing.** A `ModeUpdateRoot` whose `rendered_hash` equals the thread's last root hash is skipped as a no-op — this is what turns a flapping alert's forty identical updates into one send and thirty-nine visible `skipped` rows.
 
@@ -4776,7 +4869,7 @@ Numbered, user-observable. v1 is not done until every one of these is demonstrab
 11. An alert that resolves and re-fires — at 2 minutes or at 2 hours — creates **case #N+1**, `unacked`, and a **new root message**, because a new Case is a new conversation (git-bug `7570090`). ⛔ **THE CLOCK NO LONGER CHOOSES.** This criterion previously demanded a thread reply at 2 minutes (the group generation still open) and a new root at 2 hours (the generation having closed); `group_close_delay_s` was the timer and it is deleted. The episode was never clock-dependent and now the Slack message is not either.
 12. Acking from the Slack button and acking from `POST /api/v1/cases/{id}/ack` produce byte-identical state and go through the **same service method**.
 13. An alert flapping 30 times an hour produces **one Case and one root card** for as long as it keeps re-firing inside its retention window W (§B.3, §B.6.2) — the noise is not made rather than withheld, and nothing is damped at delivery. With W unset (the default, 0) it produces one Case per firing, all of them visible. `flap_score` / `is_flapping` are retired in place and no longer part of this claim.
-14. ⛔ **THIS CRITERION IS INVERTED, AND THE INVERSION IS UNRULED PRODUCT RISK** (git-bug `7570090`, migration `00069`, and §C.4's last ⛔ block). It read: *"300 alerts arriving for one group in 30 seconds produce **one** root card and **one** Slack thread, because they share a `group_key` and the generation owns the thread."* Nothing owns a `group_key` any more, so 300 alerts produce **300 conversations and 300 root cards**. What still holds and is still tested: oto withholds none of the 300 — storm damping was removed (ADR 0042) and nothing replaced it — and ingest keeps up, the batch accepted inside the §G.2 budget with no alert dropped. The surviving collapse mechanism is the opt-in **digest** (§H); the acceptance criterion that replaces this one is blocked on the product ruling §C.4 asks for.
+14. **300 alerts arriving in 30 seconds produce 300 conversations and 300 root cards, and oto withholds none of them.** Every one of the 300 is delivered: storm damping was removed (ADR 0042) and **nothing replaced it**, so no alert is dropped, downgraded, delayed or collapsed on oto's own judgement. Ingest keeps up — the batch is accepted inside the **§G.2 budget** with no alert lost and no `ingest_rejections` row it did not earn on its own content — and the ordering gate walks to the end of every one of the 300 threads. **The only mechanism that collapses many firings into one message is the opt-in digest** (§H, `notification_policies.digest_window_s`): an org that has configured none gets one root card per Case, by construction, and that is the accepted behaviour rather than a defect to be measured against a ratio. ⛔ **THIS CRITERION WAS INVERTED AND THE INVERSION IS NOW RULED, NOT OPEN** (git-bug `7570090`, migration `00069`; **[ADR 0045](/adr/0045-a-case-is-a-conversation-and-a-thread-per-alert-is-accepted/)**; §C.4). It read: *"300 alerts arriving for one group in 30 seconds produce **one** root card and **one** Slack thread, because they share a `group_key` and the generation owns the thread."* Nothing owns a `group_key` any more, and the owner ruled on **2026-08-20** that a conversation per alert is accepted — so the fan-out above is the criterion, and the sentence that used to defer it to a pending product ruling is gone.
 
 **The differentiator**
 

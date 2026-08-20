@@ -278,6 +278,15 @@ func TestHandleEnqueuesTheAcknowledgeAndNothingElse(t *testing.T) {
 			wantJobs: 0,
 		},
 		{
+			// The links overflow. It is a CONTAINER of places to look, so pressing
+			// the container is not a verb — and it is not `oto.noop.*` either, so
+			// before ActionOverflow existed this press fell to the default arm and
+			// counted as an action oto could not route.
+			name:     "the links overflow enqueues nothing",
+			payload:  envelope(ActionOverflow, ""),
+			wantJobs: 0,
+		},
+		{
 			name:     "an unknown action enqueues nothing",
 			payload:  envelope("oto.something.new", "x"),
 			wantJobs: 0,
@@ -379,6 +388,15 @@ func TestUnknownActionIsRecordedAndNotMerelyLogged(t *testing.T) {
 		{
 			name:     "a link button is inert, not unknown",
 			actionID: "oto.noop.runbook",
+			want:     0,
+		},
+		{
+			// ⛔ THIS IS THE REGRESSION GUARD. Every links-overflow press used to
+			// land here, so the series had a floor on every card oto posts and the
+			// metric said "oto cannot route its own menu". The overflow is known,
+			// routed, and deliberately inert; see ActionOverflow.
+			name:     "the links overflow is inert, not unknown",
+			actionID: ActionOverflow,
 			want:     0,
 		},
 		{

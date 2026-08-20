@@ -71,10 +71,20 @@ func (s CardState) Colour() string {
 // `CardExpired.Colour()` and borrowing "oto stopped hearing about this" along with the
 // grey.
 //
-// ⚠️ IT IS THE SAME GREY `expired` CARRIES, which is a real collision and the honest
-// name for it is "unresolved". Peripherally a digest and a lost signal look alike; the
-// card says which it is in its first two words, and nothing else on either is
-// confusable. Fixing it properly means a sixth row in §H.2 and an owner's ruling.
+// ⚠️ IT IS THE SAME GREY `expired` CARRIES, AND THE OWNER HAS RULED THAT IT STAYS
+// (2026-08-20). The collision is real and naming it is still the honest thing to do:
+// two cards that mean different things carry one hue, so peripherally — the colour
+// stripe alone, before any word is read — a digest and a lost signal look alike.
+//
+// ⭐ WHAT MAKES IT ACCEPTABLE IS THAT THE HUE IS NOT THE ONLY CARRIER. The card says
+// which it is in its first two words, the digest has no Status field and no state
+// emoji, and nothing else on either is confusable. A sixth hue would buy separation
+// on the one channel a reader uses least and cost a §H.2 row, a `TestSlackPaletteUnchanged`
+// amendment and a provenance argument (§M.6) for a distinction the copy already makes.
+//
+// ⛔ SO THIS IS SETTLED, NOT PENDING. `neutralColour()` routing through `Colour()`'s
+// `default:` arm IS the shape — do not read this note as an invitation to mint a sixth
+// hue, and do not re-open it without a NEW fact (a reader who was actually misled).
 func neutralColour() string { return CardState("").Colour() }
 
 // Emoji is the state emoji shown in the Status field (§H.2).

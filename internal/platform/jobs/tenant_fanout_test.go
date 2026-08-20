@@ -15,12 +15,12 @@ import (
 // THAT HAD NEVER HEARD OF `org_id`. Those payloads are `{"v":1}` and nothing
 // else, and a worker that read them as "a job for the nil org" would sweep no
 // tenant at all — a fleet-wide silent stop, one deploy long, on the sweeps that
-// expire cases and close groups. An absent field decodes to the zero value,
+// expire cases and prune. An absent field decodes to the zero value,
 // the zero value IS the fan-out tick, and the fan-out tick is exactly what those
 // rows meant. That equivalence is what makes adding the field a v1 change rather
 // than a v2 one: a field was added, no field's meaning changed.
 //
-// ⚠️ `source.reconcile` IS THE SIXTH ROW AND THE ONLY ONE WHOSE PRE-EXISTING
+// ⚠️ `source.reconcile` IS THE LAST ROW AND THE ONLY ONE WHOSE PRE-EXISTING
 // PAYLOADS ARE NOT ALL TICKS. Its queue holds two kinds of old row: `{"v":1}`,
 // which meant the fan-out tick and still does, and `{"v":1,"source_id":"…"}`,
 // which meant ONE PASS against that source. The second decodes to a zero tenant
@@ -39,7 +39,13 @@ func TestAPayloadWithNoTenantHalfIsTheFanOutTick(t *testing.T) {
 		into func([]byte) (TenantFanOut, int, error)
 	}{
 		{"case.reap", `{"v":1}`, decodeInto[CaseReapArgs]},
-		{"group.close", `{"v":1}`, decodeInto[GroupCloseArgs]},
+		// ⛔ `group.close` HAD A ROW HERE AND THE KIND IS DELETED (git-bug 7570090;
+		// its constant and args followed). Removing the row rather than leaving it
+		// is the point of the exercise: this table's whole claim is "a pre-existing
+		// `{"v":1}` row of THIS kind still means the fan-out tick", which is a
+		// statement about rows a deploy has to keep working, and a kind no client
+		// registers has no such rows to keep working. Held open, it would be the one
+		// place in the repository still asserting the kind exists.
 		{"retention.prune", `{"v":1}`, decodeInto[RetentionPruneArgs]},
 		{"stats.rollup", `{"v":1,"day":"2026-08-07"}`, decodeInto[StatsRollupArgs]},
 		{"source.reconcile", `{"v":1}`, decodeInto[SourceReconcileArgs]},

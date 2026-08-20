@@ -375,9 +375,16 @@ type CaseFilter struct {
 	// started_at DESC, id DESC) WHERE ended_at IS NULL, which is why it pairs with
 	// `States` above.
 	AckStates []AckState
-	// GroupIDs restricts to one or more AlertGroup generations — the notification
-	// grouping an episode joined, never a correlation and never an incident.
-	GroupIDs []uuid.UUID
+	// ⛔ THERE IS NO `GroupIDs`, AND THIS IS THE ONE FILTER DIMENSION WITH NO
+	// SUCCESSOR (git-bug `7570090`, migration `00069`). It restricted to one or more
+	// AlertGroup generations — the notification grouping an episode joined, never a
+	// correlation and never an incident — and it selected on `alert_cases.group_id`,
+	// a column deleted with `alert_groups`. Nothing takes its place: the notification
+	// audit's group filter could be re-pointed at `conversation_id` because a
+	// notification still has a delivery target to narrow by, but a Case has no
+	// conversation column, because the Case IS the conversation. Filtering Cases by
+	// conversation id is filtering them by their own id, which is a GET by id, not a
+	// list filter. There is nothing left to ask, so no field is offered.
 	// The four ALERT-side facets. They are answered through `alerts` and ride
 	// alerts_sev_idx / alerts_ns_idx / alerts_name_idx from the inside of the
 	// EXISTS, which is a primary-key probe per candidate row.

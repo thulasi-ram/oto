@@ -45,9 +45,11 @@ info:
     kept on the record here so that a reader who meets it in an older client, an `alert_events.group_id`
     column or a tombstone below knows what it named; **it is not part of the binding vocabulary, and
     nothing creates, addresses or resolves one.** What survives is residue and is labelled as such
-    wherever it appears: `?group_id=` on `GET /cases` is `deprecated` and returns an empty page, the
-    `group_id` on an event or frame payload is the historical `alert_events.group_id` column, and
-    `GroupState` is an enum nothing advances.
+    wherever it appears: the `group_id` on an event or frame payload is the historical
+    `alert_events.group_id` column, and `GroupState` is an enum nothing advances. The one filter that
+    named it, `?group_id=` on `GET /cases`, is **deleted rather than deprecated** — a Case has no
+    membership to select on, so that spelling is now `400 unknown_parameter` and a caller still
+    sending it is told rather than served an empty page.
 
     ## The alert lifecycle
 
@@ -1478,39 +1480,27 @@ paths:
             queue:
               summary: Nobody has looked at these
               value: [unacked]
-        - name: group_id
-          in: query
-          deprecated: true
-          description: |
-            ⛔ **RETAINED, INERT, AND SLATED FOR REMOVAL. Supplying it returns an EMPTY page — always.**
-
-            It took AlertGroup ids and asked "which episodes is that thread about". `alert_groups` is
-            deleted (git-bug `7570090`, migration `00069`) and `alert_cases.group_id` went with it, so
-            there is no membership left to select on and no Case belongs to any container any more.
-            **Empty is the truthful answer, not a bug**: the alternative — dropping the predicate and
-            serving the page — is a SILENT WIDENING of a filtered read, which is the one failure nothing
-            reports (`alerts/repository.ListCases` short-circuits in Go precisely to avoid it).
-
-            ⛔ **AND IT IS DELIBERATELY NOT RENAMED TO `conversation_id`**, which is what the same
-            rename did to `GET /notifications`. That parameter had a successor because a notification
-            still has a delivery target to be narrowed by; **this one has none, because the Case IS the
-            conversation.** Filtering Cases by conversation id would be filtering them by their own id,
-            which is `GET /api/v1/cases/{id}`. There is nothing left to ask, so nothing is offered under
-            a new name — an inert filter wearing the new vocabulary would be worse than an inert filter
-            wearing the old one, because it would look like the supported spelling.
-
-            It is still ACCEPTED rather than `400 unknown_parameter` only because it is still published
-            here; the parameter and `ListCasesQuery.GroupID` behind it come out together, and a caller
-            must stop sending it now.
-          schema:
-            type: array
-            maxItems: 32
-            uniqueItems: true
-            items:
-              type: string
-              format: uuid
-          style: form
-          explode: false
+        # ⛔ `group_id` WAS A PARAMETER HERE AND IT IS DELETED, NOT DEPRECATED (git-bug
+        # `7570090`, migration `00069`). It took AlertGroup ids and asked "which episodes is
+        # that thread about"; `alert_groups` and the `alert_cases.group_id` column are both
+        # gone, so there is no membership left to select on and no Case belongs to any
+        # container any more.
+        #
+        # ⭐ REMOVING IT FROM THIS LIST IS WHAT MAKES THE FAILURE LOUD. The parameter is no
+        # longer declared, so `httpx.NewParams` puts it in `unknown` and an old caller gets
+        # `400 unknown_parameter` naming `group_id` — TOLD, in one round trip. The interim
+        # `deprecated: true` served an EMPTY PAGE instead, which let a dashboard that had
+        # quietly stopped showing anything look merely idle. What must never happen is the
+        # third outcome: accepting the parameter and ignoring it, which serves the whole
+        # org's case list under a filtered request. That is a silent widening of a filtered
+        # read and it is the one failure nothing reports.
+        #
+        # ⛔ AND IT IS DELIBERATELY NOT RENAMED TO `conversation_id`, which is what the same
+        # rename did to `GET /notifications`. That parameter had a successor because a
+        # notification still has a delivery target to be narrowed by; this one has none,
+        # because the Case IS the conversation. Filtering Cases by conversation id would be
+        # filtering them by their own id, which is `GET /api/v1/cases/{id}`. Nothing is
+        # offered under a new name because there is nothing left to ask.
         - name: severity
           in: query
           description: |
@@ -4147,9 +4137,12 @@ paths:
           description: |
             Narrow the interest set to one group generation.
 
-            ⚠️ **IT KEEPS THIS SPELLING AND IS NOT `conversation_id`, AND THAT IS DELIBERATE RATHER
-            THAN AN OVERSIGHT.** Unlike the `group_id` on `GET /api/v1/cases`, this parameter is not a
-            column filter and never was: the stream's interest set is a predicate over FRAMES, applied
+            ⚠️ **IT KEEPS THIS SPELLING AND IS NOT `conversation_id`, AND IT IS LIVE CODE RATHER THAN
+            RESIDUE.** The `group_id` that `GET /api/v1/cases` once took is **deleted** — it selected
+            on the dropped `alert_cases.group_id` column and is now `400 unknown_parameter` — so there
+            is no longer a same-named filter here to be contrasted against. The distinction is worth
+            keeping anyway, because it is what makes this parameter survivable: it is not a
+            column filter and never was. The stream's interest set is a predicate over FRAMES, applied
             by `streaming/domain.Interest.Matches` on both the live and the resume path, and the
             `group.upserted` kind together with the `group_id` derived from a frame's payload are still
             in `UiEventKind` and still honoured. Renaming it here would publish a name the server does

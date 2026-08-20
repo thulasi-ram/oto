@@ -19,8 +19,32 @@ title: oto_slack_unknown_action_total
 Verified Slack interactions naming an `action_id` oto has no branch for. The signature was valid,
 the payload was genuine, a human really did press the button — and oto had nowhere to route it.
 
-The known ids are `oto.ack`, `oto.unack`, and anything under the `oto.noop.` prefix (the URL
-buttons, which Slack delivers an interaction for and oto must acknowledge with nothing to do).
+The known ids are the four that write — `oto.ack`, `oto.unack`, `oto.snooze`, `oto.unsnooze` — plus
+`oto.more`, plus anything under the `oto.noop.` prefix (the URL buttons, which Slack delivers an
+interaction for and oto must acknowledge with nothing to do).
+
+> ⭐ **`oto.more` was in NO set at all and every press of it counted here.** It is the links overflow —
+> the `:package: More` menu holding Timeline, Prometheus, Alertmanager, Rule history and Show all
+> labels — and the renderer has always emitted it (`render/slack/root.go`, pinned by five goldens and
+> named in SPEC §H.8). Matching neither the writing ids nor `oto.noop.`, it fell to the router's
+> `default` arm and incremented this counter on the one element of the card that was working exactly
+> as designed. **It is now admitted to the closed set, deliberately rather than renamed to
+> `oto.noop.more`**: cards already sitting in Slack carry the literal `oto.more`, so a rename would
+> turn every one of those menus into a silent no-op — the defect relocated, not fixed — and the
+> overflow is not link-only anyway (see the gap below). A press of it enqueues nothing, because
+> pressing a container of places to look is not a verb. **If you are reading this runbook because of a
+> historical spike, `oto.more` is the first thing to rule out.**
+>
+> ⚠️ **KNOWN GAP — `Show all labels` is routed but inert, and that is NOT what this counter is for.**
+> The overflow's URL options are complete: Slack navigates, oto acks, done. The `Show all labels`
+> option instead carries a `value` (`labels|<case id>`) that SPEC §H.8 designates for a `views.open`
+> modal, **and no modal is built**, so pressing that one option does nothing and says nothing. A press
+> of it is **known-and-routed, not unroutable**: it does not and must not increment
+> `oto_slack_unknown_action_total`. Conflating the two would put a permanent floor under a series whose
+> whole meaning is "oto is broken", and would hide the real renderer/router mismatches this metric
+> exists to catch. The inert option is a gap to close in the renderer's own right; it is not an
+> unknown action, and an operator seeing zero here while a user reports that `Show all labels` did
+> nothing is looking at exactly this gap.
 
 ## Why it exists, and why it is a counter rather than a log line
 
@@ -52,8 +76,9 @@ believes they acknowledged the alert. They did not.
 1. The WARN log beside the increment — it carries `action_id`, `slack_team_id`, `slack_channel_id`.
    The `action_id` string is the whole diagnosis.
 2. Compare it with the constant block in `internal/channels/service/interactions.go`
-   (`ActionAcknowledge`, `ActionUnacknowledge`, `ActionNoopPrefix`) and with what
-   `internal/channels/render/slack/` actually emits.
+   (`ActionAcknowledge`, `ActionUnacknowledge`, `ActionSnooze`, `ActionUnsnooze`, `ActionOverflow`,
+   `ActionNoopPrefix`) and with what `internal/channels/render/slack/` actually emits. **The block is
+   the closed set; anything the renderer emits that is not in it is this metric's whole subject.**
 3. Did it start at a deploy? `GET /api/v1/version`. A rename lands with a release.
 4. Whether the increment came from the HTTP path or the `slack.interaction` worker — both record
    it, because from an operator's chair it is the same fact.

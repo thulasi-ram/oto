@@ -213,7 +213,7 @@ func (d *driver) wave(specs []batchSpec) {
 // drain waits until the pipeline has genuinely stopped: every batch terminal,
 // every pipeline job gone, every delivery settled.
 //
-// ⚠️ IT WAITS ON THE PIPELINE KINDS BY NAME. The periodic sweeps (`group.close`,
+// ⚠️ IT WAITS ON THE PIPELINE KINDS BY NAME. The periodic sweeps (`case.reap`,
 // `stats.rollup`, `partitions.manage`) are always scheduled for a future tick, so
 // "no jobs at all" is a condition that can never be true and a drain written that
 // way would hang until its deadline every single time.

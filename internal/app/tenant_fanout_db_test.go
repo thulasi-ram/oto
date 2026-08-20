@@ -134,6 +134,13 @@ func TestTheFanOutReachesEveryTenantAcrossContinuations(t *testing.T) {
 // a fan-out over that tenant's due sources: the two travel the same walk, over the
 // same real tenant table, and the kind that is not a sweep is the one that would
 // otherwise never be driven against it.
+//
+// ⚠️ THE SWEEP HALF WAS `group.close` UNTIL THAT KIND WAS DELETED (git-bug 7570090;
+// its constant and args followed). `retention.prune` replaces it rather than
+// `case.reap` on purpose: `case.reap` is what TestTheFanOutWalksEveryLiveTenant
+// above already drives, and running the same kind through both leaves the SECOND
+// per-tenant sweep — the one whose args carry the fan-out half for maintenance work
+// rather than lifecycle work — driven by nothing.
 func TestAShortPageQueuesNoContinuation(t *testing.T) {
 	t.Parallel()
 
@@ -141,7 +148,9 @@ func TestAShortPageQueuesNoContinuation(t *testing.T) {
 		kind  string
 		build func(jobs.TenantFanOut) db.JobArgs
 	}{
-		{jobs.KindGroupClose, func(f jobs.TenantFanOut) db.JobArgs { return jobs.GroupCloseArgs{TenantFanOut: f} }},
+		{jobs.KindRetentionPrune, func(f jobs.TenantFanOut) db.JobArgs {
+			return jobs.RetentionPruneArgs{TenantFanOut: f}
+		}},
 		{jobs.KindSourceReconcile, func(f jobs.TenantFanOut) db.JobArgs {
 			return jobs.SourceReconcileArgs{TenantFanOut: f}
 		}},
@@ -297,8 +306,11 @@ func tenantFanOutOf(args db.JobArgs) (jobs.TenantFanOut, bool) {
 		return a.TenantFanOut, true
 	case jobs.SourceReconcileArgs:
 		return a.TenantFanOut, true
-	case jobs.GroupCloseArgs:
-		return a.TenantFanOut, true
+	// ⛔ `jobs.GroupCloseArgs` HAD AN ARM HERE AND THE TYPE IS DELETED (git-bug
+	// 7570090). This switch is the reader for the fan-out's OUTPUT, so an arm for a
+	// kind nothing enqueues is unreachable by construction — and unreachable arms are
+	// what let this switch look exhaustive while a newly added per-tenant kind falls
+	// through to `default` and gets reported as "a payload with no tenant half".
 	case jobs.RetentionPruneArgs:
 		return a.TenantFanOut, true
 	case jobs.StatsRollupArgs:

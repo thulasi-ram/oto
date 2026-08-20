@@ -499,29 +499,26 @@ func (CaseReapArgs) InsertOpts() river.InsertOpts {
 	return periodicOpts(QueueLifecycle, PriorityNormal, time.Minute)
 }
 
-// GroupCloseArgs closes group generations whose members have all ended and —
-// critically — performs the §G.7.3 GAP RECOVERY that
-// advances `channel_threads.last_sent_seq` past a dead delivery so one poison
-// message can never wedge a thread forever. Periodic, 60 s, zero payload.
+// ⛔ THERE IS NO `GroupCloseArgs` ANY MORE. `group.close` swept open `alert_groups`
+// generations whose members had all ended and closed them, and its one consumer was
+// grouping's `LifecyclePolicy{CloseDelay}` — deleted with `alert_groups` itself
+// (git-bug 7570090). registry.go stopped registering the kind in that same commit;
+// the constant and this struct outlived it by two commits, which is the whole reason
+// they are being called out rather than quietly removed. A complete, correct,
+// per-tenant periodic args struct with no handler is worse than nothing: the next
+// lifecycle sweep gets written by copying it, and nobody re-derives whether the
+// queue, the timeout or the once-a-minute period are right for the new work.
 //
-// Queue: lifecycle · Priority: normal · Retry: periodic (3) · Payload v1
+// ⚠️ ITS DOC SENTENCE CLAIMED THE GAP RECOVERY, AND THAT IS THE ONE THING TO NOT
+// GO LOOKING FOR HERE. It read "performs the §G.7.3 GAP RECOVERY that advances
+// `channel_threads.last_sent_seq` past a dead delivery so one poison message can
+// never wedge a thread forever", and that work was never in this sweep: it is
+// `platform/jobs/ordering.Gate.Recover`, called on the DELIVERY path under the
+// thread advisory lock at the moment the wedge is observed, which is both earlier
+// and more precise than a minute-granularity sweep could be. The sentence was a
+// leftover from a design where the sweep owned it; deleting the struct deletes the
+// sentence and loses no behaviour. `platform/jobs/ordering/doc.go` is the authority.
 //
-// IDEMPOTENCY KEY: none needed — closing a closed group and advancing an already
-// advanced sequence are both no-ops under the thread advisory lock, so a
-// re-delivered per-tenant pass converges rather than double-applying.
-type GroupCloseArgs struct {
-	Payload
-	TenantFanOut
-}
-
-// Kind implements db.JobArgs and river.JobArgs.
-func (GroupCloseArgs) Kind() string { return KindGroupClose }
-
-// InsertOpts pins the queue, priority, retry ceiling and tick uniqueness.
-func (GroupCloseArgs) InsertOpts() river.InsertOpts {
-	return periodicOpts(QueueLifecycle, PriorityNormal, time.Minute)
-}
-
 // ⛔ THERE IS NO `FlapScoreArgs` ANY MORE. `flap.score` recomputed
 // `alerts.flap_score` / `alerts.is_flapping`, and the detector is RETIRED: the case
 // retention window W (migration 00057) damps a flap at case formation, so a damped

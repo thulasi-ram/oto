@@ -667,9 +667,8 @@ type ListRollupsQuery struct {
 // ListCasesQuery is the validated form of the `listCases` query string.
 //
 // ⭐⭐ IT IS NOT `ListAlertsQuery` WITH `ack` PUT BACK. Every dimension here is
-// either a column of `alert_cases` — `state`, `ack`, `group_id` — or one
-// of the four IDENTITY facets an operator narrows by before they narrow by
-// anything else. What it deliberately does NOT take is the label selector, the
+// either a column of `alert_cases` — `state`, `ack` — or one of the four IDENTITY
+// facets an operator narrows by before they narrow by anything else. What it deliberately does NOT take is the label selector, the
 // free-text search, `flapping` and `snoozed`: the first two are answered by GIN
 // indexes on `alerts` and reaching them per case row turns a keyset page into a
 // scan of the identity table, and the last two are properties of the identity
@@ -690,8 +689,16 @@ type ListCasesQuery struct {
 	// work from. It is served here and nowhere else — `alerts` has carried no ack
 	// column since 00049, because a receipt belongs to the firing it was given
 	// for and the identity outlives the firing.
-	Ack       []string `json:"ack"       validate:"omitempty,max=2,unique,dive,oneof=unacked acked"`
-	GroupID   []string `json:"group_id"  validate:"omitempty,max=32,unique,dive,uuid"`
+	Ack []string `json:"ack"       validate:"omitempty,max=2,unique,dive,oneof=unacked acked"`
+	// ⛔ THERE IS NO `GroupID`, AND ITS ABSENCE IS LOAD-BEARING (git-bug `7570090`).
+	// It carried `?group_id=` onto `domain.CaseFilter.GroupIDs`, which selected on
+	// `alert_cases.group_id` — a column deleted with `alert_groups`. It is NOT
+	// renamed to `conversation_id` the way the notification audit's was: that filter
+	// had a successor because a notification still has a delivery target, and this
+	// one has none, because the Case IS the conversation. Removing this field and
+	// removing `"group_id"` from `listCasesParams` are a PAIR: this field alone
+	// leaves an accepted-but-ignored parameter, which serves the whole org under a
+	// filtered request. Both gone means `400 unknown_parameter`.
 	Severity  []string `json:"severity"  validate:"omitempty,max=16,unique,dive,max=4096"`
 	Cluster   []string `json:"cluster"   validate:"omitempty,max=32,unique,dive,clusterkey"`
 	Namespace []string `json:"namespace" validate:"omitempty,max=64,unique,dive,max=4096"`

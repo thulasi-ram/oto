@@ -24,8 +24,10 @@ import (
 	notifdomain "github.com/thulasiram/oto/internal/notification/domain"
 	notifrepo "github.com/thulasiram/oto/internal/notification/repository"
 	notifservice "github.com/thulasiram/oto/internal/notification/service"
+	"github.com/thulasiram/oto/internal/platform/authn"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
+	"github.com/thulasiram/oto/internal/platform/idempotency"
 	"github.com/thulasiram/oto/internal/platform/jobs"
 	rulesdomain "github.com/thulasiram/oto/internal/rules/domain"
 	rulesservice "github.com/thulasiram/oto/internal/rules/service"
@@ -1282,30 +1284,102 @@ type slackSnoozeActions struct {
 // `alert_snoozes` row and in the `alert.snoozed` event, so the timeline says who
 // went quiet and until when.
 //
-// ⛔ THE INTENT IS THE ZERO VALUE, AND THAT IS THE HONEST ANSWER RATHER THAN A GAP.
-// `Idempotency` is the caller's `Idempotency-Key`, and a Slack button has no such
-// header to send — an unkeyed intent (`Keyed == false`) is precisely what the
-// protocol defines for that case, so no claim is taken and the verb behaves exactly
-// as it did before the header existed. Minting a key HERE would be worse than none:
-// it would have to be derived from something, and every candidate is either the
-// press (which makes a double-click idempotent — a human pressing 4h after 30m means
-// it, §B.8.3 says a snooze supersedes its own incumbent) or the clock (which is the
-// `a6cc834` defect verbatim). The convergence a retry needs is already in the
-// domain, not in a key.
+// ⛔⛔ THE INTENT USED TO BE THE ZERO VALUE AND THAT WAS THE `a6cc834` DEFECT WITH A
+// DIFFERENT DOOR. The note here said an unkeyed intent was "the honest answer rather
+// than a gap", because a Slack button sends no `Idempotency-Key` header and because
+// every candidate key it considered was either the PRESS (which would make a genuine
+// second press replay the first — a human pressing 4h after 30m means it, §B.8.3) or
+// the CLOCK (which is `a6cc834` verbatim). Both objections are correct and both miss
+// a third candidate: the INTERACTION. `Snooze` always supersedes, so one press
+// executed twice writes `alert.unsnoozed(superseded)` and `alert.snoozed` twice for
+// a gesture that happened once, and nothing in the domain converges that — the
+// timeline is append-only and both pairs are, individually, true.
 //
-// The `replayed` flag is therefore always false and is dropped: it is the fan-out
-// signal `SnoozeAs` returns so a group gesture can stop at member one, and this
-// press has exactly one member.
+// ⭐ THE KEY IS MINTED BY `channels`, NOT HERE, and arrives as an opaque string. It
+// is a sha256 over the interaction's `response_url` — the one per-interaction
+// identity Slack already sends, byte-identical on a redelivery of the same
+// interaction and different for every new press — so it distinguishes exactly the
+// two cases the objection above conflates. See `channels/service.interactionKey`,
+// which is also where the reason it is hashed lives. THIS layer only adapts: it is
+// the one place allowed to know both `channels`' primitives and
+// `alerts/service.Idempotency`, and an empty key stays unkeyed.
+//
+// ⛔ IT IS CLAIMED UNDER `snoozeAlert`, THE CONTRACT'S OWN OPERATION, AND THAT IS
+// DELIBERATE. A Slack press and an API `POST …/snooze` are the same act on the same
+// row; two operationIds would give one gesture two key spaces and let a press and a
+// call collide on neither. The request hash is the alert, via `HashTargetedRequest`
+// — the shape the protocol prescribes for a verb addressed by a path id and carrying
+// no body — so the same key against a DIFFERENT alert is `Conflicted` rather than a
+// replay naming a snooze the presser never asked about.
+//
+// ⚠️⚠️ AN UNLINKED SLACK MEMBER IS STILL UNKEYED, AND THAT IS A REPORTED GAP RATHER
+// THAN A CHOICE. `idempotency_claims`' primary key is
+// (org_id, principal_id, operation, idempotency_key) with `principal_id` NOT NULL,
+// and `idempotency.Claim.validate` refuses a zero one as a wiring bug. A Slack
+// member who has never linked an oto account HAS no user uuid — `actor()` records
+// them as `actor_kind = 'slack'` with the Slack member id, which is a string and not
+// a uuid — so there is no principal to claim under and nothing here may invent one.
+// (Migration 00041 anticipates the case in as many words: `principal_id` is
+// "Deliberately NOT a FK to users … a Principal is not always a user row (SPEC §E.1
+// also has ingest, slack and system kinds)". What it does not define is where a
+// Slack principal's uuid comes from, and defining that from an adapter would be
+// inventing platform semantics in the wrong module.) Until it is defined, a linked
+// presser converges and an unlinked one keeps the old exposure.
+//
+// The `replayed` flag is dropped rather than returned: it is the fan-out signal
+// `SnoozeAs` gives so a group gesture can stop at member one, this press has exactly
+// one member, and a replay is a SUCCESS from the presser's chair — the snooze they
+// asked for is in force. What a replay that can no longer be served returns is a
+// `409`, which `applySnooze` answers with a sentence.
 func (a slackSnoozeActions) SnoozeAlert(
 	ctx context.Context, s db.TenantScope, alertID uuid.UUID,
-	actorKind, actorID, actorLabel string, until time.Time,
+	actorKind, actorID, actorLabel string, until time.Time, idempotencyKey string,
 ) error {
 	if a.alerts == nil {
 		return errs.Unavailable("alerts_unavailable", "alerts are not wired", 0)
 	}
 	_, err := a.alerts.SnoozeAs(ctx, s, alertID, actorKind, actorID, actorLabel,
-		until, "", alertsservice.Idempotency{})
+		until, "", slackIdempotency(s, alertID, actorID, idempotencyKey))
 	return err
+}
+
+// slackIdempotency turns `channels`' opaque interaction key into the intent
+// `alerts/service` speaks, or returns the unkeyed zero when it cannot.
+//
+// There are exactly two reasons it declines, and neither is a failure worth
+// reporting: the interaction carried no `response_url` to key on, or the presser has
+// no oto user to be the claim's principal. Both are argued on `SnoozeAlert`.
+func slackIdempotency(
+	s db.TenantScope, alertID uuid.UUID, actorID, key string,
+) alertsservice.Idempotency {
+	if key == "" {
+		return alertsservice.Idempotency{}
+	}
+	// ⛔ THE PRINCIPAL IS THE LINKED OTO USER OR NOTHING. `actorID` is a uuid string
+	// only when `channels/service.actor` resolved the Slack member to one; an
+	// unlinked member's id is a Slack handle like `U024BE7LH`, which does not parse
+	// — and `uuid.Nil` would be refused by the claim store as a wiring bug.
+	userID, err := uuid.Parse(actorID)
+	if err != nil || userID == uuid.Nil {
+		return alertsservice.Idempotency{}
+	}
+	k, err := idempotency.NewKey(key)
+	if err != nil {
+		// Unreachable: the minted key is 70 characters. Declining rather than
+		// panicking keeps a bound this layer does not own from costing a press.
+		return alertsservice.Idempotency{}
+	}
+	return alertsservice.Idempotency{
+		Keyed:     true,
+		Key:       k,
+		Operation: alertsservice.OpSnoozeAlert,
+		Principal: authn.Principal{
+			Kind:   authn.KindSlack,
+			OrgID:  s.OrgID(),
+			UserID: userID,
+		},
+		RequestHash: idempotency.HashTargetedRequest(alertID, nil),
+	}
 }
 
 // UnsnoozeAlert ends the quiet early, with `ended_reason='manual'` — a deliberate

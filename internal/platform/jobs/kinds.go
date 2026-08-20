@@ -19,8 +19,13 @@ const (
 	QueueDeliverWebhook = "deliver_webhook"
 	// QueueReconcile carries the mandatory Alertmanager reconciler and silence sync.
 	QueueReconcile = "reconcile"
-	// QueueLifecycle carries the periodic state-machine sweeps: reaper, group
-	// close, unacked reminders, digests.
+	// QueueLifecycle carries the periodic state-machine sweeps: the case reaper and
+	// the two digest kinds (the tick and its detector). ⛔ IT USED TO SAY "group
+	// close, unacked reminders" as well, and both of those kinds are gone —
+	// `notify.unacked_reminder` with the reminder (git-bug bd0fb1d) and `group.close`
+	// with grouping (git-bug 7570090, kind deleted below). A queue described by work
+	// it no longer carries is how somebody sizes its worker count for a sweep that
+	// does not run.
 	QueueLifecycle = "lifecycle"
 	// QueueMaintenance carries partition management, retention and rollups. One
 	// worker: these are DDL-adjacent and must not race themselves.
@@ -50,7 +55,35 @@ const (
 	KindSourceReconcile  = "source.reconcile"
 	KindSilencesSync     = "silences.sync"
 	KindCaseReap         = "case.reap"
-	KindGroupClose       = "group.close"
+	// ⛔ THERE IS NO `group.close` KIND ANY MORE, and this tombstone is the second
+	// half of a deletion that stopped half-way. git-bug 7570090 deleted grouping —
+	// `alert_groups`, generations, the `LifecyclePolicy{CloseDelay}` that was this
+	// sweep's ONLY consumer — and unregistered the kind in registry.go, but left the
+	// constant and `GroupCloseArgs` standing. What that leaves behind is not harmless
+	// vocabulary: a declared kind with a declared args struct is an INVITATION, and
+	// the next person adding a lifecycle sweep finds a fully-formed per-tenant
+	// periodic sitting one `Handlers` field away from working. It swept open
+	// generations idle past `group_close_delay_s` and closed them, which is what made
+	// the next fire post a brand-new Slack root. A conversation is a Case now: it ends
+	// when the Case ends, so there is no idle generation to close and no sweep to run.
+	//
+	// ⚠️ ITS DOC CLAIMED §G.7.3 GAP RECOVERY AND THAT CLAIM WAS ALREADY STALE — this
+	// is the part worth carrying forward, because it is the one thing a reader might
+	// think went missing here. Thread gap recovery — advancing
+	// `channel_threads.last_sent_seq` past a finished-but-unsent slot so one poison
+	// message cannot wedge a thread forever — lives in
+	// `platform/jobs/ordering.Gate.Recover` and runs on the DELIVERY path, under the
+	// thread advisory lock, at the moment the wedge is observed. It was never a
+	// periodic sweep's job and nothing about it is lost.
+	//
+	// ⭐ NO MIGRATION, AND THE REASONING IS THE STANDING ONE (migration 00059's
+	// header, spent again by `flap.score` and `notify.unacked_reminder` below). There
+	// is no SCHEDULE for this kind, so nothing has been able to create a row of it
+	// since 7570090; and a row that does exist is fetched, answered with River's
+	// `UnknownJobKindError`, retried to its stored `MaxAttempts` (3, from
+	// `periodicOpts`) and discarded. An unregistered kind never RUNS — it does not
+	// wedge a queue and it does not stop a client — so there is nothing for DDL to
+	// clean up, and `just reset` is the answer on the only database that exists.
 	// ⛔ THERE IS NO `flap.score` KIND ANY MORE. It recomputed
 	// `alerts.flap_score` / `alerts.is_flapping` every five minutes. The case
 	// retention window W (migration 00057) damps a flap at CASE FORMATION, which

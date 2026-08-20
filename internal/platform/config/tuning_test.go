@@ -67,8 +67,17 @@ func TestAFileKeyReportsItsFilePath(t *testing.T) {
 }
 
 // TestAnEnvVarReportsItsOwnName, spelled the way an operator would type it.
+//
+// ⚠️ IT USED `OTO_TUNING_UNACKED_REMINDER_MENTION_MIN_SEVERITY`, which is a key that
+// no longer exists (git-bug bd0fb1d, migration 00068), and the header's rule applies
+// to it verbatim: a fixture is a worked example, and one built on a key
+// `NewDeclarative` refuses with `unknown_key` teaches an operator a line that fails
+// their boot. `flap_digest_interval_s` is the substitute because it is what this test
+// actually needs — a SURVIVING key with several underscores after the infix, so the
+// assertion still proves the interesting thing (koanf does not read `_` as a nesting
+// level) rather than merely restating a one-word key.
 func TestAnEnvVarReportsItsOwnName(t *testing.T) {
-	t.Setenv("OTO_TUNING_UNACKED_REMINDER_MENTION_MIN_SEVERITY", "warning")
+	t.Setenv("OTO_TUNING_FLAP_DIGEST_INTERVAL_S", "900")
 
 	cfg, err := Load("")
 	if err != nil {
@@ -78,11 +87,11 @@ func TestAnEnvVarReportsItsOwnName(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("entries %+v, want one", entries)
 	}
-	if entries[0].Key != "unacked_reminder_mention_min_severity" {
-		t.Fatalf("key %q: the trailing underscores are part of the key, not a nested path",
+	if entries[0].Key != "flap_digest_interval_s" {
+		t.Fatalf("key %q: the interior underscores are part of the key, not a nested path",
 			entries[0].Key)
 	}
-	if entries[0].ConfigKey != "OTO_TUNING_UNACKED_REMINDER_MENTION_MIN_SEVERITY" {
+	if entries[0].ConfigKey != "OTO_TUNING_FLAP_DIGEST_INTERVAL_S" {
 		t.Fatalf("config key %q", entries[0].ConfigKey)
 	}
 }
@@ -113,9 +122,25 @@ func TestTheEnvironmentWinsAndSaysSo(t *testing.T) {
 	}
 }
 
-// TestACommaSeparatedEnvValueBecomesAList, which is the mention list's shape.
+// TestACommaSeparatedEnvValueBecomesAList pins the TRANSPORT rule, not a key.
+//
+// ⛔ IT USED `OTO_TUNING_UNACKED_REMINDER_MENTION_LIST` — the only list-valued
+// setting oto ever had, deleted with the unacked reminder (git-bug bd0fb1d,
+// migration 00068) — and NO SURVIVING KEY IS LIST-VALUED. The test is re-homed
+// rather than deleted because `splitList` is still live and still right: a comma is
+// the only list syntax an environment variable has, this package is key-agnostic by
+// design, and the split therefore cannot be conditioned on the key.
+//
+// ⭐ SO THE ASSERTION IS NOW THE OTHER HALF OF THE ORIGINAL SENTENCE. It proves the
+// split happens over a surviving key that does NOT want a list, which is the case
+// that survives the reminder: the loader hands `identity/domain` a two-element
+// `[]string` for `resolve_grace_s`, and `NewDeclarative` refuses it BY NAME
+// (`asInt` reports `[900 1200] is not a whole number` against
+// `OTO_TUNING_RESOLVE_GRACE_S`). A comma in a number failing the boot with the
+// operator's own variable named is the outcome worth pinning; silently reading
+// `900,1200` as nine hundred is the one this stops.
 func TestACommaSeparatedEnvValueBecomesAList(t *testing.T) {
-	t.Setenv("OTO_TUNING_UNACKED_REMINDER_MENTION_LIST", "<@U012AB3CD>, <!subteam^S01ABCDEF>")
+	t.Setenv("OTO_TUNING_RESOLVE_GRACE_S", "900, 1200")
 
 	cfg, err := Load("")
 	if err != nil {
@@ -129,7 +154,7 @@ func TestACommaSeparatedEnvValueBecomesAList(t *testing.T) {
 	if !ok || len(list) != 2 {
 		t.Fatalf("value %v (%T), want a two-element list", entries[0].Value, entries[0].Value)
 	}
-	if list[1] != "<!subteam^S01ABCDEF>" {
+	if list[1] != "1200" {
 		t.Fatalf("the element was not trimmed: %q", list[1])
 	}
 }

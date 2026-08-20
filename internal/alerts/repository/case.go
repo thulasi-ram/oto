@@ -465,14 +465,16 @@ func (r *CaseRepository) ListByAlert(
 // belongs. This statement is PREPAREd against a migrated container to prove the
 // arity, which the Go compiler cannot do for a spliced string.
 //
-// ⛔ AND THE FILTER SHORT-CIRCUITS IN GO RATHER THAN SIMPLY VANISHING. `ListCases`
-// returns an EMPTY page when a caller still supplies `f.GroupIDs`. Deleting the
-// predicate alone would make `?group_id=…` return the whole org's case list — a
-// SILENT WIDENING of a filtered read, which is a far worse failure than an error
-// because nothing reports it. Empty is the truthful answer: no Case belongs to any
-// group any more, so nothing matches. The `?group_id=` parameter and
-// `domain.CaseFilter.GroupIDs` still need removing one layer up; neither is in this
-// package.
+// ⛔ AND THE FILTER IS NOW GONE END TO END, WHICH IS WHY THIS PACKAGE NO LONGER
+// GUARDS IT. There was an interim in which `ListCases` short-circuited to an EMPTY
+// page whenever `f.GroupIDs` was non-empty: the predicate had gone but `?group_id=`
+// was still published, and deleting the predicate alone would have made the
+// parameter return the whole org's case list — a SILENT WIDENING of a filtered read,
+// which is a far worse failure than an error because nothing reports it. Empty was
+// the truthful answer while the parameter existed. It no longer does: `?group_id=`
+// is off `listCasesParams`, `ListCasesQuery.GroupID` and `domain.CaseFilter.GroupIDs`
+// are deleted, and an old caller is refused `400 unknown_parameter` at the API edge
+// before reaching here. The guard came out WITH the field, not before it.
 var listCasesHead = `
 SELECT ` + caseColumns + `
   FROM alert_cases
@@ -616,19 +618,6 @@ func (r *CaseRepository) ListCases(
 		return nil, db.Cursor{}, err
 	}
 	limit := db.ClampLimit(p.Limit)
-
-	// ⛔ A GROUP FACET NOW SELECTS NOTHING, LOUDLY IN THE DATA AND SILENTLY IN THE
-	// HTTP STATUS (git-bug `7570090`). See `listCasesHead`: the predicate is gone
-	// because `alert_cases.group_id` is gone, and simply dropping it would have turned
-	// `?group_id=…` into "every case in the org". An empty page is the honest answer —
-	// no Case is a member of anything any more — and it is the same answer the
-	// notification audit gives for the same query, where the id no longer resolves.
-	// It is NOT a 400: the parameter is still in the contract, and rejecting a request
-	// the published schema accepts is the API layer's decision to make, not this
-	// repository's.
-	if len(f.GroupIDs) > 0 {
-		return nil, db.Cursor{Hash: p.Cursor.Hash}, nil
-	}
 
 	// Both values is no constraint at all, and so is neither: the column has
 	// exactly two, so a filter naming both selects every row and spelling it out

@@ -103,8 +103,11 @@ var notARequestResolver = map[string]string{
 	"notification/repository.orgOfDeliverySQL": "job-payload scope for the delivery workers: the org comes from the delivery row",
 	"sources/repository.resolveSourceOrgSQL":   "job-payload scope for the source workers: the org comes from the source row",
 
-	"app.liveOrgSQL": "job-payload scope for the per-tenant periodics (`case.reap`, `group.close`, " +
-		"`flap.score`, `retention.prune`'s drill sweep, `stats.rollup`). It is the same category as the " +
+	"app.liveOrgSQL": "job-payload scope for the per-tenant periodics (`case.reap`, `notify.digest`, " +
+		"`notify.digest.reconcile`, `retention.prune`'s drill sweep, `stats.rollup`). The list named " +
+		"`group.close` and `flap.score` until both kinds were deleted (git-bug `7570090` and the flap " +
+		"retirement); the category is unchanged, because what makes it exempt is the SHAPE of the " +
+		"scope and never which sweeps happen to exist. It is the same category as the " +
 		"five above — the org comes from a ROW, not from a credential — with the twist that the row IS " +
 		"the org, because a periodic sweep has no subject to derive one from. That is exactly why it " +
 		"exists rather than the handler casting the payload's org id into a scope: a job payload is " +

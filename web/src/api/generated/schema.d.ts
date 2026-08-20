@@ -7826,30 +7826,6 @@ export interface operations {
                  */
                 ack?: components["schemas"]["AckState"][];
                 /**
-                 * @deprecated
-                 * @description ⛔ **RETAINED, INERT, AND SLATED FOR REMOVAL. Supplying it returns an EMPTY page — always.**
-                 *
-                 *     It took AlertGroup ids and asked "which episodes is that thread about". `alert_groups` is
-                 *     deleted (git-bug `7570090`, migration `00069`) and `alert_cases.group_id` went with it, so
-                 *     there is no membership left to select on and no Case belongs to any container any more.
-                 *     **Empty is the truthful answer, not a bug**: the alternative — dropping the predicate and
-                 *     serving the page — is a SILENT WIDENING of a filtered read, which is the one failure nothing
-                 *     reports (`alerts/repository.ListCases` short-circuits in Go precisely to avoid it).
-                 *
-                 *     ⛔ **AND IT IS DELIBERATELY NOT RENAMED TO `conversation_id`**, which is what the same
-                 *     rename did to `GET /notifications`. That parameter had a successor because a notification
-                 *     still has a delivery target to be narrowed by; **this one has none, because the Case IS the
-                 *     conversation.** Filtering Cases by conversation id would be filtering them by their own id,
-                 *     which is `GET /api/v1/cases/{id}`. There is nothing left to ask, so nothing is offered under
-                 *     a new name — an inert filter wearing the new vocabulary would be worse than an inert filter
-                 *     wearing the old one, because it would look like the supported spelling.
-                 *
-                 *     It is still ACCEPTED rather than `400 unknown_parameter` only because it is still published
-                 *     here; the parameter and `ListCasesQuery.GroupID` behind it come out together, and a caller
-                 *     must stop sending it now.
-                 */
-                group_id?: string[];
-                /**
                  * @description Comma-separated severity values, matched against the alert's promoted `severity` label. Not
                  *     a closed enum — operators choose their own vocabulary.
                  */
@@ -11037,9 +11013,12 @@ export interface operations {
                 /**
                  * @description Narrow the interest set to one group generation.
                  *
-                 *     ⚠️ **IT KEEPS THIS SPELLING AND IS NOT `conversation_id`, AND THAT IS DELIBERATE RATHER
-                 *     THAN AN OVERSIGHT.** Unlike the `group_id` on `GET /api/v1/cases`, this parameter is not a
-                 *     column filter and never was: the stream's interest set is a predicate over FRAMES, applied
+                 *     ⚠️ **IT KEEPS THIS SPELLING AND IS NOT `conversation_id`, AND IT IS LIVE CODE RATHER THAN
+                 *     RESIDUE.** The `group_id` that `GET /api/v1/cases` once took is **deleted** — it selected
+                 *     on the dropped `alert_cases.group_id` column and is now `400 unknown_parameter` — so there
+                 *     is no longer a same-named filter here to be contrasted against. The distinction is worth
+                 *     keeping anyway, because it is what makes this parameter survivable: it is not a
+                 *     column filter and never was. The stream's interest set is a predicate over FRAMES, applied
                  *     by `streaming/domain.Interest.Matches` on both the live and the resume path, and the
                  *     `group.upserted` kind together with the `group_id` derived from a frame's payload are still
                  *     in `UiEventKind` and still honoured. Renaming it here would publish a name the server does

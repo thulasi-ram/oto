@@ -340,10 +340,27 @@ lifetimes.
 job. You should rarely see this, because oto's whole delivery model is built to
 avoid it: `chat.update` (Tier 3, 50+/min) instead of `chat.postMessage` (~1
 message/second/channel). If it is persistent, something is posting far more root
-messages than expected — look at flap damping and at your Alertmanager
-`group_by` in [tuning.md](/setup/tuning/). oto damps nothing else: storm collapse was
-removed ([ADR 0042](/adr/0042-storm-damping-is-removed/)) and a burst of real
-firings is reported in full, by design.
+messages than expected.
+
+⛔ **Do not go looking for flap damping — there is none.** It was retired
+(git-bug `235f347`) and `flapping` left the suppression chain with storm collapse
+([ADR 0042](/adr/0042-storm-damping-is-removed/)); the `flap_*` tuning keys
+outlived the mechanism they configured. oto damps nothing on its own judgement, and
+a burst of real firings is reported in full, by design — one conversation per alert
+([ADR 0045](/adr/0045-a-case-is-a-conversation-and-a-thread-per-alert-is-accepted/)),
+which is the accepted cost, not a bug to tune away.
+
+Two things are actually actionable, and both are opt-in:
+
+- A **notification policy count condition** (`count_min` over `count_window_s`) —
+  "do not speak until this has happened five times in an hour". This is the
+  supported replacement for what flap damping was reaching for (git-bug `7570090`,
+  [ADR 0044](/adr/0044-a-count-condition-is-a-silence-the-operator-asked-for/)).
+  It binds to Cases.
+- A **digest** (`digest_window_s`), which collapses a window into one message.
+
+Then check your Alertmanager `group_by` in [tuning.md](/setup/tuning/): oto reports what
+it is sent, so a source fanning one event into many alerts is fixed at the source.
 
 ### The Acknowledge button does nothing
 

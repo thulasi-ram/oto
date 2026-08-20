@@ -9,8 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/thulasiram/oto/internal/alerts/api/filter"
 	"github.com/thulasiram/oto/internal/alerts/domain"
 	"github.com/thulasiram/oto/internal/alerts/service"
@@ -52,24 +50,30 @@ var listRollupsParams = []string{
 // `400 unknown_parameter` rather than a silently unfiltered page — see
 // ListCasesQuery for why each of them belongs on the alert list instead.
 //
-// ⛔ `group_id` IS STILL ADMITTED HERE AND IT IS INERT, WHICH IS A CHOICE AND NOT
-// AN OVERSIGHT (git-bug `7570090`). `alert_cases.group_id` is dropped, so
-// `repository.ListCases` short-circuits to an EMPTY page the moment
-// `CaseFilter.GroupIDs` is non-empty — see the comment on `listCasesHead` — and
-// this allow-list plus `p.CSV("group_id")` below are what still get it there.
-// Dropping either one would turn `?group_id=…` into "every case in the org",
-// which is a SILENT WIDENING of a filtered read and the one failure nothing
-// reports. Empty is the truthful answer: no Case is a member of anything now.
+// ⛔ `group_id` IS GONE FROM THIS LIST AND ITS ABSENCE IS THE WHOLE POINT (git-bug
+// `7570090`). `alert_groups` and `alert_cases.group_id` are deleted, so there is
+// no membership left to select on. There were three possible endings and only one
+// of them is honest:
 //
-// ⛔ AND IT IS NOT RENAMED TO `conversation_id` the way `GET /notifications` was.
+//   - ADMITTED AND BOUND — the interim state. `repository.ListCases` short-circuited
+//     to an EMPTY page, which is truthful but lets a dashboard that has quietly
+//     stopped showing anything look merely idle.
+//   - ADMITTED AND UNBOUND — the trap. Leaving `"group_id"` here while deleting the
+//     `p.CSV("group_id")` below makes `httpx.NewParams` accept the parameter and
+//     nothing read it, so `?group_id=…` serves EVERY CASE IN THE ORG under a
+//     filtered request. That is a SILENT WIDENING of a filtered read, the one
+//     failure nothing reports. The two deletions are a pair; neither is safe alone.
+//   - NOT ADMITTED — this. An unlisted parameter lands in `NewParams`' `unknown`
+//     slice and the request is refused `400 unknown_parameter` naming `group_id`,
+//     so an old caller is TOLD in one round trip.
+//
+// ⛔ AND IT WAS NOT RENAMED TO `conversation_id` the way `GET /notifications` was.
 // That parameter had a successor — a notification still has a delivery target to
 // narrow by. This one has none, because the Case IS the conversation: filtering
-// Cases by conversation id is `GET /cases/{id}`. The parameter and
-// `ListCasesQuery.GroupID` behind it come out together, at which point an old
-// caller gets `400 unknown_parameter` from `httpx.NewParams` and is told rather
-// than served. `openapi.yaml` marks it `deprecated: true` and says all of this.
+// Cases by conversation id is `GET /cases/{id}`. There is nothing left to ask, so
+// nothing is offered under a new name.
 var listCasesParams = []string{
-	"state", "ack", "group_id",
+	"state", "ack",
 	"severity", "cluster", "namespace", "alertname",
 	"synthetic", "since",
 	"limit", "cursor",
@@ -199,7 +203,6 @@ func parseListCases(r *http.Request) (casesListRequest, error) {
 	q := ListCasesQuery{
 		State:     p.CSV("state"),
 		Ack:       p.CSV("ack"),
-		GroupID:   p.CSV("group_id"),
 		Severity:  p.CSV("severity"),
 		Cluster:   p.CSV("cluster"),
 		Namespace: p.CSV("namespace"),
@@ -261,22 +264,10 @@ func caseFilter(q ListCasesQuery) (domain.CaseFilter, error) {
 		}
 		acks = append(acks, as)
 	}
-	groups := make([]uuid.UUID, 0, len(q.GroupID))
-	for _, g := range q.GroupID {
-		id, err := uuid.Parse(g)
-		if err != nil {
-			return domain.CaseFilter{}, errs.Validation("validation_failed",
-				"1 field failed validation.", errs.Violation{
-					Field: "group_id", Code: "uuid", Message: "must be a uuid",
-				})
-		}
-		groups = append(groups, id)
-	}
 
 	return domain.CaseFilter{
 		States:      states,
 		AckStates:   acks,
-		GroupIDs:    groups,
 		Severities:  q.Severity,
 		Namespaces:  q.Namespace,
 		ClusterKeys: q.Cluster,
@@ -296,7 +287,6 @@ func caseFilterHash(q ListCasesQuery) string {
 	parts := []string{
 		"state=" + joinSorted(q.State),
 		"ack=" + joinSorted(q.Ack),
-		"group_id=" + joinSorted(q.GroupID),
 		"severity=" + joinSorted(q.Severity),
 		"cluster=" + joinSorted(q.Cluster),
 		"namespace=" + joinSorted(q.Namespace),

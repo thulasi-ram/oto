@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -76,6 +78,36 @@ const (
 	// resolve to nothing and be answered honestly, which is the good outcome; the
 	// bad one is assuming they are interchangeable because they look alike.
 	ActionUnsnooze = "oto.unsnooze"
+	// ActionOverflow is the links overflow — the `:package: More` menu that holds
+	// Timeline, Prometheus, Alertmanager, Rule history and Show all labels.
+	//
+	// ⛔ IT WAS IN NO SET AT ALL AND EVERY PRESS COUNTED AS AN UNKNOWN ACTION. The
+	// renderer has always emitted `oto.more` (render/slack/root.go), it matches
+	// neither the four writing ids below nor `ActionNoopPrefix`, so it fell to
+	// `Handle`'s default and incremented `oto_slack_unknown_action_total` — a series
+	// an operator reads as "a human pressed a button oto could not route" — on the
+	// one element of the card that is working exactly as designed.
+	//
+	// ⭐ IT IS ADMITTED TO THE CLOSED SET RATHER THAN RENAMED, and the choice is not
+	// stylistic. `oto.noop.more` would read tidier and it is the WRONG fix twice
+	// over. First, the header of this block is a rule: cards posted before the
+	// rename are still sitting in Slack carrying `oto.more`, so renaming turns every
+	// one of those menus into the silent no-op this file exists to abolish — the
+	// defect relocated, not fixed. (Five goldens and four conformance cases in
+	// `render/slack` pin the literal, and SPEC §H.8's action table names it, which is
+	// the same fact showing up as tests.) Second, `oto.noop.*` means "a URL button,
+	// there is nothing here to do", and this element is NOT link-only: `Show all
+	// labels` carries a `value` (`labels|<case id>`), which §H.8 designates for a
+	// `views.open` modal. Filing a container of mixed options under the link-only
+	// namespace would make the namespace stop being true.
+	//
+	// ⚠️ SO IT IS INERT TODAY AND THAT IS A GAP, NOT THE DESIGN. The url half is
+	// complete — Slack navigates, oto acks, done (S9). The `Show all labels` half has
+	// no modal behind it yet, so pressing it does nothing and says nothing. That is
+	// worth fixing and it is NOT what the unknown-action counter is for: the action
+	// is known and routed, one of its options is unbuilt, and conflating the two
+	// would put a permanent floor under the series that says oto is broken.
+	ActionOverflow = "oto.more"
 	// ActionNoopPrefix marks the URL buttons. Slack delivers an interaction for
 	// every one of them and oto must acknowledge it; there is nothing to do
 	// beyond that, and the explicit namespace is what says so out loud.
@@ -233,12 +265,34 @@ type Cases interface {
 // contract `Cases` states and for the same reason. `not_snoozed` is the one
 // precondition an unsnooze can earn; a snooze has none, because it is orthogonal to
 // state and supersedes its own incumbent rather than refusing (§B.8.3).
+//
+// ⚠️ A SNOOZE CAN NOW EARN ONE `errs.KindConflict`, WHICH IS NOT A PRECONDITION AND
+// IS NOT A FAULT. `idempotency_key_reuse` means an earlier execution of THIS SAME
+// interaction already granted the snooze and it has since ended, so there is nothing
+// live to report and acting again would grant a second one nobody pressed for. It
+// exists only because `idempotencyKey` exists; see SnoozeAlert.
 type Snoozes interface {
 	// SnoozeAlert makes oto quiet about one alert until `until`. An `until` outside
 	// the domain's 5-minute…30-day window is a validation error, which is why the
 	// caller derives it from a preset and never from the payload.
+	//
+	// ⭐⭐ `idempotencyKey` IS WHAT STOPS ONE PRESS BECOMING TWO TIMELINE ENTRIES,
+	// and it is the only parameter on this surface that is about the DELIVERY rather
+	// than the act. A snooze ALWAYS supersedes its incumbent (§B.8.3), so a second
+	// execution of one press writes `alert.unsnoozed(superseded)` AND
+	// `alert.snoozed` a second time — a pair of facts about a gesture that happened
+	// once. It is an opaque string, minted by `interactionKey` from the interaction
+	// itself; empty means "this press has nothing stable to key on", which is
+	// honest and is exactly the unkeyed behaviour that shipped before.
+	//
+	// ⛔ IT IS NOT AN `Idempotency-Key` HEADER AND MUST NOT BE DOCUMENTED AS ONE.
+	// The header is a CLIENT's private handle on its own retry; this is oto's own
+	// handle on one Slack interaction, minted by oto, and no caller ever sends it.
+	// `internal/app` is what turns it into the intent the alerts verb speaks —
+	// `channels` is the last module in the dependency direction (§I.1) and may not
+	// learn `alerts/service.Idempotency`.
 	SnoozeAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID,
-		actorKind, actorID, actorLabel string, until time.Time) error
+		actorKind, actorID, actorLabel string, until time.Time, idempotencyKey string) error
 	// UnsnoozeAlert ends the quiet early, with `ended_reason='manual'`. It refuses
 	// with `errs.KindPrecondition` carrying `not_snoozed` when there is no quiet to
 	// end — which is the double-click, and is an outcome rather than a fault.
@@ -409,6 +463,11 @@ func (s *InteractionService) Handle(ctx context.Context, payload json.RawMessage
 				// double-click, a replay and a job retry converge (§G.5).
 				Opts: []db.JobOption{db.WithUniquePeriod(slackReplayWindow)},
 			})
+		case id == ActionOverflow:
+			// The links overflow. It is a CONTAINER of places to look, so pressing
+			// the container is not a verb and enqueues nothing — see ActionOverflow
+			// for why it is admitted here rather than renamed into the no-op
+			// namespace, and for the one option inside it that is still unbuilt.
 		case strings.HasPrefix(id, ActionNoopPrefix):
 			// A URL button. Slack delivered an interaction oto is REQUIRED to
 			// acknowledge and there is nothing else to do; the explicit namespace
@@ -731,13 +790,27 @@ func (s *InteractionService) applySnooze(
 	// could do nothing about. A job retry re-anchors it, which is the same reading —
 	// "quiet for thirty minutes from when oto went quiet".
 	until := s.clk.Now().Add(quiet)
-	switch err := s.snoozes.SnoozeAlert(ctx, scope, alertID, kind, actorID, label, until); {
+	switch err := s.snoozes.SnoozeAlert(ctx, scope, alertID, kind, actorID, label, until,
+		interactionKey(args)); {
 	case err == nil:
 		logger.Info("channels: snoozed from Slack")
 		return nil
 	case errs.IsKind(err, errs.KindNotFound):
 		s.tell(ctx, args, "oto can no longer find that alert from this channel. "+
 			"It may have been removed, or it belongs to a different oto organisation.")
+		return nil
+	case errs.IsKind(err, errs.KindConflict):
+		// ⭐ THE PRESS ALREADY LANDED AND ITS SNOOZE HAS SINCE ENDED. This is the one
+		// answer `interactionKey` can produce that is neither success nor failure:
+		// the key was claimed by an earlier execution of THIS interaction, so the
+		// snooze exists as a fact — but somebody woke the alert up in between, so
+		// there is no live quiet period to report back. Acting again would grant a
+		// snooze nobody pressed for a second time, which is the duplication the key
+		// exists to prevent, so the honest answer is a sentence and no write.
+		logger.Info("channels: a Slack snooze was already applied by this interaction",
+			slog.String("refusal", errs.CodeOf(err)))
+		s.tell(ctx, args, "That snooze was already applied, and it has since ended. "+
+			"Press Snooze again if you want oto to go quiet from now.")
 		return nil
 	case errs.IsKind(err, errs.KindPrecondition), errs.IsKind(err, errs.KindValidation):
 		// ⛔ AN OUTCOME, NOT A FAILURE — the same rule the two acks are under. A
@@ -954,6 +1027,48 @@ func unackRefusalText(code string) string {
 // 7570090). It totalled the members that refused the verb, which is how the copy
 // above used to tell "all of them refused for one reason" from "some of them did".
 // One Case refuses for exactly one reason or not at all, so the code IS the total.
+
+// interactionKey is oto's own handle on ONE Slack interaction, and it is what
+// makes a re-executed press converge instead of acting twice.
+//
+// ⭐⭐ THE PROBLEM IT SOLVES IS NOT A DOUBLE-CLICK. A human who presses 30m and then
+// 4h means both, and §B.8.3 answers that by superseding — that is the feature. The
+// duplication is ONE press executed twice: the transport enqueues, a worker crashes
+// after the snooze transaction committed but before River marked the job done, the
+// job is rescued and re-run, and `Snooze` supersedes the snooze THIS PRESS had just
+// created. The timeline then carries `alert.unsnoozed(superseded)` and
+// `alert.snoozed` twice for a gesture that happened once. A redelivered payload
+// crossing River's unique-period boundary is the same shape arriving differently.
+//
+// ⭐ IT IS DERIVED FROM `response_url`, WHICH IS THE ONLY PER-INTERACTION IDENTITY
+// SLACK ALREADY SENDS US. Every other field is stable across two DIFFERENT presses:
+// the action id, the chosen preset, the member, and `message_ts` are all identical
+// when somebody presses 30m twice an hour apart, so a key built from them would
+// replay the second press as though it were the first — refusing a snooze the human
+// meant. `response_url` is minted by Slack per interaction and is byte-identical on
+// a redelivery of that same interaction, which is exactly the distinction wanted.
+// It also needs no new field: it is already on `SlackInteractionArgs`, so this
+// closes the gap with no payload version and no header to read (`X-Slack-Retry-Num`
+// is an Events API header and does not reach this path — the transport flushes its
+// 200 before `Handle` runs, so oto is never the reason a delivery is retried).
+//
+// ⛔ THE URL IS HASHED AND NEVER STORED. A `response_url` carries a one-shot bearer
+// token in its last path segment: whatever holds this key stores it verbatim, and
+// a credential belongs in no such column. A sha256 is 70 characters here whatever
+// Slack sent, which also keeps it inside the 200-character bound the claim store
+// enforces.
+//
+// An interaction with no `response_url` yields "", which the port documents as
+// unkeyed. That is the pre-existing behaviour and it is the honest one: there is
+// nothing stable to converge on, so nothing is claimed.
+func interactionKey(args jobs.SlackInteractionArgs) string {
+	url := strings.TrimSpace(args.ResponseURL)
+	if url == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(url))
+	return "slack:" + hex.EncodeToString(sum[:])
+}
 
 // actor names the human, in the two forms the timeline accepts.
 //

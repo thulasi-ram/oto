@@ -576,12 +576,20 @@ config:
 #
 # Keys are the ones on docs/setup/tuning.md, e.g.
 #   resolve_grace_s, raw_retention_days, event_retention_months,
-#   default_verbosity, broadcast_on_resolved
+#   default_verbosity
 #   (the five unacked_reminder_* keys were here and are gone — git-bug bd0fb1d;
 #   a config still naming one is refused with unknown_key)
 #   (refire_grace_s and group_close_delay_s were here and are gone the same way —
 #   git-bug 7287b28: a conversation is a Case, so there is no idle generation to
 #   close, and the re-fire grace was a setting nothing read)
+#   (broadcast_on_resolved was LISTED HERE AS LIVE and is gone the same way —
+#   git-bug 7570090. It was ADR 0020's one configurable broadcast, and Slack
+#   thread-broadcast was removed outright: with no `reply_broadcast` call left in
+#   the notifier there is no broadcast for an org to opt into. ⛔ IT OUTLIVED ITS
+#   OWN DELETION ON THE LIVE SIDE OF THIS LIST, which is worse than the three
+#   tombstones above it — a tombstone teaches, but a dead key advertised as live is
+#   an instruction to write the line that fails the rollout. `default_verbosity` is
+#   the only non-integer key left.)
 # -----------------------------------------------------------------------------
 
 tuning: {}

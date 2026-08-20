@@ -129,8 +129,17 @@ func loadTuning(path string) ([]TuningEntry, error) {
 }
 
 // tuningEnvProvider reads only OTO_TUNING_* and keeps everything after the
-// infix as ONE flat key, so `OTO_TUNING_UNACKED_REMINDER_MENTION_MIN_SEVERITY`
-// does not get chopped into a nested path by an underscore that means nothing.
+// infix as ONE flat key, so `OTO_TUNING_FLAP_DIGEST_INTERVAL_S` does not get
+// chopped into a nested path by an underscore that means nothing.
+//
+// ⚠️ THE EXAMPLE USED TO BE `OTO_TUNING_UNACKED_REMINDER_MENTION_MIN_SEVERITY`,
+// which is a key that no longer exists (git-bug bd0fb1d, migration 00068). The
+// substitution is not cosmetic: this comment is the only place in the loader that
+// spells a whole environment variable out, so it reads as the worked example, and a
+// worked example built on a key `identity/domain.NewDeclarative` now refuses with
+// `unknown_key` teaches an operator a line that fails their boot. The mechanical
+// point is unchanged and the substitute makes it just as well — four
+// underscore-separated words after the infix, none of them a nesting level.
 func tuningEnvProvider() koanf.Provider {
 	return kenv.Provider(".", kenv.Opt{
 		Prefix: envTuningPrefix,
@@ -161,9 +170,23 @@ func flatTuning(k *koanf.Koanf) map[string]any {
 }
 
 // splitList splits a comma-separated environment value and trims each element.
-// It is the list form `unacked_reminder_mention_list` needs; every other key
-// receives it as a slice and rejects it, which is the correct answer to a comma
-// in a number.
+//
+// ⛔ NO SURVIVING TUNING KEY IS LIST-VALUED, and this is deliberately still here.
+// It existed for `unacked_reminder_mention_list`, the only list-valued setting oto
+// ever had, and that key went with the unacked reminder (git-bug bd0fb1d,
+// migration 00068) — `identity/domain`'s `asList` was deleted outright at the same
+// time. What survives here is not that key's plumbing but a TRANSPORT rule, and it
+// is the half that has to live on this side of the seam: a comma is the only list
+// syntax an environment variable has, and this package is key-agnostic by design
+// (see the ⚠️ at the top), so it cannot ask whether the key it is holding wants
+// one. Every remaining key receives the slice and rejects it BY NAME in
+// `identity/domain.NewDeclarative` — `[900 1200] is not a whole number` — which is
+// the correct answer to a comma in a number and is strictly better than silently
+// parsing `900,1200` as nine hundred.
+//
+// ⚠️ IF A LIST-VALUED SETTING COMES BACK, THIS IS ALREADY WAITING FOR IT, and
+// `asList` is the half that has to come back with it. The pairing is stated in
+// `identity/domain/declarative.go`'s closing tombstone; this is its other end.
 func splitList(v string) []string {
 	parts := strings.Split(v, ",")
 	out := make([]string, 0, len(parts))
