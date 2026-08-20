@@ -2876,8 +2876,6 @@ export interface components {
         CaseDTO: {
             id: components["schemas"]["Uuid"];
             alert_id: components["schemas"]["Uuid"];
-            /** @description The AlertGroup generation this episode joined. */
-            group_id?: components["schemas"]["Uuid"] | null;
             /**
              * Format: int32
              * @description Episode number within the Alert, starting at 1.

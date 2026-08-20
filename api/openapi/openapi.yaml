@@ -6171,11 +6171,6 @@ components:
           $ref: '#/components/schemas/Uuid'
         alert_id:
           $ref: '#/components/schemas/Uuid'
-        group_id:
-          oneOf:
-            - $ref: '#/components/schemas/Uuid'
-            - type: 'null'
-          description: The AlertGroup generation this episode joined.
         seq:
           type: integer
           format: int32

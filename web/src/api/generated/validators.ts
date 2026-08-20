@@ -244,7 +244,6 @@ export const SnoozeDTOSchema = v.looseObject({
 export const CaseDTOSchema = v.looseObject({
   "id": UuidSchema,
   "alert_id": UuidSchema,
-  "group_id": v.exactOptional(v.nullable(UuidSchema)),
   "seq": v.pipe(
     v.number(),
     v.integer(),
