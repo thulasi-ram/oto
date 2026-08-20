@@ -40,11 +40,38 @@ var _ ClaimStore = (*Repository)(nil)
 // between "your retry was replayed" and "your retry superseded the snooze you
 // already had and sent a second Slack message about it".
 type Intent struct {
-	// Keyed reports that the caller sent a key at all. False means every field
-	// below is ignored, no claim is taken, and the verb behaves exactly as it
-	// did before the header was read — which is what keeps the header optional.
+	// Keyed reports that the caller sent a key oto can CLAIM. False means no
+	// claim is taken and the verb behaves exactly as it did before the header was
+	// read — which is what keeps the header optional. ⚠️ It used to mean "every
+	// field below is ignored", and that is now true of all but one: `KeyID` is
+	// read either way, and the field says why.
 	Keyed bool
 	Key   Key
+	// KeyID is `Key.ID()` — the caller's key reduced to a uuid — and it is the
+	// ONE field a verb may read while `Keyed` is false.
+	//
+	// ⭐⭐ IT SEPARATES "THIS REQUEST HAS A NAME" FROM "THIS REQUEST CAN BE
+	// CLAIMED", two facts the header's failure modes had quietly fused into one
+	// boolean. Claiming needs a principal; naming does not. A Slack member who
+	// never linked an oto account has no principal uuid to claim under at all
+	// (`idempotency_claims.principal_id` is NOT NULL, `Claim.validate` refuses a
+	// zero one, and nothing may invent one — see `app.slackIdempotency`), yet
+	// Slack still sends a per-interaction `response_url`, so their press IS
+	// named. Dropping the whole intent because half of it was unusable threw the
+	// name away with the claim.
+	//
+	// ⛔ IT IS NOT A WEAKER CLAIM AND IT CONVERGES NO ACT. A named-but-unclaimed
+	// retry still performs the write twice; only a claim can stop that. What the
+	// name buys is a stable identity for the DOWNSTREAM keys that must not move
+	// between two executions of one request: `alerts/service.Snooze` uses it as
+	// the §C.7 occasion, so a redelivered press mints the notification key it
+	// already minted and the second card is swallowed by
+	// `notifications_idem_uniq` instead of posted into the channel.
+	//
+	// Set it whenever the caller holds a per-request identity, keyed or not.
+	// Leave it zero when it holds none: zero means "no name", and the verbs that
+	// read it fall back to whatever they named occasions before it existed.
+	KeyID uuid.UUID
 	// Operation is the contract operationId the key belongs to. One key must
 	// not be replayable across two different operations, so it is part of the
 	// claim's identity. It is filled by whichever layer OWNS that fact: the

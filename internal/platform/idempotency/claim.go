@@ -89,6 +89,57 @@ func (k Key) String() string { return k.v }
 // IsZero reports whether the key is unset.
 func (k Key) IsZero() bool { return k.v == "" }
 
+// ID is the key reduced to a uuid: a deterministic, non-reversible name for the
+// ONE request this key identifies.
+//
+// ⭐⭐ IT EXISTS FOR THE WRITES THAT MUST TELL TWO ATTEMPTS APART EVEN WHERE NO
+// CLAIM CAN BE TAKEN. A claim needs a principal — `idempotency_claims.principal_id`
+// is NOT NULL and `Claim.validate` refuses a zero one — while merely NAMING an
+// attempt needs nothing but the key. A Slack member who never linked an oto
+// account has the second and not the first, and `alerts/service.Snooze` reads this
+// as its §C.7 occasion so a REDELIVERED press re-mints the announcement key it
+// already minted instead of a fresh one. See `Intent.KeyID`, which is the field
+// that carries it, for the whole argument.
+//
+// ⛔ IT IS A DIGEST, NOT AN ENCODING, and that is not tidiness. Whatever holds a
+// derived id stores it: this path's key is a sha256 over a Slack `response_url`
+// whose last path segment is a one-shot bearer token, and a value that could be
+// walked back to it has no business in a notification's pre-image. A digest of a
+// digest discloses neither.
+//
+// ⚠️ A ZERO KEY IS uuid.Nil AND MUST STAY SO. `uuid.Nil` is the "no occasion"
+// sentinel downstream; mapping the empty key onto a real uuid would hand EVERY
+// unnamed request in the deployment the SAME occasion, which is strictly worse
+// than having none — two genuinely different snoozes would then collide on one
+// §C.7 key and the second would be swallowed as a duplicate of the first.
+//
+// The pre-image is a fixed domain tag, a NUL, then the key. The tag makes the
+// digest a function of what it is FOR as well as of the key, which is ADR 0022's
+// concern — one pre-image shape must not be reachable from another — and with
+// exactly one variable field, at the end, there is nothing that could be
+// re-split. The version and variant nibbles are then stamped per RFC 4122 §4.3,
+// which is also why this can never return `uuid.Nil` by accident: byte 6 is at
+// least `0x50` for every input.
+func (k Key) ID() uuid.UUID {
+	if k.IsZero() {
+		return uuid.Nil
+	}
+	sum := sha256.Sum256([]byte(keyIDDomain + "\x00" + k.v))
+	var out uuid.UUID
+	copy(out[:], sum[:len(out)])
+	out[6] = (out[6] & 0x0f) | 0x50
+	out[8] = (out[8] & 0x3f) | 0x80
+	return out
+}
+
+// keyIDDomain is the domain tag in Key.ID's pre-image.
+//
+// ⛔ IT IS A CONSTANT AND NOT A KNOB. Changing it re-derives every id any key ever
+// produced, which for the two snooze Reasons means one extra card per in-flight
+// snooze at the moment of deploy — the `v1` is there so a future shape gets a new
+// tag rather than a redefinition of this one.
+const keyIDDomain = "oto/platform/idempotency/key-id/v1"
+
 // Operation is the contract operationId a key was claimed for, e.g.
 // `createApiToken`.
 //

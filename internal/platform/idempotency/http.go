@@ -74,6 +74,15 @@ func FromHeader(r *http.Request) (Key, bool, error) {
 // under one key would be told "that request already succeeded" about a request
 // it never made. Operation is left for the layer that owns that fact — see
 // Intent.Operation.
+//
+// ⛔ `KeyID` IS DELIBERATELY LEFT ZERO ON THIS PATH, and a reader who fills it in
+// for symmetry will re-key notifications nobody asked to move. An HTTP caller that
+// reaches here is AUTHENTICATED, so it has a principal and its key is claimable:
+// the claim already converges its retries before any announcement is minted, and
+// the field exists only for the callers a claim cannot reach (`Intent.KeyID`).
+// Setting it here would change the §C.7 occasion of every API-driven snooze from
+// the `alert_snoozes.id` SPEC §C.7 names to a digest of a client-chosen header,
+// buying nothing the claim does not already do.
 func IntentFromRequest(r *http.Request, hash RequestHash) (Intent, error) {
 	key, keyed, err := FromHeader(r)
 	if err != nil || !keyed {

@@ -43,8 +43,20 @@ func TestIdempotencyKeyPreImageIsLengthPrefixed(t *testing.T) {
 	sum := sha256.Sum256(want)
 
 	assert.Equal(t, hex.EncodeToString(sum[:]),
-		domain.IdempotencyKey(idemOrg, domain.SubjectCase, idemSubject, domain.ReasonAllResolved, 7),
+		domain.IdempotencyKey(idemOrg, domain.SubjectCase, idemSubject, domain.ReasonAllResolved, 7, uuid.Nil),
 		"the §C.7 pre-image is uint32be(len(x))||x per field, with itoa(state_version) raw")
+
+	// ⭐ AND THE OCCASION IS APPENDED AFTER THAT RAW TAIL, as ONE framed 16-byte
+	// field, ONLY when it is non-nil. The nil case above is the inertness proof —
+	// the same bytes §C.7 has always hashed — and this is the shape of the other.
+	occasion := uuid.MustParse("018f3a4b-0000-7000-8000-00000000ab01")
+	want = append(want, 0x00, 0x00, 0x00, 0x10) // len(occasion_id_bytes) == 16
+	want = append(want, occasion[:]...)
+	occSum := sha256.Sum256(want)
+
+	assert.Equal(t, hex.EncodeToString(occSum[:]),
+		domain.IdempotencyKey(idemOrg, domain.SubjectCase, idemSubject, domain.ReasonAllResolved, 7, occasion),
+		"the occasion is field(uuid) after the tail, and its leading 0x00 is what keeps the split decodable")
 }
 
 // TestIdempotencyKeyAgreesWithTheKernel was written because §C.7 had TWO
@@ -66,11 +78,17 @@ func TestIdempotencyKeyAgreesWithTheKernel(t *testing.T) {
 		} {
 			for _, version := range []int{0, 1, 7, 12, -1, 1 << 40} {
 				for _, subject := range []uuid.UUID{idemSubject, idemOther} {
-					got := domain.IdempotencyKey(idemOrg, kind, subject, reason, version)
-					want := alerts.ComputeIdempotencyKey(
-						idemOrg, string(kind), subject, string(reason), version).String()
-					require.Equal(t, want, got,
-						"§C.7 must have one value: kind=%q reason=%q v=%d", kind, reason, version)
+					// Both occasion arms, because the adapter now has one more argument
+					// to pass through and passing `uuid.Nil` for everything would leave
+					// the conditional field untested on this side of the seam.
+					for _, occasion := range []uuid.UUID{uuid.Nil, idemOther} {
+						got := domain.IdempotencyKey(idemOrg, kind, subject, reason, version, occasion)
+						want := alerts.ComputeIdempotencyKey(
+							idemOrg, string(kind), subject, string(reason), version, occasion).String()
+						require.Equal(t, want, got,
+							"§C.7 must have one value: kind=%q reason=%q v=%d occasion=%s",
+							kind, reason, version, occasion)
+					}
 				}
 			}
 		}
@@ -91,26 +109,33 @@ func TestIdempotencyKeyIsInjective(t *testing.T) {
 	kinds := []domain.SubjectKind{"", "a", "ab", "alert_group", "a\x00b", "case"}
 	reasons := []domain.Reason{"", "a", "ab", "b", "1", "12", "a\x00b", "all_resolved"}
 	versions := []int{0, 1, 2, 12, 120, 7}
+	// uuid.Nil is in the corpus on purpose: it is the ABSENT occasion, and it must
+	// not collide with any present one — including the neighbouring versions, which
+	// is where a framing that ran the digits into the appended field would fail.
+	occasions := []uuid.UUID{uuid.Nil, idemSubject, idemOther}
 
 	seen := map[string]string{}
 	for _, kind := range kinds {
 		for _, reason := range reasons {
 			for _, version := range versions {
-				id := strings.Join([]string{
-					strconv.Quote(string(kind)),
-					strconv.Quote(string(reason)),
-					strconv.Itoa(version),
-				}, "|")
-				key := domain.IdempotencyKey(idemOrg, kind, idemSubject, reason, version)
-				if prev, dup := seen[key]; dup && prev != id {
-					t.Fatalf("idempotency_key collision:\n  %s\n  %s\nboth key to %s", prev, id, key)
+				for _, occasion := range occasions {
+					id := strings.Join([]string{
+						strconv.Quote(string(kind)),
+						strconv.Quote(string(reason)),
+						strconv.Itoa(version),
+						occasion.String(),
+					}, "|")
+					key := domain.IdempotencyKey(idemOrg, kind, idemSubject, reason, version, occasion)
+					if prev, dup := seen[key]; dup && prev != id {
+						t.Fatalf("idempotency_key collision:\n  %s\n  %s\nboth key to %s", prev, id, key)
+					}
+					seen[key] = id
 				}
-				seen[key] = id
 			}
 		}
 	}
-	assert.Len(t, seen, len(kinds)*len(reasons)*len(versions),
-		"one key per (subject_kind, reason, state_version)")
+	assert.Len(t, seen, len(kinds)*len(reasons)*len(versions)*len(occasions),
+		"one key per (subject_kind, reason, state_version, occasion)")
 }
 
 // TestIdempotencyKeyEveryInputParticipates keeps the key's inputs honest: dropping
@@ -119,12 +144,39 @@ func TestIdempotencyKeyIsInjective(t *testing.T) {
 func TestIdempotencyKeyEveryInputParticipates(t *testing.T) {
 	t.Parallel()
 
-	base := domain.IdempotencyKey(idemOrg, domain.SubjectCase, idemSubject, domain.ReasonAllResolved, 7)
+	base := domain.IdempotencyKey(idemOrg, domain.SubjectCase, idemSubject, domain.ReasonAllResolved, 7, uuid.Nil)
 	require.True(t, domain.ValidIdempotencyKey(base))
 
-	assert.NotEqual(t, base, domain.IdempotencyKey(idemOther, domain.SubjectCase, idemSubject, domain.ReasonAllResolved, 7))
-	assert.NotEqual(t, base, domain.IdempotencyKey(idemOrg, domain.SubjectAlert, idemSubject, domain.ReasonAllResolved, 7))
-	assert.NotEqual(t, base, domain.IdempotencyKey(idemOrg, domain.SubjectCase, idemOther, domain.ReasonAllResolved, 7))
-	assert.NotEqual(t, base, domain.IdempotencyKey(idemOrg, domain.SubjectCase, idemSubject, domain.ReasonFired, 7))
-	assert.NotEqual(t, base, domain.IdempotencyKey(idemOrg, domain.SubjectCase, idemSubject, domain.ReasonAllResolved, 8))
+	assert.NotEqual(t, base, domain.IdempotencyKey(idemOther, domain.SubjectCase, idemSubject, domain.ReasonAllResolved, 7, uuid.Nil))
+	assert.NotEqual(t, base, domain.IdempotencyKey(idemOrg, domain.SubjectAlert, idemSubject, domain.ReasonAllResolved, 7, uuid.Nil))
+	assert.NotEqual(t, base, domain.IdempotencyKey(idemOrg, domain.SubjectCase, idemOther, domain.ReasonAllResolved, 7, uuid.Nil))
+	assert.NotEqual(t, base, domain.IdempotencyKey(idemOrg, domain.SubjectCase, idemSubject, domain.ReasonFired, 7, uuid.Nil))
+	assert.NotEqual(t, base, domain.IdempotencyKey(idemOrg, domain.SubjectCase, idemSubject, domain.ReasonAllResolved, 8, uuid.Nil))
+	assert.NotEqual(t, base, domain.IdempotencyKey(idemOrg, domain.SubjectCase, idemSubject, domain.ReasonAllResolved, 7, idemOther),
+		"the occasion participates when it is named")
+}
+
+// TestOnlyTheSnoozeReasonsNeedAnOccasion pins the closed list, because it is the
+// answer to "which Reasons is `state_version` not a discriminator for" and getting
+// it wrong is silent in both directions: a Reason wrongly on the list would be
+// re-keyed for nothing, and one wrongly off it goes back to swallowing its own
+// second announcement.
+//
+// `snoozed` and `unsnoozed` are the two, and they are the SAME two §B.8.4 exempts
+// from snooze suppression — because both facts follow from the one structural
+// truth that a snooze is taken on an Alert and moves no Case lock.
+func TestOnlyTheSnoozeReasonsNeedAnOccasion(t *testing.T) {
+	t.Parallel()
+
+	var need []domain.Reason
+	for _, r := range domain.AllReasons() {
+		if r.NeedsOccasion() {
+			need = append(need, r)
+		}
+	}
+	assert.Equal(t, []domain.Reason{domain.ReasonSnoozed, domain.ReasonUnsnoozed}, need)
+	for _, r := range need {
+		assert.True(t, r.SnoozeExempt(),
+			"a reason that needs an occasion is a reason about snoozing, so it is also exempt from snooze suppression")
+	}
 }

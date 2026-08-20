@@ -97,6 +97,7 @@ func (k SubjectKind) String() string { return string(k) }
 //	      field(org_id_bytes(16))
 //	   || field(subject_kind) || field(subject_id_bytes(16))
 //	   || field(reason)       || itoa(state_version)
+//	   || field(occasion_id_bytes(16))   -- only when the occasion is non-nil
 //	) )
 //
 // where field(x) := uint32be(len(x)) || x.
@@ -112,6 +113,11 @@ func (k SubjectKind) String() string { return string(k) }
 //     change in how oto formats a UUID cannot silently re-key every notification;
 //   - state_version is `strconv.Itoa`, matching the spec's `itoa`, so 7 hashes as
 //     "7" and never as "07" or "7.0";
+//   - the occasion is the ONE optional field, and `uuid.Nil` writes no bytes at
+//     all rather than sixteen zero ones — so the thirteen Reasons that have no
+//     occasion keep the exact key they have always had, and only a Reason that
+//     names one is re-keyed. See ComputeIdempotencyKey for why appending after the
+//     raw tail is still uniquely decodable, and NeedsOccasion below for who names one;
 //   - every field but the last carries a 4-byte big-endian BYTE COUNT, so the
 //     pre-image decodes to exactly one field tuple and no pair of adjacent fields
 //     can be re-split into a different pair with the same bytes. The predecessor
@@ -132,19 +138,51 @@ func (k SubjectKind) String() string { return string(k) }
 // import no other domain package. So the types stop here and the bytes are the
 // kernel's.
 //
-// The signature is unchanged, so notify.go's call site is unchanged, and the
-// digest is unchanged for every input — the two implementations were already
-// byte-identical, which is why this could collapse without re-keying anything.
+// The digest is unchanged for every input the five-argument form could express —
+// the two implementations were already byte-identical, which is why they could
+// collapse without re-keying anything, and `occasionID = uuid.Nil` is that form.
 func IdempotencyKey(
 	orgID uuid.UUID,
 	kind SubjectKind,
 	subjectID uuid.UUID,
 	reason Reason,
 	stateVersion int,
+	occasionID uuid.UUID,
 ) string {
 	return kernel.ComputeIdempotencyKey(
-		orgID, string(kind), subjectID, string(reason), stateVersion,
+		orgID, string(kind), subjectID, string(reason), stateVersion, occasionID,
 	).String()
+}
+
+// NeedsOccasion reports whether this Reason's facts are told apart by an occasion
+// id rather than by `state_version` alone (§C.7).
+//
+// ⭐ IT IS A PROPERTY OF THE REASON, NOT OF THE CALLER, and that is why it is
+// declared here beside the key rather than left implicit in whatever the alerts
+// service happens to pass. The two members are `snoozed` and `unsnoozed`, and they
+// are the same two exempted from snooze suppression in §B.8.4 — for the same
+// underlying reason. A snooze is not a Case state transition: `StartSnooze` takes
+// an Alert, `alert_cases.state_version` never moves, and every fact about snoozing
+// inside one episode therefore arrives at the same `state_version`. Without an
+// occasion the second one is a byte-identical key and
+// `notifications_idem_uniq` drops it — a re-snooze from 1h to 4h that nobody is
+// told about, and a second wake-up in the same episode that nobody is told about
+// either.
+//
+// ⚠️ IT IS DELIBERATELY NOT CONSULTED BY `IdempotencyKey`, AND IT IS NOT A
+// VALIDATION. The key hashes what it is given; this answers whether a CALLER that
+// has no occasion to give is missing one. `evaluate` uses it to WARN and carry on,
+// never to refuse: an occasion-less snooze is a wiring gap whose worst outcome is
+// the swallowed duplicate this field exists to prevent, and refusing it would turn
+// that into a dead-lettered job — the FIRST announcement lost to protect the
+// second, which is the trade in the wrong direction (§B.6).
+func (r Reason) NeedsOccasion() bool {
+	switch r {
+	case ReasonSnoozed, ReasonUnsnoozed:
+		return true
+	default:
+		return false
+	}
 }
 
 // idempotencyKeyLength is the hex width notifications_idem_ck enforces.

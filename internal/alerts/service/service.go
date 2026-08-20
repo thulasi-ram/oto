@@ -384,6 +384,13 @@ type notifyRequest struct {
 	reason  string
 	alertID *uuid.UUID
 	actor   string
+	// occasionID is WHICH TIME this reason happened, for the two reasons whose
+	// facts `state_version` cannot tell apart — `snoozed` and `unsnoozed`, where it
+	// is the `alert_snoozes.id` (§C.7), or the request's own id where the caller
+	// named one and the act can therefore run twice (see `Snooze`). Zero for every
+	// other reason, and zero writes nothing into the key, so no other reason's key
+	// moves.
+	occasionID uuid.UUID
 }
 
 // enqueueNotify queues policy evaluation IN THE CALLER'S TRANSACTION.
@@ -426,12 +433,33 @@ func (s *Service) enqueueNotify(
 	// alert's episode, so a batch carries at most one fact per Case and the cache
 	// could never hit.
 	//
-	// ⚠️ AND THE VERSION IT CACHED IS NOW A CONSTANT, WHICH IS A REAL GAP, NOT A
-	// SIMPLIFICATION. `alert_groups.state_version` was what pinned a late enrichment
-	// to the state it was minted against (§C.7) so an amended card could not resend an
-	// older one. The Case has no such column yet. Until it does, every evaluation is
-	// version 1 and that pin is not being enforced — recorded here rather than left to
-	// be discovered from a duplicate card.
+	// ⚠️ AND THE VERSION IT CACHED IS NOW A HARD-CODED CONSTANT, WHICH IS A REAL GAP,
+	// NOT A SIMPLIFICATION. `alert_groups.state_version` was what pinned a late
+	// enrichment to the state it was minted against (§C.7) so an amended card could
+	// not resend an older one.
+	//
+	// ⭐ THE COLUMN EXISTS. `alert_cases.state_version` was added by migration 00023
+	// (as `alert_occurrences.state_version`, renamed by 00052) and 00052 documents it
+	// as "Optimistic lock. Every state transition is a compare-and-set on this value";
+	// `Case.StateVersion()` reads it and `case.go`'s `Transition` REFUSES a
+	// compare-and-set that does not name it. What is missing is the WIRE: this
+	// function does not read the case it is enqueueing about, it writes the literal
+	// `1` below, so every evaluation is version 1 and the §C.7 pin is not enforced —
+	// two facts about one Case at different versions still collide on
+	// `notifications_idem_uniq` as though nothing had moved.
+	//
+	// ⛔ WIRING IT IS DELIBERATELY NOT DONE HERE, AND THE REASON IS THE BLAST RADIUS
+	// RATHER THAN THE DIFFICULTY. `state_version` is a component of the idempotency
+	// key for EVERY reason, so reading the real value changes the key of every `fired`,
+	// `acked`, `resolved` and `enriched` notification oto mints, and it changes WHICH
+	// pairs of facts collapse into one card — a re-evaluation that used to be
+	// swallowed as a duplicate would become a second card the moment any transition
+	// had bumped the lock in between. That is a behaviour change across the whole
+	// notification surface and it needs its own ruling, its own tests and its own
+	// re-read of §C.7, not a line in a batch loop. The re-snooze fix does NOT need it:
+	// a snooze is not a case state transition (`StartSnooze` takes an Alert), so the
+	// lock would not have moved and the real column would have been `1` there too —
+	// which is exactly why the occasion below exists.
 	out := make([]db.JobRequest, 0, len(reqs))
 	for _, r := range reqs {
 		if r.caseID == uuid.Nil || r.reason == "" {
@@ -441,6 +469,7 @@ func (s *Service) enqueueNotify(
 			CaseID:       r.caseID,
 			Reason:       r.reason,
 			StateVersion: 1,
+			OccasionID:   r.occasionID,
 			AlertID:      r.alertID,
 			Actor:        r.actor,
 		}}

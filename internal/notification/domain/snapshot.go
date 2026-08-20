@@ -236,9 +236,13 @@ type GroupFacts struct {
 	// NOT REALLY THIS TICKET'S: no writer in the tree has EVER set that column, so the
 	// value has been the empty string on every card oto has sent, before and after.
 	// What changed is only that the SELECT which laundered it into a "write" went
-	// away. KEPT because `ReconcileWithWire` still reads it and reconciliation still
-	// matters — the load-bearing half is `AllResolved()`, and the wire half degrading
-	// to "" is the same behaviour it always had.
+	// away. ⚠️ KEPT, BUT NOT FOR THE REASON THIS COMMENT USED TO GIVE: it said
+	// `ReconcileWithWire` "still reads it", and that function ignores both of its
+	// arguments (`_ string, _ bool`) and has no caller, so nothing reads this field to
+	// decide anything today. It is kept because §H.6 still describes the delivery a
+	// real reconciliation would mint, and because the load-bearing half of that pair
+	// is `AllResolved()`; the wire half degrading to "" is the same behaviour it
+	// always had.
 	NotificationReason string
 
 	// FiringSince is the UPSTREAM start of this firing episode:

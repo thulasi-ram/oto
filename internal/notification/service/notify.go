@@ -39,6 +39,17 @@ type Intent struct {
 	Reason       domain.Reason
 	StateVersion int
 	AlertID      *uuid.UUID
+	// OccasionID is WHICH TIME this Reason happened, for the Reasons whose facts
+	// `state_version` cannot tell apart (§C.7, `Reason.NeedsOccasion`). It is set
+	// for `snoozed` and `unsnoozed` — usually the `alert_snoozes.id`, and the
+	// interaction's own id where the press could not be claimed and so may execute
+	// twice (`alerts/service.Snooze` decides, and argues it) — and `uuid.Nil`,
+	// writing nothing into the key, for every other Reason.
+	//
+	// This layer does not care WHICH of those it is and must not start caring: what
+	// it needs is only that one happening always presents the same occasion and two
+	// happenings never present the same one.
+	OccasionID uuid.UUID
 	// Actor labels the human or system that caused this, for the rendered card.
 	// ACTOR, NEVER SUBJECT.
 	Actor string
@@ -274,12 +285,42 @@ func (s *NotificationService) evaluate(
 		return Result{}, err
 	}
 
-	// §H.6, and the ONE place the wire table is applied. The intent arrived
-	// carrying a Reason derived from ONE alert's transition; this is the first
-	// moment the whole group is in scope, so it is the only moment at which
-	// "one alert resolved" can become "all alerts resolved". Everything
-	// downstream — the mode plan, the verbosity gate, the broadcast decision,
-	// the footer phrase and the idempotency key — reads the reconciled value.
+	if in.Reason.NeedsOccasion() && in.OccasionID == uuid.Nil {
+		// This Reason's facts are told apart by an occasion and this one named none,
+		// so its key is decided entirely by (subject, reason, state_version) — which
+		// a snooze does not move. The intent is still minted and still sent: the FIRST
+		// such fact in an episode is announced correctly, and only a SECOND one would
+		// be swallowed on `notifications_idem_uniq`. Refusing here would lose the
+		// first to protect the second (§B.6). This log line is where a missing wire
+		// gets noticed before a duplicate card does.
+		s.log.WarnContext(ctx, "notification: this reason needs an occasion id and named none; a second such fact in this episode will be swallowed as a duplicate",
+			"case_id", in.CaseID, "reason", string(in.Reason))
+	}
+
+	// §H.6, and the place the wire table WOULD be applied. This is the first moment
+	// the whole group is in scope — the intent arrived carrying a Reason derived from
+	// ONE alert's transition — so it is the only moment at which "one alert resolved"
+	// could become "all alerts resolved", and everything downstream (the mode plan,
+	// the verbosity gate, the broadcast decision, the footer phrase, the idempotency
+	// key) reads whatever Reason comes out of `mint`.
+	//
+	// ⚠️ WHAT COMES OUT OF `mint` IS `in.Reason`, UNCHANGED. `mint` assigns the
+	// Reason verbatim and calls nothing; `domain.ReconcileWithWire` — which used to
+	// be called here and is documented as still having this caller — is now
+	// `func(derived, _, _) Reason { return derived }` with no caller anywhere, having
+	// lost its only distinction when one Case stopped holding many alerts (git-bug
+	// `7570090`). So no reconciliation happens on this path today, and the sentence
+	// above describes a seam rather than a behaviour.
+	//
+	// ⛔ IF RECONCILIATION EVER BECOMES REAL AGAIN, THE `NeedsOccasion` CHECK ABOVE
+	// IS IN THE WRONG PLACE AND WILL FAIL SILENTLY. It reads `in.Reason` and it runs
+	// BEFORE this line, so a Reason reconciled INTO `snoozed` or `unsnoozed` would be
+	// keyed by `mint` with `uuid.Nil` for its occasion while the warning that exists
+	// to catch exactly that never fires — reintroducing the swallowed second
+	// announcement the occasion was added to prevent, with the one log line that
+	// would have reported it disabled by the ordering. Whoever gives
+	// `ReconcileWithWire` a body must move that check to after `mint` and read
+	// `n.Reason`.
 	n := s.mint(scope, in, snap, now)
 
 	// ⭐ THE MATCHER SEES THE GROUP'S LABELS PLUS THE FOCUSED ALERT'S OWN. The second
@@ -422,8 +463,12 @@ func (s *NotificationService) mint(
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	}
+	// The occasion is passed straight through, unexamined: `uuid.Nil` writes no
+	// bytes into the pre-image, so a Reason that names no occasion keeps the exact
+	// key it had before the field existed. `evaluate` is what notices a Reason that
+	// SHOULD have named one and did not.
 	n.IdempotencyKey = domain.IdempotencyKey(
-		scope.OrgID(), n.SubjectKind, n.SubjectID, n.Reason, n.StateVersion)
+		scope.OrgID(), n.SubjectKind, n.SubjectID, n.Reason, n.StateVersion, in.OccasionID)
 	return n
 }
 

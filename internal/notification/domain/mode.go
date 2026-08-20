@@ -109,6 +109,15 @@ func rootModeFor(r Reason, threadExists bool) Mode {
 		// arrives before a root has landed. There is no such thing as amending a
 		// card that was never posted, and a `new alerts added` on a destination
 		// that never saw the original is that destination's first notification.
+		//
+		// ⭐ A RE-SNOOZE NEEDED NOTHING ADDED HERE, and that is worth saying because
+		// it is where a reader will look. "The operator changed the quiet period from
+		// 1h to 4h" is an ordinary root-touching fact: this arm amends the card, the
+		// badge re-renders from `snoozed_until`, and `effectiveMode` repairs the case
+		// where the root landed after the mode was chosen. What was missing was
+		// upstream of the mode entirely — the second announcement never got a §C.7
+		// key of its own, so there was no delivery for this table to answer about
+		// (§C.7.1).
 		if threadExists {
 			return ModeUpdateRoot
 		}

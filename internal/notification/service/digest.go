@@ -658,8 +658,14 @@ func (s *DigestService) emit(
 		CreatedAt:         s.clk.Now().UTC(),
 	}
 	n.UpdatedAt = n.CreatedAt
+	// ⭐ NO OCCASION, AND THAT IS THE POINT OF THE WINDOW ORDINAL ABOVE. The occasion
+	// (§C.7) exists for Reasons whose facts `state_version` cannot tell apart; a
+	// digest's version IS its window, so every window is already a distinct key and
+	// `uuid.Nil` writes nothing into the pre-image. A digest's stored key is
+	// therefore byte-identical to the one this line computed before the field
+	// existed — which is what `one digest per (tenant, policy, window)` depends on.
 	n.IdempotencyKey = domain.IdempotencyKey(
-		scope.OrgID(), n.SubjectKind, n.SubjectID, n.Reason, n.StateVersion)
+		scope.OrgID(), n.SubjectKind, n.SubjectID, n.Reason, n.StateVersion, uuid.Nil)
 
 	var created bool
 	err = s.notifier.txr.InTx(ctx, func(ctx context.Context) error {

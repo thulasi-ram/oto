@@ -120,14 +120,15 @@ func (EnrichRunArgs) InsertOpts() river.InsertOpts {
 //
 // Queue: notify · Priority: high · Retry: retryable (12) · Payload v1
 //
-// IDEMPOTENCY KEY: sha256(org_id, subject_kind, subject_id, reason, state_version)
-// — literally `notifications.idempotency_key` (SPEC §C.7), enforced by
+// IDEMPOTENCY KEY: sha256(org_id, subject_kind, subject_id, reason, state_version,
+// occasion_id?) — literally `notifications.idempotency_key` (SPEC §C.7), enforced by
 // `notifications_idem_uniq UNIQUE (org_id, idempotency_key)`. StateVersion is in
 // the payload for exactly this reason: it pins the intent to the group state it
 // was minted against, so a re-run at a newer version mints a NEW notification
 // rather than resending an old one, and a re-run at the same version collides on
 // the unique index and is swallowed. A 23505 here is the mechanism working, not
-// an error (SPEC §L.9).
+// an error (SPEC §L.9). OccasionID is the trailing OPTIONAL component, for the two
+// Reasons a state_version cannot discriminate — see the field.
 type NotifyEvaluateArgs struct {
 	Payload
 	// ⛔ IT WAS `GroupID uuid.UUID` (git-bug `7570090`). A conversation holds exactly
@@ -145,6 +146,31 @@ type NotifyEvaluateArgs struct {
 	Reason string `json:"reason"`
 	// StateVersion is the state_version this evaluation is about.
 	StateVersion int `json:"state_version"`
+	// OccasionID is WHICH TIME this Reason happened — the §C.7 occasion, added
+	// because `state_version` is a CASE lock and a snooze is not a case state
+	// transition, so two snoozes on one alert arrived at the same version and the
+	// second announcement was swallowed on `notifications_idem_uniq`.
+	//
+	// It is set for `snoozed` and `unsnoozed`
+	// (`notification/domain.Reason.NeedsOccasion` is the closed list) and ABSENT for
+	// every other Reason — `uuid.Nil` writes no bytes into the key, so a `fired`,
+	// `acked` or `all_resolved` evaluation is keyed exactly as it was before this
+	// field existed.
+	//
+	// ⚠️ WHAT IT NAMES IS "THIS HAPPENING", WHICH IS NOT ALWAYS THE SNOOZE ROW.
+	// Normally it is the `alert_snoozes.id` (§C.7). But the row is minted per
+	// EXECUTION, and an unclaimable Slack press — an interaction from a member with
+	// no linked oto account — can genuinely execute twice for one gesture, which
+	// would be two rows and so two announcements. `alerts/service.Snooze` therefore
+	// names the REQUEST when the caller identified one (`idempotency.Intent.KeyID`)
+	// and the row only when it did not. Whatever it names, it is stable across a
+	// redelivery of one happening and different between two.
+	//
+	// ⚠️ IT IS A WIRE FIELD ON A QUEUED JOB, and it is additive: a job enqueued
+	// before this field existed decodes with `uuid.Nil` here, which is the old
+	// behaviour exactly. `omitzero` keeps it out of the payload entirely for the
+	// thirteen Reasons that never name one.
+	OccasionID uuid.UUID `json:"occasion_id,omitzero"`
 	// AlertID is set when the fact is about one Alert. MANDATORY for the
 	// alert-scoped reasons (acked, unacked, refired, rule_changed) — see
 	// notifications_focus_ck.

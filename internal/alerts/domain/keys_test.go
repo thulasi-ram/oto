@@ -643,8 +643,56 @@ func TestComputeIdempotencyKey_PreImage(t *testing.T) {
 	pre = append(pre, "7"...) // itoa(state_version) is the tail, written raw
 
 	sum := sha256.Sum256(pre)
+
+	// ⭐ THIS ASSERTION IS THE INERTNESS PROOF FOR THE OCCASION. The pre-image above
+	// names no occasion, and the key computed with `uuid.Nil` still equals it byte
+	// for byte — so a Reason that names no occasion is hashed over exactly the bytes
+	// §C.7 hashed before the field existed, and no stored key moved.
 	assert.Equal(t, hex.EncodeToString(sum[:]),
-		ComputeIdempotencyKey(orgA, "alert_group", subject, "all_resolved", 7).String())
+		ComputeIdempotencyKey(orgA, "alert_group", subject, "all_resolved", 7, uuid.Nil).String())
+
+	// And the occasion form is the same pre-image plus ONE framed 16-byte field,
+	// appended after the raw tail. It is spelled out here rather than asserted as
+	// "different", because "different" would pass for a framing that is not
+	// decodable — the boundary between the digits and the field is the `0x00` that
+	// opens `uint32be(16)`, and a decimal string cannot contain one.
+	occasion := uuid.MustParse("018f3a4b-0000-7000-8000-00000000ab01")
+	f(occasion[:])
+	occSum := sha256.Sum256(pre)
+	assert.Equal(t, hex.EncodeToString(occSum[:]),
+		ComputeIdempotencyKey(orgA, "alert_group", subject, "all_resolved", 7, occasion).String())
+	assert.NotEqual(t, hex.EncodeToString(sum[:]), hex.EncodeToString(occSum[:]))
+}
+
+// TestComputeIdempotencyKey_Occasion pins the §C.7 occasion's three properties:
+// nil is inert, a non-nil value participates, and two occasions never collide.
+//
+// The third is the one the re-snooze fix depends on. Every other component of the
+// key is constant across a re-snooze — same org, same subject, same reason, and
+// `state_version` cannot move because a snooze is not a Case state transition — so
+// the occasion is the ONLY thing keeping the second announcement out of
+// `notifications_idem_uniq`.
+func TestComputeIdempotencyKey_Occasion(t *testing.T) {
+	subject := uuid.MustParse("018f3a4b-0000-7000-8000-0000000000e5")
+	first := uuid.MustParse("018f3a4b-0000-7000-8000-0000000000a1")
+	second := uuid.MustParse("018f3a4b-0000-7000-8000-0000000000a2")
+
+	plain := ComputeIdempotencyKey(orgA, "case", subject, "snoozed", 1, uuid.Nil)
+	one := ComputeIdempotencyKey(orgA, "case", subject, "snoozed", 1, first)
+	two := ComputeIdempotencyKey(orgA, "case", subject, "snoozed", 1, second)
+
+	assert.Regexp(t, validate.PatternSHA256Hex, one.String())
+	assert.Equal(t, one, ComputeIdempotencyKey(orgA, "case", subject, "snoozed", 1, first),
+		"the same occasion is the same key: a re-run of one snooze is still one card")
+	assert.NotEqual(t, plain, one, "an occasion that is named must participate")
+	assert.NotEqual(t, one, two, "two snoozes on one alert are two announcements")
+
+	// The occasion cannot smear into the version's digits either. `field(uuid)`
+	// opens with 0x00 and `itoa` never writes one, so the split is unambiguous
+	// whatever the version is.
+	assert.NotEqual(t,
+		ComputeIdempotencyKey(orgA, "case", subject, "snoozed", 1, first),
+		ComputeIdempotencyKey(orgA, "case", subject, "snoozed", 11, first))
 }
 
 // TestCanonMapAgreesWithLabelsCanonical is what is left of the C.6 cross-check
@@ -681,25 +729,25 @@ func TestComputeIdempotencyKey(t *testing.T) {
 	other := uuid.MustParse("018f3a4b-0000-7000-8000-0000000000f6")
 
 	// "all_resolved at state_version 7" can exist exactly once.
-	base := ComputeIdempotencyKey(orgA, "alert_group", subject, "all_resolved", 7)
+	base := ComputeIdempotencyKey(orgA, "alert_group", subject, "all_resolved", 7, uuid.Nil)
 
 	assert.Regexp(t, validate.PatternSHA256Hex, base.String())
 	parsed, err := NewIdempotencyKey(base.String())
 	require.NoError(t, err)
 	assert.Equal(t, base, parsed)
 
-	assert.Equal(t, base, ComputeIdempotencyKey(orgA, "alert_group", subject, "all_resolved", 7))
-	assert.NotEqual(t, base, ComputeIdempotencyKey(orgB, "alert_group", subject, "all_resolved", 7))
-	assert.NotEqual(t, base, ComputeIdempotencyKey(orgA, "case", subject, "all_resolved", 7))
-	assert.NotEqual(t, base, ComputeIdempotencyKey(orgA, "alert_group", other, "all_resolved", 7))
-	assert.NotEqual(t, base, ComputeIdempotencyKey(orgA, "alert_group", subject, "firing", 7))
-	assert.NotEqual(t, base, ComputeIdempotencyKey(orgA, "alert_group", subject, "all_resolved", 8),
+	assert.Equal(t, base, ComputeIdempotencyKey(orgA, "alert_group", subject, "all_resolved", 7, uuid.Nil))
+	assert.NotEqual(t, base, ComputeIdempotencyKey(orgB, "alert_group", subject, "all_resolved", 7, uuid.Nil))
+	assert.NotEqual(t, base, ComputeIdempotencyKey(orgA, "case", subject, "all_resolved", 7, uuid.Nil))
+	assert.NotEqual(t, base, ComputeIdempotencyKey(orgA, "alert_group", other, "all_resolved", 7, uuid.Nil))
+	assert.NotEqual(t, base, ComputeIdempotencyKey(orgA, "alert_group", subject, "firing", 7, uuid.Nil))
+	assert.NotEqual(t, base, ComputeIdempotencyKey(orgA, "alert_group", subject, "all_resolved", 8, uuid.Nil),
 		"the state version is what makes the key repeat-safe")
 
 	// Neighbouring versions must not smear into the reason field.
 	assert.NotEqual(t,
-		ComputeIdempotencyKey(orgA, "k", subject, "ab", 1),
-		ComputeIdempotencyKey(orgA, "k", subject, "a", 12))
+		ComputeIdempotencyKey(orgA, "k", subject, "ab", 1, uuid.Nil),
+		ComputeIdempotencyKey(orgA, "k", subject, "a", 12, uuid.Nil))
 
 	assert.True(t, IdempotencyKey{}.IsZero())
 }

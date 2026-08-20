@@ -375,12 +375,42 @@ func NewIdempotencyKey(s string) (IdempotencyKey, error) {
 // ComputeIdempotencyKey derives a Notification's idempotency key (SPEC §C.7):
 //
 //	hex( sha256( field(org_id_bytes(16)) || field(subject_kind)
-//	   || field(subject_id_bytes(16)) || field(reason) || itoa(state_version) ) )
+//	   || field(subject_id_bytes(16)) || field(reason) || itoa(state_version)
+//	   || field(occasion_id_bytes(16))   -- ONLY when the occasion is non-nil ) )
 //
 // where field(x) := uint32be(len(x)) || x, the framing writeField documents.
 // `subject_kind` and `reason` are closed internal enums, so this key was never
 // forgeable through a field's content; it is framed this way because one §C key
 // with a different framing from its neighbours is a trap, not a saving.
+//
+// # THE OCCASION, AND WHY IT IS CONDITIONAL
+//
+// `occasionID` is WHICH TIME THIS REASON HAPPENED, when the four columns above
+// cannot tell two happenings apart. It is `uuid.Nil` for every Reason whose facts
+// are already distinguished by `state_version`, and `uuid.Nil` writes NOTHING: the
+// pre-image is then byte-for-byte the one this function has always computed, which
+// is why no stored key moves and the golden vector in keys_test still holds.
+//
+// ⭐ IT EXISTS BECAUSE `state_version` IS NOT ALWAYS A DISCRIMINATOR. It is
+// `alert_cases.state_version`, the CASE's optimistic lock, and it advances on a
+// case STATE TRANSITION. A snooze is not one — `StartSnooze` takes an Alert, and
+// §B.8 is emphatic that snooze is neither a state nor a suppression_reason — so a
+// second snooze on the same alert produced a byte-identical key and
+// `notifications_idem_uniq` swallowed the announcement. The operator's snooze went
+// from 1h to 4h and nobody was told, which is the silence §B.6 forbids. The
+// occasion is the `alert_snoozes.id` there: one key per snooze row, by
+// construction, minted before the row so the row, the event, the claim and the key
+// all name the same snooze.
+//
+// ⚠️ THE CONDITIONAL WRITE IS WHAT KEEPS THE PRE-IMAGE UNIQUELY DECODABLE, and it
+// is not the tail rule being broken. §C.0's tail is `itoa(state_version)`, written
+// raw because it is the remainder; anything after it must be self-delimiting from
+// the digits, and `field(uuid)` is: it is a FIXED 20 bytes whose first byte is
+// `0x00` (the high byte of the length 16), and a decimal string can contain no
+// `0x00`. So the first `0x00` after the reason field is the boundary, always, and
+// no (state_version, occasion) pair can be re-split into a different pair. This is
+// the one place a §C key writes a field after its tail, and the reason it is safe
+// is the reason it must stay a fixed-width uuid rather than becoming a free string.
 //
 // # THIS IS THE ONLY IMPLEMENTATION OF §C.7
 //
@@ -390,13 +420,19 @@ func NewIdempotencyKey(s string) (IdempotencyKey, error) {
 // closed enums and calls this — it is what notify.go calls, and it is why this
 // function is reachable at all. Until then §C.7 had two implementations and the
 // kernel's, the one a reader would assume canonical, was the dead one.
-func ComputeIdempotencyKey(orgID uuid.UUID, subjectKind string, subjectID uuid.UUID, reason string, stateVersion int) IdempotencyKey {
+func ComputeIdempotencyKey(
+	orgID uuid.UUID, subjectKind string, subjectID uuid.UUID,
+	reason string, stateVersion int, occasionID uuid.UUID,
+) IdempotencyKey {
 	h := sha256.New()
 	writeField(h, orgID[:])
 	writeField(h, []byte(subjectKind))
 	writeField(h, subjectID[:])
 	writeField(h, []byte(reason))
 	_, _ = h.Write([]byte(strconv.Itoa(stateVersion)))
+	if occasionID != uuid.Nil {
+		writeField(h, occasionID[:])
+	}
 	return IdempotencyKey{s: hex.EncodeToString(h.Sum(nil))}
 }
 

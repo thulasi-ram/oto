@@ -1,7 +1,7 @@
 ---
 title: 0022 — Length-prefixed identity pre-images
 ---
-**Status:** Accepted · 2026-08-09
+**Status:** Accepted · 2026-08-09 · amended 2026-08-20 (Amendment 1)
 **Amends:** [0004](/adr/0004-alert-identity-key-and-fingerprint/) (which specified the `0x00` framing),
 SPEC §C.0–§C.7
 **Relates to:** [0021](/adr/0021-correctness-and-testing-strategy/) (the tests that found this)
@@ -77,6 +77,36 @@ however it is serialised. Nothing else is stripped, replaced or normalised.
 `prometheus/common`'s algorithm rather than oto's framing, and it is the join key for
 `/api/v2/alerts` reconciliation — changing it would silently break every Alertmanager
 match.
+
+## Amendment 1 — §C.7 may append ONE fixed-width field after its tail (2026-08-20)
+
+`notification.idempotency_key` now takes an optional trailing **occasion** — `field(uuid)`, written
+only when the key names one — which makes it the single §C key that writes a field *after* the raw
+tail. SPEC §C.7.1 has the product argument (a re-snooze was minting a byte-identical key and its
+announcement was being dropped); this amendment records what it does to **this ADR's framing rule**,
+because that rule is what makes the appended field safe rather than a second forgeable boundary.
+
+The decision below says each key writes N framed fields and then one final field raw, "because a
+remainder needs no prefix to be found". Appending after that remainder means the remainder is no
+longer the end, so the boundary between them has to come from somewhere. It comes from **width**:
+
+- the occasion is a uuid, hashed as its 16 raw bytes, so its field is a **fixed 20 bytes** whose
+  first byte is the `0x00` of `uint32be(16)`;
+- the tail it follows is `strconv.Itoa`, which emits only `0x30`–`0x39`;
+- so the first `0x00` after the reason field is the split, always, and the encoding stays uniquely
+  decodable — read digits to the first non-digit, and what remains is either nothing or exactly one
+  framed 16-byte field.
+
+**The two bounds this rests on are binding.** An occasion of variable width could open with a digit
+(a length ≥ 48·2²⁴ does) and forge the boundary, and a tail that was not decimal would break it from
+the other side. **No second field may be appended after a tail, and no appended field may be
+variable-width.** Anything richer than one uuid belongs in front of the tail, which re-keys the whole
+key and is a different decision from this one.
+
+`uuid.Nil` writes **no bytes**, not sixteen zero ones, which is the property that made this additive:
+every key that names no occasion is hashed over byte-identical input and **nothing stored moved** —
+the opposite of this ADR's own headline consequence below, and the reason this amendment needed no
+release-gated re-key.
 
 ## Consequences
 

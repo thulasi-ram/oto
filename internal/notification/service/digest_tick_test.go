@@ -763,8 +763,11 @@ func TestAWindowThatClearsItsFloorIsOneDigestAboutThePolicyAndTheWindow(t *testi
 		"`state_version` carries the WINDOW ORDINAL (§C.7). Without it every window of one "+
 			"policy would hash to the same idempotency key and only the first would ever be sent")
 	assert.Equal(t,
-		domain.IdempotencyKey(p.OrgID, domain.SubjectDigest, p.ID, domain.ReasonDigest, n.StateVersion),
-		n.IdempotencyKey)
+		domain.IdempotencyKey(p.OrgID, domain.SubjectDigest, p.ID, domain.ReasonDigest,
+			n.StateVersion, uuid.Nil),
+		n.IdempotencyKey,
+		"a digest names no §C.7 occasion — its window ordinal already discriminates — so its "+
+			"stored key is byte-identical to the one minted before that field existed")
 
 	// ⭐⭐ AND THE ROW CARRIES ITS OWN SPAN (git-bug `342e071`, migration `00070`).
 	// `digest_window_start` alone is not a span: it is a span only in combination with

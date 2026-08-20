@@ -695,8 +695,10 @@ func (s *Service) ExpireSnoozes(
 			}); err != nil {
 				return err
 			}
+			// The occasion is the snooze that just expired, so a second expiry inside
+			// the same episode is a second announcement rather than a duplicate key.
 			return s.notifySnoozeChange(ctx, scope, alert.ID(), reasonUnsnoozed,
-				domain.ActorSystem.String())
+				domain.ActorSystem.String(), snz.ID())
 		})
 		if err != nil {
 			s.log.WarnContext(ctx, "alerts: could not expire snooze",

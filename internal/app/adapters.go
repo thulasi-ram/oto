@@ -1324,7 +1324,20 @@ type slackSnoozeActions struct {
 // also has ingest, slack and system kinds)". What it does not define is where a
 // Slack principal's uuid comes from, and defining that from an adapter would be
 // inventing platform semantics in the wrong module.) Until it is defined, a linked
-// presser converges and an unlinked one keeps the old exposure.
+// presser converges and an unlinked one is applied twice.
+//
+// ⭐⭐ BUT IT IS NOT UNNAMED, AND THAT IS THE HALF THAT MATTERS TO THE CHANNEL.
+// `Idempotency.KeyID` carries the interaction's identity down even with no claim to
+// go with it, and `Snooze` uses it as the §C.7 occasion — so the redelivered press
+// re-mints the announcement key it already minted, `notifications_idem_uniq`
+// swallows the intent, and the human sees ONE "snoozed for 1h" amendment for the
+// one gesture they made. The timeline still carries the duplicate
+// `alert.unsnoozed(superseded)` / `alert.snoozed` pair, because only a claim can
+// undo the ACT; what the name removes is the SECOND CARD. Before the §C.7 occasion
+// existed this was accidental — the second intent hashed byte-identically because
+// nothing in the key distinguished two snoozes at all — and naming the interaction
+// is what makes it deliberate: two GENUINE presses still name two occasions and
+// still amend the card twice.
 //
 // The `replayed` flag is dropped rather than returned: it is the fan-out signal
 // `SnoozeAs` gives so a group gesture can stop at member one, this press has exactly
@@ -1344,23 +1357,22 @@ func (a slackSnoozeActions) SnoozeAlert(
 }
 
 // slackIdempotency turns `channels`' opaque interaction key into the intent
-// `alerts/service` speaks, or returns the unkeyed zero when it cannot.
+// `alerts/service` speaks. It declines the CLAIM in two cases and the NAME in only
+// one, and that asymmetry is the whole of this function.
 //
-// There are exactly two reasons it declines, and neither is a failure worth
-// reporting: the interaction carried no `response_url` to key on, or the presser has
-// no oto user to be the claim's principal. Both are argued on `SnoozeAlert`.
+// ⭐⭐ NAMING THE INTERACTION AND CLAIMING IT ARE TWO DIFFERENT ANSWERS. A claim
+// needs a principal; a name needs only the key. So an unlinked presser — who has no
+// principal and never will until the owner rules on §E.1's `slack` kind — still
+// gets `KeyID` set, and the intent goes down UNKEYED BUT NAMED. Only an interaction
+// that carried no `response_url` at all is anonymous, because then there is nothing
+// to name it with. Both cases are argued on `SnoozeAlert`; what the name is FOR is
+// argued on `idempotency.Intent.KeyID`.
 func slackIdempotency(
 	s db.TenantScope, alertID uuid.UUID, actorID, key string,
 ) alertsservice.Idempotency {
 	if key == "" {
-		return alertsservice.Idempotency{}
-	}
-	// ⛔ THE PRINCIPAL IS THE LINKED OTO USER OR NOTHING. `actorID` is a uuid string
-	// only when `channels/service.actor` resolved the Slack member to one; an
-	// unlinked member's id is a Slack handle like `U024BE7LH`, which does not parse
-	// — and `uuid.Nil` would be refused by the claim store as a wiring bug.
-	userID, err := uuid.Parse(actorID)
-	if err != nil || userID == uuid.Nil {
+		// No interaction identity, so no claim and no name. This is the one press
+		// this adapter cannot make converge in any way at all.
 		return alertsservice.Idempotency{}
 	}
 	k, err := idempotency.NewKey(key)
@@ -1369,17 +1381,35 @@ func slackIdempotency(
 		// panicking keeps a bound this layer does not own from costing a press.
 		return alertsservice.Idempotency{}
 	}
-	return alertsservice.Idempotency{
-		Keyed:     true,
-		Key:       k,
-		Operation: alertsservice.OpSnoozeAlert,
-		Principal: authn.Principal{
-			Kind:   authn.KindSlack,
-			OrgID:  s.OrgID(),
-			UserID: userID,
-		},
-		RequestHash: idempotency.HashTargetedRequest(alertID, nil),
+
+	// ⭐ THE NAME IS SET BEFORE THE PRINCIPAL IS EVEN LOOKED AT, which is the fix
+	// for the duplicate card an unlinked presser used to get. `Key.ID()` is a digest
+	// of the already-hashed `response_url`: byte-identical on a redelivery of this
+	// interaction, different for the next press, and reversible to neither the key
+	// nor the bearer token inside the URL the key was made from.
+	idem := alertsservice.Idempotency{KeyID: k.ID()}
+
+	// ⛔ THE PRINCIPAL IS THE LINKED OTO USER OR NOTHING. `actorID` is a uuid string
+	// only when `channels/service.actor` resolved the Slack member to one; an
+	// unlinked member's id is a Slack handle like `U024BE7LH`, which does not parse
+	// — and `uuid.Nil` would be refused by the claim store as a wiring bug. Such a
+	// press keeps the name and goes unclaimed: it will still be APPLIED twice, and
+	// it will be ANNOUNCED once.
+	userID, err := uuid.Parse(actorID)
+	if err != nil || userID == uuid.Nil {
+		return idem
 	}
+
+	idem.Keyed = true
+	idem.Key = k
+	idem.Operation = alertsservice.OpSnoozeAlert
+	idem.Principal = authn.Principal{
+		Kind:   authn.KindSlack,
+		OrgID:  s.OrgID(),
+		UserID: userID,
+	}
+	idem.RequestHash = idempotency.HashTargetedRequest(alertID, nil)
+	return idem
 }
 
 // UnsnoozeAlert ends the quiet early, with `ended_reason='manual'` — a deliberate

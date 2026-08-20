@@ -129,6 +129,7 @@ func (w *Workers) NotifyEvaluate(ctx context.Context, job *jobs.Job[jobs.NotifyE
 		CaseID:       args.CaseID,
 		Reason:       reason,
 		StateVersion: args.StateVersion,
+		OccasionID:   args.OccasionID,
 		AlertID:      args.AlertID,
 		Actor:        args.Actor,
 	})

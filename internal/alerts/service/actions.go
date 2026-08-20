@@ -477,7 +477,40 @@ func (s *Service) Snooze(
 		}); err != nil {
 			return err
 		}
-		if err := s.notifySnoozeChange(ctx, scope, alert.ID(), reasonSnoozed, actor.Label()); err != nil {
+		// The occasion is the snooze just created — the same `snoozeID` the row, the
+		// event and the claim all name, which is why it was minted above — UNLESS the
+		// caller named the request itself, in which case it is the request.
+		//
+		// ⭐⭐ THE TWO ARE NOT INTERCHANGEABLE, AND THE DIFFERENCE IS EXACTLY THE
+		// UNCLAIMED RETRY. `snoozeID` is minted once per EXECUTION of this
+		// transaction; `idem.KeyID` is minted once per REQUEST. Either is a correct
+		// occasion as long as one request executes at most once, which is true of
+		// every path that can take a claim — a claimed retry never reaches this line,
+		// `Resolve` above having rolled it back. They part company on the one path
+		// that CANNOT take a claim: a Slack press by a member with no linked oto
+		// account has no principal to claim under (`app.slackIdempotency`), so a
+		// redelivered interaction genuinely runs this transaction a second time and
+		// mints a second `snoozeID` — a second occasion, a second §C.7 key, a second
+		// card in the channel for one human press. Keying the announcement on the
+		// REQUEST collapses that back to one, while two distinct presses — the 1h that
+		// becomes 4h — carry two request ids and are still announced twice, which is
+		// the whole point of having an occasion at all.
+		//
+		// ⚠️ THE FALLBACK IS THE OLD EXPOSURE, NOT A SECOND GOOD ANSWER. A request
+		// with no name — a Slack interaction that carried no `response_url`, so
+		// `slackIdempotency` had nothing to derive an id from — still keys on the row
+		// and can still produce two cards if it executes twice. `uuid.Nil` is not an
+		// option there and would be far worse: it is the "no occasion" sentinel, so it
+		// would key EVERY snooze of this alert identically and lose the re-snooze
+		// announcement this occasion exists to deliver. The row is the best available
+		// and it is what §C.7 documents; closing that last case needs a per-request
+		// identity oto does not currently receive.
+		occasion := snoozeID
+		if idem.KeyID != uuid.Nil {
+			occasion = idem.KeyID
+		}
+		if err := s.notifySnoozeChange(ctx, scope, alert.ID(), reasonSnoozed,
+			actor.Label(), occasion); err != nil {
 			return err
 		}
 
@@ -547,7 +580,11 @@ func (s *Service) Unsnooze(
 		if err := s.publishAlert(ctx, scope, alert.ID(), map[string]any{"snoozed_until": nil}); err != nil {
 			return err
 		}
-		if err := s.notifySnoozeChange(ctx, scope, alert.ID(), reasonUnsnoozed, actor.Label()); err != nil {
+		// The occasion is the snooze being ENDED. `ended` and `active` are the same
+		// row, so either id would do; the ended one is named because that is the fact
+		// this notification announces.
+		if err := s.notifySnoozeChange(ctx, scope, alert.ID(), reasonUnsnoozed,
+			actor.Label(), ended.ID()); err != nil {
 			return err
 		}
 
@@ -761,8 +798,31 @@ func (s *Service) createSnooze(
 // ⭐ `snoozed` and `unsnoozed` are the ONLY two notification reasons a snooze does
 // not itself suppress (§B.8.4). A snooze that cannot announce its own beginning
 // and end is the silent suppression §B.6 forbids.
+//
+// ⭐⭐ AND EXEMPTION FROM SUPPRESSION WAS NOT ENOUGH TO MAKE THE SECOND ONE AUDIBLE.
+// The `occasion` is what tells two announcements about the same alert apart, and it
+// is REQUIRED: the §C.7 key is (org, subject_kind, subject_id, reason, state_version)
+// plus this, and the four before it are all constant across a re-snooze —
+// `state_version` is `alert_cases.state_version`, which a snooze never moves
+// because `StartSnooze` takes an Alert and not a Case. Without the id, a human who
+// snoozed for 1h and then for 4h minted a byte-identical key, the second intent was
+// dropped by `notifications_idem_uniq`, and the channel was never told the quiet
+// period had changed. The data was always right; only the announcement was lost.
+//
+// It is normally the id of the snooze THIS notification is about: the row just
+// created for `snoozed`, and the row just ended for `unsnoozed`. So a wake-up is a
+// different fact from the snooze it ends, and a second wake-up in the same episode
+// — snooze, wake, snooze, wake — is a different fact from the first, which had
+// exactly the same defect.
+//
+// ⚠️ THE CALLER CHOOSES IT AND `Snooze` DOES NOT ALWAYS CHOOSE THE ROW, because a
+// row is minted per execution and an unclaimable retry executes twice. This
+// function neither knows nor needs to know which it was handed; what it requires of
+// its callers is that one happening always presents the same occasion and two
+// happenings never present the same one. `Snooze` argues its own choice.
 func (s *Service) notifySnoozeChange(
-	ctx context.Context, scope db.TenantScope, alertID uuid.UUID, reason, actor string,
+	ctx context.Context, scope db.TenantScope,
+	alertID uuid.UUID, reason, actor string, occasion uuid.UUID,
 ) error {
 	ac, ok, err := s.cases.GetOpenByAlert(ctx, scope, alertID)
 	if err != nil {
@@ -774,10 +834,11 @@ func (s *Service) notifySnoozeChange(
 		return nil
 	}
 	_, err = s.enqueueNotify(ctx, scope, []notifyRequest{{
-		reason:  reason,
-		alertID: ptr(alertID),
-		caseID:  ac.ID(),
-		actor:   actor,
+		reason:     reason,
+		alertID:    ptr(alertID),
+		caseID:     ac.ID(),
+		actor:      actor,
+		occasionID: occasion,
 	}}, nil)
 	return err
 }

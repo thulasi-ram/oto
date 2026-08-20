@@ -507,10 +507,13 @@ func ReasonFromWire(wire string) (Reason, WireVerdict) {
 // function ignoring the table nothing mints a `repeat` at all. It is left declared
 // because §H.6 still describes the delivery; a writer for it is a separate ruling.
 //
-// ⛔ THE NAME NOW OVERSTATES WHAT THIS DOES, AND IT SHOULD BE DELETED WITH ITS ONE
-// CALLER — `notification/service.notify`, which applies it at the one moment the
-// wire value is in scope. It is kept declared here rather than removed under that
-// caller's feet. ⛔ A future group-level authority is NOT a reason to keep the seam:
+// ⛔ THE NAME NOW OVERSTATES WHAT THIS DOES, AND IT HAS NO CALLER AT ALL. An earlier
+// version of this comment said it "SHOULD BE DELETED WITH ITS ONE CALLER —
+// `notification/service.notify`" and that was already false when written: `mint`
+// assigns `in.Reason` verbatim and reaches nothing here, so every remaining mention
+// of this function in the tree is a comment. Deleting it therefore costs one
+// declaration and no call site — it is kept only because §H.6 still describes the
+// `repeat` delivery whose writer this would have been. ⛔ A future group-level authority is NOT a reason to keep the seam:
 // the object that owns a fact about many alerts at once is an INCIDENT
 // (`correlation`, DEFERRED-POST-V1), and a fact about an incident belongs ON the
 // incident, not widening one member's Reason.

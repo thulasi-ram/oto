@@ -674,10 +674,10 @@ was written with. Ratification does not change that: overturning the rank is a n
 
 | Operation | Effect |
 |---|---|
-| `snooze(alert_id, until, note)` | Closes any active snooze on that alert as `superseded`; inserts a new `alert_snoozes` row; emits **`alert.snoozed`**; enqueues `notify.evaluate(reason=snoozed)` so the channel is **told it is going quiet**. |
-| `unsnooze(alert_id)` | Sets `ended_at`, `ended_reason='manual'`; clears the projection; emits **`alert.unsnoozed`**; enqueues `notify.evaluate(reason=unsnoozed)`. |
+| `snooze(alert_id, until, note)` | Closes any active snooze on that alert as `superseded`; inserts a new `alert_snoozes` row; emits **`alert.snoozed`**; enqueues `notify.evaluate(reason=snoozed, occasion=<the new alert_snoozes.id>)` so the channel is **told it is going quiet** — and told again when the quiet period CHANGES (§C.7.1). |
+| `unsnooze(alert_id)` | Sets `ended_at`, `ended_reason='manual'`; clears the projection; emits **`alert.unsnoozed`**; enqueues `notify.evaluate(reason=unsnoozed, occasion=<the ended alert_snoozes.id>)`. |
 | ⛔ `snooze` on an AlertGroup | **THE ROW IS DELETED WITH THE ENTITY** (git-bug `7570090`, migration `00069`). It described a fan-out over *currently-joined members*, one snooze per member `alert_id`, never predictive. There is no member set to fan out over: a conversation holds one Case, so a snooze is taken on the Alert and nowhere else. |
-| Expiry (`snooze.expire`, every 60 s) | Sets `ended_at = now`, `ended_reason='expired'`; clears the projection; emits `alert.unsnoozed` with `reason='expired'`; if the alert's case is still open, enqueues `notify.evaluate(reason=unsnoozed)`. |
+| Expiry (`snooze.expire`, every 60 s) | Sets `ended_at = now`, `ended_reason='expired'`; clears the projection; emits `alert.unsnoozed` with `reason='expired'`; if the alert's case is still open, enqueues `notify.evaluate(reason=unsnoozed, occasion=<the expired alert_snoozes.id>)`. |
 
 **Bounds (binding).** `snoozed_until` is **NOT NULL**. Minimum **5 minutes**, maximum **30 days**.
 **There is no indefinite snooze** — an unexpiring snooze is a mute, and mutes are how channels die.
@@ -723,6 +723,13 @@ which is otherwise never gated. A partial mute is a confusing mute.
 themselves exempt. Snooze must be able to announce its own beginning and end, or it becomes the
 silent suppression that §B.6 forbids.
 
+⚠️ **EXEMPTION FROM SUPPRESSION IS ONLY HALF OF BEING HEARD.** An exempt fact that is identical to
+its predecessor is still not delivered — it is dropped one layer down, by `notifications_idem_uniq`.
+A RE-SNOOZE (1 h changed to 4 h) is exactly that fact, and these same two Reasons are the two that
+name a §C.7 **occasion** for exactly this reason. The two mechanisms are separate and both are
+required: §B.8.4 decides whether oto is allowed to speak, §C.7.1 decides whether what it says is a
+new sentence. **A change to one is not a substitute for the other.**
+
 Because deliveries are rendered at **claim** time (C11), the wake-up notification reflects the
 alert's state *now*, not a replay of what was suppressed. An alert that fired and resolved entirely
 inside a snooze window produces no stale card.
@@ -743,7 +750,13 @@ Two new `alert_events.type` values, added to the closed enum in §D.4.1:
   critical stays `#a30200` / `:rotating_light:`.
 - A field is added: `*Notifications*\n:zzz: Snoozed by <@UA8RXUSPL> until <!date^1786468800^{time}|17:00 UTC>`
 - The `Snooze` action becomes `:bell: Unsnooze` (`oto.unsnooze`). Buttons are never no-ops (S10/§H.1).
-- A `snoozed` thread reply is posted once (§H.5), and an `unsnoozed` reply when it ends.
+- A `snoozed` thread reply is posted once per snooze (§H.5), and an `unsnoozed` reply when it ends.
+- **A RE-SNOOZE AMENDS THE CARD.** The second announcement is an ordinary root-touching fact, so
+  §H.6's root column answers `update_root` on a destination that can amend and whose card has landed
+  — the countdown badge re-renders from `snoozed_until` with no renderer change — and `post_root`
+  only where no card exists yet. It is never a SECOND root card: two cards read as two incidents
+  (ADR 0008, migration `00069`: *"chat.update in place is PRIMARY; thread replies are the
+  exception"*).
 
 **UI:**
 - A `:zzz:` badge with a live countdown on the row and in the header.
@@ -816,6 +829,10 @@ because it is the remainder and needs no prefix to be found. Decoding is still t
 take the N prefixed fields, and everything left is the tail. Where the tail is itself a
 §C.1 serialisation it is self-delimiting in turn, so the two layers never interact.
 **Do not "fix" this asymmetry** — making the tail prefixed re-keys everything for nothing.
+
+**The one thing that may follow a tail** is §C.7's *occasion* (§C.7.1): a fixed-width `field(uuid)`,
+written only when the key names one, whose leading `0x00` cannot occur in the decimal tail it follows.
+Nothing else may be appended after a tail, and nothing appended after a tail may be variable-width.
 
 A canonical blob that is *not* last must be framed like any other field. §C.6 is the one
 place that happens.
@@ -1055,6 +1072,7 @@ idempotency_key := hex( sha256(
    || field(subject_kind) || field(subject_id_bytes(16))
    || field(reason)
    || itoa(state_version)                     -- tail, raw
+   || field(occasion_id_bytes(16))            -- ONLY when an occasion is named
 ) )
 ```
 
@@ -1076,6 +1094,60 @@ idempotency_key := hex( sha256(
 > longer the dead one.
 >
 > `TestIdempotencyKeyAgreesWithTheKernel` survives, for the same reason as §C.6's.
+
+#### C.7.1 The occasion — which TIME this reason happened
+
+`state_version` is the discriminator for every fact that follows a **Case state transition**, and
+for a digest it is the **window ordinal**. Two Reasons have neither, and for them the five
+components above are constant across genuinely different facts:
+
+| Reason | The fact | Why `state_version` cannot tell two apart |
+|---|---|---|
+| `snoozed` | a quiet period beginning | a snooze is taken on the **Alert** (`StartSnooze`), is neither a `state` nor a `suppression_reason` (§B.8.2), and moves no Case lock |
+| `unsnoozed` | a quiet period ending | the same, in the other direction — snooze → wake → snooze → wake is four facts at one version |
+
+So a human who snoozed for 1 h and then for 4 h minted a **byte-identical key**, the second intent
+was dropped by `notifications_idem_uniq`, and the channel went on displaying the first quiet period.
+§B.8.3 supersedes correctly and the row was always right; **only the announcement was lost**, which
+is precisely the silence §B.6 forbids. Exempting these two Reasons from snooze *suppression* (§B.8.4)
+was never enough on its own: a fact that is exempt from suppression and identical to its predecessor
+is still not delivered.
+
+**The occasion is normally `alert_snoozes.id`** for both — the row the fact is about: the snooze just
+created, or the snooze just ended. It is minted before the claim is taken (§B.8.3), so the row, the
+event, the claim and the key all name the same snooze, and a REDELIVERED `notify.evaluate` for one
+press carries the same occasion and is swallowed exactly as it always was. A nonce here would have
+broken that.
+
+⚠️ **BUT WHEN THE PRESS CANNOT BE CLAIMED, THE OCCASION IS THE REQUEST'S ID INSTEAD**, and that
+substitution is what keeps the guarantee above true. A Slack press is claimed against the presser's
+oto user, and an **unlinked** member has none (`slack_identities.user_id` is nullable and unlinked is
+a first-class state — requiring a link would silently lose acks from anyone not onboarded), while
+`idempotency_claims.principal_id` is `NOT NULL`. Such a press is therefore *named but not claimable*:
+no claim stops the redelivery re-executing, so it supersedes again and mints a **new** snooze row. If
+the occasion were that new row's id the redelivery would mint a new key and the channel would get a
+second card for one human press — which is exactly what happened before this clause existed, because
+the old constant-`state_version` key was accidentally absorbing it. So where a request carries an id,
+the occasion is that id, which is stable across redelivery and distinct between two genuine presses.
+
+⛔ **Residual, stated rather than implied:** an interaction that carries no request identity at all
+has nothing stable to name, so it falls back to the snooze row's id and a redelivery of *that* does
+produce two cards. `uuid.Nil` is not an escape — it would key every snooze of one alert identically
+and lose the re-snooze announcement this section exists to deliver.
+
+**Framing (binding).** The occasion is the ONE optional component of any §C key and the ONE field
+written *after* a tail. `uuid.Nil` writes **no bytes at all** — not sixteen zero ones — so the
+thirteen Reasons that name no occasion keep the exact key they have always had and **no stored key
+moved**. When present it is `field(uuid)`: a fixed 20 bytes opening with `0x00`, which is what keeps
+the pre-image uniquely decodable against the raw `itoa(state_version)` in front of it, since a
+decimal string can contain no `0x00`. **It must stay a fixed-width uuid**; a free-string occasion
+could open with a digit and forge that boundary. See §C.0's tail rule, which this is the single
+sanctioned exception to.
+
+**No migration.** `notifications.idempotency_key` is a 64-hex digest and
+`notifications_idem_uniq (org_id, idempotency_key)` is unchanged in shape and meaning; nothing
+recomputes the key from a stored row, so no column stores the occasion. Adding one would be a second
+copy of a fact the job payload already carries.
 
 ### C.8 `alert_events` idempotency
 

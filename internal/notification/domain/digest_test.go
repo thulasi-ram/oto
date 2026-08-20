@@ -529,8 +529,10 @@ func TestOneWindowIsOneIntent(t *testing.T) {
 		"notifications_sver_ck requires >= 1, and every window after the first of 1970 is")
 
 	key := func(subject uuid.UUID, start time.Time) string {
+		// No occasion: a digest's discriminator IS its window ordinal, carried in
+		// `state_version`, so `uuid.Nil` and the key is the one it has always been.
 		return domain.IdempotencyKey(
-			org, domain.SubjectDigest, subject, domain.ReasonDigest, d.WindowOrdinal(start))
+			org, domain.SubjectDigest, subject, domain.ReasonDigest, d.WindowOrdinal(start), uuid.Nil)
 	}
 
 	assert.Equal(t, key(policy, first), key(policy, first.Add(9*time.Minute)),
