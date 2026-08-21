@@ -48,7 +48,12 @@ var wordingReach = map[string]struct {
 	"V4": {structural, "the block-type whitelist is Go's; a Wording cannot introduce a type"},
 
 	"V5": {bounded, "section text — the primary surface a Wording reaches. Bounded by truncateSection, and an empty render falls back to Go's text"},
-	"V6": {bounded, "field text — reached by the fields stanza. Bounded by truncateField; field COUNT stays Go's"},
+	// ⚠️ V6 IS UNREACHABLE BY REFUSAL, NOT BY MECHANISM — the same fragile shape as
+	// V14. The fields grid renders to up to ten separately-budgeted cells in a
+	// binding §H.7 order, so StanzaFields is refused (see wording.StanzaID.Wordable).
+	// If that refusal is ever lifted, this classification must move to `bounded`
+	// and truncateField becomes the thing holding the line.
+	"V6": {structural, "field-cell text; StanzaFields is refused because one line of prose would replace the grid rather than re-word it"},
 	"V7": {bounded, "context element text — reached by the footer/trail stanzas. Inner text bounded by the shared text-object rule; element COUNT stays Go's"},
 
 	"V8":  {structural, "actions block elements; StanzaActions is refused outright"},
@@ -127,7 +132,7 @@ func TestTheReachableSetIsSmallAndDeliberate(t *testing.T) {
 		}
 	}
 	sort.Strings(reachable)
-	want := []string{"V18", "V5", "V6", "V7"} // sorted lexically
+	want := []string{"V18", "V5", "V7"} // sorted lexically
 	if len(reachable) != len(want) {
 		t.Fatalf("a Wording now reaches %v; ADR 0037's argument covers %v", reachable, want)
 	}

@@ -3,6 +3,7 @@ package wording
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -71,6 +72,9 @@ func Compile(stanza StanzaID, src string) (*Wording, error) {
 		return nil, fmt.Errorf("wording is %d bytes, and the limit is %d: a stanza is one line of prose",
 			len(src), MaxTemplateBytes)
 	}
+	if msg := unbalanced(src); msg != "" {
+		return nil, errors.New(msg)
+	}
 	// The template SOURCE is sanitised too, not only the values interpolated into
 	// it. ADR 0037 says the sink strips a mention "from interpolated values *and*
 	// from literals", and a literal private-use codepoint typed into a template body
@@ -121,6 +125,9 @@ func Validate(stanza StanzaID, src string) []Problem {
 		return []Problem{{Kind: ProblemTooLong, Message: fmt.Sprintf(
 			"a wording is one line of prose; this is %d bytes and the limit is %d",
 			len(src), MaxTemplateBytes)}}
+	}
+	if msg := unbalanced(src); msg != "" {
+		return []Problem{{Kind: ProblemParse, Message: msg}}
 	}
 	clean := sanitise(src)
 	t, err := laxly().ParseString(clean)
@@ -199,4 +206,40 @@ func liquidMessage(err error) string {
 		return ""
 	}
 	return strings.TrimPrefix(err.Error(), "Liquid error: ")
+}
+
+// unbalanced reports an unclosed Liquid delimiter, in words, or "" when the
+// template is balanced.
+//
+// ⛔ LIQUID DOES NOT DO THIS FOR US, AND THE FAILURE IS SILENT. `{{ alert.name`
+// with no closing braces does NOT fail to parse: the library treats the unclosed
+// run as ordinary literal text, so the template "succeeds" and renders the string
+// `{{ alert.name` onto the card. Every other malformation this package can produce
+// surfaces as an error and falls back to oto's own text; this one produces a
+// plausible-looking card with template syntax printed on it, which is worse than a
+// failure because nothing anywhere reports it. Found by
+// TestAFailingWordingFallsBackRatherThanKillingTheCard.
+//
+// ⚠️ IT CHECKS THE SOURCE, NOT THE OUTPUT, ON PURPOSE. Scanning rendered text for
+// "{{" would also fire on an alert whose annotation legitimately contains a
+// PromQL or Go-template snippet, and punish the data for the template's mistake.
+func unbalanced(src string) string {
+	for _, d := range []struct{ open, close, what string }{
+		{"{{", "}}", "an expression"},
+		{"{%", "%}", "a tag"},
+	} {
+		if n := strings.Count(src, d.open) - strings.Count(src, d.close); n != 0 {
+			return "unclosed " + d.what + ": " + strconv.Itoa(abs(n)) + "\u00d7 " + d.open +
+				" with no matching " + d.close +
+				" — liquid would print this on the card as literal text rather than fail"
+		}
+	}
+	return ""
+}
+
+func abs(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
 }

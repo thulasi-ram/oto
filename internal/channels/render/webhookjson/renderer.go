@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/thulasiram/oto/internal/channels/domain"
+	"github.com/thulasiram/oto/internal/channels/render/wording"
 	"github.com/thulasiram/oto/internal/platform/clock"
 	"github.com/thulasiram/oto/internal/platform/errs"
 )
@@ -88,6 +89,8 @@ func (r *Renderer) Render(
 	// belongs to exactly one org"). `org` is a frozen non-optional v1 key whose members
 	// are all strings, so its absence surfaces as empty strings rather than as an
 	// invented tenant — which is the honest shape available without a schema bump.
+	env.Rendered = renderWordings(v, o, at)
+
 	if v.Digest != nil {
 		env.Digest = mapDigest(*v.Digest)
 		env.Summary = digestSummary(*v.Digest)
@@ -417,4 +420,45 @@ func marshal(v any) (json.RawMessage, error) {
 		return nil, err
 	}
 	return json.RawMessage(bytes.TrimRight(buf.Bytes(), "\n")), nil
+}
+
+// renderWordings produces the customer's per-Stanza prose for a webhook consumer.
+//
+// ⭐ IT IS THE SAME TEMPLATE THE SLACK CARD USES, SPELLED DIFFERENTLY. A Wording is
+// text and text is portable; what is not portable is punctuation. PlainDialect
+// drops every emphasis mark and renders a timestamp as oto's UTC string rather
+// than as Slack's <!date^…> token, so a consumer receives values it can process
+// instead of one product's markup it would have to strip.
+//
+// ⛔ A FAILING WORDING OMITS ITS KEY RATHER THAN EMITTING AN ERROR OR AN EMPTY
+// STRING. The Slack renderer falls back to oto's own text because a card must say
+// something; there is no equivalent here, because every fact a Stanza could
+// mention is ALREADY in the envelope as a structured field. An absent key is the
+// truthful rendering of "the customer's prose for this stanza did not render",
+// and it is a smaller claim than an empty string a consumer would print.
+func renderWordings(v *domain.NotificationView, o domain.RenderOptions, at time.Time) map[string]string {
+	if len(o.Wordings) == 0 {
+		return nil
+	}
+	in := wording.BuildInput(v, at)
+	out := make(map[string]string, len(o.Wordings))
+	for _, id := range wording.AllStanzas {
+		src, ok := o.Wordings[string(id)]
+		if !ok || src == "" || !id.Wordable() {
+			continue
+		}
+		w, err := wording.Compile(id, src)
+		if err != nil {
+			continue
+		}
+		text, err := w.Render(in, wording.PlainDialect{})
+		if err != nil {
+			continue
+		}
+		out[string(id)] = text
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }

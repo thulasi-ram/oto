@@ -61,6 +61,22 @@ type Dialect interface {
 	// StripAudience removes every spelling by which THIS provider addresses a
 	// group of humans. It is called on the finished string, after marks are spelled.
 	StripAudience(s string) string
+	// EscapeText neutralises the characters THIS provider's message parser treats
+	// as markup, and it is applied to the WORDS only — never to the markup oto's
+	// own marks just produced.
+	//
+	// ⛔ THE ORDER IS THE WHOLE REASON THIS IS ON THE INTERFACE. Escaping the
+	// finished string would destroy oto's own output: Slack's <!date^…> token
+	// would become &lt;!date^…&gt; and render as literal garbage. Escaping before
+	// rendering would be worse — the marks are inserted BY filters during the
+	// render, so there is no "before" that sees them. Spell therefore escapes each
+	// run of text as it walks, and writes markup through untouched.
+	//
+	// ⚠️ AND IT IS PER-PROVIDER BECAUSE ESCAPING IS A QUIRK LIKE ANY OTHER. A
+	// webhook consumer receives a JSON string: giving it "&amp;" where the alert
+	// said "&" is not safety, it is corruption of the value it will go on to
+	// process.
+	EscapeText(s string) string
 }
 
 // MarkKind is one emphasis a Wording can ask for.
@@ -99,6 +115,13 @@ func (k MarkKind) String() string {
 type SlackDialect struct{}
 
 func (SlackDialect) Name() string { return "slack" }
+
+// EscapeText neutralises the three characters Slack's mrkdwn parser treats as
+// control characters, exactly as slack.escape() does for upstream annotation text.
+// A label value containing "<!channel>" must not become a channel-wide ping.
+func (SlackDialect) EscapeText(s string) string {
+	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace(s)
+}
 
 func (SlackDialect) Emphasis(k MarkKind) (string, string) {
 	switch k {
@@ -162,6 +185,11 @@ type PlainDialect struct{}
 func (PlainDialect) Name() string                       { return "plain" }
 func (PlainDialect) Emphasis(MarkKind) (string, string) { return "", "" }
 
+// EscapeText is the identity: a webhook consumer receives a JSON string and is
+// going to process the value, so handing it "&amp;" where the alert said "&" is
+// not safety, it is corruption.
+func (PlainDialect) EscapeText(s string) string { return s }
+
 func (PlainDialect) Timestamp(_ time.Time, fallback string) string { return fallback }
 
 // StripAudience removes the bare spellings that read as a broadcast in almost every
@@ -185,14 +213,23 @@ func Spell(d Dialect, s string) string {
 	if s == "" {
 		return ""
 	}
-	var b strings.Builder
+	var b, run strings.Builder
 	b.Grow(len(s))
+	// flush escapes the words accumulated so far. Markup is written straight to b,
+	// bypassing this, which is the point.
+	flush := func() {
+		if run.Len() > 0 {
+			b.WriteString(d.EscapeText(run.String()))
+			run.Reset()
+		}
+	}
 	runes := []rune(s)
 	for i := 0; i < len(runes); i++ {
 		r := runes[i]
 		switch r {
 		case markCodeOpen, markCodeClose, markStrikeOpen, markStrikeClose,
 			markBoldOpen, markBoldClose, markItalicOpen, markItalicClose:
+			flush()
 			kind, opening := markMeta(r)
 			open, close := d.Emphasis(kind)
 			if opening {
@@ -205,14 +242,16 @@ func Spell(d Dialect, s string) string {
 			if end < 0 {
 				continue // unterminated: drop the mark, keep the words
 			}
+			flush()
 			b.WriteString(spellTime(d, string(runes[i+1:end])))
 			i = end
 		case markTimeClose, markTimeSep:
 			// Orphaned separator. Drop it rather than print a private-use glyph.
 		default:
-			b.WriteRune(r)
+			run.WriteRune(r)
 		}
 	}
+	flush()
 	return d.StripAudience(b.String())
 }
 
@@ -222,7 +261,10 @@ func spellTime(d Dialect, payload string) string {
 		return payload
 	}
 	unix, err := strconv.ParseInt(payload[:sep], 10, 64)
-	fallback := payload[sep+len(string(markTimeSep)):]
+	// The fallback is oto's own formatted UTC string, but it is escaped anyway:
+	// it is the one part of a time mark that becomes visible prose, and escaping
+	// it costs nothing on a string oto controls.
+	fallback := d.EscapeText(payload[sep+len(string(markTimeSep)):])
 	if err != nil {
 		return fallback
 	}

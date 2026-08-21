@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/thulasiram/oto/internal/channels/domain"
+	"github.com/thulasiram/oto/internal/channels/render/wording"
 )
 
 // renderRoot builds the card that is posted once per AlertGroup generation and
@@ -21,9 +22,12 @@ func (r *Renderer) renderRoot(v *domain.NotificationView, o domain.RenderOptions
 	nonce := renderNonce(v, o)
 	now := r.renderedAt(v)
 	blocks := make([]Block, 0, 8)
+	// The customer's Wordings for this delivery, already selected upstream. nil
+	// when there are none, which is the common case and costs nothing.
+	st := r.newStanzas(v, o)
 
-	blocks = append(blocks, r.titleBlock(v, o, state, nonce))
-	if b, ok := r.bodyBlock(v, nonce); ok {
+	blocks = append(blocks, r.titleBlock(v, o, state, nonce, st))
+	if b, ok := r.bodyBlock(v, nonce, st); ok {
 		blocks = append(blocks, b)
 	}
 	blocks = append(blocks, r.fieldsBlock(v, o, state, now, nonce))
@@ -33,13 +37,13 @@ func (r *Renderer) renderRoot(v *domain.NotificationView, o domain.RenderOptions
 	if b, ok := r.trailBlock(v, state, nonce); ok {
 		blocks = append(blocks, b)
 	}
-	if b, ok := r.ruleBlock(v, nonce); ok {
+	if b, ok := r.ruleBlock(v, nonce, st); ok {
 		blocks = append(blocks, b)
 	}
 	if b, ok := r.actionsBlock(v, state, nonce); ok {
 		blocks = append(blocks, b)
 	}
-	blocks = append(blocks, r.footerBlock(v, o, state, now, nonce))
+	blocks = append(blocks, r.footerBlock(v, o, state, now, nonce, st))
 
 	fallback := rootText(v, state)
 
@@ -58,7 +62,7 @@ func (r *Renderer) renderRoot(v *domain.NotificationView, o domain.RenderOptions
 
 // titleBlock is a section, never a header (S1): a header is plain_text only, so
 // it cannot carry the bold link into oto, and that link is the whole point.
-func (r *Renderer) titleBlock(v *domain.NotificationView, o domain.RenderOptions, state CardState, nonce string) Block {
+func (r *Renderer) titleBlock(v *domain.NotificationView, o domain.RenderOptions, state CardState, nonce string, st *stanzas) Block {
 	title := v.Group.Title
 	if title == "" {
 		title = v.Group.GroupLabels["alertname"]
@@ -75,8 +79,14 @@ func (r *Renderer) titleBlock(v *domain.NotificationView, o domain.RenderOptions
 	if cluster := clusterChip(v); cluster != "" {
 		head += "  ·  " + code(cluster)
 	}
-	if summary := oneLine(annotation(v, "summary")); summary != "" {
-		head += "\n_" + escape(truncateRunes(summary, 240)) + "_"
+	// ⛔ A WORDING REACHES THE SUBTITLE, NEVER THE LINE ABOVE IT. The head carries
+	// the leading emoji (state and severity, §H.2/§H.4), the bold link into oto and
+	// the cluster chip — all structure ADR 0037 keeps. The subtitle is the one
+	// prose line in this stanza, so it is the one a customer can rewrite.
+	subtitle := escapedOr(st, wording.StanzaTitle,
+		func() string { return escape(truncateRunes(oneLine(annotation(v, "summary")), 240)) })
+	if subtitle != "" {
+		head += "\n_" + subtitle + "_"
 	}
 
 	return sectionBlock(blockID("title", nonce), truncateSection(head, o.BaseURL))
@@ -84,7 +94,11 @@ func (r *Renderer) titleBlock(v *domain.NotificationView, o domain.RenderOptions
 
 // bodyBlock carries the alert's own prose. It is dropped entirely when there is
 // none: an empty italic line is worse than no line (S11).
-func (r *Renderer) bodyBlock(v *domain.NotificationView, nonce string) (Block, bool) {
+func (r *Renderer) bodyBlock(v *domain.NotificationView, nonce string, st *stanzas) (Block, bool) {
+	// ⛔ THE DROP DECISIONS ARE MADE ON GO'S VALUE, BEFORE ANY WORDING IS
+	// CONSULTED — which is what stops a Wording from deciding whether a block
+	// exists. A customer can change what the body SAYS; they cannot conjure a body
+	// onto a card that has no prose, and they cannot suppress one that does.
 	body := annotation(v, "description", "message")
 	if body == "" {
 		return Block{}, false
@@ -93,7 +107,8 @@ func (r *Renderer) bodyBlock(v *domain.NotificationView, nonce string) (Block, b
 		// Already shown under the title; repeating it is noise.
 		return Block{}, false
 	}
-	return sectionBlock(blockID("body", nonce), truncateSection(escape(body), v.Links.Group)), true
+	text := escapedOr(st, wording.StanzaBody, func() string { return escape(body) })
+	return sectionBlock(blockID("body", nonce), truncateSection(text, v.Links.Group)), true
 }
 
 // fieldsBlock renders the scannable two-column grid. Order is binding (§H.7) and
@@ -274,7 +289,7 @@ func (r *Renderer) membersBlock(
 // matters most is afterwards, when somebody asks whether the threshold was
 // sensible or when it last changed. Dropping it deleted the one thing oto has
 // that nothing else does, from the one message that outlives the incident.
-func (r *Renderer) ruleBlock(v *domain.NotificationView, nonce string) (Block, bool) {
+func (r *Renderer) ruleBlock(v *domain.NotificationView, nonce string, st *stanzas) (Block, bool) {
 	if v.Rule == nil {
 		return Block{}, false
 	}
@@ -282,10 +297,18 @@ func (r *Renderer) ruleBlock(v *domain.NotificationView, nonce string) (Block, b
 	if expr == "" {
 		return Block{}, false
 	}
-	text := ":mag: " + code(truncateRunes(expr, 900))
-	if v.Rule.For > 0 {
-		text += "   " + code("for: "+humanDuration(v.Rule.For))
-	}
+	text := escapedOr(st, wording.StanzaRule, func() string {
+		t := ":mag: " + code(truncateRunes(expr, 900))
+		if v.Rule.For > 0 {
+			t += "   " + code("for: "+humanDuration(v.Rule.For))
+		}
+		return t
+	})
+	// ⛔ THE LINK IS RE-ATTACHED AFTER THE WORDING, NEVER INSIDE IT. ADR 0037
+	// refuses user-authored URLs — link() escapes the label but not the url, which
+	// is exactly how `runbook_url: "<!channel>"` once put a channel-wide ping in
+	// every push notification. So a Wording rewrites the sentence about the rule
+	// and Go still owns the way out of the card.
 	if v.RuleChange != nil {
 		text += "   :scroll: " + link(v.Links.Timeline, "the rule changed since the last case")
 	}
@@ -695,7 +718,7 @@ func overflowMenu(v *domain.NotificationView) (Action, bool) {
 // footerBlock is the provenance line: which group, which receiver, why this
 // delivery happened, and when the card was last touched. It is what makes an
 // update-in-place card trustworthy — the reader can see it is current.
-func (r *Renderer) footerBlock(v *domain.NotificationView, o domain.RenderOptions, state CardState, now time.Time, nonce string) Block {
+func (r *Renderer) footerBlock(v *domain.NotificationView, o domain.RenderOptions, state CardState, now time.Time, nonce string, st *stanzas) Block {
 	parts := []string{"oto"}
 	if k := v.Group.GroupKey; k != "" {
 		parts = append(parts, code(shortKey(k)))
@@ -724,10 +747,18 @@ func (r *Renderer) footerBlock(v *domain.NotificationView, o domain.RenderOption
 	if o.Continued {
 		// §H.9: this card replaces one that is gone or unreachable. Saying so is
 		// what stops a recovery reading as a second incident.
-		parts = append(parts, "_continued from an earlier card_")
+		parts = append(parts, continuedMarker)
 	}
 
-	text := strings.Join(parts, "  ·  ")
+	text := escapedOr(st, wording.StanzaFooter, func() string { return strings.Join(parts, "  ·  ") })
+	if o.Continued {
+		// §H.9's marker is re-appended after a Wording for the same reason the rule
+		// link is: it is the sentence that stops a recovered card reading as a
+		// second incident, and it must not be something a customer can drop.
+		if !strings.Contains(text, continuedMarker) {
+			text += "  ·  " + continuedMarker
+		}
+	}
 	return contextBlock(blockID("footer", nonce), Text{Type: TypeMrkdwn, Text: truncateField(text, v.Links.Group)})
 }
 

@@ -74,6 +74,28 @@ type Envelope struct {
 	Links       map[string]string     `json:"links,omitempty"`
 	Previous    map[string]string     `json:"previous,omitempty"`
 	Summary     string                `json:"summary"`
+	// Rendered carries the customer's Wordings for this delivery, keyed by Stanza
+	// (ADR 0037, ADR 0048). It is absent unless the destination has Wordings, so
+	// every existing consumer and all three checked-in fixtures are unchanged.
+	//
+	// ⛔ ADDITIVE ONLY, WHICH IS WHY IT MAY LAND ON A FROZEN ENVELOPE. §H.10 /
+	// SCOPE-BOUNDARY H-2 freeze `oto.notification.v1`, and what that freeze forbids
+	// is MOVING, RENAMING or DROPPING a key a consumer already reads — the same
+	// reasoning that let `group` become a pointer. A new `omitempty` key adds a
+	// promise without altering one; nothing a v1 consumer parses today changes shape.
+	//
+	// ⭐ THE MARKERS ARE STRIPPED, BECAUSE THE WEBHOOK IS NOT A DEGRADED SLACK. The
+	// same Wording that renders "*critical*" on a Slack card arrives here as
+	// "critical": a consumer is a PROGRAM, and handing it another product's
+	// punctuation to parse is a worse contract than handing it clean text. This is
+	// the half of the cross-channel problem a layout abstraction could not solve —
+	// text is portable, layout is not.
+	//
+	// ⚠️ IT IS NOT `summary`, AND MUST NOT BECOME IT. `summary` is a frozen v1 key
+	// oto composes and consumers depend on; a Wording is the customer's own prose
+	// for one named unit. Folding one into the other would make a frozen field mean
+	// two different things depending on configuration a consumer cannot see.
+	Rendered map[string]string `json:"rendered,omitempty"`
 }
 
 // Org identifies the tenant.

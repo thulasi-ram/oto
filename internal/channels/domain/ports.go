@@ -329,6 +329,24 @@ type RenderOptions struct {
 	// stale one — a human can see the first and cannot see the second — but only
 	// if it says so.
 	Continued bool
+	// Wordings are the customer's per-Stanza templates for this delivery, ALREADY
+	// SELECTED: the map is keyed by stanza name and holds at most one template
+	// each, because the `when` clause and the priority order were resolved
+	// upstream where the matcher vocabulary lives. The renderer picks, it does not
+	// match.
+	//
+	// ⭐ IT IS TEMPLATE SOURCE RATHER THAN A COMPILED OBJECT ON PURPOSE. This
+	// package cannot import the wording package — that package imports this one for
+	// NotificationView — and a string is also exactly what gets written onto the
+	// delivery row beside the rendered payload, so "why did my card read like that"
+	// is answerable from one row rather than from a config that may since have
+	// changed. The renderer keeps its own compiled cache.
+	//
+	// ⛔ A WORDING CAN ONLY EVER SUBSTITUTE TEXT (ADR 0037). Go still builds every
+	// block, assigns every block_id and owns the attachment, colour and emoji, and
+	// a Wording that fails or renders empty falls back to oto's own string — which
+	// is what makes it impossible for one to mark a delivery dead.
+	Wordings map[string]string
 	// ⛔ `Mentions` WAS HERE AND IS DELETED (git-bug bd0fb1d). It carried the org's
 	// resolved mention audience for the ONE unacked reminder, gated on severity.
 	// The owner withdrew the reminder and ruled the mention goes with it: a mention

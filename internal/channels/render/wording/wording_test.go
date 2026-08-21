@@ -281,8 +281,18 @@ func TestActionsTakesNoWording(t *testing.T) {
 		t.Errorf("the refusal must say WHY: %q", p[0].Message)
 	}
 	for _, s := range AllStanzas {
-		if s != StanzaActions && !s.Wordable() {
-			t.Errorf("%s should be wordable", s)
+		wantWordable := s == StanzaTitle || s == StanzaBody || s == StanzaRule || s == StanzaFooter
+		if s.Wordable() != wantWordable {
+			t.Errorf("%s: Wordable()=%v, want %v", s, s.Wordable(), wantWordable)
+		}
+	}
+	for _, refused := range []StanzaID{StanzaFields, StanzaMembers, StanzaTrail, StanzaActions} {
+		p := Validate(refused, `{{ alert.name }}`)
+		if len(p) != 1 || p[0].Kind != ProblemStanza {
+			t.Fatalf("%s must refuse a wording, got %+v", refused, p)
+		}
+		if len(p[0].Message) < 30 {
+			t.Errorf("%s refuses with no real reason: %q", refused, p[0].Message)
 		}
 	}
 	if len(AllStanzas) != 8 {
@@ -419,5 +429,65 @@ func TestDeliveryNeverFailsOnAnAbsentField(t *testing.T) {
 		if !strings.Contains(out, "/") {
 			t.Errorf("%s: the stanza lost its shape: %q", f.Name, out)
 		}
+	}
+}
+
+// TestWordsAreEscapedButOtosOwnMarkupIsNot is the ordering bug this design exists
+// to prevent. Escape the finished string and Slack's own <!date^…> token becomes
+// &lt;!date^…&gt; and renders as literal garbage; escape nothing and an annotation
+// containing "<" reaches the mrkdwn parser.
+func TestWordsAreEscapedButOtosOwnMarkupIsNot(t *testing.T) {
+	w, err := Compile(StanzaBody, `{{ annotations.summary }} at {{ group.started_at | datetime }} {{ alert.service | code }}`)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	v := firingView()
+	v.Alerts[0].Annotations = map[string]string{"summary": `a<b & c>d`}
+	in := BuildInput(v, fixtureClock.Add(time.Hour))
+
+	slack, err := w.Render(in, SlackDialect{})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if !strings.Contains(slack, "a&lt;b &amp; c&gt;d") {
+		t.Errorf("upstream text must be escaped for Slack: %q", slack)
+	}
+	if !strings.Contains(slack, "<!date^") || strings.Contains(slack, "&lt;!date") {
+		t.Errorf("oto's own date token must NOT be escaped: %q", slack)
+	}
+	if !strings.Contains(slack, "`checkout`") {
+		t.Errorf("oto's own code markup must survive escaping: %q", slack)
+	}
+
+	plain, err := w.Render(in, PlainDialect{})
+	if err != nil {
+		t.Fatalf("render plain: %v", err)
+	}
+	if !strings.Contains(plain, "a<b & c>d") {
+		t.Errorf("a webhook consumer must get the value the alert carried, unescaped: %q", plain)
+	}
+}
+
+// TestUnclosedDelimiterIsRefused. Liquid renders `{{ alert.name` as literal text
+// rather than failing, so without this check a malformed wording would print
+// template syntax on a card and nothing would report it.
+func TestUnclosedDelimiterIsRefused(t *testing.T) {
+	for _, src := range []string{
+		`{{ alert.name`,
+		`{{ alert.name }} and {{ group.title`,
+		`{% something`,
+		`alert.name }}`,
+	} {
+		if _, err := Compile(StanzaBody, src); err == nil {
+			t.Errorf("%q compiled; liquid would print it as literal text", src)
+		}
+		p := Validate(StanzaBody, src)
+		if len(p) == 0 || p[0].Kind != ProblemParse {
+			t.Errorf("%q was not refused at save time: %+v", src, p)
+		}
+	}
+	// A balanced template is untouched by the check.
+	if _, err := Compile(StanzaBody, `{{ alert.name | default: "x" }}`); err != nil {
+		t.Errorf("a balanced wording was refused: %v", err)
 	}
 }
