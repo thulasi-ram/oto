@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 76 {
-		t.Fatalf("latest migration is %d, want 76 — this test pins the number so that a "+
+	if latest != 77 {
+		t.Fatalf("latest migration is %d, want 77 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1629,6 +1629,22 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// accepts a kind the release below it cannot interpret. No column reading can
 	// see that, and it is the half most likely to be forgotten because nothing
 	// references it.
+	// 00077 adds one nullable JSONB column recording WHICH wordings produced a card.
+	// Its Down warns rather than refusing, unlike 00076's: what a rollback loses here
+	// is the explanation of a card, not the card (`rendered` still holds the bytes)
+	// and not the customer's prose (the `wordings` table still holds every template).
+	if n := countColumns("notification_deliveries", "wordings"); n != 1 {
+		t.Fatalf("notification_deliveries.wordings is absent at migration 77 (found %d); "+
+			"00077's Up exists so that \"why did my card read like that\" needs one row "+
+			"rather than a replay against configuration that may since have changed", n)
+	}
+
+	down(77)
+
+	if n := countColumns("notification_deliveries", "wordings"); n != 0 {
+		t.Fatalf("notification_deliveries.wordings survived 00077's Down (found %d)", n)
+	}
+
 	// 00076 is a plain CREATE TABLE, so its Down is a DROP guarded by a row count —
 	// the shape 00073, 00074 and 00075 all use for a narrowing Down. The guard is
 	// what is interesting here: a Wording is customer-authored prose that exists

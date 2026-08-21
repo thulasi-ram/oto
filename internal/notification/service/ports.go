@@ -136,7 +136,7 @@ type DeliveryStore interface {
 	SetThreadSeq(ctx context.Context, s db.TenantScope, id uuid.UUID, seq int, now time.Time) error
 	Get(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Delivery, error)
 	Claim(ctx context.Context, s db.TenantScope, id uuid.UUID, leaseCutoff, now time.Time) (domain.Delivery, bool, error)
-	PersistRendered(ctx context.Context, s db.TenantScope, id uuid.UUID, payload json.RawMessage, hash, fallback string, now time.Time) error
+	PersistRendered(ctx context.Context, s db.TenantScope, id uuid.UUID, payload json.RawMessage, hash, fallback string, now time.Time, wordings map[string]string) error
 	// MarkSent reports whether the row was actually written. False means the claim
 	// was gone and the send is recorded NOWHERE — see the repository's warning.
 	MarkSent(ctx context.Context, s db.TenantScope, id uuid.UUID, messageID, conversationID string, raw json.RawMessage, now time.Time) (bool, error)

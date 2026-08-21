@@ -596,7 +596,7 @@ func (s *DispatchService) claim(
 		// truncated, so a dead delivery can be debugged from the row.
 		if len(msg.Payload) > 0 && msg.Fallback != "" {
 			_ = s.deliveries.PersistRendered(ctx, scope, d.ID,
-				msg.Payload, msg.Hash, msg.Fallback, now)
+				msg.Payload, msg.Hash, msg.Fallback, now, opts.Wordings)
 		}
 		// ⛔ THIS FAILURE IS OTO'S, NOT THE DESTINATION'S, AND THE COUNTER AND THIS
 		// LOG LINE ARE THE ONLY ALARM IT HAS. `fail` marks the row dead in this
@@ -638,7 +638,7 @@ func (s *DispatchService) claim(
 
 	// BEFORE the network call, always.
 	if err := s.deliveries.PersistRendered(ctx, scope, d.ID,
-		msg.Payload, msg.Hash, msg.Fallback, now); err != nil {
+		msg.Payload, msg.Hash, msg.Fallback, now, opts.Wordings); err != nil {
 		return outcome{}, nil, err
 	}
 

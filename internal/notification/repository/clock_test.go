@@ -241,7 +241,7 @@ func TestDeliveryWritesSurviveAWorkerBehindTheFanOut(t *testing.T) {
 		"deliveries_time_ck, restated in Go so the failure names the invariant")
 
 	require.NoError(t, deliveries.PersistRendered(h.Ctx, fx.scope, d.ID,
-		json.RawMessage(`{"text":"hi"}`), strings.Repeat("0", 64), "hi", behind),
+		json.RawMessage(`{"text":"hi"}`), strings.Repeat("0", 64), "hi", behind, nil),
 		"a worker whose clock lags the fan-out must not 500 on deliveries_time_ck")
 
 	recorded, err := deliveries.MarkSent(h.Ctx, fx.scope, d.ID,
