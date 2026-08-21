@@ -41,6 +41,7 @@ import type {
   CreatePolicyRequest,
   CreateSourceRequest,
   CreateTokenRequest,
+  CreateWordingRequest,
   DeliveryDrill,
   Delivery,
   Enricher,
@@ -62,6 +63,7 @@ import type {
   Policy,
   PolicyPreview,
   PolicyPreviewRequest,
+  PreviewWordingRequest,
   Rejection,
   RejectionListQuery,
   ResolvedConversation,
@@ -83,8 +85,11 @@ import type {
   UpdateOrgSettingsRequest,
   UpdatePolicyRequest,
   UpdateSourceRequest,
+  UpdateWordingRequest,
   Uuid,
   VersionInfo,
+  Wording,
+  WordingPreview,
 } from "./types";
 
 const V1 = "/api/v1";
@@ -731,6 +736,61 @@ export function deletePolicy(id: Uuid): Promise<void> {
  */
 export function previewPolicy(body: PolicyPreviewRequest, c: Ctx = {}): Promise<PolicyPreview> {
   return postItem<PolicyPreview>(`${V1}/notification-policies/preview`, body, ctx(c));
+}
+
+/* -------------------------------------------------------------------------- */
+/* Wordings — the text of one Stanza, in the customer's own words             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Every Wording in the org, org-wide rows and per-destination rows together.
+ *
+ * ⛔ NO `channel_id` IS PASSED, AND THAT IS THE SCREEN'S REQUIREMENT RATHER THAN
+ * AN OMISSION. With one, the server answers with that destination's OWN rows and
+ * drops the org-wide house voice (`listWordings`) — which is right for a screen
+ * that edits one channel's exceptions and wrong for the one screen whose job is
+ * showing precedence, because the row that loses is the half a reader came for.
+ */
+export function listWordings(c: Ctx = {}): Promise<ListEnvelope<Wording>> {
+  return getList<Wording>(`${V1}/wordings`, ctx(c));
+}
+
+/**
+ * ⛔ NO `Idempotency-Key`, DELIBERATELY, and the handler says why: a Wording is
+ * settings, so a retried create leaves a duplicate row an operator can see and
+ * delete rather than a second message a human has already read.
+ */
+export function createWording(body: CreateWordingRequest): Promise<Wording> {
+  return postItem<Wording>(`${V1}/wordings`, body);
+}
+
+export function getWording(id: Uuid, c: Ctx = {}): Promise<Wording> {
+  return getItem<Wording>(`${V1}/wordings/${id}`, ctx(c));
+}
+
+/**
+ * `stanza` and `channel_id` are absent from the body on purpose (ADR 0049):
+ * moving a Wording between stanzas or between scopes is a different Wording, not
+ * an edit of this one. The form must not offer either.
+ */
+export function updateWording(id: Uuid, body: UpdateWordingRequest): Promise<Wording> {
+  return patchItem<Wording>(`${V1}/wordings/${id}`, body);
+}
+
+export function deleteWording(id: Uuid): Promise<void> {
+  return del(`${V1}/wordings/${id}`);
+}
+
+/**
+ * The authoring loop: what this template would SAY, on every fixture of the
+ * shipped corpus, in every Dialect oto can spell.
+ *
+ * ⛔ A TEMPLATE THAT FAILS VALIDATION IS STILL A `200` CARRYING `problems`. The
+ * refusal and the output belong in the same round trip, so a caller must never
+ * treat a non-empty `problems` as an error that replaces the renderings.
+ */
+export function previewWording(body: PreviewWordingRequest, c: Ctx = {}): Promise<WordingPreview> {
+  return postItem<WordingPreview>(`${V1}/wordings/preview`, body, ctx(c));
 }
 
 /* -------------------------------------------------------------------------- */

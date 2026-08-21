@@ -23,15 +23,22 @@ import { cn } from "~/lib/cn";
 import { SidebarPanel, SubNavLink } from "~/components/SidebarSlot";
 import { ActivitySection } from "~/features/notifications/ActivitySection";
 import { PoliciesSection } from "~/features/notifications/PoliciesSection";
+import { WordingsSection } from "~/features/notifications/WordingsSection";
 
 /*
  * Policies first because it is the one that is *written*: an operator arriving
  * here for the first time has no policies, and every row the activity log could
- * show them would say `no_policy`. Activity second, and it is the one they come
+ * show them would say `no_policy`. Activity last, and it is the one they come
  * back for.
+ *
+ * Wordings sits between them because it is the other half of the same sentence:
+ * a policy decides WHETHER and WHERE a fact is communicated, a wording decides
+ * what the card SAYS when it is (ADR 0037). Both are written; the activity log is
+ * not configuration at all, and reads last for that reason.
  */
 const SECTIONS = [
   { id: "policies", label: "Policies" },
+  { id: "wordings", label: "Wordings" },
   { id: "activity", label: "Activity log" },
 ] as const;
 
@@ -85,6 +92,12 @@ const NotificationsRoute: Component = () => {
             rows whose right-hand edge carries a timestamp; capping it at a
             reading measure would strand that column in the middle of a wide
             display, so it takes the width it is given.
+
+            Wordings takes the width too, and for the activity log's reason
+            rather than the policy editor's: its preview puts two providers'
+            spellings of the same line SIDE BY SIDE, and a reading measure would
+            stack them — which is the one arrangement in which the contrast that
+            justifies the pane stops being visible (ADR 0048).
           */}
           <div class="min-h-0 w-full flex-1 overflow-auto">
             <div
@@ -96,6 +109,9 @@ const NotificationsRoute: Component = () => {
               <Switch>
                 <Match when={params.section === "policies"}>
                   <PoliciesSection />
+                </Match>
+                <Match when={params.section === "wordings"}>
+                  <WordingsSection />
                 </Match>
                 <Match when={params.section === "activity"}>
                   <ActivitySection />

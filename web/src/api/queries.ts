@@ -49,9 +49,16 @@ import {
   listPolicies,
   listRuleSnapshots,
   listSources,
+  listWordings,
+  previewWording,
 } from "./endpoints";
 import { keepPrevious } from "~/lib/keysetFeed";
-import type { AlertListQuery, NotificationListQuery, RuleSnapshotQuery } from "./types";
+import type {
+  AlertListQuery,
+  NotificationListQuery,
+  RuleSnapshotQuery,
+  WordingStanza,
+} from "./types";
 
 /**
  * The floor under everything the live stream owns, and the client's default.
@@ -179,6 +186,37 @@ export function policiesQuery() {
   return {
     queryKey: qk.settings.policies(),
     queryFn: ({ signal }: { signal: AbortSignal }) => listPolicies({ signal }),
+  };
+}
+
+/** Every Wording in the org — both scopes, because precedence is the screen. */
+export function wordingsQuery() {
+  return {
+    queryKey: qk.wordings.list(),
+    queryFn: ({ signal }: { signal: AbortSignal }) => listWordings({ signal }),
+  };
+}
+
+/**
+ * What one candidate template would say, on every fixture, in every Dialect.
+ *
+ * ⭐ IT IS A QUERY AND NOT A MUTATION, AND THE CACHE IS THE AUTHORING LOOP. The
+ * endpoint writes nothing and its answer is a pure function of the two strings in
+ * the key, so an author who types a word and deletes it again gets the previous
+ * rendering back instantly rather than paying for a second POST of a question
+ * already answered. `enabled` is the caller's, because only the caller knows
+ * whether there is a template to ask about — the contract's `minLength: 1` makes
+ * an empty one a `422` rather than an empty answer.
+ *
+ * ⛔ A NON-EMPTY `problems` IS A SUCCESS, NOT AN ERROR. The server answers `200`
+ * for an invalid template on purpose: the refusal and the output belong on screen
+ * together, because the fix is usually only visible when both are.
+ */
+export function wordingPreviewQuery(stanza: WordingStanza, template: string) {
+  return {
+    queryKey: qk.wordings.preview(stanza, template),
+    queryFn: ({ signal }: { signal: AbortSignal }) =>
+      previewWording({ stanza, template }, { signal }),
   };
 }
 
@@ -356,6 +394,11 @@ export const FRESHNESS: Readonly<Record<string, Freshness>> = {
   "settings.channels": { by: "mutation" },
   "settings.channelConnections": { by: "mutation" },
   "settings.policies": { by: "mutation" },
+  // Settings, like the policies beside them: creating, editing and deleting a
+  // Wording all happen on the screen that reads the list, and all three
+  // invalidate it. No stream frame can change one — a Wording is what an operator
+  // wrote, not something an alert did.
+  "wordings.list": { by: "mutation" },
   // `TuningSection` writes the saved settings back with `setQueryData`, which is
   // the same guarantee by a shorter route: the entry holds the server's answer.
   "settings.org": { by: "mutation" },
@@ -382,6 +425,10 @@ export const FRESHNESS: Readonly<Record<string, Freshness>> = {
   "rules.batch": {
     by: "immutable",
     why: "a snapshot is content-addressed, so once an id has been resolved its answer can never change; asking again would be asking a settled question",
+  },
+  "wordings.preview": {
+    by: "immutable",
+    why: "a preview writes nothing and reads nothing of the org: it is one template rendered against a fixture corpus that ships with the build, so the stanza and the template in the key are the whole question and the answer to them cannot change while the tab is open",
   },
 
   "stats.overview": {

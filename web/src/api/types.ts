@@ -185,6 +185,17 @@ export type Matcher = S["MatcherDTO"];
 export type Throttle = S["ThrottleDTO"];
 export type Policy = S["PolicyDTO"];
 export type PolicyPreview = S["PolicyPreviewDTO"];
+/**
+ * One Liquid template that writes the TEXT of one Stanza (ADR 0037). Structure
+ * stays oto's — there is no colour, no block and no destination on this shape.
+ */
+export type Wording = S["WordingDTO"];
+/** One of SPEC §H.7's eight block names. Four take a Wording; four are refused. */
+export type WordingStanza = S["WordingStanza"];
+export type WordingPreview = S["WordingPreviewDTO"];
+export type WordingRendering = S["WordingRenderingDTO"];
+/** One fixture's text as ONE provider writes it — `slack` or `plain` (ADR 0048). */
+export type WordingSpelling = S["WordingSpellingDTO"];
 export type Notification = S["NotificationDTO"];
 export type NotificationDetail = S["NotificationDetailDTO"];
 export type Delivery = S["DeliveryDTO"];
@@ -237,6 +248,10 @@ export type ResolveConversationRequest = S["ResolveConversationRequest"];
 export type CreatePolicyRequest = S["CreatePolicyRequest"];
 export type UpdatePolicyRequest = S["UpdatePolicyRequest"];
 export type PolicyPreviewRequest = S["PolicyPreviewRequest"];
+export type CreateWordingRequest = S["CreateWordingRequest"];
+/** `stanza` and `channel_id` are absent on purpose — see `updateWording` (ADR 0049). */
+export type UpdateWordingRequest = S["UpdateWordingRequest"];
+export type PreviewWordingRequest = S["PreviewWordingRequest"];
 /** A partial write: an omitted key is left alone, `reset` returns one to the default. */
 export type UpdateOrgSettingsRequest = S["UpdateOrgSettingsRequest"];
 export type LoginRequest = S["LoginRequest"];
