@@ -25,6 +25,9 @@ type renderer struct {
 	// seen records every RenderOptions the dispatcher asked for, so a test can
 	// assert on what the card was told about itself.
 	seen []chdomain.RenderOptions
+	// err makes the renderer refuse, which is the ONE failure in this pipeline
+	// that is oto's own bug rather than a destination's.
+	err error
 }
 
 func newRenderer() *renderer {
@@ -37,6 +40,12 @@ func newRenderer() *renderer {
 
 // hex is a 64-character lowercase hash, which is all deliveries_hash_ck asks.
 func hex(seed string) string { return strings.Repeat(seed, 64) }
+
+func (r *renderer) fail(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.err = err
+}
 
 func (r *renderer) set(mode chdomain.Mode, h string) {
 	r.mu.Lock()
@@ -54,6 +63,15 @@ func (r *renderer) Render(
 	defer r.mu.Unlock()
 	r.seen = append(r.seen, o)
 	h := r.hashes[o.Mode]
+	if r.err != nil {
+		// The bytes come back WITH the error, as the slack renderer does: §L.6
+		// wants the offending payload persisted on the dead row.
+		return chdomain.RenderedMessage{
+			Fallback: "an alert is firing",
+			Payload:  json.RawMessage(`{"illegal":true}`),
+			Hash:     h,
+		}, r.err
+	}
 	return chdomain.RenderedMessage{
 		Fallback: "an alert is firing",
 		Summary:  "an alert is firing",
@@ -134,6 +152,7 @@ type dispatchRig struct {
 	renderer   *renderer
 	target     *target
 	jobs       *enqueuer
+	metrics    *service.Metrics
 }
 
 func newDispatchRig(t *testing.T, tgt *target) dispatchRig {
@@ -142,6 +161,8 @@ func newDispatchRig(t *testing.T, tgt *target) dispatchRig {
 	fx := newFixture(t, domain.CapThreading|domain.CapAmend)
 	clk := clock.New()
 	rend := newRenderer()
+	// A nil registry is the house shape for tests: real collectors, no global.
+	metrics := service.NewMetrics(nil)
 
 	channels := repository.NewChannelRepository(fx.pool)
 	deliveries := repository.NewDeliveryRepository(fx.pool)
@@ -190,13 +211,14 @@ func newDispatchRig(t *testing.T, tgt *target) dispatchRig {
 		Enqueuer: jobs,
 		BaseURL:  "https://oto.example.com",
 		Clock:    clk,
+		Metrics:  metrics,
 	})
 	require.NoError(t, err)
 
 	return dispatchRig{
 		fx: fx, notifier: notifier, dispatcher: dispatcher,
 		deliveries: deliveries, threads: threads,
-		renderer: rend, target: tgt, jobs: jobs,
+		renderer: rend, target: tgt, jobs: jobs, metrics: metrics,
 	}
 }
 

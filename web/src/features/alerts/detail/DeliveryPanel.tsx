@@ -17,6 +17,7 @@
 import { For, Match, Show, Switch, type Component } from "solid-js";
 
 import type { DeliverySummary, Notification } from "~/api/types";
+import { DeadDeliveries } from "~/features/notifications/DeadDeliveries";
 import { describeSuppression, REASON_LABEL } from "~/features/notifications/vocabulary";
 import { RelativeTime } from "~/components/Time";
 import { Chip, Panel, PanelHeader, PanelTitle } from "~/components/ui/surfaces";
@@ -178,6 +179,17 @@ export const DeliveryPanel: Component<DeliveryPanelProps> = (props) => (
                       </Show>
                     </div>
                   )}
+                </Show>
+
+                {/* ⭐ THE ONE ACTIONABLE THING ON THIS PANEL, AND IT IS GATED ON
+                    THE COUNT RATHER THAN ALWAYS MOUNTED. The retry endpoint takes
+                    a DELIVERY id and this row only carries a roll-up, so the ids
+                    cost a request — one per intent that actually gave up, which
+                    on almost every alert is none. The org-wide log stays a log
+                    (`features/notifications/ActivitySection`); this is the screen
+                    that has the context to judge a retry. */}
+                <Show when={(n.delivery_summary?.dead ?? 0) > 0}>
+                  <DeadDeliveries notificationId={n.id} />
                 </Show>
               </li>
             )}

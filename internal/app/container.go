@@ -876,10 +876,13 @@ func (c *Container) buildNotification(
 		BaseURL:  c.Config.HTTP.BaseURL,
 		Clock:    clk,
 		Logger:   logger,
-		// ⭐ `oto_delivery_claim_lost_total` is an ALERT, not a statistic: every
-		// increment is a message that exists in somebody's channel with no `sent`
-		// row behind it. Left unregistered it was a counter nothing could scrape,
-		// which is the same as not having it.
+		// ⭐ BOTH OF THESE ARE ALERTS, NOT STATISTICS, AND BOTH ARE INVISIBLE
+		// FAILURES OTHERWISE. `oto_delivery_claim_lost_total`: a message that
+		// exists in somebody's channel with no `sent` row behind it.
+		// `oto_render_invalid_total`: a card oto could not build, whose delivery
+		// dies while the job reports success, so no queue metric ever moves. Left
+		// unregistered they are counters nothing could scrape, which is the same
+		// as not having them.
 		Metrics: notifservice.NewMetrics(reg),
 	}); err != nil {
 		return err

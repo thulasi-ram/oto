@@ -115,11 +115,21 @@ var authFailed = map[string]bool{
 // renderInvalid means oto built an illegal message. It is an oto BUG and it is
 // dead on arrival.
 //
-// ⛔ THERE IS NO `oto_render_invalid_total`. Earlier drafts promised one and no
-// collector was ever written, so this comment used to name a counter that would
-// have read zero forever (5bc341a). The delivery itself is the record:
-// `status='dead'`, `error_class='config_invalid'`, the offending payload kept in
-// `notification_deliveries.rendered`, and `oto_jobs_dead_total` carrying the rate.
+// ⭐ `oto_render_invalid_total` NOW EXISTS, AND IT IS THE ALARM. Earlier drafts
+// promised it, no collector was written, and this comment recorded the absence
+// (5bc341a). It is now constructed in `notification/service.NewMetrics` and
+// incremented on the render-failure branch of `dispatch.go`.
+//
+// ⚠️ IT HAD TO BE ITS OWN COUNTER RATHER THAN `oto_jobs_dead_total`, WHICH THIS
+// COMMENT USED TO POINT AT. A render failure is deterministic, so the job is not
+// retried and never reaches the dead-letter — the counter would have stayed at
+// zero while cards died. And even where it fired, `oto_jobs_dead_total` cannot
+// tell "oto built an illegal card" from "the token was revoked", which are an oto
+// bug and a customer's configuration and want different people woken.
+//
+// The delivery is still the record: `status='dead'`,
+// `error_class='config_invalid'`, and the offending payload kept in
+// `notification_deliveries.rendered`.
 //
 // ⚠️ `msg_blocks_too_long` ("Blocks submitted with this message are too long") is
 // the spelling Slack's chat.postMessage reference carries TODAY, and it was in no

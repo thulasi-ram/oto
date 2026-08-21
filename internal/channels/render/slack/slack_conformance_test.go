@@ -30,8 +30,11 @@ func mustValidate(t *testing.T, payload string) error {
 }
 
 // checkName is the §L.6 check that refused the payload. Naming it in an
-// assertion is naming what an operator reads off the dead delivery — the
-// `oto_render_invalid_total{check}` this used to cite was never built (5bc341a).
+// assertion is naming what an operator reads off the dead delivery.
+//
+// ⚠️ `oto_render_invalid_total` NOW EXISTS but carries NO `check` label, so this
+// is still the only place the check name is pinned. See validate.go's Error for
+// why the label was refused.
 func checkName(err error) string {
 	var e *slackrender.Error
 	if err == nil {

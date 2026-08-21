@@ -57,10 +57,14 @@ var allowedBlocks = map[string]bool{
 // in notification_deliveries.rendered so the dead delivery can be debugged, and
 // Check names which rule refused it. This is always an oto bug.
 //
-// ⛔ `Check` IS NOT A METRIC LABEL. It reads like one, and this comment used to
-// say so — `oto_render_invalid_total{check}` was promised by an early draft and
-// never built (5bc341a). The check name reaches an operator through the dead
-// delivery and the log line, not through a series.
+// ⛔ `Check` IS STILL NOT A METRIC LABEL, THOUGH THE COUNTER NOW EXISTS.
+// `oto_render_invalid_total` was promised by an early draft, went unbuilt for
+// long enough that this comment recorded its absence (5bc341a), and is now
+// constructed in `notification/service.NewMetrics`. Its labels are
+// provider/renderer/mode and deliberately NOT `check`: reading the check would
+// mean `errors.As` on this type from `dispatch.go`, whose own header forbids
+// provider-specific code there. The check name still reaches an operator through
+// the dead delivery and the log line, which is where it was always readable.
 type Error struct {
 	Check   string
 	Detail  string

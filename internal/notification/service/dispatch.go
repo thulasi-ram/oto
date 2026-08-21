@@ -584,6 +584,26 @@ func (s *DispatchService) claim(
 			_ = s.deliveries.PersistRendered(ctx, scope, d.ID,
 				msg.Payload, msg.Hash, msg.Fallback, now)
 		}
+		// ⛔ THIS FAILURE IS OTO'S, NOT THE DESTINATION'S, AND THE COUNTER AND THIS
+		// LOG LINE ARE THE ONLY ALARM IT HAS. `fail` marks the row dead in this
+		// transaction — config_invalid is terminal — and the job then reports
+		// SUCCESS, correctly: the job was asked to resolve a delivery and it did.
+		// So `oto_jobs_dead_total` never fires for a render bug, and handing the
+		// error out through `outcome.retry` would not change that: it classifies
+		// retryable, River would wake a job whose delivery is already resolved,
+		// and the second pass would exit quietly at `Status.Resolved()` and
+		// succeed. One extra wake-up, no extra information, still no dead-letter.
+		// The named counter is also the better alarm than the generic one would
+		// be: `config_invalid` from a provider means somebody's channel config is
+		// wrong, whereas this means oto built a card it cannot send — and only one
+		// of those is fixed by shipping a new oto.
+		s.metrics.RenderInvalid.WithLabelValues(
+			string(channel.Type), channel.Renderer, string(mode)).Inc()
+		s.log.ErrorContext(ctx,
+			"notification: oto could not render a legal payload; the delivery is dead and nobody was told",
+			"delivery_id", d.ID, "channel_id", d.ChannelID, "thread_id", d.ThreadID,
+			"provider", string(channel.Type), "renderer", channel.Renderer,
+			"mode", string(mode), "reason", string(n.Reason), "error", err.Error())
 		out, err := s.fail(ctx, scope, d, channel, err, domain.ClassConfigInvalid, now)
 		return out, nil, err
 	}
