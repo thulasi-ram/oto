@@ -1,6 +1,7 @@
 package wording
 
 import (
+	"regexp"
 	"strings"
 	"time"
 
@@ -93,7 +94,19 @@ func unknownFields(src string) []string {
 	return unknown
 }
 
-// referencedPaths pulls every dotted identifier out of liquid's quoted expression.
+// referencedPaths pulls every FIELD REFERENCE out of liquid's quoted expression.
+//
+// ⛔ QUOTED LITERALS ARE REMOVED FIRST, AND THAT IS NOT TIDINESS. Without it the
+// author's own strings become "fields": `{{ annotations.runbook | default:
+// "runbook.example.com" }}` was refused with "runbook.example.com is not a field
+// of an oto notification", which is both wrong and baffling — the thing it names
+// is the fallback text they typed.
+//
+// ⛔ AND A SINGLE-SEGMENT TOKEN IS A REFERENCE TOO. Requiring a dot meant a
+// misspelt ROOT — `{{ labls | default: "-" }}` — was silently accepted and rendered
+// "-" forever, which is the exact failure mode the typo pass exists to prevent and
+// is worse than the noisy version. Filter names are single-segment as well, so
+// they are excluded by name from the curated set rather than by shape.
 func referencedPaths(msg string) []string {
 	const marker = "undefined variable in {{"
 	i := strings.Index(msg, marker)
@@ -104,24 +117,68 @@ func referencedPaths(msg string) []string {
 	if j := strings.Index(expr, "}}"); j >= 0 {
 		expr = expr[:j]
 	}
+	expr = dotBrackets(expr)
+	expr = stripQuoted(expr)
+
+	filters := map[string]bool{}
+	for _, f := range FilterNames {
+		filters[f] = true
+	}
+	keywords := map[string]bool{"true": true, "false": true, "nil": true, "null": true,
+		"and": true, "or": true, "contains": true, "empty": true, "blank": true}
+
 	var out []string
 	for _, tok := range strings.FieldsFunc(expr, func(r rune) bool {
 		return r != '.' && r != '_' && (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') &&
 			(r < '0' || r > '9')
 	}) {
 		tok = strings.Trim(tok, ".")
-		// A bare number, a filter name with no dot, or a quoted literal's contents
-		// are not field references. A reference oto could satisfy always has a root
-		// in StanzaInput or is a dotted path.
-		if tok == "" || !strings.Contains(tok, ".") {
+		if tok == "" || filters[tok] || keywords[strings.ToLower(tok)] {
 			continue
 		}
-		if r := tok[0]; r >= '0' && r <= '9' {
-			continue
+		if c := tok[0]; c >= '0' && c <= '9' {
+			continue // a numeric literal, or a filter argument like `40`
 		}
 		out = append(out, tok)
 	}
 	return out
+}
+
+// dotBrackets rewrites `labels["team"]` as `labels.team`.
+//
+// ⛔ WITHOUT IT A BRACKET INDEX HIDES EVERY LATER TYPO. The two forms mean the same
+// thing to Liquid, but the tokeniser only understands dots — so `labls["team"]`
+// yielded the bare root, planting it did not satisfy the indexed lookup, the next
+// probe failed on the same expression, the loop saw no progress and stopped. A
+// second, ordinary typo later in the same template then shipped. Normalising the
+// two spellings into one is what lets the planting loop make progress.
+var bracketIndex = regexp.MustCompile(`\[\s*["']([A-Za-z0-9_.\-]+)["']\s*\]`)
+
+func dotBrackets(s string) string {
+	return bracketIndex.ReplaceAllString(s, ".$1")
+}
+
+// stripQuoted blanks the contents of every quoted literal, so an author's own
+// fallback text is never mistaken for a field name.
+func stripQuoted(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	var quote rune
+	for _, r := range s {
+		switch {
+		case quote != 0 && r == quote:
+			quote = 0
+			b.WriteByte(' ')
+		case quote != 0:
+			b.WriteByte(' ')
+		case r == '\'' || r == '"':
+			quote = r
+			b.WriteByte(' ')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // lookup reports whether a dotted path already resolves in the probe.

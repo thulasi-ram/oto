@@ -77,6 +77,10 @@ type Dialect interface {
 	// said "&" is not safety, it is corruption of the value it will go on to
 	// process.
 	EscapeText(s string) string
+	// DefuseLink makes an address unclickable without hiding it, in whatever way
+	// THIS provider allows. An empty return means the provider does not linkify at
+	// all and the address is data rather than markup.
+	DefuseLink(addr string) string
 }
 
 // MarkKind is one emphasis a Wording can ask for.
@@ -137,6 +141,13 @@ func (SlackDialect) Timestamp(at time.Time, fallback string) string {
 	return "<!date^" + strconv.FormatInt(at.UTC().Unix(), 10) + "^{date_short_pretty} {time}|" + fallback + ">"
 }
 
+// DefuseLink wraps an address in a code span, where Slack does not linkify.
+//
+// ⭐ WRAPPING RATHER THAN REMOVING: the reader still sees the exact address the
+// alert carried and simply cannot click it. Deleting it would tell them a smaller
+// truth than the one that exists, which is truncateAt's doctrine applied to a URL.
+func (SlackDialect) DefuseLink(addr string) string { return "`" + addr + "`" }
+
 // StripAudience removes Slack's broadcast and subteam spellings.
 //
 // ⚠️ IT RUNS EVEN THOUGH escape() ALREADY NEUTRALISES THE BRACKETS, and the
@@ -158,18 +169,53 @@ func (SlackDialect) StripAudience(s string) string { return stripCommonAudience(
 // prevent. A dialect adds its provider's extra spellings; it does not get to skip
 // these.
 func stripCommonAudience(s string) string {
-	for _, tok := range []string{
-		"<!channel>", "<!here>", "<!everyone>",
-		"&lt;!channel&gt;", "&lt;!here&gt;", "&lt;!everyone&gt;",
-		"@channel", "@here", "@everyone", "@room", "@all",
-	} {
-		s = replaceFold(s, tok, "")
+	// ⛔ THE WHOLE BODY IS A FIXPOINT, NOT JUST THE WORD PASS. An earlier fix looped
+	// `replaceFold` and stopped there, which closed one door and left the other
+	// open: the bracketed-span pass runs AFTER the word pass, so the halves IT joins
+	// are never re-examined by the word pass that already ran. A label of
+	// `@ch<@U024BE7LH>annel` strips its user mention and leaves `@ch`+`annel` =
+	// `@channel`, on both dialects. Every pass strictly shortens the string, so this
+	// terminates.
+	for i := 0; i < 32; i++ {
+		before := s
+		for _, tok := range []string{
+			"<!channel>", "<!here>", "<!everyone>",
+			"&lt;!channel&gt;", "&lt;!here&gt;", "&lt;!everyone&gt;",
+			"@channel", "@here", "@everyone", "@room", "@all",
+		} {
+			s = replaceFold(s, tok, "")
+		}
+		for _, pair := range [][2]string{
+			{"<@", ">"}, {"&lt;@", "&gt;"},
+			{"<!subteam^", ">"}, {"&lt;!subteam^", "&gt;"},
+		} {
+			s = stripBracketed(s, pair[0], pair[1])
+		}
+		if s == before {
+			return s
+		}
 	}
-	for _, pair := range [][2]string{
-		{"<@", ">"}, {"&lt;@", "&gt;"},
-		{"<!subteam^", ">"}, {"&lt;!subteam^", "&gt;"},
-	} {
-		s = stripBracketed(s, pair[0], pair[1])
+	return s
+}
+
+// neutralise is the LAST thing that touches a Wording's output: it refuses this
+// provider's audience spellings and defuses this provider's links, repeatedly,
+// until neither pass changes anything.
+//
+// ⛔ THE ORDER BETWEEN THEM IS NOT FIXABLE BY CHOOSING ONE, WHICH IS WHY IT IS A
+// LOOP. Defusing first misses every address the audience strip goes on to CREATE —
+// a label of `htt@channelps://evil.example/phish` loses `@channel` and becomes a
+// live, clickable link on the card. Stripping first misses every audience token an
+// address-defusing pass would expose. Each pass can feed the other, so the only
+// correct answer is to run both until the string stops changing.
+func neutralise(d Dialect, s string) string {
+	for i := 0; i < 16; i++ {
+		before := s
+		s = d.StripAudience(s)
+		s = defuseLinks(d, s)
+		if s == before {
+			return s
+		}
 	}
 	return s
 }
@@ -190,9 +236,12 @@ func stripCommonAudience(s string) string {
 // they simply cannot click it, and it is visibly marked as a literal. Deleting it
 // would tell them a smaller truth than the one that exists, which is the doctrine
 // truncateAt already states for a cut sentence.
-func defuseLinks(s, open, shut string) string {
+func defuseLinks(d Dialect, s string) string {
 	if !strings.Contains(s, "://") && !strings.Contains(s, "www.") {
 		return s
+	}
+	if d.DefuseLink("x") == "x" {
+		return s // this provider does not linkify; the address is data
 	}
 	var b strings.Builder
 	b.Grow(len(s) + 8)
@@ -204,12 +253,35 @@ func defuseLinks(s, open, shut string) string {
 			continue
 		}
 		b.WriteString(s[i:start])
-		b.WriteString(open)
-		b.WriteString(s[start : start+n])
-		b.WriteString(shut)
+		if alreadyDefused(d, s, start, n) {
+			// ⚠️ IDEMPOTENCE IS REQUIRED, NOT NICE. neutralise runs this pass until
+			// the string stops changing, so a defuser that re-wraps its own output
+			// would add a delimiter per iteration and stop only at the loop's cap —
+			// which is what a lone `code`-filtered URL did, arriving as seventeen
+			// backticks.
+			b.WriteString(s[start : start+n])
+		} else {
+			b.WriteString(d.DefuseLink(s[start : start+n]))
+		}
 		i = start + n
 	}
 	return b.String()
+}
+
+// alreadyDefused reports whether the address at [start, start+n) is already sitting
+// inside this provider's defusing wrapper.
+func alreadyDefused(d Dialect, s string, start, n int) bool {
+	wrapped := d.DefuseLink("\x00")
+	i := strings.Index(wrapped, "\x00")
+	if i < 0 {
+		return false
+	}
+	open, shut := wrapped[:i], wrapped[i+1:]
+	if open == "" && shut == "" {
+		return false
+	}
+	return start >= len(open) && s[start-len(open):start] == open &&
+		start+n+len(shut) <= len(s) && s[start+n:start+n+len(shut)] == shut
 }
 
 // urlAt reports a URL-looking run beginning at or after i, and its length.
@@ -272,6 +344,20 @@ func (PlainDialect) EscapeText(s string) string { return s }
 // Timestamp hands over oto's own UTC rendering, which a program can parse.
 func (PlainDialect) Timestamp(_ time.Time, fallback string) string { return fallback }
 
+// DefuseLink returns the address UNCHANGED, and that is a decision rather than an
+// omission.
+//
+// ⛔ A WEBHOOK CONSUMER IS A PROGRAM AND A URL IS DATA TO IT. Nothing linkifies a
+// JSON string, so there is no link to defuse — and a runbook address is the single
+// most common thing an alert annotation carries, so mangling it would corrupt the
+// field a consumer is most likely to want. This is the same reasoning as
+// EscapeText's identity: handing a program another product's defensive markup is
+// not safety.
+//
+// ⚠️ IT IS NOT AN EXEMPTION FOR AUDIENCE TOKENS, WHICH ARE STILL STRIPPED HERE. A
+// ping is never legitimate content; an address usually is.
+func (PlainDialect) DefuseLink(addr string) string { return addr }
+
 // StripAudience removes the bare spellings that read as a broadcast in almost every
 // chat product, so a webhook consumer that forwards oto's text into one cannot be
 // used as a laundering step for a ping a Wording was not allowed to send.
@@ -290,23 +376,17 @@ func Spell(d Dialect, s string) string {
 	}
 	var b, run strings.Builder
 	b.Grow(len(s))
-	codeOpen, codeShut := d.Emphasis(MarkCode)
-	inCode := 0
-	// flush escapes the words accumulated so far and defuses any address in them.
-	// Markup is written straight to b, bypassing this, which is the point.
+	// flush escapes the words accumulated so far. Markup is written straight to b,
+	// bypassing this, which is the point.
+	//
+	// ⚠️ DEFUSING IS NOT DONE HERE. It used to be, and that was the bug: an address
+	// the audience strip CREATES at the end of Spell had already passed this point.
+	// Both now run together, to a fixpoint, in neutralise.
 	flush := func() {
-		if run.Len() == 0 {
-			return
+		if run.Len() > 0 {
+			b.WriteString(d.EscapeText(run.String()))
+			run.Reset()
 		}
-		text := d.EscapeText(run.String())
-		// Inside a code span there is nothing to defuse — no provider linkifies
-		// there, which is exactly why defuseLinks wraps in one — and wrapping again
-		// would emit a delimiter inside its own span.
-		if inCode == 0 && codeOpen != "" {
-			text = defuseLinks(text, codeOpen, codeShut)
-		}
-		b.WriteString(text)
-		run.Reset()
 	}
 	runes := []rune(s)
 	for i := 0; i < len(runes); i++ {
@@ -315,11 +395,6 @@ func Spell(d Dialect, s string) string {
 		case markCodeOpen, markCodeClose, markStrikeOpen, markStrikeClose,
 			markBoldOpen, markBoldClose, markItalicOpen, markItalicClose:
 			flush()
-			if r == markCodeOpen {
-				inCode++
-			} else if r == markCodeClose && inCode > 0 {
-				inCode--
-			}
 			kind, opening := markMeta(r)
 			open, shut := d.Emphasis(kind)
 			if opening {
@@ -342,7 +417,7 @@ func Spell(d Dialect, s string) string {
 		}
 	}
 	flush()
-	return d.StripAudience(b.String())
+	return neutralise(d, b.String())
 }
 
 func spellTime(d Dialect, payload string) string {

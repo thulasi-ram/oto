@@ -810,8 +810,19 @@ func footerIdentity(v *domain.NotificationView, now time.Time) string {
 
 // replaceAll removes every occurrence of tok, repeatedly, so that removing one
 // cannot spell another out of the halves it joins.
+//
+// ⛔ IT RUNS TO A FIXPOINT AND NOT TO A COUNT. A cap of eight passes was enough for
+// anything sane and exactly wrong as a security boundary: a 288-byte footer
+// template nesting the marker nine deep exhausted the cap and left a surviving
+// copy, forging §H.9's "continued from an earlier card" on a card that continues
+// nothing. Each pass strictly shortens the string — `with` is empty — so the loop
+// terminates on its own, and the bound below is a guard against a future non-empty
+// replacement rather than the mechanism.
 func replaceAll(s, tok, with string) string {
-	for i := 0; i < 8 && strings.Contains(s, tok); i++ {
+	if tok == "" || len(with) >= len(tok) {
+		return strings.ReplaceAll(s, tok, with)
+	}
+	for strings.Contains(s, tok) {
 		s = strings.ReplaceAll(s, tok, with)
 	}
 	return s

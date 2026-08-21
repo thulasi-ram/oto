@@ -1,9 +1,6 @@
 package slack
 
 import (
-	"errors"
-	"sync"
-
 	"github.com/thulasiram/oto/internal/channels/domain"
 	"github.com/thulasiram/oto/internal/channels/render/wording"
 )
@@ -51,7 +48,7 @@ func (s *stanzas) or(id wording.StanzaID, builtin string) string {
 	if !ok || src == "" {
 		return builtin
 	}
-	w, err := compiledWording(id, src)
+	w, err := wording.Compiled(id, src)
 	if err != nil {
 		return builtin
 	}
@@ -62,60 +59,24 @@ func (s *stanzas) or(id wording.StanzaID, builtin string) string {
 	return out
 }
 
-// compiledCache keeps parsed templates across deliveries.
-//
-// A Renderer is built once (`New(clk)`) and shared by every dispatch, and a
-// customer's Wording changes rarely while their alerts do not — so parsing one
-// per delivery would be pure waste. The cache is keyed by stanza and source, so a
-// changed template is a different key and there is nothing to invalidate.
-//
-// ⚠️ IT DOES NOT MAKE THE RENDERER IMPURE. §F.1 requires that the renderer be a
-// pure function of its input: the cache is transparent — same input, same output,
-// no I/O, no clock — and a cold cache differs from a warm one only in speed.
-var compiledCache sync.Map // stanza+"\x00"+source -> *wording.Wording or error
-
-// errCacheCorrupt can only happen if something stores a third type in the cache,
-// which nothing does. It exists so the read has no unchecked assertion.
-var errCacheCorrupt = errors.New("compiled wording cache holds an unexpected type")
-
-func compiledWording(id wording.StanzaID, src string) (*wording.Wording, error) {
-	key := string(id) + "\x00" + src
-	if hit, ok := compiledCache.Load(key); ok {
-		if w, ok := hit.(*wording.Wording); ok {
-			return w, nil
-		}
-		if err, ok := hit.(error); ok {
-			return nil, err
-		}
-		return nil, errCacheCorrupt
-	}
-	w, err := wording.Compile(id, src)
-	if err != nil {
-		compiledCache.Store(key, err)
-		return nil, err
-	}
-	compiledCache.Store(key, w)
-	return w, nil
-}
-
 // continuedMarker is §H.9's "this card replaces an earlier one" sentence. It is a
-// constant because the footer re-attaches it after a Wording, and two spellings
-// would make that check silently fail.
+// constant because the footer both STRIPS it from a Wording's output and appends
+// its own, and two spellings would make one of those silently fail.
 const continuedMarker = "_continued from an earlier card_"
 
 // escapedOr returns the customer's text for id, or builds Go's.
 //
 // ⚠️ builtin IS A CLOSURE SO THAT THE ORDER READS CORRECTLY — the customer's text
-// is preferred, Go's is what happens otherwise — and NOT, as this comment used to
-// claim, to defer expensive composition. It does defer it for the rule stanza,
+// is preferred, Go's is what happens otherwise — and NOT, as this comment once
+// claimed, to defer expensive composition. It does defer it for the rule stanza,
 // which truncates a 900-rune expression inside the closure; it does NOT for the
 // footer, which builds all nine of its parts before calling here and only defers
 // the `Join`. A reason that is false for the example it names is worse than no
 // reason, because the next reader restructures the caller to preserve it.
 //
-// ⚠️ NEITHER SIDE IS ESCAPED HERE. Go's builder escapes its own inputs as it always
+// ⛔ NEITHER SIDE IS ESCAPED HERE. Go's builder escapes its own inputs as it always
 // has; a Wording's output was escaped run-by-run by its Dialect, which is the only
-// way oto's own <!date^…> tokens survive. Escaping the result again would break
+// way oto's own `<!date^…>` tokens survive. Escaping the result again would break
 // both.
 func escapedOr(s *stanzas, id wording.StanzaID, builtin func() string) string {
 	if s != nil {

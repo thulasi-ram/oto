@@ -255,18 +255,49 @@ func TestAWordingCannotForgeTheContinuedMarker(t *testing.T) {
 	}
 }
 
-// TestAVerboseWordingCannotDropTheContinuedMarker. It used to be appended after
-// the worded text and then cut from the front by truncateField, so a long-but-legal
-// template dropped it by being verbose.
+// TestAVerboseWordingCannotDropTheContinuedMarker. §H.9's marker used to be
+// appended after the worded text and then cut from the FRONT by truncateField, so
+// a long-but-legal footer dropped it by being verbose.
+//
+// ⚠️ THE FIRST VERSION OF THIS TEST WAS VACUOUS AND THE RED TEAM PROVED IT. It used
+// a 2 240-byte literal against a 2 048-byte source ceiling, so `Compile` refused
+// the template outright and the card fell back to Go's own footer — the truncation
+// path the test names was never entered, and it passed with the fix reverted. The
+// template must therefore be legal at SAVE time and enormous at RENDER time, which
+// is what interpolation is for: 60 references to an annotation the fixture fills
+// with 4 000 bytes.
 func TestAVerboseWordingCannotDropTheContinuedMarker(t *testing.T) {
-	long := strings.Repeat("padding words that go on and on ", 70) // ~2240 bytes
+	tmpl := strings.Repeat(`{{ annotations.summary }} `, 60) // ~1 560 B of source
+	if len(tmpl) > 2048 {
+		t.Fatalf("the template must be legal at save time; it is %d bytes", len(tmpl))
+	}
 	_, p := renderOpts(t, func(o *domain.RenderOptions) {
 		o.Continued = true
-		o.Wordings = map[string]string{"footer": long}
+		o.Wordings = map[string]string{"footer": tmpl}
 	})
 	got := blockText(p, "footer")
+	if !strings.Contains(got, "…") {
+		t.Fatalf("the footer was not actually truncated, so this test proves nothing "+
+			"(%d bytes)", len(got))
+	}
 	if !strings.Contains(got, continuedMarkerText) {
-		t.Errorf("a verbose wording dropped §H.9's marker: ...%q", got[tailFrom(got, 160):])
+		t.Errorf("a verbose wording dropped §H.9's marker: ...%q", got[tailFrom(got, 200):])
+	}
+}
+
+// TestAWordingCannotForgeTheMarkerHoweverDeeplyNested. The strip used to give up
+// after eight passes, so nesting the marker nine deep left a surviving copy.
+func TestAWordingCannotForgeTheMarkerHoweverDeeplyNested(t *testing.T) {
+	// Each layer is the marker with another marker inserted at its midpoint, so
+	// removing the outer one spells the inner.
+	nested := continuedMarkerText
+	for i := 0; i < 12; i++ {
+		mid := len(nested) / 2
+		nested = nested[:mid] + continuedMarkerText + nested[mid:]
+	}
+	_, p := renderWith(t, map[string]string{"footer": "all is well " + nested})
+	if got := blockText(p, "footer"); strings.Contains(got, continuedMarkerText) {
+		t.Errorf("a 12-deep nested marker forged §H.9 on a card that is not continued: %q", got)
 	}
 }
 

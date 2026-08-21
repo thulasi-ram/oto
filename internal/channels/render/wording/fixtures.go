@@ -21,6 +21,15 @@ type Fixture struct {
 	// Representative marks the ORDINARY cards. A Wording that renders empty on one
 	// of these is refused at save time; rendering empty on a hostile fixture is
 	// expected and is handled at delivery by falling back to oto's own text.
+	//
+	// ⚠️ THE DIGEST IS NOT REPRESENTATIVE, THOUGH IT IS AN ORDINARY MESSAGE. A
+	// Wording only ever reaches the ROOT card: a digest emits `digest`,
+	// `digestfacts`, `digestlook` and `digestfooter`, and a thread reply emits
+	// `reply` and `replyctx` — none of them SPEC §H.7's eight stanza names. So
+	// refusing a template because it says nothing on a digest would be refusing it
+	// for a card it will never write. It stays in the corpus as a ROBUSTNESS
+	// fixture: a view with almost every field absent is exactly what shakes out a
+	// template that assumed one.
 	Representative bool
 }
 
@@ -31,7 +40,7 @@ func Fixtures() []Fixture {
 	return []Fixture{
 		{Name: "firing", Representative: true, Input: BuildInput(firingView(), fixtureClock.Add(23*time.Minute))},
 		{Name: "resolved", Representative: true, Input: BuildInput(resolvedView(), fixtureClock.Add(2*time.Hour))},
-		{Name: "digest", Representative: true, Input: BuildInput(digestView(), fixtureClock)},
+		{Name: "digest", Input: BuildInput(digestView(), fixtureClock)},
 		{Name: "empty-labels", Input: BuildInput(emptyView(), fixtureClock)},
 		{Name: "oversized-annotation", Input: BuildInput(oversizedView(), fixtureClock)},
 		{Name: "hostile-text", Input: BuildInput(hostileView(), fixtureClock)},

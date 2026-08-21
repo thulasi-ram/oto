@@ -185,17 +185,128 @@ func TestATypoInAFilterArgumentNamesTheRightField(t *testing.T) {
 	}
 }
 
-// TestASecondTypoIsNotHiddenBehindTheFirst. Any message the parser could not read
-// used to `break` the whole pass, so a typo after an unparseable reference shipped.
+// TestASecondTypoIsNotHiddenBehindTheFirst.
+//
+// ⚠️ THE FIRST VERSION OF THIS TEST WAS VACUOUS AND THE RED TEAM PROVED IT by
+// re-implementing the pre-fix algorithm and showing it returned both names for the
+// input used. Two plain dotted typos were never the failing case. The real one is a
+// BRACKET INDEX: `labls["team"]` yielded only the bare root, planting it did not
+// satisfy the indexed lookup, the next probe failed on the same expression, the
+// loop saw no progress and stopped — and an ordinary typo later in the template
+// shipped clean.
 func TestASecondTypoIsNotHiddenBehindTheFirst(t *testing.T) {
-	p := Validate(StanzaBody, `{{ alert.srvice | default: "-" }} and {{ group.titel | default: "-" }}`)
+	p := Validate(StanzaBody, `Error on {{ labls["team"] }} for {{ alert.nmae | default: "-" }}`)
 	var msgs string
 	for _, one := range p {
 		msgs += one.Message + "\n"
 	}
-	for _, want := range []string{"alert.srvice", "group.titel"} {
+	for _, want := range []string{"labls", "alert.nmae"} {
 		if !strings.Contains(msgs, want) {
 			t.Errorf("%s was not reported:\n%s", want, msgs)
+		}
+	}
+}
+
+// TestAMisspeltRootIsRefused. Requiring a dot meant `{{ labls | default: "-" }}`
+// was accepted and rendered "-" forever — silently correct-looking output from a
+// template that reaches nothing, which is worse than the noisy failure.
+func TestAMisspeltRootIsRefused(t *testing.T) {
+	p := Validate(StanzaBody, `{{ labls | default: "-" }}`)
+	if len(p) == 0 {
+		t.Fatal("a misspelt root was accepted and would render its default forever")
+	}
+	if !strings.Contains(p[0].Message, "labls") {
+		t.Errorf("the message must name it: %q", p[0].Message)
+	}
+}
+
+// TestAnAuthorsOwnStringIsNotBlamedAsAField. The typo pass tokenised the whole
+// expression including quoted literals, so a fallback string became a "field":
+// `default: "runbook.example.com"` was refused with "runbook.example.com is not a
+// field of an oto notification".
+func TestAnAuthorsOwnStringIsNotBlamedAsAField(t *testing.T) {
+	for _, src := range []string{
+		`{{ annotations.runbook | default: "runbook.example.com" }}`,
+		`{{ alert.service | default: "see docs.example for help" }}`,
+		`{{ group.title | default: 'a.b.c' }}`,
+	} {
+		for _, p := range Validate(StanzaBody, src) {
+			if strings.Contains(p.Message, "example") || strings.Contains(p.Message, "a.b.c") {
+				t.Errorf("%s blamed the author's own literal: %q", src, p.Message)
+			}
+		}
+	}
+}
+
+// TestDelimitersAreCheckedByOrderAndNotByCount. `}}{{ alert.name }}{{` has two of
+// each, so a count-based balance check called it well formed while the card
+// rendered `}}OtoSmokeTest{{`.
+func TestDelimitersAreCheckedByOrderAndNotByCount(t *testing.T) {
+	for _, src := range []string{
+		`}}{{ alert.name }}{{`,
+		`}}{{`,
+		`%}{%`,
+		`}}{{ alert.name`,
+		`{{ alert.name }}}}{{{{`,
+	} {
+		if _, err := Compile(StanzaBody, src); err == nil {
+			t.Errorf("%q compiled; liquid would print it on the card as literal text", src)
+		}
+		if p := Validate(StanzaBody, src); len(p) == 0 || p[0].Kind != ProblemParse {
+			t.Errorf("%q was not refused at save time: %+v", src, p)
+		}
+	}
+	if _, err := Compile(StanzaBody, `{{ alert.name }} and {{ group.title }}`); err != nil {
+		t.Errorf("a well-formed template was refused: %v", err)
+	}
+}
+
+// TestAnAudienceStripCannotSpellALiveURL. defuseLinks ran inside Spell's flush,
+// BEFORE StripAudience, so any address the strip created was never seen by the
+// defuser — and a label is enough to create one.
+func TestAnAudienceStripCannotSpellALiveURL(t *testing.T) {
+	v := firingView()
+	v.Alerts[0].Labels = map[string]string{
+		"a": "htt@channelps://evil.example/phish",
+		"b": "www@here.evil.example",
+		"c": "htt<@U1>ps://evil.example/reset",
+	}
+	in := BuildInput(v, fixtureClock)
+	for _, key := range []string{"a", "b", "c"} {
+		w, _ := Compile(StanzaBody, `see {{ labels.`+key+` }}`)
+		out, err := w.Render(in, SlackDialect{})
+		if err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		for _, live := range []string{"https://evil.example", "www.evil.example"} {
+			if i := strings.Index(out, live); i >= 0 && (i == 0 || out[i-1] != '`') {
+				t.Errorf("label %s spelled an undefused address: %q", key, out)
+			}
+		}
+	}
+}
+
+// TestABracketedSpanRemovalCannotSpellAnAudience. The earlier fix looped
+// replaceFold but not the bracketed-span pass that runs after it, so the halves
+// THAT join were never re-examined by the word pass.
+func TestABracketedSpanRemovalCannotSpellAnAudience(t *testing.T) {
+	v := firingView()
+	v.Alerts[0].Labels = map[string]string{
+		"a": "@ch<@U024BE7LH>annel",
+		"b": "@he<@U1>re",
+		"c": "@every<!subteam^SAZ94GDB8>one",
+	}
+	in := BuildInput(v, fixtureClock)
+	for _, d := range []Dialect{SlackDialect{}, PlainDialect{}} {
+		for _, key := range []string{"a", "b", "c"} {
+			w, _ := Compile(StanzaBody, `ping {{ labels.`+key+` }} now`)
+			out, _ := w.Render(in, d)
+			low := strings.ToLower(out)
+			for _, tok := range []string{"@channel", "@here", "@everyone"} {
+				if strings.Contains(low, tok) {
+					t.Errorf("%s/%s: a bracketed-span removal spelled %q: %q", d.Name(), key, tok, out)
+				}
+			}
 		}
 	}
 }

@@ -89,7 +89,16 @@ func (r *Renderer) Render(
 	// belongs to exactly one org"). `org` is a frozen non-optional v1 key whose members
 	// are all strings, so its absence surfaces as empty strings rather than as an
 	// invented tenant — which is the honest shape available without a schema bump.
-	env.Rendered = renderWordings(v, o, at)
+	// ⛔ THE ROOT CARD ONLY, MATCHING SLACK. A Stanza is a unit of the ROOT card —
+	// SPEC §H.7's eight block names — and a digest and a thread reply have neither
+	// that layout nor those facts. This used to apply a wording set unconditionally
+	// while the Slack renderer applied it only in renderRoot, so the same
+	// configuration produced customer prose on one provider's digest and oto's own
+	// on the other's. Two renderers disagreeing about what a setting MEANS is worse
+	// than either answer.
+	if v.Digest == nil && o.Mode != domain.ModeThreadReply {
+		env.Rendered = renderWordings(v, o, at)
+	}
 
 	if v.Digest != nil {
 		env.Digest = mapDigest(*v.Digest)
@@ -440,25 +449,9 @@ func renderWordings(v *domain.NotificationView, o domain.RenderOptions, at time.
 	if len(o.Wordings) == 0 {
 		return nil
 	}
-	in := wording.BuildInput(v, at)
-	out := make(map[string]string, len(o.Wordings))
-	for _, id := range wording.AllStanzas {
-		src, ok := o.Wordings[string(id)]
-		if !ok || src == "" || !id.Wordable() {
-			continue
-		}
-		w, err := wording.Compile(id, src)
-		if err != nil {
-			continue
-		}
-		text, err := w.Render(in, wording.PlainDialect{})
-		if err != nil {
-			continue
-		}
-		out[string(id)] = text
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
+	// ⭐ THE SHARED HELPER, WHICH ALSO MEANS THE SHARED PARSE CACHE. This used to be
+	// its own loop calling wording.Compile directly, so every delivery re-parsed
+	// every template while the Slack renderer served its from a cache — the same
+	// work, done twice, one of the copies wasted.
+	return wording.RenderAll(o.Wordings, wording.BuildInput(v, at), wording.PlainDialect{})
 }
