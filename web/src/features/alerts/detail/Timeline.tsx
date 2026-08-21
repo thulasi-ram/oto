@@ -22,13 +22,21 @@ import type { AlertEvent } from "~/api/types";
 import { ClockSkewBadge, ClockTime, RelativeTime } from "~/components/Time";
 import { Button } from "~/components/ui/Button";
 import { FilterRow } from "~/components/ui/FilterRow";
+import {
+  CheckList,
+  ChoiceList,
+  FilterMenu,
+  SortGlyph,
+  summarise,
+  type CheckOption,
+} from "~/components/ui/FilterMenu";
 import { EmptyState } from "~/components/ui/states";
-import { ToggleGroup, ToggleGroupItem } from "~/components/ui/ToggleGroup";
 import { calendarDay, differentDay } from "~/lib/format";
 import { cn } from "~/lib/cn";
 import {
   ALL_CATEGORIES,
   CATEGORY_LABEL,
+  CATEGORY_MARK,
   describeActor,
   isHuman,
   kindOf,
@@ -49,35 +57,114 @@ export interface TimelineProps {
   readonly onLoadMore: () => void;
 }
 
+/**
+ * The two directions, and the sentence each of them is.
+ *
+ * ⛔ NEITHER WORD SAYS `occurred`. Ordering is `(recorded_at, id)` — oto's own
+ * clock — which is the whole reason a skewed upstream cannot reorder the
+ * timeline, and the gutter still displays `occurred_at`. "Newest first" is
+ * therefore about the record, not about the claim, and the title says so.
+ */
+const ORDER_OPTIONS = [
+  { value: "desc" as const, label: "Newest first" },
+  { value: "asc" as const, label: "Oldest first" },
+];
+
+const ORDER_TITLE =
+  "Ordering is always by oto's own clock, so a skewed upstream can never reorder the timeline.";
+
+/**
+ * The event-kind filter and the sort, as two dropdowns.
+ *
+ * ⭐ THIS WAS A ROW OF NINE PILLS AND IT READ AS A TAB STRIP. Nine
+ * `ToggleGroupItem`s wrapped to two lines inside a panel header, with exactly one
+ * usually lit, which is the shape of "you are in one of these" rather than "the
+ * list is narrowed to these" — and the timeline is a set, not a place. The
+ * trigger now says which kinds are on without being opened, which is the same
+ * bargain `FilterBar` makes and the reason a popover is affordable here at all.
+ *
+ * ⛔ AND `Show all` IS GONE AS A SEPARATE BUTTON. It was a control that appeared
+ * and vanished beside a filter, saying in a verb what the filter itself should
+ * say in its own resting state. `CheckList` draws `All kinds` as a checked row,
+ * so clearing the axis is the first thing in the menu rather than a button that
+ * only exists once you have narrowed something.
+ */
+const TimelineFilters: Component<{
+  readonly categories: readonly EventCategory[];
+  readonly onCategoriesChange: (next: readonly EventCategory[]) => void;
+  readonly order: "asc" | "desc";
+  readonly onOrderChange: (next: "asc" | "desc") => void;
+}> = (props) => {
+  const options = (): readonly CheckOption<EventCategory>[] =>
+    ALL_CATEGORIES.map((c) => ({
+      value: c,
+      label: CATEGORY_LABEL[c],
+      // Tier A ink, always: the shape is the vocabulary a filter row may borrow
+      // from the timeline, the hue is the marker's alone (§M.7).
+      icon: <Marker shape={CATEGORY_MARK[c]} class="text-ink-subtle" />,
+    }));
+
+  const kindsValue = (): string | undefined =>
+    summarise(props.categories.map((c) => CATEGORY_LABEL[c]));
+
+  const orderLabel = (): string =>
+    ORDER_OPTIONS.find((o) => o.value === props.order)?.label ?? ORDER_OPTIONS[0]!.label;
+
+  return (
+    <FilterRow tone="raised" gap="tight">
+      <FilterMenu
+        label="Event kinds"
+        value={kindsValue()}
+        title={
+          props.categories.length === 0
+            ? "Every kind of event, which is what the timeline shows when nothing is narrowed."
+            : props.categories.map((c) => CATEGORY_LABEL[c]).join(" · ")
+        }
+      >
+        <CheckList<EventCategory>
+          legend="Event kinds"
+          options={options()}
+          value={props.categories}
+          onChange={props.onCategoriesChange}
+          allLabel="All kinds"
+          allTitle="Every event this alert has, which is what the timeline shows unnarrowed."
+        />
+      </FilterMenu>
+
+      {/* Sort is a DIRECTION, not a set, so it is the one control in this row
+          that is single-choice — and it says its value on its face for the same
+          reason every filter trigger does. */}
+      <FilterMenu
+        label="Sort"
+        value={orderLabel()}
+        leading={<SortGlyph direction={props.order} class="text-ink-subtle" />}
+        title={ORDER_TITLE}
+        width="w-56"
+      >
+        <ChoiceList<"asc" | "desc">
+          legend="Sort order"
+          value={props.order}
+          onChange={props.onOrderChange}
+          options={ORDER_OPTIONS.map((o) => ({
+            value: o.value,
+            label: o.label,
+            icon: <SortGlyph direction={o.value} />,
+            title: ORDER_TITLE,
+          }))}
+        />
+      </FilterMenu>
+    </FilterRow>
+  );
+};
+
 export const Timeline: Component<TimelineProps> = (props) => (
   <div class="flex min-h-0 flex-col">
-    <FilterRow tone="raised">
-      <ToggleGroup
-        legend="Event kinds"
-        multiple
-        value={[...props.categories]}
-        onChange={(next) => props.onCategoriesChange(next as EventCategory[])}
-      >
-        <For each={ALL_CATEGORIES}>
-          {(c) => <ToggleGroupItem value={c}>{CATEGORY_LABEL[c]}</ToggleGroupItem>}
-        </For>
-      </ToggleGroup>
-      <div class="ml-auto flex items-center gap-sm">
-        <Show when={props.categories.length > 0}>
-          <Button size="sm" variant="ghost" onClick={() => props.onCategoriesChange([])}>
-            Show all
-          </Button>
-        </Show>
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={() => props.onOrderChange(props.order === "desc" ? "asc" : "desc")}
-          title="Ordering is always by oto's own clock, so a skewed upstream can never reorder the timeline."
-        >
-          {props.order === "desc" ? "Newest first" : "Oldest first"}
-        </Button>
-      </div>
-    </FilterRow>
+    <TimelineFilters
+      categories={props.categories}
+      onCategoriesChange={props.onCategoriesChange}
+      order={props.order}
+      onOrderChange={props.onOrderChange}
+    />
 
     <Show
       when={props.events.length > 0}
@@ -256,7 +343,7 @@ const PayloadTable: Component<{ readonly payload: Record<string, unknown> }> = (
  * a colour-vision deficiency or a bad monitor at 3am (U1). The colour is a
  * second channel, never the only one.
  */
-const Marker: Component<{ readonly shape: MarkerShape }> = (props) => {
+const Marker: Component<{ readonly shape: MarkerShape; readonly class?: string }> = (props) => {
   const body = (): string => {
     switch (props.shape) {
       case "dot":
@@ -275,7 +362,7 @@ const Marker: Component<{ readonly shape: MarkerShape }> = (props) => {
   };
 
   return (
-    <svg viewBox="0 0 10 10" class="size-2.5" aria-hidden="true">
+    <svg viewBox="0 0 10 10" class={cn("size-2.5 shrink-0", props.class)} aria-hidden="true">
       <Show
         when={props.shape !== "ring"}
         fallback={<circle cx="5" cy="5" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8" />}

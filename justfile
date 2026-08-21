@@ -327,6 +327,19 @@ generate-check:
 validators-check:
     cd {{web_dir}} && npm run gen:validators:check
 
+# Re-trace the ensō from the painting embedded in assets/logo/oto-icon-mark.svg
+# into web/src/components/ensoPaths.ts — three weights of one brush stroke.
+#
+# ⛔ NOT PART OF `just ci`, ON PURPOSE. It writes a generated file, needs potrace
+# and `sips`, and its output only changes when the artwork or the ladder does —
+# which is a deliberate design edit, not something a build should perform behind
+# somebody's back. Run it by hand and commit the result; the generated file's own
+# header says it is generated, and tools/ensotrace/ensotrace.py carries the whole
+# argument for why the stroke is traced rather than drawn in code.
+[group('design')]
+enso-trace:
+    python3 tools/ensotrace/ensotrace.py
+
 # SCOPE-BOUNDARY AC-49 (SPEC §P-18): the banned vocabulary and the forbidden
 # person-subject columns, over internal/, web/src/ and db/migrations/. Known debt
 # lives in tools/lintvocab/baseline.txt and can only shrink.

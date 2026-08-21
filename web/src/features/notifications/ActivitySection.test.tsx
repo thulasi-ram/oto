@@ -34,6 +34,22 @@ function mount(rows: readonly ReturnType<typeof notification>[], page = {}): Fet
 
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Picks a delivery status out of the "Where it got to" menu.
+ *
+ * ⛔ THIS STEP IS THE COST OF THE DROPDOWN, AND IT IS DELIBERATELY EXPLICIT. The
+ * six statuses used to be a strip of toggles in the DOM at mount, so a test — and
+ * a screen reader — could reach straight for the word. A closed Kobalte popover
+ * renders nothing, so both open it first. What is *not* behind the menu is the
+ * trigger's own summary of what is on, which is what makes the hiding acceptable
+ * (see `~/components/ui/FilterMenu`).
+ */
+async function pickStatus(name: string): Promise<void> {
+  fireEvent.click(screen.getByRole("button", { name: /^Where it got to/ }));
+  await until(() => expect(screen.getByRole("dialog")).toBeTruthy());
+  fireEvent.click(screen.getByRole("button", { name }));
+}
+
 describe("what the log admits to", () => {
   it("⛔ puts every suppression the contract can record into words", async () => {
     mount(
@@ -75,7 +91,7 @@ describe("what the log admits to", () => {
 
     // Narrow to one status; the answer is now about the filter, and it must not
     // read as "oto has never notified anybody".
-    fireEvent.click(screen.getByRole("button", { name: "deliberately not sent" }));
+    await pickStatus("deliberately not sent");
     await until(() => expect(screen.getByText(/No notification matches those filters/)).toBeTruthy());
     expect(screen.queryByText(/never formed a notification intent/)).toBeNull();
   });
@@ -88,7 +104,7 @@ describe("the filters", () => {
     const net = mount([notification()]);
     await until(() => expect(net.to(PATH)).toHaveLength(1));
 
-    fireEvent.click(screen.getByRole("button", { name: "nothing landed" }));
+    await pickStatus("nothing landed");
 
     // A client-side filter over one page would be a filter that lies: it can
     // only ever narrow the fifty rows already fetched, and the row being looked
@@ -105,7 +121,7 @@ describe("the filters", () => {
     fireEvent.click(screen.getByRole("button", { name: "Load 50 more" }));
     await until(() => expect(net.to(PATH).some((c) => c.search.get("cursor") !== null)).toBe(true));
 
-    fireEvent.click(screen.getByRole("button", { name: "deliberately not sent" }));
+    await pickStatus("deliberately not sent");
 
     // §E.3 answers a cursor minted under different filters with `400
     // cursor_filter_mismatch`, and an effect that reset it would be too late —

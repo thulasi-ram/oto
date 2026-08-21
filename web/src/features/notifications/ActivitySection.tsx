@@ -44,7 +44,7 @@ import {
 } from "~/components/ui/Combobox";
 import { Chip, Panel, PanelHeader, PanelTitle } from "~/components/ui/surfaces";
 import { ErrorState } from "~/components/ui/states";
-import { ToggleGroup, ToggleGroupItem } from "~/components/ui/ToggleGroup";
+import { CheckList, FilterMenu, summarise } from "~/components/ui/FilterMenu";
 import { cn } from "~/lib/cn";
 import { absoluteTime, count as fmtCount, shortId } from "~/lib/format";
 import { createKeysetFeed, type KeysetFeed } from "~/lib/keysetFeed";
@@ -163,17 +163,27 @@ export const ActivitySection: Component = () => {
       {/* The filters are a band above the list rather than a panel beside it —
           ADR 0033's rule, applied to the second table in the product. */}
       <div class={cn("flex flex-col gap-md border-b border-line", PANEL_BODY)}>
-        <ToggleGroup
-          legend="Where it got to"
-          showLegend
-          multiple
-          value={[...statuses()]}
-          onChange={(next) => setStatuses(next as NotificationStatus[])}
-        >
-          <For each={STATUSES}>
-            {(s) => <ToggleGroupItem value={s}>{STATUS_LABEL[s]}</ToggleGroupItem>}
-          </For>
-        </ToggleGroup>
+        {/* ⭐ A DROPDOWN, NOT A STRIP OF PILLS. Six delivery statuses laid out as
+            toggles filled a whole row with a control that read as a tab bar —
+            one pill lit, the rest waiting — when the fact is a SET: `failed` and
+            `dead` together is the normal question. The trigger says which
+            statuses are on without being opened, which is what makes the popover
+            affordable (see `FilterMenu`). */}
+        <div class="flex flex-wrap items-center gap-xs">
+          <FilterMenu
+            label="Where it got to"
+            value={summarise(statuses().map((s) => STATUS_LABEL[s]))}
+            title="The delivery's own outcome. `suppressed` and `skipped` are recorded with a reason rather than dropped, which is why they are filterable at all."
+          >
+            <CheckList<NotificationStatus>
+              legend="Where it got to"
+              options={STATUSES.map((s) => ({ value: s, label: STATUS_LABEL[s] }))}
+              value={statuses()}
+              onChange={(next) => setStatuses(next)}
+              allLabel="Any outcome"
+            />
+          </FilterMenu>
+        </div>
 
         {/* Eighteen reasons is too many to lay out as toggles, and the operator
             usually arrives knowing the word they want — so the same searchable

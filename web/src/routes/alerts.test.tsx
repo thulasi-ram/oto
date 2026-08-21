@@ -179,11 +179,17 @@ async function openMenu(axis: string): Promise<void> {
   await until(() => expect(screen.getByRole("dialog")).toBeTruthy());
 }
 
-/** Toggle the first lifecycle state — the smallest possible filter change. */
+/**
+ * Tick the first lifecycle state — the smallest possible filter change.
+ *
+ * `[0]` is the axis's own "Any state" row, which CLEARS it; the values start at
+ * `[1]`. Clicking the clear row on an already-empty axis would change nothing and
+ * mint no request, which is the one thing these tests cannot work with.
+ */
 async function changeAFilter(): Promise<void> {
   await openMenu("Status");
   const states = await screen.findByRole("group", { name: "Lifecycle state" });
-  fireEvent.click(within(states).getAllByRole("button")[0]!);
+  fireEvent.click(within(states).getAllByRole("button")[1]!);
 }
 
 describe("changing the filters while a page is loaded", () => {
@@ -216,7 +222,7 @@ describe("changing the grouping while a bucket page is loaded", () => {
     // A bucket cursor is a bucket key, so regrouping invalidates it twice over:
     // the keys it orders do not exist under the new axis.
     await openMenu("Group");
-    fireEvent.click(screen.getByRole("tab", { name: "By namespace" }));
+    fireEvent.click(screen.getByRole("button", { name: "By namespace" }));
 
     await until(() => {
       expect(

@@ -13,16 +13,17 @@
  *     thing the two systems share (§M.6).
  *
  * The marks themselves live in `./glyphs`, which is where §0.3's rule is
- * argued: severity gets the ordinal bar ramp because severity is ordered, and
- * each lifecycle state gets an unrelated shape because lifecycle is not.
+ * argued: severity gets an ordinal variable because severity is ordered — the
+ * WEIGHT of oto's own traced ensō — and each lifecycle state gets an unrelated
+ * shape because lifecycle is not ordered at all.
  */
 import { type Component } from "solid-js";
 
-import { SeverityBars, StateGlyph } from "~/components/glyphs";
+import { SeverityEnso, StateGlyph } from "~/components/glyphs";
 import { cn } from "~/lib/cn";
 import type { AckState, Case, ResolveReason, State } from "~/api/types";
 
-export { SeverityBars, StateGlyph, type GlyphState } from "~/components/glyphs";
+export { SeverityEnso, StateGlyph, type GlyphState } from "~/components/glyphs";
 
 /* -------------------------------------------------------------------------- */
 /* State                                                                      */
@@ -156,17 +157,31 @@ const CASE_STATE_MEANING: Record<CaseState, string> = {
   closed: "This firing has ended. A case is terminal: a re-fire starts the next episode.",
 };
 
-/**
- * The neutral rail on a row (compare `STATE_BAR`, which is the alert's).
+/*
+ * ⛔⛔ THERE IS NO `CASE_STATE_RAIL` HERE ANY MORE, AND THE DELETION IS THE POINT.
  *
- * It is the same 3 px gesture at a distance and carries none of the state
- * palette: `open` is inked, `closed` is drawn in the border tone, and neither is
- * a hue anybody has to decode.
+ * It was the neutral twin of `STATE_BAR` above: a 3 px bar down the left edge of
+ * a case row, `bg-ink-muted` when the episode was open and `bg-line-strong` when
+ * it had ended. `STATE_BAR` earns its place — it carries the ALERT's state, the
+ * one fact §M.2 spends a saturated colour on, and `chromeExceptions` names the two
+ * files allowed to draw it. This one carried a BOOLEAN, in grey, immediately beside
+ * a `CaseStateChip` already saying `Open` or `Ended · resolved` in words.
+ *
+ * It is worth being precise about how it got there, because the shape recurs: the
+ * rail originally WAS the lifecycle bar, keyed on four states and coloured. That
+ * was correctly refused on this surface — §M.7 does not list a case row — and what
+ * survived the refusal was the geometry with the meaning taken out. A tint that
+ * survives review by being decolourised is not a status any more; it is a thing to
+ * decode with nothing behind it, and it reads as decoration precisely because that
+ * is what it had become.
+ *
+ * The two rows that drew it now say the same thing better and cheaper:
+ *   - `/cases` washes the whole ENDED row (`bg-sunken`, and the title one ink
+ *     tier down), which is a property of the row rather than a mark beside it.
+ *   - `CasePanel` keeps its one left-edge mark for "this is the case you are
+ *     reading" and lets the chip carry the state, because two neutral marks in one
+ *     gutter meaning two different things is worse than either alone.
  */
-export const CASE_STATE_RAIL: Record<CaseState, string> = {
-  open: "bg-ink-muted",
-  closed: "bg-line-strong",
-};
 
 export interface CaseStateChipProps {
   readonly state: CaseState;
@@ -278,7 +293,22 @@ export function normaliseSeverity(severity: string | null | undefined): KnownSev
   return null;
 }
 
-const SEVERITY_COLOUR: Record<KnownSeverity, string> = {
+/**
+ * The hue each known severity is drawn in.
+ *
+ * ⭐ EXPORTED, AND THE EXPORT IS THE POINT. This file is one of the four
+ * `chromeExceptions` in `test/design/chrome_test.go` allowed to name a Tier-B
+ * utility, and the gate is a per-FILE permission: any other file that wants a
+ * severity in colour either earns its own standing exception — which is how §M.2's
+ * scarcity dies, one reasonable entry at a time — or takes the mapping from here.
+ * Taking it from here is also simply truer, because there is then exactly one
+ * answer to "what colour is a warning" rather than two that agree today.
+ *
+ * ⛔ IT IS NOT A DEFAULT. A caller with no severity draws `text-ink-subtle`, which
+ * is Tier A and needs no permission: an unknown severity is the absence of a
+ * reading, not a quiet reading, and must never be coloured as though it were one.
+ */
+export const SEVERITY_TONE: Record<KnownSeverity, string> = {
   critical: "text-firing-solid",
   warning: "text-acked-solid",
   info: "text-info-solid",
@@ -286,19 +316,27 @@ const SEVERITY_COLOUR: Record<KnownSeverity, string> = {
 
 /**
  * §0.3: severity is the one axis that really is ordered, so it — and only it —
- * gets the ordinal encoding: an ascending count of filled bars. The unfilled
- * bars stay drawn at low opacity, so `info` and `critical` ink the same box and
- * a column of severities reads as one ruler rather than three sizes of mark.
+ * gets the ordinal encoding, which is now the WEIGHT of the traced ensō's brush
+ * stroke (see `./glyphs` for why there are two weights and not four, and why
+ * `info` versus `warning` is left to hue).
  *
- * A missing or unrecognised severity inks zero bars: the ruler is present, the
- * reading is absent. That is a different statement from "info", and an unknown
- * severity is never coerced into one.
+ * A missing or unrecognised severity ranks `0` and draws the faint ring: the mark
+ * is present, the reading is absent. That is a different statement from "info",
+ * and an unknown severity is never coerced into one — `severity` is a free
+ * vocabulary and a deployment spelling it `sev1` must not be told it means
+ * something.
  */
-const SEVERITY_BARS: Record<KnownSeverity, number> = {
+const SEVERITY_LEVEL: Record<KnownSeverity, number> = {
   critical: 3,
   warning: 2,
   info: 1,
 };
+
+/** The rank a severity inks, for the callers that filter by one. */
+export function severityLevel(severity: string | null | undefined): number {
+  const known = normaliseSeverity(severity);
+  return known === null ? 0 : SEVERITY_LEVEL[known];
+}
 
 export interface SeverityMarkProps {
   readonly severity: string | null | undefined;
@@ -315,12 +353,12 @@ export const SeverityMark: Component<SeverityMarkProps> = (props) => {
     <span
       class={cn(
         "inline-flex shrink-0 items-center gap-1 text-body",
-        known() ? SEVERITY_COLOUR[known() as KnownSeverity] : "text-ink-subtle",
+        known() ? SEVERITY_TONE[known() as KnownSeverity] : "text-ink-subtle",
         props.class,
       )}
       title={`Severity: ${text()}`}
     >
-      <SeverityBars filled={known() === null ? 0 : SEVERITY_BARS[known() as KnownSeverity]} />
+      <SeverityEnso level={known() === null ? 0 : SEVERITY_LEVEL[known() as KnownSeverity]} />
       {/* U1: the glyph is never the only channel — the word is always available,
           visually when asked for and to assistive tech always. */}
       {props.withLabel === true ? (

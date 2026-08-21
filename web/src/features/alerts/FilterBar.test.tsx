@@ -84,9 +84,25 @@ describe("the enumerable filters", () => {
       .getAllByRole("button")
       .map((el) => el.textContent?.trim() ?? "");
 
-    expect(labels).toHaveLength(enumValues("State").length);
+    // ⭐ THE FIRST ROW IS THE AXIS'S OWN "ALL", AND IT IS PART OF THE CONTRACT.
+    // `CheckList` draws the empty set as a checked row rather than leaving every
+    // box blank, so an unnarrowed axis never looks like a filter that can return
+    // nothing — and so unchecking the last value lands somewhere legible.
+    expect(labels[0]).toBe("Any state");
+    expect(labels.slice(1)).toHaveLength(enumValues("State").length);
     for (const label of labels) expect(label).not.toBe("");
     expectNoUndefined(group as HTMLElement);
+  });
+
+  it("clears the axis from its own first row rather than needing every box unticked", async () => {
+    stubReferenceData();
+    const { onChange } = mount({ state: ["firing", "suppressed"] });
+    await openMenu("Status");
+
+    const group = screen.getByRole("group", { name: "Lifecycle state" });
+    fireEvent.click(within(group).getByRole("button", { name: "Any state" }));
+
+    expect(onChange.mock.calls[0]?.[0]?.state).toEqual([]);
   });
 
   it("toggles a state without disturbing the rest of the filter set", async () => {
@@ -95,7 +111,8 @@ describe("the enumerable filters", () => {
     await openMenu("Status");
 
     const group = screen.getByRole("group", { name: "Lifecycle state" });
-    fireEvent.click(within(group).getAllByRole("button")[0]!);
+    // [0] is the "Any state" row; the values start at [1].
+    fireEvent.click(within(group).getAllByRole("button")[1]!);
 
     expect(onChange).toHaveBeenCalledTimes(1);
     const next = onChange.mock.calls[0]?.[0];
@@ -260,13 +277,34 @@ describe("the merged search box", () => {
   });
 });
 
-describe("grouping, as tabs", () => {
-  it("offers one tab per axis the contract rolls up on, plus 'All'", async () => {
+/**
+ * ⛔ THIS WAS "grouping, as tabs" AND THE RENAME IS THE POINT.
+ *
+ * The axis was an ARIA tab list, and the property these tests pinned — focus
+ * moves on ←/→ WITHOUT selecting — existed only to defuse the widget: a tab list
+ * activates on arrow keys, and each activation here swaps `/alerts` for
+ * `/alerts/rollups`, so walking three rows with a cursor key fired three roll-up
+ * requests. Manual activation fixed that and cost a second lie: the list is a
+ * column, and `orientation` had to stay `horizontal` because Kobalte's vertical
+ * delegate retires ←/→ altogether.
+ *
+ * `ChoiceList` is a column of ordinary buttons, so the guarantee is now
+ * structural rather than configured: there is no arrow-key behaviour to suppress,
+ * every row is its own focus stop, and nothing fires until something is pressed.
+ * The test below asserts exactly that, which is the same promise the old one made
+ * by a longer route.
+ */
+describe("grouping, as a list of axes", () => {
+  /** The rows of the Group menu, in order. */
+  function groupRows(): HTMLElement[] {
+    return within(screen.getByRole("group", { name: "Group alerts by" })).getAllByRole("button");
+  }
+
+  it("offers one row per axis the contract rolls up on, plus 'All'", async () => {
     stubReferenceData();
     mount();
     await openMenu("Group");
-    const tabs = screen.getAllByRole("tab");
-    expect(tabs.map((t) => t.textContent)).toEqual([
+    expect(groupRows().map((t) => t.textContent)).toEqual([
       "All",
       "By alert name",
       "By namespace",
@@ -274,46 +312,46 @@ describe("grouping, as tabs", () => {
     ]);
   });
 
-  it("marks exactly the current axis selected, and only it reachable by Tab", async () => {
+  it("marks exactly the current axis, and leaves every row reachable by Tab", async () => {
     stubReferenceData();
     mount({ groupBy: "namespace" });
     await openMenu("Group");
-    const tabs = screen.getAllByRole("tab");
+    const rows = groupRows();
 
-    const byNamespace = tabs.find((t) => t.textContent === "By namespace")!;
-    expect(byNamespace).toHaveAttribute("aria-selected", "true");
-    expect(byNamespace).toHaveAttribute("tabindex", "0");
+    const byNamespace = rows.find((t) => t.textContent === "By namespace")!;
+    expect(byNamespace).toHaveAttribute("aria-current", "true");
 
-    for (const t of tabs) {
-      if (t !== byNamespace) {
-        expect(t).toHaveAttribute("aria-selected", "false");
-        expect(t).toHaveAttribute("tabindex", "-1");
-      }
+    for (const t of rows) {
+      if (t !== byNamespace) expect(t).not.toHaveAttribute("aria-current");
+      // ⭐ NO ROVING FOCUS. A tab list keeps one tab stop for the whole strip;
+      // three buttons are three tab stops, which is what makes "focus moved but
+      // nothing was selected" impossible to get wrong rather than configured.
+      expect(t).not.toHaveAttribute("tabindex");
     }
   });
 
-  it("activates a tab on click", async () => {
+  it("activates a row on click", async () => {
     stubReferenceData();
     const { onChange } = mount();
     await openMenu("Group");
-    fireEvent.click(screen.getByRole("tab", { name: "By alert name" }));
+    fireEvent.click(screen.getByRole("button", { name: "By alert name" }));
     expect(onChange.mock.calls[0]?.[0]?.groupBy).toBe("alertname");
   });
 
-  it("moves focus on the arrow keys without activating — activation is Enter/Space only", async () => {
+  it("⛔ fires no roll-up request on a cursor key — only a press changes the axis", async () => {
     stubReferenceData();
     const { onChange } = mount();
     await openMenu("Group");
-    const all = screen.getByRole("tab", { name: "All" });
-    const byAlertName = screen.getByRole("tab", { name: "By alert name" });
+    const [all, byAlertName] = groupRows() as [HTMLElement, HTMLElement];
 
     all.focus();
     fireEvent.keyDown(all, { key: "ArrowRight" });
-    expect(document.activeElement).toBe(byAlertName);
-    // Moving focus must not itself fire the rollup request the axis change would.
+    fireEvent.keyDown(all, { key: "ArrowDown" });
+    // Selecting an axis swaps the endpoint the screen reads. A cursor key must
+    // never be able to do that, and here nothing listens for one.
     expect(onChange).not.toHaveBeenCalled();
 
-    fireEvent.keyDown(byAlertName, { key: "Enter" });
+    fireEvent.click(byAlertName);
     expect(onChange.mock.calls[0]?.[0]?.groupBy).toBe("alertname");
   });
 });

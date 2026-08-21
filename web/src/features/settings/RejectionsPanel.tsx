@@ -41,7 +41,7 @@ import type {
 import { RelativeTime } from "~/components/Time";
 import { Button } from "~/components/ui/Button";
 import { Chip } from "~/components/ui/surfaces";
-import { ToggleGroup, ToggleGroupItem } from "~/components/ui/ToggleGroup";
+import { CheckList, FilterMenu, summarise } from "~/components/ui/FilterMenu";
 import { ErrorState } from "~/components/ui/states";
 import { count as fmtCount, formatLabels, truncate } from "~/lib/format";
 import { createKeysetFeed, keepPrevious, type KeysetFeed } from "~/lib/keysetFeed";
@@ -235,18 +235,28 @@ const RejectionFeed: Component<{ readonly sourceID: string }> = (props) => {
         Refused alerts
       </h3>
 
-      <div class="mt-xs">
-        <ToggleGroup
-          legend="Reason"
-          showLegend
-          multiple
-          value={[...reasons()]}
-          onChange={(next) => setReasons(next as RejectionReason[])}
+      {/* ⭐ A DROPDOWN, NOT A STRIP OF PILLS. This is a panel nested inside a
+          source's row on the settings screen, so the reasons wrapped to two and
+          sometimes three lines of toggles above a five-row list — a filter taller
+          than the thing it filters. The trigger names the reasons in force at
+          rest, which is the whole of what the strip was buying. */}
+      <div class="mt-xs flex flex-wrap items-center gap-xs">
+        <FilterMenu
+          label="Reason"
+          value={summarise(reasons().map((r) => REASON_LABEL[r]))}
+          title="Why the webhook payload was refused. Every refusal is recorded with its reason rather than dropped, which is what makes this list possible at all."
         >
-          <For each={RejectionReasonSchema.options}>
-            {(reason) => <ToggleGroupItem value={reason}>{REASON_LABEL[reason]}</ToggleGroupItem>}
-          </For>
-        </ToggleGroup>
+          <CheckList<RejectionReason>
+            legend="Reason"
+            options={RejectionReasonSchema.options.map((r) => ({
+              value: r,
+              label: REASON_LABEL[r],
+            }))}
+            value={reasons()}
+            onChange={(next) => setReasons(next)}
+            allLabel="Any reason"
+          />
+        </FilterMenu>
       </div>
 
       <p class={standing().tone} aria-live="polite" aria-atomic="true">

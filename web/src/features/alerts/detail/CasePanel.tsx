@@ -15,7 +15,7 @@ import { A } from "@solidjs/router";
 
 import type { Case, ResolveReason, SuppressionReason } from "~/api/types";
 import { RelativeTime } from "~/components/Time";
-import { CASE_STATE_RAIL, CaseStateChip } from "~/components/StateChip";
+import { CaseStateChip } from "~/components/StateChip";
 import { Panel, PanelHeader, PanelTitle } from "~/components/ui/surfaces";
 import { EmptyState, ErrorState, LoadingLine } from "~/components/ui/states";
 import { cn } from "~/lib/cn";
@@ -102,17 +102,18 @@ export const CasePanel: Component<CasePanelProps> = (props) => (
                   ac.id === props.currentId ? "border-l-2 border-l-ink-muted bg-sunken" : "",
                 )}
               >
-                {/* ⛔ THE RAIL IS NEUTRAL, AND THAT FOLLOWS FROM WHAT IT ENCODES.
-                    It used to be the lifecycle bar keyed on the case's state,
-                    back when a case had four of them; an episode has two, the
-                    panel sits under an alert whose own state is already on the
-                    screen above it, and §M.2 spends a saturated colour only
-                    where it means "this is the state of an alert". */}
-                <span
-                  aria-hidden="true"
-                  class={cn("mt-2xs h-6 w-2xs shrink-0 rounded-full", CASE_STATE_RAIL[ac.state])}
-                />
-
+                {/* ⛔⛔ THE STATE RAIL WAS HERE AND IS DELETED, AND THIS ROW IS THE
+                    CLEAREST CASE FOR WHY. It was a 2 px neutral bar keyed on
+                    `ac.state` — inked when open, drawn in the border tone when
+                    ended — sitting immediately left of a `CaseStateChip` that
+                    said `Open` or `Ended` in words. Two channels for one boolean
+                    is merely redundant; what made it a defect is the line above,
+                    where the CURRENT case is marked with `border-l-2
+                    border-l-ink-muted`. That put two neutral left-edge marks in
+                    the same 6 px of gutter, meaning two unrelated things — "this
+                    is the one you are reading" and "this one is still running" —
+                    with nothing to tell a reader which was which.
+                    One left edge, one meaning. The state is the chip's. */}
                 <div class="min-w-0 flex-1">
                   <div class="flex flex-wrap items-center gap-x-sm gap-y-2xs">
                     <A

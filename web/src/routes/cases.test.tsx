@@ -209,6 +209,145 @@ describe("a row", () => {
 });
 
 /* -------------------------------------------------------------------------- */
+/* What the row does NOT say                                                  */
+/* -------------------------------------------------------------------------- */
+
+describe("the alert's own state", () => {
+  it("⛔ is not on the row, because the row's subject is the EPISODE", async () => {
+    // The row used to wear two badges: `Firing` for what the identity is doing
+    // now, and `Open`/`Ended` for this episode. On one wrap row that reads as
+    // three words about two subjects — and the loudest of them, the only Tier-B
+    // hue on the screen, was about the thing this list does not contain. The eye
+    // went to it first, every row, and read it as the row's status.
+    mount("?state=open,closed", [
+      caseListItem({
+        state: "closed",
+        ended_at: "2026-08-09T09:30:00.000Z",
+        resolve_reason: "upstream",
+        alert: alertRef({ state: "firing" }),
+      }),
+    ]);
+    await until(() => expect(screen.getByText("HighErrorRate")).toBeTruthy());
+
+    // The episode says what it is.
+    expect(screen.getByText("Ended · resolved")).toBeTruthy();
+    // The identity does not, here. `/alerts`, `/alerts/:id` and the case
+    // detail's "The alert" panel are where `firing` has its subject on screen.
+    expect(screen.queryByText("Firing")).toBeNull();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Folding the loaded rows by identity                                        */
+/* -------------------------------------------------------------------------- */
+
+/** Two firings of one alert plus one of another, newest first as the API serves. */
+function threeFirings() {
+  const disk = alertRef({ id: "alert-disk", alertname: "DiskFillingUp" });
+  const errors = alertRef({ id: "alert-errors", alertname: "HighErrorRate" });
+  return [
+    caseListItem({ id: "c-3", seq: 9, alert: disk, started_at: "2026-08-09T12:00:00.000Z" }),
+    caseListItem({ id: "c-2", seq: 4, alert: errors, started_at: "2026-08-09T11:00:00.000Z" }),
+    caseListItem({
+      id: "c-1",
+      seq: 8,
+      alert: disk,
+      state: "closed",
+      ended_at: "2026-08-09T10:30:00.000Z",
+      resolve_reason: "upstream",
+      started_at: "2026-08-09T10:00:00.000Z",
+    }),
+  ];
+}
+
+describe("grouping by alert", () => {
+  it("⛔ sends nothing new on the wire — it is a layout, not a filter", async () => {
+    const net = mount("?group=alert&state=open,closed", threeFirings());
+    const q = await lastQuery(net);
+    // `GET /api/v1/cases` has no `group_by`, and it must not grow one here: a
+    // grouped response would need a second ordering to page over and this list
+    // has exactly one indexed total order.
+    expect(q.get("group")).toBeNull();
+    expect(q.get("group_by")).toBeNull();
+    expect(q.get("state")).toBe("open,closed");
+  });
+
+  it("carries the newest firing as the row and folds the earlier ones away", async () => {
+    mount("?group=alert&state=open,closed", threeFirings());
+
+    // One row per identity, and it is the LATEST firing that names it: `#9`,
+    // not the `#8` that ended earlier the same morning.
+    await until(() => expect(screen.getByText("DiskFillingUp")).toBeTruthy());
+    expect(screen.getByText("#9")).toBeTruthy();
+    expect(screen.queryByText("firing #8")).toBeNull();
+
+    // The earlier one is behind a closed handle that counts it.
+    const handle = screen.getByRole("button", { name: /1 earlier firing loaded/ });
+    expect(handle).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(handle);
+    await until(() => expect(screen.getByText("firing #8")).toBeTruthy());
+  });
+
+  it("leaves an alert with one loaded firing without a handle at all", async () => {
+    // A grouped list of a healthy estate must look like the flat one, not grow a
+    // column of empty disclosure triangles.
+    mount("?group=alert&state=open,closed", threeFirings());
+    await until(() => expect(screen.getByText("HighErrorRate")).toBeTruthy());
+    expect(screen.getAllByRole("button", { name: /earlier firing/ })).toHaveLength(1);
+  });
+
+  it("⭐ says so when the queue alone gives it nothing to fold", async () => {
+    // An alert has at most ONE open episode, so grouping the default view folds
+    // nothing. That is worth a sentence rather than leaving the operator to
+    // conclude the feature is broken — and the screen offers the press instead of
+    // quietly widening what is on the wire.
+    const net = mount("?group=alert", [caseListItem()]);
+    await until(() => expect(net.to(PATH).length).toBeGreaterThan(0));
+
+    expect(screen.getByText(/an alert has at most one/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Include ended" }));
+    await until(() =>
+      expect(net.to(PATH)[net.to(PATH).length - 1]!.search.get("state")).toBe("open,closed"),
+    );
+  });
+
+  it("⛔⛔ keeps the loaded pages when the layout changes", async () => {
+    // ⭐ THIS IS THE ONE THAT PAYS FOR `DECORATIVE_PARAMS`. A cursor is minted
+    // under a filter set and §E.3 refuses one carried across a change, so the
+    // screen resets pagination whenever its fingerprint moves. `group` never
+    // reaches the wire, so it cannot have changed the keyset — and if it were in
+    // the fingerprint anyway, folding the list would throw away every page the
+    // operator had loaded, which is precisely the set the fold is a view of.
+    const net = stubFetch({
+      [`GET ${PATH}`]: (call: { search: URLSearchParams }) =>
+        call.search.get("cursor") === null
+          ? { json: list(threeFirings(), { has_more: true, next_cursor: "page-two" }) }
+          : {
+              json: list([caseListItem({ id: "c-0", seq: 1, alert: alertRef({ id: "alert-old" }) })]),
+            },
+    });
+    renderScreen(() => <CasesRoute />, { path: "/cases?state=open,closed" });
+
+    await until(() => expect(screen.getByRole("button", { name: /Load 100 more/ })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: /Load 100 more/ }));
+    await until(() => expect(net.to(PATH).length).toBe(2));
+    const paged = net.to(PATH).length;
+
+    // Fold the list. The rows on screen came from two pages and must survive it.
+    fireEvent.click(screen.getByRole("button", { name: /^Group/ }));
+    await until(() => expect(screen.getByRole("dialog")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "By alert" }));
+
+    await until(() => expect(screen.getByRole("button", { name: /earlier firing/ })).toBeTruthy());
+    // Four cases across three identities — the second page is still folded in.
+    expect(screen.getByText(/4 cases across 3 alerts/)).toBeTruthy();
+    // And no request was issued at all: nothing about the query changed.
+    expect(net.to(PATH).length).toBe(paged);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 /* Nothing to show                                                            */
 /* -------------------------------------------------------------------------- */
 

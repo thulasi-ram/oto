@@ -42,7 +42,7 @@
  * "Load more" adds a page rather than replacing one, because numbered pages over
  * a cursor are a lie the moment a new case opens above you.
  */
-import { For, Match, Show, Switch, createMemo } from "solid-js";
+import { For, Match, Show, Switch, createMemo, createSignal } from "solid-js";
 import { A, useNavigate, useSearchParams } from "@solidjs/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/solid-query";
 
@@ -54,18 +54,23 @@ import { Elapsed, RelativeTime } from "~/components/Time";
 import {
   AckChip,
   CASE_STATE_LABEL,
-  CASE_STATE_RAIL,
   CaseStateChip,
+  SeverityEnso,
   SeverityMark,
-  StateChip,
   StateGlyph,
+  severityLevel,
   type CaseState,
 } from "~/components/StateChip";
 import { Button } from "~/components/ui/Button";
 import { FilterRow } from "~/components/ui/FilterRow";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "~/components/ui/Select";
+import {
+  CheckList,
+  ChoiceList,
+  FilterMenu,
+  MenuSection,
+  summarise,
+} from "~/components/ui/FilterMenu";
 import { Chip } from "~/components/ui/surfaces";
-import { ToggleGroup, ToggleGroupItem } from "~/components/ui/ToggleGroup";
 import { ErrorState, PageEmptyState, TableSkeleton } from "~/components/ui/states";
 import { cn } from "~/lib/cn";
 import { count as fmtCount, idempotencyKey } from "~/lib/format";
@@ -111,17 +116,106 @@ const ALL_ACK: readonly AckState[] = AckStateSchema.options;
  */
 const COMMON_SEVERITIES = ["critical", "warning", "info"] as const;
 
-/** An option for the small single-selects below: a value plus its label. */
-interface Opt<T extends string> {
-  readonly value: T;
-  readonly label: string;
+/**
+ * What weight of the §0.3 ensō a severity inks — the same reading
+ * `AlertFilterToolbar` does, and for the same reason: the glyph on the trigger has
+ * to be the glyph on the rows below it or it is teaching a second alphabet.
+ *
+ * Anything outside the common three ranks 0 and draws the FAINT ring rather than
+ * guessing at an order nobody stated. `severity` is a free vocabulary.
+ */
+const severityRank = (severity: string): number => severityLevel(severity);
+
+/** The worst severity in a set, for the one glyph a 32 px trigger can hold. */
+const worstSeverityRank = (severities: readonly string[]): number =>
+  severities.reduce((worst, s) => Math.max(worst, severityRank(s)), 0);
+
+const ACK_LABEL: Record<AckState, string> = {
+  unacked: "Unacknowledged",
+  acked: "Acknowledged",
+};
+
+const ACK_TITLE: Record<AckState, string> = {
+  unacked: "Firings nobody has recorded seeing yet. This is the queue, and paired with Open it is the shape `case_ack_idx` exists for.",
+  acked: "Firings somebody has signed for. A receipt belongs to ONE firing and clears itself when the next one opens.",
+};
+
+/* -------------------------------------------------------------------------- */
+/* Grouping                                                                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * How the loaded page is laid out. **Not a filter, and not on the wire.**
+ *
+ * ⛔ `GET /api/v1/cases` HAS NO `group_by` AND MUST NOT GROW ONE HERE. A grouped
+ * server response would need a second ordering to page over, and this list has
+ * exactly one indexed total order — `-started_at` with the id as tiebreak — which
+ * is the whole reason a keyset cursor is sound (see the file header). So grouping
+ * is a **presentation of the rows already loaded** and nothing else: it re-orders
+ * nothing, it requests nothing, and it never claims to have seen a firing that is
+ * still behind the cursor.
+ *
+ * ⭐ WHICH IS THE ONE THING IT HAS TO SAY OUT LOUD. "Four earlier firings" under a
+ * grouped row means *four in the pages you have loaded* — an alert that fired
+ * forty times has thirty-six more waiting on "Load more". The strip says so while
+ * grouping is on, because a count that looks total and is not is worse than no
+ * count.
+ */
+type GroupMode = "none" | "alert";
+
+const GROUP_MODES: readonly GroupMode[] = ["none", "alert"];
+
+/**
+ * URL parameters this screen reads and the REQUEST does not — see `fingerprint`.
+ * Every name here has to be absent from `query()` below, and that is the whole
+ * of what earns a line in this set.
+ */
+const DECORATIVE_PARAMS: ReadonlySet<string> = new Set(["group"]);
+
+const GROUP_LABEL: Record<GroupMode, string> = {
+  none: "Flat, newest first",
+  alert: "By alert",
+};
+
+const GROUP_TITLE: Record<GroupMode, string> = {
+  none: "Every firing as its own row, newest first — the order the cursor pages in.",
+  alert:
+    "One row per alert, carrying its most recent firing, with earlier firings of the same alert folded underneath it. Only the pages already loaded are grouped.",
+};
+
+/**
+ * One alert's firings, out of the rows currently loaded.
+ *
+ * `latest` is the newest episode of that identity in the loaded set and is the
+ * row that carries the alert's name; `earlier` are the older ones, newest first,
+ * and they are the same `CaseRow` drawn indented. The list arrives ordered by
+ * `-started_at`, so the first case seen for an alert IS its latest and no sort is
+ * needed to find it.
+ */
+interface AlertGroup {
+  readonly alertId: string;
+  readonly latest: CaseListItem;
+  readonly earlier: readonly CaseListItem[];
 }
 
-const ACK_OPTIONS: Opt<"" | AckState>[] = [
-  { value: "", label: "Any" },
-  { value: "unacked", label: "Unacknowledged" },
-  { value: "acked", label: "Acknowledged" },
-];
+function groupByAlert(rows: readonly CaseListItem[]): readonly AlertGroup[] {
+  const order: string[] = [];
+  const byAlert = new Map<string, CaseListItem[]>();
+  for (const c of rows) {
+    const key = c.alert.id;
+    const bucket = byAlert.get(key);
+    if (bucket === undefined) {
+      order.push(key);
+      byAlert.set(key, [c]);
+    } else {
+      bucket.push(c);
+    }
+  }
+  return order.map((id) => {
+    const [latest, ...earlier] = byAlert.get(id) as CaseListItem[];
+    return { alertId: id, latest: latest as CaseListItem, earlier };
+  });
+}
 
 /** A narrowing carried in the URL that has no control of its own on the bar. */
 interface Narrowing {
@@ -156,12 +250,37 @@ export default function CasesRoute() {
     return picked.length > 0 ? picked : DEFAULT_STATES;
   });
 
-  const ack = (): AckState | null => {
-    const raw = str("ack");
-    return (ALL_ACK as readonly string[]).includes(raw) ? (raw as AckState) : null;
-  };
+  /**
+   * The acknowledgement states in force, as a SET.
+   *
+   * ⭐ IT IS A SET BECAUSE THE ENDPOINT'S IS. `ack` is a comma-separated list on
+   * the wire, and this was a three-option single-select whose first option was
+   * the word `Any` — an invented third value standing in for "neither of the two
+   * that exist". Naming both is the same as naming none, so the empty set is what
+   * `Any` always meant, and now it is spelled that way in one control instead of
+   * being a magic option inside it.
+   */
+  const acks = createMemo<readonly AckState[]>(() =>
+    csv("ack").filter((s): s is AckState => (ALL_ACK as readonly string[]).includes(s)),
+  );
 
   const severities = createMemo<readonly string[]>(() => csv("severity"));
+
+  /**
+   * Severities in the URL that are not one of the common three.
+   *
+   * A deployment spelling it `sev1` sees its own word back in the menu rather
+   * than having it silently dropped — but no invented rank: the ruler stays empty
+   * for a severity nobody told us how to order.
+   */
+  const customSeverities = createMemo<readonly string[]>(() =>
+    severities().filter((s) => !(COMMON_SEVERITIES as readonly string[]).includes(s)),
+  );
+
+  /** How the loaded rows are laid out. Junk falls back to the flat list. */
+  const group = createMemo<GroupMode>(() =>
+    (GROUP_MODES as readonly string[]).includes(str("group")) ? (str("group") as GroupMode) : "none",
+  );
 
   /**
    * The filters this bar has no control for, kept because a URL is how one
@@ -206,10 +325,19 @@ export default function CasesRoute() {
    * string minus the cursor is therefore the fingerprint — anything the operator
    * can change is in it by construction, so a filter added later cannot be
    * forgotten here (see `createKeysetFeed`).
+   *
+   * ⛔ MINUS THE PARAMETERS THAT NEVER REACH THE WIRE, AND `group` IS THE FIRST
+   * OF THEM. The fingerprint's job is to describe the keyset the server minted a
+   * cursor under; a parameter the request does not carry cannot have changed that
+   * keyset, and including it would throw away every loaded page the moment
+   * somebody folded the list — which is precisely the set grouping is a view of.
+   * A parameter belongs in `DECORATIVE_PARAMS` only when `query()` below provably
+   * ignores it.
    */
   const fingerprint = createMemo(() => {
     const sp = new URLSearchParams();
     for (const [k, v] of Object.entries(params)) {
+      if (DECORATIVE_PARAMS.has(k)) continue;
       if (typeof v === "string" && v !== "") sp.set(k, v);
     }
     sp.sort();
@@ -234,7 +362,7 @@ export default function CasesRoute() {
     // which is exactly what "Open + Ended" should mean.
     q["state"] = [...states()];
 
-    if (ack() !== null) q["ack"] = [ack()];
+    if (acks().length > 0) q["ack"] = [...acks()];
     if (severities().length > 0) q["severity"] = [...severities()];
 
     for (const key of ["cluster", "namespace", "alertname"] as const) {
@@ -256,17 +384,39 @@ export default function CasesRoute() {
 
   const rows = feed.rows;
 
+  /** The loaded rows folded by identity, when that is what the operator asked for. */
+  const groups = createMemo<readonly AlertGroup[]>(() =>
+    group() === "alert" ? groupByAlert(rows()) : [],
+  );
+
   const status = (): string => {
     const n = rows().length;
     if (cases.isPending && n === 0) return "Loading…";
-    return `${fmtCount(n)}${feed.hasMore() ? "+" : ""} case${n === 1 ? "" : "s"}`;
+    const cases_ = `${fmtCount(n)}${feed.hasMore() ? "+" : ""} case${n === 1 ? "" : "s"}`;
+    if (group() !== "alert") return cases_;
+    const g = groups().length;
+    return `${cases_} across ${fmtCount(g)} alert${g === 1 ? "" : "s"}`;
   };
+
+  /**
+   * Grouping by alert while only OPEN episodes are loaded folds nothing, and it
+   * is worth saying rather than leaving the operator to conclude the feature is
+   * broken: a case is one contiguous firing and never two at once, so an alert
+   * has at most ONE open episode. The earlier firings the fold exists to show are
+   * all `closed`.
+   *
+   * ⛔ AND THE SCREEN DOES NOT QUIETLY ADD THE FILTER ITSELF. Changing what is on
+   * the wire as a side effect of a layout choice is how an operator ends up
+   * looking at rows they did not ask for; the strip offers the press instead.
+   */
+  const groupingIsInert = (): boolean =>
+    group() === "alert" && states().length === 1 && states()[0] === "open";
 
   /** Nothing narrowed at all — the default queue, which has its own sentence. */
   const isDefaultView = (): boolean =>
     states().length === 1 &&
     states()[0] === "open" &&
-    ack() === null &&
+    acks().length === 0 &&
     severities().length === 0 &&
     narrowings().length === 0;
 
@@ -276,68 +426,125 @@ export default function CasesRoute() {
     // here refuses to grow with its content, which is what gives the list its
     // own bounded scroller instead of scrolling the document.
     <div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+      {/* ⭐ THREE AXES AND A LAYOUT, EACH BEHIND ITS OWN DROPDOWN, EACH SAYING ITS
+          VALUE AT REST. This row used to be three `ToggleGroup`s — six chips and
+          three selects spread across the full width — and the six chips read as a
+          TAB STRIP: a row of pills with one lit, which says "you are in one of
+          these" when the fact is "the list is narrowed to these". The two
+          sentences disagree the moment two chips are on, which for `Open + Ended`
+          is the normal case. `FilterMenu`'s header argues the trade in full.
+
+          ⛔ AND STILL NO SORT CONTROL. The file header spends a paragraph on why:
+          `GET /api/v1/cases` takes no `sort`, because a keyset cursor is only
+          sound over an indexed total order and this list has exactly one. The
+          Group menu below is a LAYOUT, not an order — it re-folds the rows the
+          cursor already handed over and leaves their sequence alone. */}
       <div class="shrink-0">
-        <FilterRow>
-          <label class="flex items-center gap-1.5 text-body text-ink-muted">
-            <span>Ack</span>
-            <Select<Opt<"" | AckState>>
-              multiple={false}
-              options={ACK_OPTIONS}
-              optionValue="value"
-              optionTextValue="label"
-              value={ACK_OPTIONS.find((o) => o.value === (ack() ?? "")) ?? ACK_OPTIONS[0]!}
-              onChange={(opt) => setParams({ ack: opt && opt.value !== "" ? opt.value : null })}
-              itemComponent={(p) => <SelectItem item={p.item}>{p.item.rawValue.label}</SelectItem>}
-            >
-              <SelectTrigger
-                id="case-ack"
-                aria-label="Acknowledgement"
-                title="A receipt belongs to one firing. `Unacknowledged` is the list of firings nobody has recorded seeing yet."
-              >
-                <SelectValue<Opt<"" | AckState>>>
-                  {(state) => state.selectedOption().label}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent />
-            </Select>
-          </label>
+        <FilterRow gap="tight">
+          <FilterMenu
+            label="Ack"
+            value={summarise(acks().map((a) => ACK_LABEL[a]))}
+            title="A receipt belongs to ONE firing, and this list is the only one in the product where the row IS the firing."
+          >
+            <CheckList<AckState>
+              legend="Acknowledgement"
+              options={ALL_ACK.map((a) => ({
+                value: a,
+                label: ACK_LABEL[a],
+                icon:
+                  a === "acked" ? (
+                    <StateGlyph state="acked" tone="inherit" class="size-3.5" />
+                  ) : undefined,
+                title: ACK_TITLE[a],
+              }))}
+              value={acks()}
+              onChange={(next) => setParams({ ack: next.length > 0 ? next.join(",") : null })}
+              allLabel="Either way"
+              allTitle="Both acknowledged and unacknowledged firings — the same thing as omitting the filter."
+            />
+          </FilterMenu>
 
           {/* ⭐ ONE CONTROL FOR THE ONE AXIS AN EPISODE HAS. Turning both on is
               how you ask for everything in retention; turning both off is not a
               third answer, so it falls back to the queue rather than to a list
-              that could not contain anything. */}
-          <ToggleGroup
-            legend="Episode"
-            multiple
-            value={[...states()]}
-            onChange={(next) => setParams({ state: next.length > 0 ? next.join(",") : null })}
+              that could not contain anything — which is why this axis's `All` row
+              is spelled `Open + Ended` and not left as the empty set. */}
+          <FilterMenu
+            label="Episode"
+            value={summarise(states().map((s) => CASE_STATE_LABEL[s]))}
+            title="`alert_cases.state` — the one axis an episode has. `firing` and `suppressed` are facts about the ALERT and are refused here with a 400."
           >
-            <For each={CASE_STATES}>
-              {(s) => (
-                <ToggleGroupItem
-                  value={s}
-                  title={
-                    s === "open"
-                      ? "Episodes that have not ended. This is the queue, and it is the shape of this list the ack index is built for."
-                      : "Episodes that have ended, whether the upstream resolved them or oto stopped hearing about them. A case is terminal — a re-fire is the next episode, not this one again."
-                  }
-                >
-                  {CASE_STATE_LABEL[s]}
-                </ToggleGroupItem>
-              )}
-            </For>
-          </ToggleGroup>
+            <CheckList<CaseState>
+              legend="Episode"
+              options={CASE_STATES.map((s) => ({
+                value: s,
+                label: CASE_STATE_LABEL[s],
+                title:
+                  s === "open"
+                    ? "Episodes that have not ended. This is the queue, and it is the shape of this list the ack index is built for."
+                    : "Episodes that have ended, whether the upstream resolved them or oto stopped hearing about them. A case is terminal — a re-fire is the next episode, not this one again.",
+              }))}
+              value={states()}
+              // ⛔ CLEARING THIS AXIS IS NOT "EVERYTHING", WHICH IS WHY `allValue`
+              // NAMES BOTH VALUES. An absent `?state=` reads back as the QUEUE
+              // (see `DEFAULT_STATES`), so emitting the empty set here would turn
+              // a press on "Open + Ended" into a press on "Open".
+              allValue={CASE_STATES}
+              onChange={(next) => setParams({ state: next.length > 0 ? next.join(",") : null })}
+              allLabel="Open + Ended"
+              allTitle="Everything in retention. The queue is the default because a list of every episode oto has ever opened answers a question nobody asked."
+            />
+          </FilterMenu>
 
-          <ToggleGroup
-            legend="Severity"
-            multiple
-            value={[...severities()]}
-            onChange={(next) => setParams({ severity: next.length > 0 ? next.join(",") : null })}
+          <FilterMenu
+            label="Severity"
+            value={summarise(severities())}
+            leading={<SeverityEnso level={worstSeverityRank(severities())} class="size-3" />}
+            title="Matched against the alert's promoted `severity` label. A free vocabulary, so the three offered here are a convenience and never the closed set."
           >
-            <For each={COMMON_SEVERITIES}>
-              {(s) => <ToggleGroupItem value={s}>{s}</ToggleGroupItem>}
-            </For>
-          </ToggleGroup>
+            <CheckList<string>
+              legend="Severity"
+              options={[...COMMON_SEVERITIES, ...customSeverities()].map((s) => ({
+                value: s,
+                label: s,
+                icon: <SeverityEnso level={severityRank(s)} />,
+              }))}
+              value={severities()}
+              onChange={(next) => setParams({ severity: next.length > 0 ? next.join(",") : null })}
+              allLabel="Any severity"
+            />
+          </FilterMenu>
+
+          {/* The layout, and it is deliberately the last control in the row: it
+              changes nothing about WHICH firings are here, only how the ones
+              already loaded are stacked. */}
+          <FilterMenu
+            label="Group"
+            value={group() === "none" ? undefined : GROUP_LABEL.alert}
+            title={GROUP_TITLE[group()]}
+            width="w-80"
+          >
+            <MenuSection label="Layout">
+              <ChoiceList<GroupMode>
+                legend="Group cases by"
+                value={group()}
+                onChange={(next) => setParams({ group: next === "none" ? null : next })}
+                options={GROUP_MODES.map((g) => ({
+                  value: g,
+                  label: GROUP_LABEL[g],
+                  title: GROUP_TITLE[g],
+                }))}
+              />
+              {/* ⛔ THE HONEST SENTENCE, AND IT IS NOT OPTIONAL. Grouping folds
+                  the LOADED pages, because the endpoint has no grouped ordering
+                  to page over. A count that reads as total and is not is worse
+                  than no count at all. */}
+              <p class="px-xs pt-2xs text-meta leading-snug text-ink-subtle">
+                Folds the pages already loaded. An alert that fired forty times shows the firings
+                oto has handed over so far, not all forty — “Load more” brings the rest.
+              </p>
+            </MenuSection>
+          </FilterMenu>
         </FilterRow>
       </div>
 
@@ -351,6 +558,25 @@ export default function CasesRoute() {
         aria-live="polite"
       >
         <span class="text-body tabular-nums text-ink-muted">{status()}</span>
+
+        {/* Grouping by alert with only the queue loaded folds nothing, because an
+            alert has at most one OPEN episode. The strip says so and offers the
+            press, rather than the Group menu quietly widening what is on the
+            wire. */}
+        <Show when={groupingIsInert()}>
+          <span class="flex items-center gap-2xs text-meta text-ink-subtle">
+            Only open episodes are loaded, and an alert has at most one.
+            <Button
+              variant="link"
+              size="sm"
+              class="h-auto p-0 text-meta"
+              onClick={() => setParams({ state: CASE_STATES.join(",") })}
+              title="Include ended episodes, so earlier firings of the same alert have something to fold under."
+            >
+              Include ended
+            </Button>
+          </span>
+        </Show>
 
         {/* Every narrowing the bar has no control for, said out loud with its
             way off. A filter that only exists in a query string is a filter an
@@ -416,7 +642,12 @@ export default function CasesRoute() {
         <Match when={true}>
           <div class="min-h-0 flex-1 overflow-auto">
             <ul>
-              <For each={rows()}>{(c) => <CaseRow item={c} />}</For>
+              <Show
+                when={group() === "alert"}
+                fallback={<For each={rows()}>{(c) => <CaseRow item={c} />}</For>}
+              >
+                <For each={groups()}>{(g) => <AlertGroupRows group={g} />}</For>
+              </Show>
             </ul>
 
             <div class="flex items-center justify-center gap-3 border-t border-line bg-surface px-3 py-2">
@@ -450,6 +681,86 @@ export default function CasesRoute() {
 }
 
 /* -------------------------------------------------------------------------- */
+/* One alert's firings, folded                                                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One alert's most recent loaded firing, with its earlier ones folded under it.
+ *
+ * ⭐ THE FOLD IS CLOSED BY DEFAULT AND THE COUNT IS ON THE HANDLE. An alert that
+ * has fired forty times is one line until asked, which is the whole point of
+ * grouping; an alert that has fired once has no handle at all, so the grouped
+ * list of a healthy estate looks exactly like the flat one rather than growing a
+ * column of empty disclosure triangles.
+ *
+ * ⛔ IT COUNTS WHAT IS LOADED AND SAYS SO IN THE HANDLE'S TOOLTIP. The endpoint
+ * has no grouped ordering, so this fold is over the pages the cursor has already
+ * handed over — see `GroupMode`. "3 earlier firings" is therefore a floor, never
+ * a total, and the one place that could be mistaken for a total is here.
+ *
+ * ⛔ AND IT IS A `<ul>` INSIDE THE ROW'S `<li>`, not a sibling list. A nested list
+ * is the markup for "these belong to that"; two flat lists with an indent are the
+ * markup for "these are unrelated and one of them has a margin", and a screen
+ * reader reads out exactly the difference.
+ */
+const AlertGroupRows = (props: { readonly group: AlertGroup }) => {
+  const [open, setOpen] = createSignal(false);
+  const earlier = (): readonly CaseListItem[] => props.group.earlier;
+  const n = (): number => earlier().length;
+
+  return (
+    <>
+      <CaseRow item={props.group.latest} />
+
+      <Show when={n() > 0}>
+        <li class="border-b border-line bg-surface">
+          <button
+            type="button"
+            class={
+              "flex w-full items-center gap-2xs py-1 pl-6 pr-3 text-meta text-ink-subtle " +
+              "transition-colors duration-100 hover:bg-raised/60 hover:text-ink"
+            }
+            aria-expanded={open()}
+            title={
+              `Earlier firings of ${props.group.latest.alert.alertname} among the cases loaded so far. ` +
+              `Grouping folds the pages already fetched, so there may be more behind “Load more”.`
+            }
+            onClick={() => setOpen(!open())}
+          >
+            <svg
+              viewBox="0 0 12 12"
+              class={cn(
+                "size-3 shrink-0 transition-transform duration-100",
+                open() ? "rotate-90" : "",
+              )}
+              aria-hidden="true"
+            >
+              <path
+                d="M4.4 2.6 7.8 6l-3.4 3.4"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.4"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+            <span class="tabular-nums">
+              {fmtCount(n())} earlier firing{n() === 1 ? "" : "s"} loaded
+            </span>
+          </button>
+
+          <Show when={open()}>
+            <ul>
+              <For each={earlier()}>{(c) => <CaseRow item={c} nested />}</For>
+            </ul>
+          </Show>
+        </li>
+      </Show>
+    </>
+  );
+};
+
+/* -------------------------------------------------------------------------- */
 /* One row                                                                    */
 /* -------------------------------------------------------------------------- */
 
@@ -462,50 +773,103 @@ export default function CasesRoute() {
  * the reference for the whole page, which is why the row can render them at all
  * without a request of its own.
  *
- * ⭐ AND SO DOES `state`, WHICH IS WHY THE ROW WEARS TWO CHIPS. `StateChip` says
- * what the ALERT is right now — firing, or muted by a silence — and it is read
- * through `alert` for exactly the same reason `alertname` is. `CaseStateChip`
- * says whether the EPISODE in this row is the one still running. They can
- * legitimately disagree: an ended case under an alert that has since fired again
- * is a row that says `Firing` and `Ended · resolved`, and that is the truth.
+ * ⛔⛔ AND THE ALERT'S `state` IS NOT ONE OF THEM ANY MORE. This row used to wear
+ * TWO badges — `StateChip` for what the identity is doing right now, `CaseStateChip`
+ * for whether this episode is the one still running — and the pair was defensible
+ * in prose and unreadable on screen. `Firing · Ended · resolved` on one row is
+ * three words about two different subjects in one wrap group, and the loudest of
+ * them (a saturated `Firing`) is about the thing this screen is NOT listing: a
+ * case list lists episodes, and the reader has to look at the second chip to
+ * learn which one they are looking at. Worse, it was the only Tier-B hue on the
+ * screen, so the eye went to it first, every row, correctly reading it as the
+ * row's status and wrongly believing that status belonged to the row.
  *
- * ⛔ NOTHING HERE SPENDS A STATE HUE, AND THAT IS §M.7 RATHER THAN TASTE. The row
- * used to carry a firing tint and a lifecycle rail keyed on the case's own state;
- * §M.2's scarcity argument allows a row status only on the surfaces
- * `chromeExceptions` names, this file is not one of them, and the axis it was
- * colouring — open versus ended — is not a state hue's job anyway.
+ * `firing` lives where its subject is: `/alerts` and `/alerts/:id`, where the row
+ * IS the identity — and `/cases/:id`, where "The alert" panel states it under the
+ * heading `state now`, next to a link out to the identity. Nothing was lost; one
+ * fact stopped being said in the one place its subject was absent.
+ *
+ * ⛔ NOTHING HERE SPENDS A STATE HUE, AND THAT IS §M.7 RATHER THAN TASTE. §M.2's
+ * scarcity argument allows a row status only on the surfaces `chromeExceptions`
+ * names, and this file is not one of them.
+ *
+ * ⛔ AND THE 3 px RAIL IS GONE TOO. It was a neutral bar — `bg-ink-muted` when
+ * open, `bg-line-strong` when ended — down the left edge of every row, and the
+ * only fact it carried was one the row already stated in words two columns to the
+ * right. It is the residue of a review: the rail once carried the STATE hue, that
+ * was correctly refused here, and it survived as a decolourised stub encoding a
+ * boolean nobody needed a colour swatch for. An unlabelled tint that duplicates
+ * an adjacent label is not a status — it is a thing to decode, and there was
+ * nothing behind it. The ended row's own wash (below) is now the whole of that
+ * channel, and it goes across the row rather than beside it.
  */
-const CaseRow = (props: { readonly item: CaseListItem }) => {
+const CaseRow = (props: {
+  readonly item: CaseListItem;
+  /** Drawn as an earlier firing folded under its alert's most recent one. */
+  readonly nested?: boolean;
+}) => {
   const c = (): CaseListItem => props.item;
   /** The episode's own state is authoritative; `ended_at` only agrees with it. */
   const open = (): boolean => c().state === "open";
 
   return (
-    <li class="border-b border-line bg-surface">
-      <div class="flex items-center gap-3 px-3 py-2 hover:bg-raised/60">
+    <li
+      class={cn(
+        "border-b border-line",
+        // ⭐ THE ENDED ROW IS WASHED, AND IT IS THE ONE THING ON THIS SCREEN THAT
+        // ENCODES `state` WITHOUT A WORD — which is allowed because the word is
+        // still there. An episode that has ended is history: it cannot be
+        // acknowledged, it will never change again, and in a list holding both it
+        // is the row you are scanning PAST. Tier A only — the sunken surface and
+        // one tier off the title's ink, no hue, and both halves measured pairs.
+        open() ? "bg-surface" : "bg-sunken",
+      )}
+    >
+      <div
+        class={cn(
+          "flex items-center gap-3 py-2 pr-3 hover:bg-raised/60",
+          // The fold's indent, and the guide that makes it read as a fold rather
+          // than as a row that lost its left margin.
+          props.nested === true ? "border-l-2 border-line-strong pl-6 ml-3" : "pl-3",
+        )}
+      >
         <A href={`/cases/${c().id}`} class="flex min-w-0 flex-1 items-start gap-3">
-          <span
-            aria-hidden="true"
-            class={cn("mt-0.5 h-8 w-[3px] shrink-0 rounded-full", CASE_STATE_RAIL[c().state])}
-          />
-
           <SeverityMark severity={c().alert.severity} class="mt-0.5" />
 
           <div class="min-w-0 flex-1">
             <div class="flex flex-wrap items-center gap-2">
-              <span class="min-w-0 truncate text-item font-medium text-ink">
-                {c().alert.alertname}
-              </span>
-              <StateChip state={c().alert.state} size="sm" />
+              {/* Under a fold the identity is already named by the row above, so
+                  the earlier firing leads with what distinguishes it — `#seq` —
+                  and does not repeat the name a second and fifth time. */}
+              <Show
+                when={props.nested !== true}
+                fallback={
+                  <span class="shrink-0 text-item tabular-nums text-ink-muted">
+                    firing #{c().seq}
+                  </span>
+                }
+              >
+                <span
+                  class={cn(
+                    "min-w-0 truncate text-item font-medium",
+                    open() ? "text-ink" : "text-ink-muted",
+                  )}
+                >
+                  {c().alert.alertname}
+                </span>
+              </Show>
               <CaseStateChip state={c().state} resolveReason={c().resolve_reason} size="sm" />
               <AckChip ackState={c().ack_state} />
               {/* Which firing of this alert this is. `#1` is its first ever, and
                   a high number is a fact worth seeing from the list — it is also
                   the whole of what a re-fire does now, since a case is terminal
-                  and the next one opens at the next `seq`. */}
-              <Chip title="Which firing of this alert this is, counted since oto first saw the identity. A re-fire opens the next one rather than reopening this one.">
-                #{c().seq}
-              </Chip>
+                  and the next one opens at the next `seq`. Under a fold it has
+                  already been said, in the lead position, so it is not repeated. */}
+              <Show when={props.nested !== true}>
+                <Chip title="Which firing of this alert this is, counted since oto first saw the identity. A re-fire opens the next one rather than reopening this one.">
+                  #{c().seq}
+                </Chip>
+              </Show>
             </div>
 
             <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-meta text-ink-muted">
@@ -518,10 +882,16 @@ const CaseRow = (props: { readonly item: CaseListItem }) => {
               >
                 <Elapsed from={c().started_at} to={c().ended_at ?? null} /> firing
               </span>
-              <Show when={c().alert.namespace}>
-                {(ns) => <span class="font-mono">namespace {ns()}</span>}
+              {/* The identity's own labels belong to the row that names it. An
+                  earlier firing shares them by construction, so repeating
+                  `namespace`/`cluster` under a fold is the same string five
+                  times down one column. */}
+              <Show when={props.nested !== true}>
+                <Show when={c().alert.namespace}>
+                  {(ns) => <span class="font-mono">namespace {ns()}</span>}
+                </Show>
+                <span class="font-mono">cluster {c().alert.cluster_key}</span>
               </Show>
-              <span class="font-mono">cluster {c().alert.cluster_key}</span>
               <Show when={c().acked_by_label}>
                 {(who) => <span>seen by {who()}</span>}
               </Show>

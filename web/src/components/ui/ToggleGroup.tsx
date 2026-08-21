@@ -2,6 +2,22 @@
  * A multi-select segmented control, built directly on `@kobalte/core/toggle-group`
  * rather than ported from solid-ui.com's registry.
  *
+ * ⛔⛔ IT IS A FORM FIELD NOW, AND IT IS NOT A FILTER. It has exactly one caller
+ * left — the policy editor in `PoliciesSection`, where the operator is choosing
+ * which suppression reasons a policy CARRIES — and that is the shape it is right
+ * for: a bounded set of facts being authored, all of them worth seeing at once, in
+ * a form that already has a label and a submit button.
+ *
+ * Every FILTER that used to be one of these is a checkbox dropdown now
+ * (`~/components/ui/FilterMenu`). The reason is in that file's header and it is
+ * worth not relearning: a row of pills with one lit says *"you are in one of
+ * these"*, which is a tab strip's sentence, and a filter's sentence is *"the list
+ * is narrowed to these"*. The two disagree the moment two pills are on — which for
+ * `Open + Ended`, or `failed + dead`, is the normal case rather than the edge one.
+ * Five screens had four different idioms for it.
+ *
+ * So: authoring a value, in a form → this. Narrowing a list → `FilterMenu`.
+ *
  * solid-ui *does* ship a `toggle-group.tsx` (https://solid-ui.com/docs/components/toggle-group),
  * but it is not a faithful port here for two reasons:
  *

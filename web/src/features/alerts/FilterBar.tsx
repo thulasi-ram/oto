@@ -50,14 +50,21 @@
  *
  * ⭐ THE GLYPH ALPHABET IS THE SIGNATURE (§0.3, `~/components/glyphs`). The
  * severity ruler on the Severity trigger is the same ruler the table's rows
- * carry, and the state marks beside the lifecycle toggles are the same six
+ * carry, and the state marks beside the lifecycle checkboxes are the same six
  * shapes — but every one of them is drawn `tone="inherit"`, in Tier A ink. The
  * *shape* is the vocabulary the chrome may borrow; the *hue* is state's alone,
  * and lending it to a filter chip is exactly how scarcity is spent.
  *
+ * ⭐ AND EVERY MULTI-VALUE AXIS IS A COLUMN OF CHECKBOXES, NOT A SEGMENTED STRIP.
+ * The pills said "you are in one of these" while the axis meant "narrowed to
+ * these", which is a disagreement that shows up the moment two of them are on.
+ * The control recipe lives in `~/components/ui/FilterMenu` now and is shared with
+ * `/cases`, the alert Timeline, the notification log and the rejections panel —
+ * see that file's header for the argument, which was originally this one's.
+ *
  * Severity is a free vocabulary, not an enum (`AlertDTO.severity` is
- * deliberately open), so the common three are offered as toggles and anything
- * else arriving from a URL is preserved and shown rather than silently dropped.
+ * deliberately open), so the common three are offered and anything else arriving
+ * from a URL is preserved and shown rather than silently dropped.
  *
  * **The search bar is one control, not two.** A committed label matcher
  * (`namespace="payments"`) and a free-text search word used to live in separate
@@ -74,14 +81,25 @@ import {
   createMemo,
   createSignal,
   type Component,
-  type JSX,
-  type ParentComponent,
 } from "solid-js";
 import { useQuery } from "@tanstack/solid-query";
 
 import { clustersQuery, labelNamesQuery } from "~/api/queries";
-import { SeverityBars, StateGlyph } from "~/components/glyphs";
-import { Popover, PopoverContent, PopoverTrigger } from "~/components/ui/Popover";
+import { SeverityEnso, StateGlyph } from "~/components/glyphs";
+import {
+  CaretGlyph,
+  CheckList,
+  ChoiceList,
+  FILTER_TRIGGER,
+  FILTER_TRIGGER_OFF,
+  FILTER_TRIGGER_ON,
+  FilterMenu,
+  MenuSection,
+  MENU_ROW,
+  MENU_ROW_ACTIVE,
+  MENU_ROW_QUIET,
+  summarise,
+} from "~/components/ui/FilterMenu";
 import {
   Select,
   SelectContent,
@@ -90,10 +108,8 @@ import {
   SelectTrigger,
 } from "~/components/ui/Select";
 import { Button } from "~/components/ui/Button";
-import { Chip, SECTION_LABEL } from "~/components/ui/surfaces";
-import { Tabs, TabsList, TabsTrigger } from "~/components/ui/Tabs";
+import { Chip } from "~/components/ui/surfaces";
 import { TextField, TextFieldInput } from "~/components/ui/TextField";
-import { ToggleGroup, ToggleGroupItem } from "~/components/ui/ToggleGroup";
 import { STATE_LABEL } from "~/components/StateChip";
 import { cn } from "~/lib/cn";
 import type { State } from "~/api/types";
@@ -701,125 +717,22 @@ const SearchBox: Component<{
 /* The toolbar's own furniture                                                */
 /* -------------------------------------------------------------------------- */
 
-/**
- * ⭐ THE ONE CONTROL RECIPE THIS TOOLBAR HAS, AND IT SPENDS NO ACCENT.
+/*
+ * ⭐ THE CONTROL RECIPE, THE MENU, THE CARET, THE MENU SECTION AND `summarise`
+ * ALL MOVED TO `~/components/ui/FilterMenu` AND ARE IMPORTED ABOVE.
  *
- * Every instrument in the band — the four menu triggers and the three selects —
- * wears exactly this, so a row of seven different Kobalte primitives reads as
- * one set of instruments rather than as whatever each library shipped.
+ * They were invented here, for this toolbar, and they stopped being this
+ * toolbar's business the moment the same shape was the right answer on `/cases`,
+ * on the alert Timeline, on the notification activity log and in the rejections
+ * panel — five screens which between them had four different filter idioms. A
+ * private copy per screen is how a product ends up with a segmented strip here, a
+ * tab bar there and a dropdown somewhere else, all filtering, none agreeing.
  *
- * The active treatment is deliberately **neutral**: a raised surface, the
- * stronger hairline, and a `text-ink-muted` → `text-ink` weight lift. Three
- * channels, no hue, legible in greyscale. The rail's version of this tinted
- * every pressed control with `bg-accent-fill`, which put five accent marks in
- * the chrome of a screen whose entire job is to make one severity mark the
- * loudest thing on it. The accent left in this file is spent once, on the
- * current view — the only control here that answers "where am I" (§0.6, §M.2).
+ * Nothing about the *argument* moved: the trigger states its VALUE and not just
+ * its axis, `Clear N filters` stays outside every popover, and the two axes with
+ * no control keep their pills. That is still this file's header, and it is still
+ * what pays for the popovers.
  */
-const TRIGGER =
-  "inline-flex h-8 shrink-0 items-center gap-2xs rounded-control border px-sm text-item " +
-  "transition-colors duration-100";
-const TRIGGER_OFF = "border-line bg-transparent text-ink-muted hover:bg-raised hover:text-ink";
-const TRIGGER_ON = "border-line-strong bg-raised font-medium text-ink";
-
-/** A full-width control row, inside a menu. */
-const ROW =
-  "flex h-8 w-full items-center gap-xs rounded-control px-xs text-item transition-colors duration-100";
-const ROW_QUIET = "text-ink-muted hover:bg-raised hover:text-ink";
-/** The file's ONE accent: the view you are currently in, and nothing else. */
-const ROW_ACTIVE = "bg-accent-fill text-ink";
-
-/**
- * The menu caret. Points down at rest and flips when the menu is open, so the
- * shape says which way the panel will move — read off the trigger's own
- * `data-expanded`, never off a second copy of the state.
- */
-const CaretGlyph: Component = () => (
-  <svg
-    viewBox="0 0 12 12"
-    class={
-      "size-3 shrink-0 text-ink-subtle transition-transform duration-100 " +
-      "group-data-[expanded]:rotate-180"
-    }
-    aria-hidden="true"
-  >
-    <path
-      d="M2.6 4.4 6 7.8l3.4-3.4"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="1.4"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-    />
-  </svg>
-);
-
-/**
- * One axis, behind a menu — and saying on its face what it is doing.
- *
- * `value` is the whole design (see this file's header on what the popover
- * costs): `undefined` means the axis is not narrowing anything and the trigger
- * shows only its name, quietly; a string means it is, and the trigger lifts and
- * says what to. The axis name stays `text-ink-subtle` in both cases, so the
- * *value* is what the eye lands on — hierarchy from weight and tone, at one
- * size, because there is only one size a 32 px control can hold.
- *
- * The trigger's own text is its accessible name. No `aria-label` is added on
- * top: it would have to repeat the same two words, and a label that drifts from
- * the text beside it is worse than no label at all.
- */
-const FilterMenu: ParentComponent<{
-  readonly label: string;
-  /** What this axis is currently narrowing by, or `undefined` when it is not. */
-  readonly value?: string | undefined;
-  /** A glyph from the §0.3 alphabet, drawn in Tier A ink. Optional. */
-  readonly leading?: JSX.Element;
-  /** The long form, for a hover. The trigger itself can only afford a summary. */
-  readonly title?: string | undefined;
-}> = (props) => (
-  <Popover>
-    <PopoverTrigger
-      class={cn("group", TRIGGER, props.value === undefined ? TRIGGER_OFF : TRIGGER_ON)}
-      title={props.title}
-    >
-      {props.leading}
-      <span class={cn("font-normal", props.value === undefined ? "" : "text-ink-subtle")}>
-        {props.label}
-      </span>
-      {/* ⛔ A REAL SPACE, NOT THE FLEX GAP. `gap-2xs` separates these two spans
-          on screen and not at all in the accessibility tree, where the name
-          would concatenate to "Severitycritical +1". A whitespace-only text run
-          is not rendered as a flex item (CSS Flexbox §4), so this costs no
-          layout and buys the trigger a name a screen reader can say. */}
-      {" "}
-      <Show when={props.value}>
-        {(value) => <span class="max-w-[9rem] truncate">{value()}</span>}
-      </Show>
-      <CaretGlyph />
-    </PopoverTrigger>
-    {/* `p-md` and a column of `gap-md` bands: a menu holding three axes needs
-        the axes to read as three things, and the only separator used here is
-        space — a hairline between every pair would draw more ink than the
-        controls do. */}
-    <PopoverContent class="w-72 p-md">
-      <div class="flex flex-col gap-md">{props.children}</div>
-    </PopoverContent>
-  </Popover>
-);
-
-/**
- * A labelled band inside a menu.
- *
- * The label is the quietest type in the app (`text-micro`, `text-ink-subtle`)
- * on purpose: each axis is named exactly once, above the control that narrows
- * it, so nothing inside has to repeat the word.
- */
-const MenuSection: ParentComponent<{ readonly label: string }> = (props) => (
-  <div class="flex min-w-0 flex-col gap-2xs">
-    <h3 class={cn(SECTION_LABEL, "flex items-center gap-2xs text-ink-subtle")}>{props.label}</h3>
-    {props.children}
-  </div>
-);
 
 /**
  * The saved views.
@@ -893,68 +806,49 @@ const AppliedChip: Component<{
 );
 
 /* -------------------------------------------------------------------------- */
-/* Grouping, as tabs                                                          */
+/* Grouping, as one of a list                                                  */
 /* -------------------------------------------------------------------------- */
 
 /**
- * A manual-activation tab strip (ARIA APG), deliberately not automatic — moving
- * focus with the arrow keys must never fire a request. Selecting an axis reads
- * `GET /api/v1/alerts/rollups` instead of `GET /api/v1/alerts`; automatic
- * activation would fire one of those per arrow key press while someone merely
- * tabs through the list of axes.
+ * The roll-up axis, as a column of rows inside the Group menu.
  *
- * ⛔ THE ORIENTATION STAYS HORIZONTAL even though the strip is laid out as a
- * column — inside the Group menu, where "By alert name" and "By namespace" are
- * far too long to sit side by side in a 288 px panel. Kobalte derives the
- * arrow-key axis from `orientation`, and its `TabsKeyboardDelegate` answers
- * `getKeyRightOf` with `undefined` under `vertical` — so declaring the visual
- * truth here would silently retire ArrowLeft/ArrowRight, which is the
- * roving-focus contract `FilterBar.test.tsx` pins ("moves focus on the arrow
- * keys without activating"). The list is a column driven with ←/→; that
- * mismatch is the smaller of the two, and it is stated here rather than left to
- * be discovered.
+ * ⛔⛔ IT WAS A `role="tablist"` AND IT IS NOT ANY MORE, WHICH IS THE FIX RATHER
+ * THAN THE COST. The strip was a manual-activation ARIA tab list, and every word
+ * of the paragraph that used to sit here was about fighting the widget: tabs
+ * activate on arrow keys, this axis fires a DIFFERENT ENDPOINT when it changes
+ * (`/alerts/rollups` rather than `/alerts`), so activation had to be forced to
+ * manual — and then the orientation had to be declared `horizontal` while the
+ * thing was laid out as a column, because Kobalte's vertical keyboard delegate
+ * retires ←/→ and ←/→ was the roving-focus contract the tests pinned. Two
+ * deliberate lies to the accessibility tree, to make a tab list behave like a
+ * list of buttons.
+ *
+ * It also *was* a tab list in the one sense that matters: three rows, one lit,
+ * inside a popover that already had a caret and a trigger stating its value. A
+ * tab strip nested in a dropdown is two navigation metaphors for one choice.
+ *
+ * `ChoiceList` is the plain thing: one focus stop per row, `aria-current` on the
+ * live one, activation on click/Enter/Space only and never on a cursor key. No
+ * orientation to misdeclare, and no request fired while somebody walks the list.
  */
-const GroupingTabs: Component<{
+const GroupingChoices: Component<{
   readonly value: GroupBy;
   readonly onChange: (next: GroupBy) => void;
   /** The flat-list total, already formatted with its "+" qualifier when more
-   *  pages remain unloaded — shown only on the "All" tab. */
+   *  pages remain unloaded — shown only on the "All" row. */
   readonly totalCountLabel?: string | undefined;
-}> = (props) => {
-  return (
-    <Tabs value={props.value} onChange={(v) => props.onChange(v as GroupBy)} activationMode="manual">
-      <TabsList
-        aria-label="Group alerts by"
-        class="-mx-xs flex h-auto flex-col items-stretch gap-0 rounded-none bg-transparent p-0"
-      >
-        <For each={GROUP_BY_VALUES}>
-          {(g) => (
-            <TabsTrigger
-              value={g}
-              class={cn(
-                ROW,
-                "justify-start font-normal",
-                ROW_QUIET,
-                // Neutral, like every other selected thing in this file except
-                // the view rows: a raised surface and the text lift, no tint.
-                "data-[selected]:border data-[selected]:border-line-strong",
-                "data-[selected]:bg-raised data-[selected]:font-medium data-[selected]:text-ink",
-                "data-[selected]:shadow-none",
-              )}
-            >
-              <span class="min-w-0 flex-1 truncate text-left">{GROUP_TAB_LABEL[g]}</span>
-              <Show when={g === "none" && props.totalCountLabel !== undefined}>
-                <span class="shrink-0 tabular-nums text-meta text-ink-subtle">
-                  {props.totalCountLabel}
-                </span>
-              </Show>
-            </TabsTrigger>
-          )}
-        </For>
-      </TabsList>
-    </Tabs>
-  );
-};
+}> = (props) => (
+  <ChoiceList<GroupBy>
+    legend="Group alerts by"
+    value={props.value}
+    onChange={props.onChange}
+    options={GROUP_BY_VALUES.map((g) => ({
+      value: g,
+      label: GROUP_TAB_LABEL[g],
+      hint: g === "none" ? props.totalCountLabel : undefined,
+    }))}
+  />
+);
 
 /* -------------------------------------------------------------------------- */
 /* The panel itself                                                           */
@@ -979,19 +873,21 @@ export interface FilterBarProps {
  * How many of the three bars a severity inks — the §0.3 ruler, reused.
  *
  * `AlertDTO.severity` is a free vocabulary, so anything outside the common
- * three ranks 0 and draws the empty ruler rather than guessing at an order it
- * was never told. The glyph keeps a constant bounding box either way, which is
- * the whole reason the unfilled bars are drawn faint instead of omitted.
+ * three ranks 0 and draws the faint ring rather than guessing at an order it was
+ * never told. The glyph keeps a constant bounding box either way, which is the
+ * whole reason level 0 is drawn faint instead of omitted.
+ *
+ * ⛔ AND IN HERE THE GLYPH IS TIER A, SO `info` AND `warning` DRAW THE SAME MARK.
+ * That is faithful rather than broken, and it is the same bargain `CATEGORY_MARK`
+ * makes in the timeline's own filter: this menu is a LEGEND for the rows below it,
+ * so it draws what the rows draw, and the rows separate those two by hue — which
+ * chrome may not spend (§M.2). The label beside each row is what tells them apart
+ * here; a menu that invented a distinguishing shape would be disagreeing with the
+ * thing it is a legend for. `critical` still differs by weight, which is the one
+ * distinction worth having without colour.
  */
 const SEVERITY_RANK: Record<string, number> = { critical: 3, warning: 2, info: 1 };
 const severityRank = (severity: string): number => SEVERITY_RANK[severity] ?? 0;
-
-/** `first +n`, the only summary a 32 px trigger can hold. */
-function summarise(parts: readonly string[]): string | undefined {
-  const [first, ...rest] = parts;
-  if (first === undefined) return undefined;
-  return rest.length === 0 ? first : `${first} +${rest.length}`;
-}
 
 /**
  * The band of instruments above the alert table.
@@ -1138,9 +1034,9 @@ export const AlertFilterToolbar: Component<FilterBarProps> = (props) => {
   const selectClass = (on: boolean): string =>
     cn(
       "group [&>svg:last-child]:hidden",
-      TRIGGER,
+      FILTER_TRIGGER,
       "w-auto justify-start",
-      on ? TRIGGER_ON : TRIGGER_OFF,
+      on ? FILTER_TRIGGER_ON : FILTER_TRIGGER_OFF,
     );
 
   return (
@@ -1184,7 +1080,7 @@ export const AlertFilterToolbar: Component<FilterBarProps> = (props) => {
                       type="button"
                       aria-current={activeView() === view.id ? "true" : undefined}
                       onClick={() => props.onChange(view.apply(props.filters))}
-                      class={cn(ROW, activeView() === view.id ? ROW_ACTIVE : ROW_QUIET)}
+                      class={cn(MENU_ROW, activeView() === view.id ? MENU_ROW_ACTIVE : MENU_ROW_QUIET)}
                     >
                       <span class="min-w-0 flex-1 truncate text-left">{view.label}</span>
                     </button>
@@ -1194,25 +1090,28 @@ export const AlertFilterToolbar: Component<FilterBarProps> = (props) => {
             </MenuSection>
 
             {/* U1: never colour alone — and here, never colour at all. The mark
-                is the §0.3 state shape drawn `tone="inherit"`, so the toggle
-                carries the same alphabet the table's rows do without spending a
-                Tier B hue on chrome (§M.2). */}
+                is the §0.3 state shape drawn `tone="inherit"`, so the row carries
+                the same alphabet the table's rows do without spending a Tier B
+                hue on chrome (§M.2).
+
+                ⭐ AND THEY ARE CHECKBOXES NOW, NOT A SEGMENTED STRIP. Four
+                lifecycle states as pills inside a 288 px panel wrapped to two
+                rows and read as a tab bar directly beneath a list of views that
+                genuinely IS one — two rows of pills, one meaning "go here" and
+                one meaning "and also these". A checkbox says "several at once"
+                without being read. */}
             <MenuSection label="Lifecycle state">
-              <ToggleGroup
+              <CheckList<State>
                 legend="Lifecycle state"
-                multiple
-                value={[...props.filters.state]}
-                onChange={(next) => patch({ state: next as State[] })}
-              >
-                <For each={ALL_STATES}>
-                  {(s) => (
-                    <ToggleGroupItem value={s} class="gap-2xs">
-                      <StateGlyph state={s} tone="inherit" />
-                      {STATE_LABEL[s]}
-                    </ToggleGroupItem>
-                  )}
-                </For>
-              </ToggleGroup>
+                options={ALL_STATES.map((s) => ({
+                  value: s,
+                  label: STATE_LABEL[s],
+                  icon: <StateGlyph state={s} tone="inherit" />,
+                }))}
+                value={props.filters.state}
+                onChange={(next) => patch({ state: [...next] })}
+                allLabel="Any state"
+              />
             </MenuSection>
           </FilterMenu>
 
@@ -1223,34 +1122,23 @@ export const AlertFilterToolbar: Component<FilterBarProps> = (props) => {
           <FilterMenu
             label="Severity"
             value={severityValue()}
-            leading={<SeverityBars filled={severityMark()} class="size-3" />}
+            leading={<SeverityEnso level={severityMark()} class="size-3" />}
           >
-            <ToggleGroup
+            {/* The common three, then any severity a URL brought in that is not
+                one of them: a deployment using `sev1` sees its own word back
+                rather than having it silently dropped — but no invented rank, so
+                the ruler stays empty for a severity nobody told us how to order. */}
+            <CheckList<string>
               legend="Severity"
-              multiple
-              value={[...props.filters.severity]}
-              onChange={(next) => patch({ severity: next })}
-            >
-              <For each={COMMON_SEVERITIES}>
-                {(s) => (
-                  <ToggleGroupItem value={s} class="gap-2xs">
-                    <SeverityBars filled={severityRank(s)} />
-                    {s}
-                  </ToggleGroupItem>
-                )}
-              </For>
-              {/* A deployment using `sev1` sees its own word back rather than
-                  having it silently dropped — but no invented rank: the ruler
-                  stays empty for a severity nobody told us how to order. */}
-              <For each={customSeverities()}>
-                {(s) => (
-                  <ToggleGroupItem value={s} class="gap-2xs">
-                    <SeverityBars filled={severityRank(s)} />
-                    {s}
-                  </ToggleGroupItem>
-                )}
-              </For>
-            </ToggleGroup>
+              options={[...COMMON_SEVERITIES, ...customSeverities()].map((s) => ({
+                value: s,
+                label: s,
+                icon: <SeverityEnso level={severityRank(s)} />,
+              }))}
+              value={props.filters.severity}
+              onChange={(next) => patch({ severity: [...next] })}
+              allLabel="Any severity"
+            />
           </FilterMenu>
 
           {/* Cluster and Since are already listboxes, so they sit in the band
@@ -1338,7 +1226,7 @@ export const AlertFilterToolbar: Component<FilterBarProps> = (props) => {
             an operator who read it that way would think alerts were missing. */}
         <div class="ml-auto flex flex-wrap items-center gap-xs">
           <FilterMenu label="Group" value={groupValue()}>
-            <GroupingTabs
+            <GroupingChoices
               value={props.filters.groupBy}
               onChange={(g) => patch({ groupBy: g })}
               totalCountLabel={props.totalCountLabel}

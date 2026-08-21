@@ -34,10 +34,24 @@ function mount(): ReturnType<typeof stubFetch> {
   return stub;
 }
 
+/**
+ * Opens the Reason menu and hands back its row group.
+ *
+ * ⛔ THIS STEP IS THE COST OF THE DROPDOWN. Fifteen reasons used to be a strip of
+ * toggles in the DOM at mount — a filter three lines tall above a five-row list —
+ * so a test could reach straight for the word. A closed Kobalte popover renders
+ * nothing, so it is opened first; the trigger's own summary of what is on is what
+ * stays readable at rest (see `~/components/ui/FilterMenu`).
+ */
+async function openReasons(): Promise<HTMLElement> {
+  fireEvent.click(await screen.findByRole("button", { name: /^Reason/ }));
+  return await screen.findByRole("group", { name: "Reason" });
+}
+
 describe("the reason filter", () => {
   it("offers every reason the contract publishes, each in words rather than as a wire token", async () => {
     mount();
-    const group = await screen.findByRole("group", { name: "Reason" });
+    const group = await openReasons();
 
     const labels = within(group)
       .getAllByRole("button")
@@ -46,7 +60,11 @@ describe("the reason filter", () => {
     // The picklist the control is built from is the contract's own, so the count
     // is derived twice from the same place and never typed here.
     expect([...RejectionReasonSchema.options]).toEqual([...enumValues("RejectionReason")]);
-    expect(labels).toHaveLength(enumValues("RejectionReason").length);
+    // ⭐ [0] IS THE AXIS'S OWN "ALL". `CheckList` draws the empty set as a checked
+    // row rather than leaving every box blank, so an unnarrowed axis never looks
+    // like a filter that can return nothing.
+    expect(labels[0]).toBe("Any reason");
+    expect(labels.slice(1)).toHaveLength(enumValues("RejectionReason").length);
     for (const label of labels) {
       expect(label).not.toBe("");
       // `too_many_labels` on screen is the drift symptom, not a label.
@@ -57,9 +75,10 @@ describe("the reason filter", () => {
 
   it("puts the chosen reason on the wire, comma-joined as the contract asks", async () => {
     const stub = mount();
-    const group = await screen.findByRole("group", { name: "Reason" });
+    const group = await openReasons();
 
-    fireEvent.click(within(group).getAllByRole("button")[0]!);
+    // [0] is the "Any reason" row; the values start at [1].
+    fireEvent.click(within(group).getAllByRole("button")[1]!);
 
     await until(() => {
       const sent = stub.to("/rejections").map((c) => c.search.get("reason"));

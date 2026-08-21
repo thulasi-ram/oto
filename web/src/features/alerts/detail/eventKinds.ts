@@ -373,3 +373,32 @@ export function describeActor(kind: ActorKind, label: string | null | undefined)
 export function isHuman(kind: ActorKind): boolean {
   return kind === "user" || kind === "slack";
 }
+
+/**
+ * The mark that stands for a whole CATEGORY in the event-kind filter menu.
+ *
+ * ⭐ THE MENU IS A LEGEND FOR THE TIMELINE, SO IT DRAWS WHAT THE TIMELINE DRAWS.
+ * Three categories answer `dot` here — lifecycle, enrichment, notification —
+ * because that is genuinely the mark their rows carry, and inventing a
+ * distinguishing shape for the menu would make the legend disagree with the
+ * thing it is a legend for. The label beside it is what tells the three apart;
+ * the glyph is there so an operator who has seen a column of dots can find the
+ * switch that turns them off.
+ *
+ * ⛔ AND IT CARRIES NO TONE. `EVENT_KINDS` spends Tier-B state hues on its
+ * markers, which §M.7 permits on a timeline marker and nowhere else — a filter
+ * row is chrome, so these are drawn in Tier A ink at the call site. This map is
+ * therefore shape only, on purpose: a `tone` field here would be an invitation
+ * to import one into a menu.
+ */
+export const CATEGORY_MARK: Record<EventCategory, MarkerShape> = {
+  lifecycle: "dot",
+  ack: "ring",
+  snooze: "square",
+  comment: "quote",
+  rule: "diamond",
+  enrichment: "dot",
+  notification: "dot",
+  group: "square",
+  source: "bar",
+};
