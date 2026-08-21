@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 75 {
-		t.Fatalf("latest migration is %d, want 75 — this test pins the number so that a "+
+	if latest != 76 {
+		t.Fatalf("latest migration is %d, want 76 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1629,6 +1629,34 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// accepts a kind the release below it cannot interpret. No column reading can
 	// see that, and it is the half most likely to be forgotten because nothing
 	// references it.
+	// 00076 is a plain CREATE TABLE, so its Down is a DROP guarded by a row count —
+	// the shape 00073, 00074 and 00075 all use for a narrowing Down. The guard is
+	// what is interesting here: a Wording is customer-authored prose that exists
+	// nowhere else, so dropping the table with live rows in it destroys something
+	// no backup of the alert data would restore.
+	if n := countTables("wordings"); n != 1 {
+		t.Fatalf("wordings is absent at migration 76 (found %d); 00076's Up exists to create "+
+			"the table a customer's own prose lives in", n)
+	}
+	// The stanza CHECK is the floor under the Go refusal. `fields`, `members`,
+	// `trail` and `actions` are structure rather than wording, and a row naming one
+	// could only arrive by a path that skipped the service — which is exactly the
+	// path a constraint is for.
+	if _, err := env.pool.Exec(env.ctx,
+		`INSERT INTO wordings (id, org_id, stanza, template, created_at, updated_at)
+		 VALUES ($1, $2, 'fields', 'x', now(), now())`, id.New(), id.New()); err == nil {
+		t.Fatal("wordings accepted stanza 'fields' at migration 76; wordings_stanza_ck exists " +
+			"because a grid of separately-budgeted cells is structure, not one line of prose")
+	}
+
+	down(76)
+
+	if n := countTables("wordings"); n != 0 {
+		t.Fatalf("wordings still exists after 00076's Down (found %d); the Down is a guarded "+
+			"DROP and a Down that runs cleanly and removes nothing is the failure this file "+
+			"exists to catch", n)
+	}
+
 	if n := countTables("channel_connections"); n != 1 {
 		t.Fatalf("channel_connections is absent at migration 75 (found %d); 00075's Up exists "+
 			"to create the table a channel now answers to", n)
