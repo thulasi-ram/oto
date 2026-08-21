@@ -5142,7 +5142,8 @@ Numbered, user-observable. v1 is not done until every one of these is demonstrab
 34. `GET /metrics` exposes at minimum: `oto_ingest_accepted_total`,
     `oto_ingest_rejected_total{reason}`, `oto_ingest_duration_seconds`, `oto_clock_skew_seconds`,
     `oto_thread_order_decisions_total{action,reason}`, `oto_thread_gap_recovered_total{reason}`,
-    `oto_thread_head_wait_seconds` and `oto_delivery_claim_lost_total{mode}`. Every name in this
+    `oto_thread_head_wait_seconds`, `oto_delivery_claim_lost_total{mode}` and
+    `oto_render_invalid_total{provider,renderer,mode}`. Every name in this
     list is constructed by a collector in the tree and has a page in `docs/runbooks/`.
 
     **Facts that are deliberately not metrics.** Earlier drafts of this criterion promised seven
@@ -5159,8 +5160,17 @@ Numbered, user-observable. v1 is not done until every one of these is demonstrab
     | `oto_notification_suppressed_total{reason}` | `notifications.suppressed_reason`, the closed set in `internal/notification/domain/suppression.go`. §B.6 requires every suppression to be a row with a place in the UI, so the durable record is the primary artefact and a counter would only be its shadow |
     | `oto_delivery_attempts_total{class}` | `notification_deliveries.attempts` and `.error_class`; the per-job rate is already on `oto_jobs_failed_total{class}` |
     | `oto_delivery_dead_total` | `notification_deliveries.status = 'dead'` with `error_class`; the per-job rate is already on `oto_jobs_dead_total`, which is alertable and paged |
-    | `oto_render_invalid_total{check}` | The delivery itself: `status='dead'`, `error_class='config_invalid'`, the offending payload kept in `notification_deliveries.rendered` and retrievable via `GET /api/v1/deliveries/{id}`. `internal/channels/render/slack/validate.go` names the failing check; `oto_jobs_dead_total` carries the rate |
     | `oto_check_violation_total{constraint}` | A `23514` is mapped to `errs.KindInternal` with the **constraint name as the error `Code`** (§L.9, `internal/*/repository/errors.go`), so it surfaces as a 500 naming the constraint, in the log line and — on a job path — in `oto_jobs_failed_total{class="internal"}` |
+
+    ⭐ `oto_render_invalid_total` WAS ON THIS TABLE AND HAS BEEN BUILT. It is now in the minimum
+    list above, with labels `{provider,renderer,mode}` and a page at
+    `docs/runbooks/oto_render_invalid_total.md`. This entry's replacement fact was **wrong**, not
+    merely thin: it directed an operator to `oto_jobs_dead_total`, and that counter never fires for
+    a render failure. `dispatch.go` marks the delivery dead in the same transaction and the job then
+    reports success — correctly, it was asked to resolve a delivery and it did — so the queue never
+    sees a death. The struck name was not a missing metric standing in for a fact you could read
+    elsewhere; it was the only alarm a whole failure mode had, and the table said otherwise. It
+    carries no `check` label and §L.6 says why.
 
     `oto_thread_recovered_total` was the eighth name here. It is not missing: it **shipped** as
     `oto_thread_gap_recovered_total`, and this criterion now uses the registered name.
@@ -6046,11 +6056,24 @@ the offending payload persisted in `notification_deliveries.rendered` and the fa
 in `notification_deliveries.error`** (`slack.Error.Check`, rendered as
 `slack render invalid (<check>): …`). It is never silently truncated and never sent.
 
-This is an oto bug, and the alert on it is `oto_jobs_dead_total`
-(`deploy/prometheus/oto-rules.yaml`) — the deliver job dies, so the death is already counted.
-There is **no** `oto_render_invalid_total{check}` counter; earlier drafts promised one and no
-collector was ever built (AC-34). `Check` is the label such a counter *would* carry, and it is
-kept as a stable, closed vocabulary so the delivery records stay greppable by check name.
+This is an oto bug, and the alert on it is **`oto_render_invalid_total{provider,renderer,mode}`**
+(`internal/notification/service/metrics.go`, `docs/runbooks/oto_render_invalid_total.md`).
+
+⛔ THIS PARAGRAPH USED TO NAME `oto_jobs_dead_total` AND SAY "the deliver job dies, so the death is
+already counted". Both halves were false, and together they meant a whole failure mode had no alarm
+at all while the SPEC asserted it had one. The job does **not** die: `dispatch.go` marks the
+delivery dead in the same transaction and then reports SUCCESS — correctly, since the job was asked
+to resolve a delivery and it did — so River's dead-letter is never reached and the queue counter
+stays flat. Nor would handing the error out fix it: a render error has no case in `jobs.Classify`
+and classifies *retryable*, so River would wake a job whose delivery is already resolved and the
+second pass would exit quietly at `Status.Resolved()`. And even when `oto_jobs_dead_total` does
+fire, it cannot separate "oto built an illegal card" from "the destination's token was revoked" —
+one is fixed by shipping a new oto and one by a customer editing their config.
+
+⚠️ THE COUNTER CARRIES NO `check` LABEL, though V0–V18 is bounded enough to be one. The check is a
+provider concept and `dispatch.go` holds no provider-specific code. `Check` is still kept as a
+stable, closed vocabulary, because it is what makes the delivery records greppable by check name and
+it is what the log line and `notification_deliveries.error` carry.
 
 Renderers additionally have golden files (`testdata/*.golden.json`), and the CI golden test runs
 `Validate` over every golden file — so a limit violation is caught at build time, not in production.

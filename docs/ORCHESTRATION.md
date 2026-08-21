@@ -163,10 +163,12 @@ being declared done, which is the standard the depguard rules were held to.
   `oto_source_degraded_holds_total`, `oto_notification_suppressed_total`,
   `oto_delivery_attempts_total`, `oto_delivery_dead_total`,
   `oto_thread_recovered_total`, `oto_render_invalid_total` and
-  `oto_check_violation_total`. **No collector in the tree constructs any of
-  them** — the facts exist in tables and logs instead, and
+  `oto_check_violation_total`. Two of those eight are no longer gaps:
   `oto_thread_recovered_total` shipped under the name
-  `oto_thread_gap_recovered_total`. `docs/runbooks/README.md` lists where each
+  `oto_thread_gap_recovered_total`, and **`oto_render_invalid_total` is now built**
+  (`{provider,renderer,mode}`) because the fact its struck entry pointed at was
+  false — `oto_jobs_dead_total` never fires for a render failure. **No collector
+  constructs the other six** — those facts exist in tables and logs instead. `docs/runbooks/README.md` lists where each
   one lives today so the gap stays visible rather than being discovered by an
   alert that never fires.
 
