@@ -259,7 +259,7 @@ func (r *WordingRepository) List(
 // ------------------------------------------------------------------ writes
 
 const createWordingSQL = `
-INSERT INTO wordings (id, org_id, channel_id, stanza, template, matchers, reasons,
+INSERT INTO wordings AS w (id, org_id, channel_id, stanza, template, matchers, reasons,
                       priority, enabled, created_at, updated_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
 RETURNING ` + wordingColumns
