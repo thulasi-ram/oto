@@ -4,7 +4,7 @@
 in three places, one of which is a safety claim that was false when it was written
 **Relates to:** [0037](0037-wordings-are-liquid-and-structure-stays-otos.md) (the ADR this amends —
 its ruling that a Wording is Liquid and structure stays oto's is untouched),
-[0013](0013-actor-never-subject.md) (why oto may not name a human),
+[0013](0013-alert-first-scope-boundary.md) (the scope boundary that keeps a human out of the model),
 [0020](0020-broadcast-the-transitions-that-must-be-seen.md) (the unread-knob trap),
 [0043](0043-the-slack-action-row-renders-five-elements.md) (why a button's label is structure)
 **Amends:** SPEC §H.7 (the Stanza set and the two orders), §L.6 (nineteen checks, not eighteen)
@@ -50,7 +50,7 @@ sink drops while keeping the words. Same for `code`, `bold` and `italic`.
 The implementation is committed: `internal/channels/render/wording/dialect.go`. Its shape is the whole
 decision, so it is worth stating rather than pointing at.
 
-- **`Dialect` is an interface with five methods** — `Name`, `Emphasis(MarkKind) (open, close string)`,
+- **`Dialect` is an interface with five methods** — `Name`, `Emphasis(MarkKind) (open, shut string)`,
   `Timestamp(at, fallback)`, `StripAudience(s)` and `EscapeText(s)`. A provider is added by writing one
   of these. Not by touching a template, not by touching a filter, not by touching the sink.
 - **The marks are private-use codepoints, and that is the mechanism rather than a style.** A Wording

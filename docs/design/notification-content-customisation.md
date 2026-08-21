@@ -68,7 +68,7 @@ than it deserves. Every line below was checked against the tree at commit `0ea5a
    their keys are the customer's data rather than oto's vocabulary — `labels`, `annotations`,
    `enrichment` — where a missing key is a fact about the signal, not a typo. Delivery stays lax and
    `default` does the totality job it was given.
-9. **`actions` is a stanza that takes no Wording** — eight names, **seven wordable** (ADR 0048,
+9. **Four of the eight stanzas take a Wording** — `title`, `body`, `rule`, `footer` (ADR 0048,
    `wording/stanza.go`). An actions block resolves to a list of `Action` structs whose visible label is
    bound to a stable `action_id` an interaction handler matches on, so re-wording a button is an
    interaction change wearing a wording's clothes (ADR 0043; git-bug `85da108`, `ccad583`). It stays in
@@ -323,7 +323,7 @@ Two new terms.
 
 > **Stanza** — One named, ordered unit of a rendered message: `title`, `body`, `fields`, `members`, `trail`,
 > `rule`, `actions`, `footer`. The renderer always has one. Configuration may substitute a Stanza's text; it
-> never authors a Stanza's structure and never invents one. **Eight names, seven wordable**: `actions` is
+> never authors a Stanza's structure and never invents one. **Eight names, four wordable** — `title`, `body`, `rule`, `footer`. `fields`, `members`, `trail` and `actions` are
 > declared and refused, because a button's label is bound to its `action_id` (ADR 0048, revision-block
 > item 9).
 >
@@ -443,6 +443,7 @@ Pre-release, the division that matters is not risky-vs-safe but **cheap now, exp
    finding 8's retry wiring, snooze into `NotificationView`, and the `alert.history` payload rendered.
 3. **The safety floor.** `StanzaInput`, the curated filter registry, the strict/lax engine pair, the sink
    wiring, and the 19-check exhaustiveness test. Nothing user-facing ships in this step.
-4. **Wordings across all eight Stanzas**, plus the preview endpoint replaying against a stored
+4. **Wordings across the four PROSE Stanzas** (title, body, rule, footer; the other four are refused
+   with a reason — see ADR 0048), plus the preview endpoint replaying against a stored
    `NotificationView`. Stanza-by-stanza rollout is a released-product technique and is not needed here.
 5. **The policy-scoped override last**, once its two open questions are answered.
