@@ -26,7 +26,7 @@ import { fireEvent, screen } from "@solidjs/testing-library";
 import { describe, expect, it } from "vitest";
 import * as v from "valibot";
 
-import { ChannelsSection } from "./ChannelsSection";
+import { PoliciesSection } from "~/features/notifications/PoliciesSection";
 import { SourcesSection } from "./SourcesSection";
 import { TuningSection } from "./TuningSection";
 import { enumValuesOf, patternOf } from "~/api/bounds";
@@ -35,7 +35,7 @@ import {
   CreateSourceRequestSchema,
 } from "~/api/generated/validators";
 import { enumValues, integerBounds, requestField, requestMaxLength } from "~/test/contract";
-import { channel, cluster, orgSettings, source } from "~/test/fixtures";
+import { alert, channel, channelConnection, cluster, orgSettings, policy, source } from "~/test/fixtures";
 import type { Bound } from "~/test/contract";
 import {
   expectNoUndefined,
@@ -55,29 +55,44 @@ const BOUNDS = integerBounds("UpdateOrgSettingsRequest");
 /* Channels                                                                   */
 /* -------------------------------------------------------------------------- */
 
-function mountChannels(): void {
+/**
+ * A channel is created from the notification policy screen now, not from
+ * Settings (ADR 0047) — `ChannelsSection.tsx` manages Connections, and the
+ * Verbosity control this describe block is about lives in
+ * `PoliciesSection.tsx`'s `ChannelCreateDialog`.
+ */
+function mountPolicyEditor(): void {
   stubFetch({
+    "GET /api/v1/notification-policies": list([policy()]),
+    "GET /api/v1/channels": list([channel()]),
+    "GET /api/v1/channel-connections": list([channelConnection()]),
     "GET /api/v1/channel-types": unpaged([
       {
         type: "slack",
         display_name: "Slack",
-        credential_kinds: ["bot_token"],
+        credential_kinds: [],
+        connection_credential_kinds: ["slack_bot_token"],
+        connection_config_schema: { type: "object", properties: {} },
         renderers: ["slack.default"],
         config_schema: { type: "object", properties: {} },
       },
     ]),
-    "GET /api/v1/channels": list([channel()]),
+    "GET /api/v1/alerts": list([alert()]),
+    "GET /api/v1/labels": { json: { data: [], meta: { request_id: "r" } } },
   });
-  renderScreen(() => <ChannelsSection />);
+  renderScreen(() => <PoliciesSection />);
 }
 
 describe("the channel editor", () => {
   it("offers every verbosity the contract publishes and no other", async () => {
-    mountChannels();
+    mountPolicyEditor();
     await until(() => expect(screen.getByRole("button", { name: "Edit" })).toBeTruthy());
     fireEvent.click(screen.getByRole("button", { name: "Edit" }));
-
     await until(() => expect(document.querySelector('[role="dialog"]')).toBeTruthy());
+
+    fireEvent.click(screen.getByRole("button", { name: "+ New channel" }));
+    await until(() => expect(document.querySelectorAll('[role="dialog"]').length).toBeGreaterThan(1));
+
     // The Verbosity control is Kobalte's `Select` now, not a native `<select>` —
     // there is no `HTMLSelectElement` to read `.options` off directly. Kobalte
     // still renders one real hidden `<select>` with real `<option>`s underneath
@@ -86,8 +101,8 @@ describe("the channel editor", () => {
     const select = document.querySelector("#ch-verbosity") as HTMLSelectElement;
     expect(select, "no hidden native <select> found for the Verbosity control").toBeTruthy();
 
-    // `VERBOSITIES` is hand-written in `ChannelsSection.tsx` — and copied a
-    // third time in `tuningCopy.ts`. Derived here so that the day `Verbosity`
+    // `VERBOSITIES` is hand-written in `PoliciesSection.tsx` — and copied a
+    // second time in `tuningCopy.ts`. Derived here so that the day `Verbosity`
     // grows a member, the copies are a test failure rather than a channel that
     // silently cannot be set to it.
     //

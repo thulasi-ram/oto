@@ -6534,22 +6534,23 @@ of the 54 call sites was on the correct side of that line already; what was miss
   --oto-type-page: 18px;
 
   /* Radius. The tier is chosen by what the corner belongs to, not by how big
-     it looks. All three are 0px as of ADR 0031 — see the note below the
-     table. */
-  --oto-radius-chip: 0px;
-  --oto-radius-control: 0px;
-  --oto-radius-surface: 0px;
+     it looks. ADR 0031 took all three to 0px; ADR 0046 restores the census
+     values below — see the note below the table. */
+  --oto-radius-chip: 3px;
+  --oto-radius-control: 4px;
+  --oto-radius-surface: 6px;
 }
 ```
 
-> ⚠️ **AMENDED — [ADR 0031](../adr/0031-sharp-corners-and-crisper-grid.md).** The three radius
-> steps above were *derived* from the 3px/4px/6px census this section describes — not designed —
-> and that census is still the accurate history of why three tiers exist and where the line between
-> `chip` and `control` falls. What ADR 0031 changes is the **value** each of the three steps holds,
-> not the tiers themselves: all three render 0px, an explicit Bloomberg-terminal/Swiss-Modernist
-> sharp-corners override, so a component still reaches for the correct named step (`rounded-chip` on
-> a badge, `rounded-control` on a button) even though every one of them is visually flush today.
-> `rounded-full`/`rounded-none` are unaffected — they were always shapes, not steps.
+> ⚠️ **AMENDED TWICE — [ADR 0031](../adr/0031-sharp-corners-and-crisper-grid.md), then
+> [ADR 0046](../adr/0046-corners-round-again.md).** The three radius steps above were *derived*
+> from the 3px/4px/6px census this section describes — not designed — and that census is still the
+> accurate history of why three tiers exist and where the line between `chip` and `control` falls.
+> ADR 0031 took the **value** each step holds to 0px, an explicit Bloomberg-terminal/Swiss-Modernist
+> sharp-corners override, without touching the tiers themselves. ADR 0046 reverses that override and
+> restores the census values — not a third derivation, the same 3px/4px/6px this section already
+> documents. `rounded-full`/`rounded-none` are unaffected throughout — they were always shapes, not
+> steps.
 
 | Utility | Step | What it is for |
 |---|---|---|
@@ -6559,9 +6560,9 @@ of the 54 call sites was on the correct side of that line already; what was miss
 | `text-item` | 13 px | a named thing or a control — row titles, nav, tabs, buttons |
 | `text-title` | 14 px | dialog and section titles |
 | `text-page` | 18 px | the page heading, and nothing else |
-| `rounded-chip` | 0 px (ADR 0031; was 3 px) | inline — badges, chips, code spans, skeletons |
-| `rounded-control` | 0 px (ADR 0031; was 4 px) | buttons, inputs, wells, nav items, bordered boxes; **and the `:focus-visible` ring**, since what takes focus is a control |
-| `rounded-surface` | 0 px (ADR 0031; was 6 px) | panels and dialogs — anything that holds controls |
+| `rounded-chip` | 3 px (ADR 0046; was 0 px under ADR 0031) | inline — badges, chips, code spans, skeletons |
+| `rounded-control` | 4 px (ADR 0046; was 0 px under ADR 0031) | buttons, inputs, wells, nav items, bordered boxes; **and the `:focus-visible` ring**, since what takes focus is a control |
+| `rounded-surface` | 6 px (ADR 0046; was 0 px under ADR 0031) | panels and dialogs — anything that holds controls |
 
 `rounded-full` and `rounded-none` remain available and are not steps: they are shapes, and a status
 dot is a circle at any radius the scale could name.

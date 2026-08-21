@@ -71,14 +71,27 @@ const (
 // Its ConfigSchema is the ONE source of truth for a provider's configuration: the
 // same bytes validate on the server and render the settings form in the UI, so
 // adding a provider changes no UI code (§L.5).
+//
+// ⭐ TWO SCHEMAS, TWO LEVELS. ConfigSchema is a CHANNEL's own settings — one
+// destination, e.g. `conversation_id`. ConnectionConfigSchema is the ORG-WIDE
+// setup every channel of this type shares, e.g. a Slack workspace's `team_id` —
+// set up once in Settings, referenced by many channels. The same schema-driven
+// argument applies to both: neither schema is hand-copied into a DTO.
 type Descriptor struct {
 	Type            Type
 	DisplayName     string
 	ConfigSchema    json.RawMessage // JSON Schema draft 2020-12; drives the dynamic settings UI
 	CredentialKinds []string
-	Capabilities    Capability
-	Renderers       []RendererID
-	RateLimitClass  string // "slack" | "none"
+	// ConnectionConfigSchema is the JSON Schema for this provider's Connection —
+	// the org-wide setup, not one destination's.
+	ConnectionConfigSchema json.RawMessage
+	// ConnectionCredentialKinds is what a Connection of this type accepts. A
+	// slack connection requires CredBotToken (channel_connections_cred_ck); a
+	// webhook connection may have none at all.
+	ConnectionCredentialKinds []string
+	Capabilities              Capability
+	Renderers                 []RendererID
+	RateLimitClass            string // "slack" | "none"
 }
 
 // ChannelConfig is the validated, non-secret configuration of one Channel
@@ -125,6 +138,10 @@ type Credential struct {
 type Provider interface {
 	Descriptor() Descriptor
 	ValidateConfig(ctx context.Context, raw json.RawMessage) error
+	// ValidateConnectionConfig validates a Connection's config against
+	// Descriptor().ConnectionConfigSchema — the org-wide setup, not one
+	// channel's.
+	ValidateConnectionConfig(ctx context.Context, raw json.RawMessage) error
 	Open(ctx context.Context, cfg ChannelConfig, cred Credential) (Channel, error)
 }
 
@@ -136,6 +153,35 @@ type Channel interface {
 	Amend(ctx context.Context, ref MessageRef, msg RenderedMessage) (DeliverResult, error)
 	Probe(ctx context.Context) error
 	Close() error
+}
+
+// ConversationQuery names a conversation by whichever half the operator typed.
+// Exactly one of Name or ID is set; the caller fills the other in.
+type ConversationQuery struct {
+	// Name is a channel display name, with or without a leading '#'.
+	Name string
+	// ID is the provider's own identifier ("C0123456" for Slack).
+	ID string
+}
+
+// ConversationResult is what a resolve answered: both halves, filled in.
+type ConversationResult struct {
+	ID   string
+	Name string
+}
+
+// ConversationResolver is an OPTIONAL capability a Provider may implement, so
+// the settings UI can turn "the channel named #sre-alerts" and "the channel
+// with id C0123456" into each other. It is not part of Provider itself: a
+// provider with nothing to resolve — the generic webhook — need not fake one.
+//
+// ⭐ THIS RE-OPENS A DELIBERATELY CLOSED SCOPE DECISION. The Slack `API`
+// interface in `providers/slack/channel.go` used to be exactly three methods,
+// and `conversations.info` was removed for having zero callers. This interface
+// is that caller, reintroduced on purpose — see the ADR that supersedes the
+// "cut it, nothing calls it" reasoning.
+type ConversationResolver interface {
+	ResolveConversation(ctx context.Context, cred Credential, query ConversationQuery) (ConversationResult, error)
 }
 
 // Mode is the delivery decision produced by the §H.6 table.

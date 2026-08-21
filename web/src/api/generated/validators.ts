@@ -1243,8 +1243,13 @@ export const ChannelTypeDTOSchema = v.looseObject({
   ),
   "config_schema": v.record(v.string(), v.unknown()),
   "credential_kinds": v.pipe(
-    v.array(v.picklist(["slack_bot_token", "slack_app_token", "slack_signing_secret", "basic", "bearer", "none"])),
-    v.maxLength(6),
+    v.array(v.picklist(["slack_bot_token", "slack_app_token", "slack_signing_secret", "basic", "bearer", "webhook_signing_secret", "none"])),
+    v.maxLength(7),
+  ),
+  "connection_config_schema": v.record(v.string(), v.unknown()),
+  "connection_credential_kinds": v.pipe(
+    v.array(v.picklist(["slack_bot_token", "slack_app_token", "slack_signing_secret", "basic", "bearer", "webhook_signing_secret", "none"])),
+    v.maxLength(7),
   ),
   "capabilities": v.pipe(
     v.array(v.picklist(["threading", "amend", "rich_layout", "interactive", "broadcast", "dedupe_key"])),
@@ -1267,8 +1272,7 @@ export const ChannelDTOSchema = v.looseObject({
     v.maxLength(120),
   ),
   "config": v.record(v.string(), v.unknown()),
-  "credential_kind": v.exactOptional(v.nullable(v.picklist(["slack_bot_token", "slack_app_token", "slack_signing_secret", "basic", "bearer", "none"]))),
-  "credential_rotated_at": v.exactOptional(v.nullable(TimestampSchema)),
+  "connection_id": UuidSchema,
   "renderer": RendererIdSchema,
   "verbosity": VerbositySchema,
   "thread_updates": v.boolean(),
@@ -2312,7 +2316,7 @@ export const UpdateClusterRequestSchema = v.pipe(
 );
 
 export const CredentialInputSchema = v.looseObject({
-  "kind": v.picklist(["slack_bot_token", "slack_app_token", "slack_signing_secret", "basic", "bearer", "none"]),
+  "kind": v.picklist(["slack_bot_token", "slack_app_token", "slack_signing_secret", "basic", "bearer", "webhook_signing_secret", "none"]),
   "values": v.exactOptional(v.pipe(
     v.record(v.string(), v.pipe(
       v.string(),
@@ -2434,7 +2438,7 @@ export const CreateChannelRequestSchema = v.strictObject({
     v.maxLength(120),
   ),
   "config": v.record(v.string(), v.unknown()),
-  "credential": v.exactOptional(CredentialInputSchema),
+  "connection_id": UuidSchema,
   "renderer": v.exactOptional(RendererIdSchema),
   "verbosity": v.exactOptional(VerbositySchema),
   "thread_updates": v.exactOptional(v.boolean(), true),
@@ -2450,7 +2454,7 @@ export const UpdateChannelRequestSchema = v.pipe(
       v.maxLength(120),
     )),
     "config": v.exactOptional(v.record(v.string(), v.unknown())),
-    "credential": v.exactOptional(CredentialInputSchema),
+    "connection_id": v.exactOptional(UuidSchema),
     "renderer": v.exactOptional(RendererIdSchema),
     "verbosity": v.exactOptional(VerbositySchema),
     "thread_updates": v.exactOptional(v.boolean()),
@@ -2459,6 +2463,62 @@ export const UpdateChannelRequestSchema = v.pipe(
   }),
   v.check((value) => Object.keys(value).length >= 1, "at least 1 property required"),
 );
+
+export const ChannelConnectionDTOSchema = v.looseObject({
+  "id": UuidSchema,
+  "type": ChannelTypeSchema,
+  "name": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(120),
+  ),
+  "config": v.record(v.string(), v.unknown()),
+  "credential_kind": v.exactOptional(v.nullable(v.picklist(["slack_bot_token", "slack_app_token", "slack_signing_secret", "basic", "bearer", "webhook_signing_secret", "none"]))),
+  "credential_rotated_at": v.exactOptional(v.nullable(TimestampSchema)),
+  "created_at": TimestampSchema,
+  "updated_at": TimestampSchema,
+});
+
+export const CreateChannelConnectionRequestSchema = v.strictObject({
+  "type": ChannelTypeSchema,
+  "name": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(120),
+  ),
+  "config": v.record(v.string(), v.unknown()),
+  "credential": v.exactOptional(CredentialInputSchema),
+});
+
+export const UpdateChannelConnectionRequestSchema = v.pipe(
+  v.strictObject({
+    "name": v.exactOptional(v.pipe(
+      v.string(),
+      v.minLength(1),
+      v.maxLength(120),
+    )),
+    "config": v.exactOptional(v.record(v.string(), v.unknown())),
+    "credential": v.exactOptional(CredentialInputSchema),
+  }),
+  v.check((value) => Object.keys(value).length >= 1, "at least 1 property required"),
+);
+
+export const ResolveConversationRequestSchema = v.strictObject({
+  "name": v.exactOptional(v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(80),
+  )),
+  "conversation_id": v.exactOptional(v.pipe(
+    v.string(),
+    v.regex(/^[CGD][A-Z0-9]{2,}$/),
+  )),
+});
+
+export const ResolveConversationDTOSchema = v.looseObject({
+  "conversation_id": v.string(),
+  "conversation_name": v.string(),
+});
 
 export const CreatePolicyRequestSchema = v.strictObject({
   "name": v.pipe(
@@ -2804,6 +2864,22 @@ export const ChannelResponseSchema = v.looseObject({
 
 export const ChannelTestResponseSchema = v.looseObject({
   "data": ChannelTestDTOSchema,
+  "meta": MetaSchema,
+});
+
+export const ChannelConnectionListResponseSchema = v.looseObject({
+  "data": v.array(ChannelConnectionDTOSchema),
+  "page": PageInfoSchema,
+  "meta": MetaSchema,
+});
+
+export const ChannelConnectionResponseSchema = v.looseObject({
+  "data": ChannelConnectionDTOSchema,
+  "meta": MetaSchema,
+});
+
+export const ResolveConversationResponseSchema = v.looseObject({
+  "data": ResolveConversationDTOSchema,
   "meta": MetaSchema,
 });
 

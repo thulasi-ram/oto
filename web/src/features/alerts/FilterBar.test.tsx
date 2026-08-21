@@ -14,6 +14,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { FilterBar } from "./FilterBar";
 import { DEFAULT_FILTERS, type AlertFilters } from "./filters";
+import { STATE_LABEL } from "~/components/StateChip";
 import { enumValues } from "~/test/contract";
 import { cluster } from "~/test/fixtures";
 import { expectNoUndefined, list, renderScreen, stubFetch, unpaged, until } from "~/test/harness";
@@ -118,6 +119,28 @@ describe("the enumerable filters", () => {
     const next = onChange.mock.calls[0]?.[0];
     expect(next?.state).toEqual([enumValues("State")[0]]);
     expect(next?.severity).toEqual(["critical"]);
+  });
+
+  /**
+   * ⛔ THE STATUS MENU OFFERS NO SAVED VIEWS, AND THAT IS THE ASSERTION.
+   *
+   * `All` and `Firing` sat above the checkboxes as a one-of-many list, and both
+   * were reachable by one press on the axis itself — `All` *was* `Any state`
+   * under a second name. Two controls for one fact, inside one 288 px panel, and
+   * free to disagree the moment a second state was ticked. What this refuses is
+   * either of them coming back: a heading standing over the only control in the
+   * menu, a second row spelling one of the axis's own values, or an
+   * `aria-current` row, which is the "where am I" marker the tab bar owns and no
+   * filter in this band is allowed to carry.
+   */
+  it("offers no saved views over the lifecycle axis, so the panel is one axis and one control", async () => {
+    stubReferenceData();
+    mount({ state: ["firing"] });
+    const panel = await openMenu("Status");
+
+    expect(within(panel).queryByRole("heading")).toBeNull();
+    expect(within(panel).getAllByRole("button", { name: STATE_LABEL.firing })).toHaveLength(1);
+    expect(panel.querySelector("[aria-current]")).toBeNull();
   });
 
   it("keeps a severity that arrived from a link even though it is not one of the common three", async () => {
@@ -377,8 +400,8 @@ describe("what the toolbar says without being opened", () => {
       groupBy: "namespace",
     });
 
-    // A view is three axes agreeing, so the trigger says the view's name rather
-    // than reciting the axes it is made of.
+    // One lifecycle state on: the trigger says which. There is no saved-view
+    // name standing in front of the axis any more — see `FilterBar.tsx`.
     expect(screen.getByRole("button", { name: /^Status\s+Firing/ })).toBeTruthy();
     // Two severities: the first, and how many more. Never a bare count.
     expect(screen.getByRole("button", { name: /^Severity\s+critical \+1/ })).toBeTruthy();

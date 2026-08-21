@@ -25,10 +25,22 @@ const capabilities = domain.CapRichLayout
 // CredNone is the credential kind for an unauthenticated receiver. A webhook that
 // needs auth uses `basic` or `bearer`; the secret is sealed in
 // channel_credentials and is never in the config (§L.5).
+//
+// CredSigningSecret is a different kind of credential from the other three: it
+// authenticates oto TO the receiver in the OTHER direction — every one of the
+// other kinds gets oto INTO the receiver, while this one lets the receiver
+// PROVE a payload came from oto. It signs the outbound JSON body with
+// HMAC-SHA256 and sets the result on `X-Oto-Signature` (see Channel.send in
+// channel.go). A connection may carry both a signing secret and a basic/bearer
+// credential — they answer different questions — but `channel_credentials` has
+// one row per kind, so a connection needing both seals two credentials and this
+// provider is only ever handed one Credential at a time; v1 does not need that
+// combination and does not implement it.
 const (
-	CredNone   = "none"
-	CredBasic  = "basic"
-	CredBearer = "bearer"
+	CredNone          = "none"
+	CredBasic         = "basic"
+	CredBearer        = "bearer"
+	CredSigningSecret = "webhook_signing_secret"
 )
 
 // Provider mints generic webhook Channels.
@@ -94,13 +106,15 @@ func NewProvider(o Options) *Provider {
 // does not offer the control. See GatedSchema.
 func (p *Provider) Descriptor() domain.Descriptor {
 	return domain.Descriptor{
-		Type:            domain.TypeWebhook,
-		DisplayName:     "Webhook",
-		ConfigSchema:    p.schema().Raw(),
-		CredentialKinds: []string{CredNone, CredBasic, CredBearer},
-		Capabilities:    capabilities,
-		Renderers:       []domain.RendererID{domain.RendererWebhookJSON},
-		RateLimitClass:  "none",
+		Type:                      domain.TypeWebhook,
+		DisplayName:               "Webhook",
+		ConfigSchema:              p.schema().Raw(),
+		CredentialKinds:           []string{CredNone, CredBasic, CredBearer},
+		ConnectionConfigSchema:    ConnectionSchema.Raw(),
+		ConnectionCredentialKinds: []string{CredNone, CredBasic, CredBearer, CredSigningSecret},
+		Capabilities:              capabilities,
+		Renderers:                 []domain.RendererID{domain.RendererWebhookJSON},
+		RateLimitClass:            "none",
 	}
 }
 
@@ -149,6 +163,12 @@ func (p *Provider) checkInsecureSkipVerify(requested bool) error {
 			Field: insecureSkipVerifyProperty, Code: "forbidden",
 			Message: "this is a deployment-level setting and cannot be changed per channel",
 		})
+}
+
+// ValidateConnectionConfig checks a stored connection config against
+// ConnectionSchema — currently empty, so any object with no properties passes.
+func (p *Provider) ValidateConnectionConfig(_ context.Context, raw json.RawMessage) error {
+	return ConnectionSchema.Validate(raw)
 }
 
 // schema is the config schema this deployment will actually honour.
@@ -202,6 +222,7 @@ func (p *Provider) Open(
 
 	return &Channel{
 		cfg:    parsed,
+		cred:   cred,
 		client: p.httpClient(parsed, cred),
 		guard:  p.guard,
 		clock:  p.clock,

@@ -137,6 +137,7 @@ export const qk = {
     sources: () => ["settings", "sources"] as const,
     channelTypes: () => ["settings", "channel-types"] as const,
     channels: () => ["settings", "channels"] as const,
+    channelConnections: () => ["settings", "channel-connections"] as const,
     policies: () => ["settings", "policies"] as const,
     /** The org's tuning, its origins and its bounds — one query, one screen. */
     org: () => ["settings", "org"] as const,

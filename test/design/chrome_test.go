@@ -43,6 +43,21 @@ const utilityPrefixes = `bg|text|border|ring|outline|fill|stroke|from|via|to|sha
 var chromeExceptions = map[string]string{
 	"components/StateChip.tsx": "IS the state badge — the component §M.7 names first. Its whole " +
 		"job is to be the one place a state hue is spent.",
+	// ⭐ THE GLYPH ALPHABET IS THE OTHER HALF OF `StateChip`'s ENTRY, NOT A SECOND
+	// SURFACE. §0.3's six marks live here, and `GLYPH_COLOUR` is the single map from
+	// a state to its Tier-B `*-solid` token — the same "one place" argument the chip
+	// makes, for the shape channel instead of the fill.
+	//
+	// ⛔ AND THE HUE IS OPT-IN AT EVERY CALL SITE, WHICH IS WHY THIS IS NOT A LEAK.
+	// `StateGlyph` takes `tone`, and every piece of CHROME that borrows a mark —
+	// the lifecycle rows in `/alerts`'s Status menu, `/cases`'s Ack menu — passes
+	// `tone="inherit"` and gets `currentColor`. The `*-solid` tokens are painted
+	// only for a caller that wants the state mark itself, on the surfaces §M.7
+	// names. A file that defines the alphabet cannot avoid naming its colours; what
+	// it can do is make spending them a decision the caller states, and it does.
+	"components/glyphs.tsx": "IS the §0.3 state-mark alphabet — the shape half of what " +
+		"StateChip.tsx is the fill half of. GLYPH_COLOUR is the one map from a state to its " +
+		"Tier-B token, and chrome callers take tone=\"inherit\" instead.",
 	"features/alerts/AlertTable.tsx": "row status: the firing row's own tint, at 40% so it reads " +
 		"as a row and not as a badge.",
 	"features/alerts/GroupedAlerts.tsx": "row status: the same tint on a group's member rows.",

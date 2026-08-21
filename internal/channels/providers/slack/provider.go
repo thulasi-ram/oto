@@ -96,13 +96,15 @@ func defaultAPI(token string, httpClient *http.Client) API {
 // Descriptor is static and is served verbatim by GET /api/v1/channel-types.
 func (p *Provider) Descriptor() domain.Descriptor {
 	return domain.Descriptor{
-		Type:            domain.TypeSlack,
-		DisplayName:     "Slack",
-		ConfigSchema:    Schema.Raw(),
-		CredentialKinds: []string{CredBotToken, CredAppToken, CredSigningSecret},
-		Capabilities:    capabilities,
-		Renderers:       []domain.RendererID{domain.RendererSlackDefault},
-		RateLimitClass:  "slack",
+		Type:                      domain.TypeSlack,
+		DisplayName:               "Slack",
+		ConfigSchema:              Schema.Raw(),
+		CredentialKinds:           []string{CredBotToken, CredAppToken, CredSigningSecret},
+		ConnectionConfigSchema:    ConnectionSchema.Raw(),
+		ConnectionCredentialKinds: []string{CredBotToken},
+		Capabilities:              capabilities,
+		Renderers:                 []domain.RendererID{domain.RendererSlackDefault},
+		RateLimitClass:            "slack",
 	}
 }
 
@@ -113,6 +115,13 @@ func (p *Provider) Descriptor() domain.Descriptor {
 // there are none beyond the schema, which is the point of having one.
 func (p *Provider) ValidateConfig(_ context.Context, raw json.RawMessage) error {
 	_, err := ParseConfig(raw)
+	return err
+}
+
+// ValidateConnectionConfig checks a stored connection config (the workspace's
+// team_id) against ConnectionSchema.
+func (p *Provider) ValidateConnectionConfig(_ context.Context, raw json.RawMessage) error {
+	_, err := ParseConnectionConfig(raw)
 	return err
 }
 

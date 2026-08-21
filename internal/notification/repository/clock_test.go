@@ -78,12 +78,16 @@ func newFixture(t *testing.T) fixture {
 	ac := h.Case(h.Alert(org, cluster))
 
 	channelID := id.New()
+	// The connection the destination answers to. `channels.connection_id` is NOT
+	// NULL since ADR 0047, so this is not extra seeding — it is the row without
+	// which the channel below cannot exist.
+	conn := h.WebhookConnection(org)
 	// `created_at`/`updated_at` are NAMED and take the harness clock: 00032 took
 	// this table's DEFAULT now() away.
-	h.Exec(`INSERT INTO channels (id, org_id, type, name, config, renderer,
+	h.Exec(`INSERT INTO channels (id, org_id, type, name, config, connection_id, renderer,
 	           created_at, updated_at)
-	        VALUES ($1, $2, 'webhook', $3, '{}'::jsonb, 'webhook.json', $4, $4)`,
-		channelID, org.ID, "dest-"+org.Slug, h.Now())
+	        VALUES ($1, $2, 'webhook', $3, '{}'::jsonb, $4, 'webhook.json', $5, $5)`,
+		channelID, org.ID, "dest-"+org.Slug, conn.ID, h.Now())
 
 	return fixture{h: h, scope: org.Scope, caseID: ac.ID, channel: channelID}
 }

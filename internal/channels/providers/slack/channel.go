@@ -16,20 +16,31 @@ import (
 // API is the slice of the Slack SDK oto uses.
 //
 // It is an interface for two reasons. It makes the Channel testable without a
-// workspace, and it makes the surface auditable: everything oto can do to Slack is
-// these THREE methods, and the manifest in deploy/slack requests exactly the one
-// scope they need between them (`chat:write`; `auth.test` needs none).
+// workspace, and it makes the surface auditable: everything oto can do to Slack
+// is these FIVE methods, and the manifest in deploy/slack requests exactly the
+// scopes they need between them.
 //
-// ⛔ NOTHING HERE READS SLACK. No conversations.history, no conversations.replies,
-// no conversations.info, no search. oto's database is the memory of Slack (C9,
-// ADR 0008), and every read method that appears here is a read scope somebody has
-// to justify to a workspace admin. `GetConversationInfoContext` was here, was
-// called only by a probe nothing invoked, and cost `channels:read` + `groups:read`
-// for it; it is gone and so are they.
+// ⛔ THIS USED TO BE THREE METHODS, AND THE COMMENT USED TO SAY "NOTHING HERE
+// READS SLACK". `GetConversationInfoContext` and `channels:read`/`groups:read`
+// were removed for having ZERO CALLERS — a `Probe` nothing invoked. They are
+// back, on purpose, with a real caller this time: `Provider.ResolveConversation`
+// (resolve.go), which lets the settings UI turn a typed channel NAME into its
+// ID and back, at CONFIGURATION time. This is still not "oto reads Slack to
+// reconstruct its own state" (C9, ADR 0008) — oto's database remains the memory
+// of what it has DELIVERED. It is metadata lookup for a human naming a
+// destination, and the ADR that reintroduces the scopes says so explicitly
+// rather than letting this comment silently disagree with the manifest again.
+//
+// `GetConversationsContext` (`conversations.list`) is how a NAME resolves to an
+// ID — Slack has no "look up a channel by name" method, so a name lookup walks
+// the list. `GetConversationInfoContext` (`conversations.info`) is how an ID
+// resolves to a name; it is the cheaper, single-item call.
 type API interface {
 	PostMessageContext(ctx context.Context, channelID string, options ...slack.MsgOption) (string, string, error)
 	UpdateMessageContext(ctx context.Context, channelID, timestamp string, options ...slack.MsgOption) (string, string, string, error)
 	AuthTestContext(ctx context.Context) (*slack.AuthTestResponse, error)
+	GetConversationsContext(ctx context.Context, params *slack.GetConversationsParameters) ([]slack.Channel, string, error)
+	GetConversationInfoContext(ctx context.Context, input *slack.GetConversationInfoInput) (*slack.Channel, error)
 }
 
 // Channel is one configured Slack destination.

@@ -277,16 +277,24 @@ describe("grouping by alert", () => {
 
     // One row per identity, and it is the LATEST firing that names it: `#9`,
     // not the `#8` that ended earlier the same morning.
+    //
+    // ⛔ THE NUMBER IS ITS OWN COLUMN, WHICH IS WHY THESE ARE BARE `#n`. The seq
+    // used to sit in the row's title line, so it read as one run of text with
+    // the elapsed time — `firing #8` — and that is what this test used to match
+    // on. `CaseRow` leads with it in a `w-9` monospace column now, ahead of the
+    // severity mark, because scanning a case list by firing number is faster
+    // than scanning it by alertname. Matching the old string here passed
+    // vacuously on the collapsed assertion and failed on the expanded one.
     await until(() => expect(screen.getByText("DiskFillingUp")).toBeTruthy());
     expect(screen.getByText("#9")).toBeTruthy();
-    expect(screen.queryByText("firing #8")).toBeNull();
+    expect(screen.queryByText("#8")).toBeNull();
 
     // The earlier one is behind a closed handle that counts it.
     const handle = screen.getByRole("button", { name: /1 earlier firing loaded/ });
     expect(handle).toHaveAttribute("aria-expanded", "false");
 
     fireEvent.click(handle);
-    await until(() => expect(screen.getByText("firing #8")).toBeTruthy());
+    await until(() => expect(screen.getByText("#8")).toBeTruthy());
   });
 
   it("leaves an alert with one loaded firing without a handle at all", async () => {

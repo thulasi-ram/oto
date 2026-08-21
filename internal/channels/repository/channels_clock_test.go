@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/require"
 
@@ -38,8 +39,9 @@ func TestChannelTimestampsComeFromTheApplicationClock(t *testing.T) {
 	h := harness.New(t)
 	org := h.Org()
 	repo := repository.NewChannelRepository(h.Pool, h.Clock)
+	conn := newWebhookConnection(t, h, org, "alerts receiver")
 
-	inst, err := repo.Create(h.Ctx, org.Scope, newWebhook("alerts"))
+	inst, err := repo.Create(h.Ctx, org.Scope, newWebhook("alerts", conn))
 	require.NoError(t, err)
 
 	// The row did not take the database's clock. If it had, `created_at` would be
@@ -80,7 +82,9 @@ func TestChannelHealthSurvivesAPodBehindTheOneThatCreatedIt(t *testing.T) {
 	org := h.Org()
 	repo := repository.NewChannelRepository(h.Pool, h.Clock)
 
-	inst, err := repo.Create(h.Ctx, org.Scope, newWebhook("lagging"))
+	conn := newWebhookConnection(t, h, org, "lagging receiver")
+
+	inst, err := repo.Create(h.Ctx, org.Scope, newWebhook("lagging", conn))
 	require.NoError(t, err)
 
 	// A second pod, two seconds behind the first, learns the destination is fine.
@@ -123,15 +127,40 @@ func TestChannelsTableHasNoClockOfItsOwn(t *testing.T) {
 	require.Equal(t, "created_at", pgErr.ColumnName)
 }
 
-func newWebhook(name string) domain.NewInstance {
+// newWebhook is one destination, and it needs a connection to belong to.
+//
+// ⛔ `channels.connection_id` IS NOT NULL (ADR 0047, migration 00075), so a
+// channel with no connection is not a lighter fixture — it is a row the schema
+// refuses, answered as `channel_connection_missing`. The id is a parameter
+// rather than created in here because these tests are about the CLOCK, and a
+// builder that quietly opened a second write would put a second `created_at` in
+// the middle of what they measure.
+func newWebhook(name string, connection uuid.UUID) domain.NewInstance {
 	return domain.NewInstance{
 		Type:           domain.TypeWebhook,
 		Name:           name,
 		Config:         json.RawMessage(`{}`),
+		ConnectionID:   connection,
 		Renderer:       "webhook.json",
 		Verbosity:      domain.VerbosityAll,
 		ThreadUpdates:  true,
 		ShowFieldEmoji: true,
 		Enabled:        true,
 	}
+}
+
+// newWebhookConnection creates the org-wide setup the destinations above hang
+// off, and returns its id. A webhook connection may carry no credential at all,
+// which keeps these tests clear of the credential sealer entirely.
+func newWebhookConnection(t *testing.T, h *harness.H, org harness.Org, name string) uuid.UUID {
+	t.Helper()
+
+	conns := repository.NewConnectionRepository(h.Pool, h.Clock)
+	conn, err := conns.Create(h.Ctx, org.Scope, domain.NewConnection{
+		Type:   domain.TypeWebhook,
+		Name:   name,
+		Config: json.RawMessage(`{}`),
+	})
+	require.NoError(t, err)
+	return conn.ID
 }

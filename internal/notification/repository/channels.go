@@ -79,16 +79,24 @@ func NewChannelRepository(q db.Querier) *ChannelRepository { return &ChannelRepo
 
 func (r *ChannelRepository) db(ctx context.Context) db.Querier { return db.FromContext(ctx, r.q) }
 
+// ⛔ `credential_id` NO LONGER LIVES ON `channels`. A channel now references a
+// connection (`c.connection_id`), and the connection carries the credential —
+// so every read here joins `channel_connections` to recover it. This module
+// never unseals it (see SealedCredential below); it only needs to know WHICH
+// row to hand to the credential port.
 const channelColumns = `
-  id, org_id, type, name, config, credential_id, capabilities, renderer,
-  verbosity, thread_updates, show_field_emoji, enabled, health_status,
-  health_error, deleted_at`
+  c.id, c.org_id, c.type, c.name, c.config, cx.credential_id, c.capabilities,
+  c.renderer, c.verbosity, c.thread_updates, c.show_field_emoji, c.enabled,
+  c.health_status, c.health_error, c.deleted_at`
+
+const channelFrom = `
+  FROM channels c
+  JOIN channel_connections cx ON cx.id = c.connection_id AND cx.org_id = c.org_id`
 
 const listChannelsByIDsSQL = `
-SELECT` + channelColumns + `
-  FROM channels
- WHERE org_id = $1 AND id = ANY($2::uuid[])
- ORDER BY name ASC`
+SELECT` + channelColumns + channelFrom + `
+ WHERE c.org_id = $1 AND c.id = ANY($2::uuid[])
+ ORDER BY c.name ASC`
 
 // ListByIDs resolves a policy's `channel_ids` fan-out.
 //
@@ -129,9 +137,8 @@ func (r *ChannelRepository) ListByIDs(
 }
 
 const getChannelSQL = `
-SELECT` + channelColumns + `
-  FROM channels
- WHERE org_id = $1 AND id = $2`
+SELECT` + channelColumns + channelFrom + `
+ WHERE c.org_id = $1 AND c.id = $2`
 
 // Get reads one channel.
 func (r *ChannelRepository) Get(

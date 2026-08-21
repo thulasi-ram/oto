@@ -76,6 +76,15 @@ func (f *chanRegistry) ValidateConfig(context.Context, domain.Type, json.RawMess
 	return f.configErr
 }
 
+// ValidateConnectionConfig shares configErr/configCalls with ValidateConfig:
+// no test in this file exercises both a channel and a connection create in the
+// same call, so one counter is enough to prove "validated on the server" either
+// way.
+func (f *chanRegistry) ValidateConnectionConfig(context.Context, domain.Type, json.RawMessage) error {
+	f.configCalls++
+	return f.configErr
+}
+
 func (f *chanRegistry) Types() []domain.Type {
 	out := make([]domain.Type, 0, len(f.descriptors))
 	for _, d := range f.descriptors {
@@ -128,14 +137,10 @@ func (f *chanStore) Create(
 ) (domain.Instance, error) {
 	f.created = append(f.created, in)
 	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
-	kind := ""
-	if in.CredentialID != nil {
-		kind = "slack_bot_token"
-	}
 	return domain.Instance{
 		ID: uuid.MustParse("019fe297-d84f-7599-b5b2-1f231749104a"), OrgID: s.OrgID(),
 		Type: in.Type, Name: in.Name, Config: in.Config,
-		CredentialID: in.CredentialID, CredentialKind: kind,
+		ConnectionID: in.ConnectionID,
 		Capabilities: in.Capabilities, Renderer: in.Renderer, Verbosity: in.Verbosity,
 		ThreadUpdates: in.ThreadUpdates, ShowFieldEmoji: in.ShowFieldEmoji, Enabled: in.Enabled,
 		Health: domain.InstanceHealthUnknown, CreatedAt: now, UpdatedAt: now,
@@ -174,6 +179,112 @@ func (f *chanStore) ReferencingPolicies(
 		return nil, err
 	}
 	return f.referencing, nil
+}
+
+// chanConnStore is a ConnectionStore keyed by id, with the same tenant
+// isolation chanStore proves for channels one hop over.
+type chanConnStore struct {
+	byID map[uuid.UUID]domain.Connection
+	// referencing is what ReferencingChannels answers for a live id.
+	referencing []string
+	created     []domain.NewConnection
+	patched     []domain.ConnectionPatch
+	deleted     []uuid.UUID
+	listPage    []domain.Connection
+}
+
+func (f *chanConnStore) Get(_ context.Context, s db.TenantScope, id uuid.UUID) (domain.Connection, error) {
+	conn, ok := f.byID[id]
+	if !ok || conn.OrgID != s.OrgID() {
+		return domain.Connection{}, errs.NotFound("connection_not_found", "no such connection")
+	}
+	return conn, nil
+}
+
+func (f *chanConnStore) List(
+	_ context.Context, s db.TenantScope, _ bool, _ db.Keyset,
+) ([]domain.Connection, db.Cursor, error) {
+	out := make([]domain.Connection, 0, len(f.listPage))
+	for _, c := range f.listPage {
+		if c.OrgID == s.OrgID() {
+			out = append(out, c)
+		}
+	}
+	return out, db.Cursor{}, nil
+}
+
+func (f *chanConnStore) Create(
+	_ context.Context, s db.TenantScope, in domain.NewConnection,
+) (domain.Connection, error) {
+	f.created = append(f.created, in)
+	now := chanNow
+	id := in.ID
+	if id == uuid.Nil {
+		id = uuid.MustParse("019fe297-d84f-7599-b5b2-1f2317493333")
+	}
+	return domain.Connection{
+		ID: id, OrgID: s.OrgID(), Type: in.Type, Name: in.Name, Config: in.Config,
+		CredentialID: in.CredentialID, CreatedAt: now, UpdatedAt: now,
+	}, nil
+}
+
+func (f *chanConnStore) Update(
+	ctx context.Context, s db.TenantScope, id uuid.UUID, p domain.ConnectionPatch,
+) (domain.Connection, error) {
+	conn, err := f.Get(ctx, s, id)
+	if err != nil {
+		return domain.Connection{}, err
+	}
+	f.patched = append(f.patched, p)
+	if p.Name != nil {
+		conn.Name = *p.Name
+	}
+	return conn, nil
+}
+
+func (f *chanConnStore) SoftDelete(ctx context.Context, s db.TenantScope, id uuid.UUID) error {
+	if _, err := f.Get(ctx, s, id); err != nil {
+		return err
+	}
+	f.deleted = append(f.deleted, id)
+	return nil
+}
+
+func (f *chanConnStore) ReferencingChannels(
+	ctx context.Context, s db.TenantScope, id uuid.UUID,
+) ([]string, error) {
+	if _, err := f.Get(ctx, s, id); err != nil {
+		return nil, err
+	}
+	return f.referencing, nil
+}
+
+// chanResolver is a ConversationResolver that answers from a table instead of
+// from Slack. It records the scope it was given, because the whole tenancy
+// question for this operation is whether the connection id was resolved under
+// the caller's org before a credential was ever opened.
+type chanResolver struct {
+	// answer is what a live connection resolves to, whichever half was asked.
+	answer domain.ConversationResult
+	err    error
+	// queries is every lookup that reached this far, in order.
+	queries []domain.ConversationQuery
+}
+
+func (f *chanResolver) ResolveConversation(
+	_ context.Context, s db.TenantScope, connectionID uuid.UUID, q domain.ConversationQuery,
+) (domain.ConversationResult, error) {
+	// The resolver holds the tenant boundary itself: it opens a connection's
+	// credential, so a request naming somebody else's connection must die here
+	// rather than reach Slack with the wrong workspace's token.
+	if connectionID != chanConnMine || s.OrgID() != apitest.OrgID {
+		return domain.ConversationResult{}, errs.NotFound("connection_not_found", "no such connection")
+	}
+	f.queries = append(f.queries, q)
+	if f.err != nil {
+		return domain.ConversationResult{}, f.err
+	}
+	return f.answer, nil
 }
 
 // chanCreds records the plaintext it was handed, so a test can prove the bytes
@@ -231,6 +342,14 @@ var chanNow = time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
 // chanMine is a destination owned by apitest.OrgID.
 var chanMine = uuid.MustParse("019fe297-d84f-7599-b5b2-1f2317490001")
 
+// chanConnMine is the slack connection chanMine references, owned by the same
+// tenant.
+var chanConnMine = uuid.MustParse("019fe297-d84f-7599-b5b2-1f2317494444")
+
+// chanConnStranger is a slack connection owned by apitest.OtherOrgID, for the
+// cross-tenant type-check test.
+var chanConnStranger = uuid.MustParse("019fe297-d84f-7599-b5b2-1f2317495555")
+
 // slackDescriptor is the provider descriptor `listChannelTypes` serves. Its
 // ConfigSchema is deliberately a real schema document: the contract types it as
 // an object and the settings form is generated from these exact bytes.
@@ -241,7 +360,11 @@ func slackDescriptor() domain.Descriptor {
 		ConfigSchema: json.RawMessage(`{"$schema":"https://json-schema.org/draft/2020-12/schema",` +
 			`"type":"object","required":["conversation_id"],` +
 			`"properties":{"conversation_id":{"type":"string","pattern":"^[CGD][A-Z0-9]{8,}$"}}}`),
-		CredentialKinds: []string{"slack_bot_token"},
+		CredentialKinds: []string{},
+		ConnectionConfigSchema: json.RawMessage(`{"$schema":"https://json-schema.org/draft/2020-12/schema",` +
+			`"type":"object","required":["team_id"],` +
+			`"properties":{"team_id":{"type":"string","pattern":"^T[A-Z0-9]{2,}$"}}}`),
+		ConnectionCredentialKinds: []string{"slack_bot_token"},
 		Capabilities: domain.CapThreading | domain.CapAmend | domain.CapRichLayout |
 			domain.CapInteractive,
 		Renderers:      []domain.RendererID{domain.RendererSlackDefault},
@@ -251,40 +374,57 @@ func slackDescriptor() domain.Descriptor {
 
 func webhookDescriptor() domain.Descriptor {
 	return domain.Descriptor{
-		Type:            domain.TypeWebhook,
-		DisplayName:     "Webhook",
-		ConfigSchema:    json.RawMessage(`{"type":"object","required":["url"],"properties":{"url":{"type":"string"}}}`),
-		CredentialKinds: []string{"bearer", "basic", "none"},
-		Capabilities:    domain.CapDedupeKey,
-		Renderers:       []domain.RendererID{domain.RendererWebhookJSON},
-		RateLimitClass:  "none",
+		Type:                      domain.TypeWebhook,
+		DisplayName:               "Webhook",
+		ConfigSchema:              json.RawMessage(`{"type":"object","required":["url"],"properties":{"url":{"type":"string"}}}`),
+		CredentialKinds:           []string{},
+		ConnectionConfigSchema:    json.RawMessage(`{"type":"object","properties":{}}`),
+		ConnectionCredentialKinds: []string{"bearer", "basic", "webhook_signing_secret", "none"},
+		Capabilities:              domain.CapDedupeKey,
+		Renderers:                 []domain.RendererID{domain.RendererWebhookJSON},
+		RateLimitClass:            "none",
 	}
 }
 
 // channelFixture is one stored destination, healthy and fully populated, so that
-// a schema failure is about the mapping rather than about an absent field.
+// a schema failure is about the mapping rather than about an absent field. It
+// references chanConnMine — the credential lives there now, not here.
 func channelFixture(id, org uuid.UUID) domain.Instance {
+	checked := chanNow.Add(-time.Minute)
+	return domain.Instance{
+		ID:              id,
+		OrgID:           org,
+		Type:            domain.TypeSlack,
+		Name:            "#sre-alerts",
+		Config:          json.RawMessage(`{"conversation_id":"C7F2X9QLM"}`),
+		ConnectionID:    chanConnMine,
+		Capabilities:    domain.CapThreading | domain.CapAmend,
+		Renderer:        domain.RendererSlackDefault,
+		Verbosity:       domain.VerbosityStatusChanges,
+		ThreadUpdates:   true,
+		ShowFieldEmoji:  true,
+		Enabled:         true,
+		Health:          domain.InstanceHealthy,
+		HealthCheckedAt: &checked,
+		CreatedAt:       chanNow.Add(-30 * 24 * time.Hour),
+		UpdatedAt:       chanNow.Add(-time.Hour),
+	}
+}
+
+// connectionFixture is one stored connection, fully populated, owned by org.
+func connectionFixture(id, org uuid.UUID) domain.Connection {
 	kind := "slack_bot_token"
 	rotated := chanNow.Add(-72 * time.Hour)
-	checked := chanNow.Add(-time.Minute)
 	credential := uuid.MustParse("019fe297-d84f-7599-b5b2-1f2317492222")
-	return domain.Instance{
+	return domain.Connection{
 		ID:                  id,
 		OrgID:               org,
 		Type:                domain.TypeSlack,
-		Name:                "#sre-alerts",
-		Config:              json.RawMessage(`{"conversation_id":"C7F2X9QLM","team_id":"T9TK3CUKW"}`),
+		Name:                "Acme Slack workspace",
+		Config:              json.RawMessage(`{"team_id":"T9TK3CUKW"}`),
 		CredentialID:        &credential,
 		CredentialKind:      kind,
 		CredentialRotatedAt: &rotated,
-		Capabilities:        domain.CapThreading | domain.CapAmend,
-		Renderer:            domain.RendererSlackDefault,
-		Verbosity:           domain.VerbosityStatusChanges,
-		ThreadUpdates:       true,
-		ShowFieldEmoji:      true,
-		Enabled:             true,
-		Health:              domain.InstanceHealthy,
-		HealthCheckedAt:     &checked,
 		CreatedAt:           chanNow.Add(-30 * 24 * time.Hour),
 		UpdatedAt:           chanNow.Add(-time.Hour),
 	}
@@ -292,16 +432,19 @@ func channelFixture(id, org uuid.UUID) domain.Instance {
 
 // chanWorld is one wired router plus the fakes behind it.
 type chanWorld struct {
-	registry *chanRegistry
-	store    *chanStore
-	creds    *chanCreds
-	tester   *chanTester
-	writer   *service.Writer
-	client   *apitest.Client
+	registry    *chanRegistry
+	store       *chanStore
+	connections *chanConnStore
+	creds       *chanCreds
+	resolver    *chanResolver
+	tester      *chanTester
+	writer      *service.Writer
+	client      *apitest.Client
 }
 
 // newChanWorld wires the Channels router with two providers, one destination
-// owned by apitest.OrgID and one owned by apitest.OtherOrgID.
+// owned by apitest.OrgID and one owned by apitest.OtherOrgID, each referencing
+// a connection owned by the same tenant as its channel.
 //
 // The stranger row EXISTS in the store. That matters: a probe against an id that
 // is simply absent proves nothing about tenancy, because "no such row" and "not
@@ -311,6 +454,10 @@ func newChanWorld(t *testing.T) *chanWorld {
 
 	mine := channelFixture(chanMine, apitest.OrgID)
 	stranger := channelFixture(apitest.StrangerID, apitest.OtherOrgID)
+	stranger.ConnectionID = chanConnStranger
+
+	connMine := connectionFixture(chanConnMine, apitest.OrgID)
+	connStranger := connectionFixture(chanConnStranger, apitest.OtherOrgID)
 
 	store := &chanStore{
 		byID: map[uuid.UUID]domain.Instance{
@@ -319,10 +466,21 @@ func newChanWorld(t *testing.T) *chanWorld {
 		},
 		listPage: []domain.Instance{mine, stranger},
 	}
+	connStore := &chanConnStore{
+		byID: map[uuid.UUID]domain.Connection{
+			chanConnMine:     connMine,
+			chanConnStranger: connStranger,
+		},
+		listPage: []domain.Connection{connMine, connStranger},
+	}
 	w := &chanWorld{
-		registry: &chanRegistry{descriptors: []domain.Descriptor{slackDescriptor(), webhookDescriptor()}},
-		store:    store,
-		creds:    &chanCreds{},
+		registry:    &chanRegistry{descriptors: []domain.Descriptor{slackDescriptor(), webhookDescriptor()}},
+		store:       store,
+		connections: connStore,
+		creds:       &chanCreds{},
+		resolver: &chanResolver{
+			answer: domain.ConversationResult{ID: "C7F2X9QLM", Name: "sre-alerts"},
+		},
 		tester: &chanTester{
 			store:  store,
 			result: domain.TestResult{OK: true, ProviderConversationID: "C7F2X9QLM", ProviderMessageID: "1723023262.114300", CheckedAt: chanNow},
@@ -341,11 +499,13 @@ func newChanWorld(t *testing.T) *chanWorld {
 	w.writer = writer
 
 	rt := NewRouter(Options{
-		Registry: w.registry,
-		Channels: w.store,
-		Creds:    w.creds,
-		Writes:   w.writer,
-		Clock:    clock.NewFake(chanNow),
+		Registry:    w.registry,
+		Channels:    w.store,
+		Connections: w.connections,
+		Creds:       w.creds,
+		Resolver:    w.resolver,
+		Writes:      w.writer,
+		Clock:       clock.NewFake(chanNow),
 	})
 	w.client = apitest.New(rt)
 	return w
@@ -400,7 +560,35 @@ func TestListChannelsAnswersAPageOfThisTenantsDestinations(t *testing.T) {
 	}
 }
 
-// ⭐ TestCreatingAChannelSealsTheSecretAndNeverEchoesIt.
+// TestListConnectionsAnswersAPageOfThisTenantsSetups.
+//
+// The admin half of ADR 0047's split: Settings lists CONNECTIONS, and one
+// connection stands for a whole workspace rather than for a destination. The
+// stranger's connection exists in the same store, so a handler that forgot its
+// scope would serve two.
+func TestListConnectionsAnswersAPageOfThisTenantsSetups(t *testing.T) {
+	t.Parallel()
+
+	w := newChanWorld(t)
+	resp := w.client.GET("/channel-connections").MustStatus(t, http.StatusOK)
+	schema.Assert(t, "listChannelConnections", http.StatusOK, resp.Body())
+
+	data, _ := resp.JSON(t)["data"].([]any)
+	if len(data) != 1 {
+		t.Fatalf("the page carries %d connections, want 1 — the other belongs to %s",
+			len(data), apitest.OtherOrgID)
+	}
+	// A list is the widest surface a secret could escape through: one row per
+	// workspace, and every one of them owns a sealed bot token.
+	first, _ := data[0].(map[string]any)
+	for _, forbidden := range []string{"credential", "values", "token", "credential_id"} {
+		if _, present := first[forbidden]; present {
+			t.Fatalf("⛔ the connection list carries %q: %#v", forbidden, first[forbidden])
+		}
+	}
+}
+
+// ⭐ TestCreatingAConnectionSealsTheSecretAndNeverEchoesIt.
 //
 // This is the one assertion in the file whose failure is a security incident
 // rather than a bug. `credential.values` is write-only: it travels from the
@@ -408,7 +596,10 @@ func TestListChannelsAnswersAPageOfThisTenantsDestinations(t *testing.T) {
 // this API has a way to read it back. The response is checked for the literal
 // token bytes because a leak would not announce itself as a named field — it
 // would arrive inside some helpfully echoed request object.
-func TestCreatingAChannelSealsTheSecretAndNeverEchoesIt(t *testing.T) {
+//
+// This used to be about creating a CHANNEL. It is a connection's credential now
+// — a channel no longer carries one at all — so the assertion moved with it.
+func TestCreatingAConnectionSealsTheSecretAndNeverEchoesIt(t *testing.T) {
 	t.Parallel()
 
 	w := newChanWorld(t)
@@ -416,13 +607,12 @@ func TestCreatingAChannelSealsTheSecretAndNeverEchoesIt(t *testing.T) {
 
 	body := map[string]any{
 		"type":   "slack",
-		"name":   "#sre-alerts",
-		"config": map[string]any{"conversation_id": "C7F2X9QLM"},
+		"name":   "Acme Slack workspace 2",
+		"config": map[string]any{"team_id": "T9TK3CUKW"},
 		"credential": map[string]any{
 			"kind":   "slack_bot_token",
 			"values": map[string]string{"token": botToken},
 		},
-		"renderer": "slack.default",
 	}
 	// The fixture is proved to be one a real client could have sent, so this test
 	// cannot pass with a request the contract forbids.
@@ -430,10 +620,10 @@ func TestCreatingAChannelSealsTheSecretAndNeverEchoesIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal fixture: %v", err)
 	}
-	schema.AssertRequest(t, "createChannel", raw)
+	schema.AssertRequest(t, "createChannelConnection", raw)
 
-	resp := w.client.POST(t, "/channels", body).MustStatus(t, http.StatusCreated)
-	schema.Assert(t, "createChannel", http.StatusCreated, resp.Body())
+	resp := w.client.POST(t, "/channel-connections", body).MustStatus(t, http.StatusCreated)
+	schema.Assert(t, "createChannelConnection", http.StatusCreated, resp.Body())
 
 	if strings.Contains(string(resp.Body()), botToken) {
 		t.Fatalf("⛔ the bot token came back in the response body:\n%s", resp.Body())
@@ -446,21 +636,56 @@ func TestCreatingAChannelSealsTheSecretAndNeverEchoesIt(t *testing.T) {
 	}
 	// ⛔ The config was validated ON THE SERVER. A client is not a trust boundary.
 	if w.registry.configCalls != 1 {
-		t.Fatalf("ValidateConfig ran %d times; the provider schema must be applied on every write",
+		t.Fatalf("ValidateConnectionConfig ran %d times; the provider schema must be applied on every write",
 			w.registry.configCalls)
 	}
 }
 
-// TestGetChannelServesOneDestinationAndOnlyTheSafeHalfOfItsSecret.
+// TestCreatingAChannelCarriesNoCredentialAndReferencesAConnection.
 //
-// `credential_kind` and `credential_rotated_at` are the ONLY things this API ever
-// says about a secret: which kind is attached, and when it last moved.
-func TestGetChannelServesOneDestinationAndOnlyTheSafeHalfOfItsSecret(t *testing.T) {
+// A channel no longer has anywhere to put a secret — `connection_id` is the
+// whole of what it says about where its credential lives.
+func TestCreatingAChannelCarriesNoCredentialAndReferencesAConnection(t *testing.T) {
 	t.Parallel()
 
 	w := newChanWorld(t)
-	resp := w.client.GET("/channels/"+chanMine.String()).MustStatus(t, http.StatusOK)
-	schema.Assert(t, "getChannel", http.StatusOK, resp.Body())
+	body := map[string]any{
+		"type":          "slack",
+		"name":          "#sre-alerts-2",
+		"config":        map[string]any{"conversation_id": "C7F2X9QLM"},
+		"connection_id": chanConnMine.String(),
+		"renderer":      "slack.default",
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+	schema.AssertRequest(t, "createChannel", raw)
+
+	resp := w.client.POST(t, "/channels", body).MustStatus(t, http.StatusCreated)
+	schema.Assert(t, "createChannel", http.StatusCreated, resp.Body())
+
+	data, _ := resp.JSON(t)["data"].(map[string]any)
+	if got := data["connection_id"]; got != chanConnMine.String() {
+		t.Fatalf("connection_id = %v, want %s", got, chanConnMine)
+	}
+	for _, forbidden := range []string{"credential", "credential_kind", "credential_rotated_at"} {
+		if _, present := data[forbidden]; present {
+			t.Fatalf("⛔ the channel response carries %q: %#v", forbidden, data[forbidden])
+		}
+	}
+}
+
+// TestGetConnectionServesOneSetupAndOnlyTheSafeHalfOfItsSecret.
+//
+// `credential_kind` and `credential_rotated_at` are the ONLY things this API ever
+// says about a secret: which kind is attached, and when it last moved.
+func TestGetConnectionServesOneSetupAndOnlyTheSafeHalfOfItsSecret(t *testing.T) {
+	t.Parallel()
+
+	w := newChanWorld(t)
+	resp := w.client.GET("/channel-connections/"+chanConnMine.String()).MustStatus(t, http.StatusOK)
+	schema.Assert(t, "getChannelConnection", http.StatusOK, resp.Body())
 
 	data, _ := resp.JSON(t)["data"].(map[string]any)
 	if got := data["credential_kind"]; got != "slack_bot_token" {
@@ -468,34 +693,56 @@ func TestGetChannelServesOneDestinationAndOnlyTheSafeHalfOfItsSecret(t *testing.
 	}
 	for _, forbidden := range []string{"credential", "values", "token", "credential_id"} {
 		if _, present := data[forbidden]; present {
+			t.Fatalf("⛔ the connection response carries %q: %#v", forbidden, data[forbidden])
+		}
+	}
+}
+
+// TestGetChannelCarriesConnectionIdAndNoCredentialFields.
+//
+// A channel's response points at its connection and says nothing about a
+// secret directly — there is no field left on this DTO that could.
+func TestGetChannelCarriesConnectionIdAndNoCredentialFields(t *testing.T) {
+	t.Parallel()
+
+	w := newChanWorld(t)
+	resp := w.client.GET("/channels/"+chanMine.String()).MustStatus(t, http.StatusOK)
+	schema.Assert(t, "getChannel", http.StatusOK, resp.Body())
+
+	data, _ := resp.JSON(t)["data"].(map[string]any)
+	if got := data["connection_id"]; got != chanConnMine.String() {
+		t.Fatalf("connection_id = %v, want %s", got, chanConnMine)
+	}
+	for _, forbidden := range []string{"credential", "credential_kind", "credential_rotated_at"} {
+		if _, present := data[forbidden]; present {
 			t.Fatalf("⛔ the channel response carries %q: %#v", forbidden, data[forbidden])
 		}
 	}
 }
 
-// TestUpdatingAChannelRotatesTheSecretInPlace.
+// TestUpdatingAConnectionRotatesTheSecretInPlace.
 //
-// A supplied credential ROTATES rather than detaching and re-attaching, so the
-// channel never spends a moment pointing at nothing — and the new plaintext is
-// no more echoed than the old one was.
-func TestUpdatingAChannelRotatesTheSecretInPlace(t *testing.T) {
+// A supplied credential ROTATES rather than detaching and re-attaching, so
+// every channel referencing the connection never spends a moment pointing at
+// nothing — and the new plaintext is no more echoed than the old one was.
+func TestUpdatingAConnectionRotatesTheSecretInPlace(t *testing.T) {
 	t.Parallel()
 
 	w := newChanWorld(t)
 	const rotatedToken = "xoxb-2222222222-3333333333-alsonotreal" //nolint:gosec // a fixture, not a credential
 
 	body := map[string]any{
-		"name":       "#sre-alerts-v2",
+		"name":       "Acme Slack workspace v2",
 		"credential": map[string]any{"kind": "slack_bot_token", "values": map[string]string{"token": rotatedToken}},
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {
 		t.Fatalf("marshal fixture: %v", err)
 	}
-	schema.AssertRequest(t, "updateChannel", raw)
+	schema.AssertRequest(t, "updateChannelConnection", raw)
 
-	resp := w.client.PATCH(t, "/channels/"+chanMine.String(), body).MustStatus(t, http.StatusOK)
-	schema.Assert(t, "updateChannel", http.StatusOK, resp.Body())
+	resp := w.client.PATCH(t, "/channel-connections/"+chanConnMine.String(), body).MustStatus(t, http.StatusOK)
+	schema.Assert(t, "updateChannelConnection", http.StatusOK, resp.Body())
 
 	if len(w.creds.rotated) != 1 {
 		t.Fatalf("RotateCredential ran %d times, want exactly 1 — a detach-then-attach leaves a gap",
@@ -525,6 +772,97 @@ func TestDeletingAChannelIsA204WithNothingInIt(t *testing.T) {
 	}
 	if len(w.store.deleted) != 1 {
 		t.Fatalf("SoftDelete ran %d times, want 1", len(w.store.deleted))
+	}
+}
+
+// TestDeletingAConnectionIsA204WithNothingInIt.
+//
+// The same RFC 9110 §15.3.5 shape `deleteChannel` holds one hop over. A
+// connection nothing references is the only one that gets here — the 409 for one
+// that is still referenced has its own test below.
+func TestDeletingAConnectionIsA204WithNothingInIt(t *testing.T) {
+	t.Parallel()
+
+	w := newChanWorld(t)
+	resp := w.client.DELETE("/channel-connections/"+chanConnMine.String()).
+		MustStatus(t, http.StatusNoContent)
+	schema.AssertNoBody(t, "deleteChannelConnection", http.StatusNoContent, resp.Body())
+
+	if resp.Header("Content-Type") != "" {
+		t.Fatalf("the 204 advertises Content-Type %q for a body that cannot exist", resp.Header("Content-Type"))
+	}
+	if len(w.connections.deleted) != 1 {
+		t.Fatalf("SoftDelete ran %d times, want 1", len(w.connections.deleted))
+	}
+}
+
+// ⭐ TestResolvingAConversationFillsInTheHalfTheOperatorDidNotType.
+//
+// This is the operation ADR 0047 reopened `channels:read`/`groups:read` for, and
+// the reason it is allowed to exist is entirely about WHEN it runs: a human is
+// typing into a settings form, once, naming a destination. It is not on the
+// delivery path, so C9 — "oto never reads Slack to reconstruct its own state" —
+// is untouched.
+//
+// Both directions go through one endpoint because the operator only ever knows
+// one half: type `#sre-alerts` and get the id, or paste the id out of Slack's
+// own "Copy link" menu and get the name back to check it against what you meant.
+func TestResolvingAConversationFillsInTheHalfTheOperatorDidNotType(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		body map[string]any
+		want domain.ConversationQuery
+	}{
+		{"a name resolves to an id", map[string]any{"name": "sre-alerts"},
+			domain.ConversationQuery{Name: "sre-alerts"}},
+		{"an id resolves to a name", map[string]any{"conversation_id": "C7F2X9QLM"},
+			domain.ConversationQuery{ID: "C7F2X9QLM"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			w := newChanWorld(t)
+			raw, err := json.Marshal(tc.body)
+			require.NoError(t, err)
+			schema.AssertRequest(t, "resolveSlackConversation", raw)
+
+			resp := w.client.POST(t, "/channel-connections/"+chanConnMine.String()+"/slack/resolve", tc.body).
+				MustStatus(t, http.StatusOK)
+			schema.Assert(t, "resolveSlackConversation", http.StatusOK, resp.Body())
+
+			data, _ := resp.JSON(t)["data"].(map[string]any)
+			if data["conversation_id"] != "C7F2X9QLM" || data["conversation_name"] != "sre-alerts" {
+				t.Fatalf("the answer is missing a half: %#v", data)
+			}
+			// The half the operator typed is the half that goes to Slack. Sending
+			// both would let a mismatched pair resolve to whichever one Slack
+			// happened to look at first.
+			if len(w.resolver.queries) != 1 || w.resolver.queries[0] != tc.want {
+				t.Fatalf("the resolver was asked %#v, want exactly one %#v", w.resolver.queries, tc.want)
+			}
+		})
+	}
+}
+
+// ⛔ TestResolvingWithNeitherHalfNamesTheFieldThatIsEmpty.
+//
+// An empty body is the one request this endpoint cannot answer — there is no
+// half to fill the other in from — and it is a 422 naming a control rather than
+// a round trip to Slack that asks for nothing.
+func TestResolvingWithNeitherHalfNamesTheFieldThatIsEmpty(t *testing.T) {
+	t.Parallel()
+
+	w := newChanWorld(t)
+	resp := w.client.POST(t, "/channel-connections/"+chanConnMine.String()+"/slack/resolve",
+		map[string]any{}).MustStatus(t, http.StatusUnprocessableEntity)
+
+	schema.AssertProblem(t, "resolveSlackConversation", http.StatusUnprocessableEntity, resp.Body())
+	resp.MustViolate(t, "name")
+
+	if len(w.resolver.queries) != 0 {
+		t.Fatal("⛔ an empty query still reached the resolver, and so would have reached Slack")
 	}
 }
 
@@ -575,11 +913,29 @@ func TestAnotherTenantsChannelIdIsAlwaysA404(t *testing.T) {
 	t.Parallel()
 
 	stranger := apitest.StrangerID.String()
+	// ⭐ THE CONNECTION ROUTES ARE IN THE SAME TABLE, NOT A SECOND TEST. ADR 0047
+	// gave the module a second addressable resource, and a connection is the one
+	// that HOLDS THE CREDENTIAL — the id in the path decides which workspace's bot
+	// token gets opened. A cross-tenant miss here is worse than a leaked channel
+	// name: it is oto posting into somebody else's Slack. `chanConnStranger` is a
+	// real row owned by `apitest.OtherOrgID`, so a handler that forgot its scope
+	// would find it.
+	conn := chanConnStranger.String()
 	routes := []apitest.Route{
 		{Op: "getChannel", Method: http.MethodGet, Path: "/channels/" + stranger},
 		{Op: "updateChannel", Method: http.MethodPatch, Path: "/channels/" + stranger, Body: `{"name":"mine now"}`},
 		{Op: "deleteChannel", Method: http.MethodDelete, Path: "/channels/" + stranger},
 		{Op: "testChannel", Method: http.MethodPost, Path: "/channels/" + stranger + "/test"},
+		{Op: "getChannelConnection", Method: http.MethodGet, Path: "/channel-connections/" + conn},
+		{
+			Op: "updateChannelConnection", Method: http.MethodPatch,
+			Path: "/channel-connections/" + conn, Body: `{"name":"mine now"}`,
+		},
+		{Op: "deleteChannelConnection", Method: http.MethodDelete, Path: "/channel-connections/" + conn},
+		{
+			Op: "resolveSlackConversation", Method: http.MethodPost,
+			Path: "/channel-connections/" + conn + "/slack/resolve", Body: `{"name":"sre-alerts"}`,
+		},
 	}
 
 	apitest.AssertCrossTenant404(t, func(t *testing.T) (*apitest.Client, apitest.RouteCheck) {
@@ -588,8 +944,17 @@ func TestAnotherTenantsChannelIdIsAlwaysA404(t *testing.T) {
 			if strings.Contains(string(resp.Body()), "#sre-alerts") {
 				t.Fatalf("⛔ the refusal leaked the other tenant's channel name:\n%s", resp.Body())
 			}
+			if strings.Contains(string(resp.Body()), "Acme Slack workspace") {
+				t.Fatalf("⛔ the refusal leaked the other tenant's connection name:\n%s", resp.Body())
+			}
 			if len(w.store.deleted) != 0 || len(w.store.patched) != 0 {
 				t.Fatal("⛔ a cross-tenant request still reached a write")
+			}
+			if len(w.connections.deleted) != 0 || len(w.connections.patched) != 0 {
+				t.Fatal("⛔ a cross-tenant request still reached a connection write")
+			}
+			if len(w.resolver.queries) != 0 {
+				t.Fatal("⛔ a cross-tenant resolve reached the resolver, and so would have opened a token")
 			}
 		}
 	}, routes)
@@ -621,26 +986,28 @@ func TestDeletingAChannelAPolicyStillRoutesToIsA409(t *testing.T) {
 	}
 }
 
-// TestASlackChannelWithoutABotTokenNamesTheControlThatIsEmpty.
+// TestASlackConnectionWithoutABotTokenNamesTheControlThatIsEmpty.
 //
-// `channels_cred_ck` would catch this in the database, but as a 23514 — a 500
-// that tells the operator nothing. Saying it here turns it into a field violation
-// pointing at the control they left blank.
-func TestASlackChannelWithoutABotTokenNamesTheControlThatIsEmpty(t *testing.T) {
+// `channel_connections_cred_ck` would catch this in the database, but as a
+// 23514 — a 500 that tells the operator nothing. Saying it here turns it into
+// a field violation pointing at the control they left blank. It used to be a
+// channel that could be created without a credential; only a connection can be
+// now.
+func TestASlackConnectionWithoutABotTokenNamesTheControlThatIsEmpty(t *testing.T) {
 	t.Parallel()
 
 	w := newChanWorld(t)
-	resp := w.client.POST(t, "/channels", map[string]any{
+	resp := w.client.POST(t, "/channel-connections", map[string]any{
 		"type":   "slack",
-		"name":   "#sre-alerts",
-		"config": map[string]any{"conversation_id": "C7F2X9QLM"},
+		"name":   "Acme Slack workspace 2",
+		"config": map[string]any{"team_id": "T9TK3CUKW"},
 	}).MustStatus(t, http.StatusUnprocessableEntity)
 
-	schema.AssertProblem(t, "createChannel", http.StatusUnprocessableEntity, resp.Body())
+	schema.AssertProblem(t, "createChannelConnection", http.StatusUnprocessableEntity, resp.Body())
 	resp.MustViolate(t, "credential")
 
-	if len(w.store.created) != 0 {
-		t.Fatal("a refused create still wrote a channel row")
+	if len(w.connections.created) != 0 {
+		t.Fatal("a refused create still wrote a connection row")
 	}
 }
 
@@ -655,11 +1022,11 @@ func TestARendererBelongingToTheOtherProviderIsRefused(t *testing.T) {
 
 	w := newChanWorld(t)
 	resp := w.client.POST(t, "/channels", map[string]any{
-		"type":       "slack",
-		"name":       "#sre-alerts",
-		"config":     map[string]any{"conversation_id": "C7F2X9QLM"},
-		"credential": map[string]any{"kind": "slack_bot_token", "values": map[string]string{"token": "x"}},
-		"renderer":   "webhook.json",
+		"type":          "slack",
+		"name":          "#sre-alerts",
+		"config":        map[string]any{"conversation_id": "C7F2X9QLM"},
+		"connection_id": chanConnMine.String(),
+		"renderer":      "webhook.json",
 	}).MustStatus(t, http.StatusUnprocessableEntity)
 
 	schema.AssertProblem(t, "createChannel", http.StatusUnprocessableEntity, resp.Body())
@@ -680,10 +1047,10 @@ func TestAConfigTheProviderSchemaRejectsIsReRootedUnderConfig(t *testing.T) {
 			Message: "a Slack conversation id, not a channel name"})
 
 	resp := w.client.POST(t, "/channels", map[string]any{
-		"type":       "slack",
-		"name":       "#sre-alerts",
-		"config":     map[string]any{"conversation_id": "#sre-alerts"},
-		"credential": map[string]any{"kind": "slack_bot_token", "values": map[string]string{"token": "x"}},
+		"type":          "slack",
+		"name":          "#sre-alerts",
+		"config":        map[string]any{"conversation_id": "#sre-alerts"},
+		"connection_id": chanConnMine.String(),
 	}).MustStatus(t, http.StatusUnprocessableEntity)
 
 	schema.AssertProblem(t, "createChannel", http.StatusUnprocessableEntity, resp.Body())

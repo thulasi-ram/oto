@@ -31,9 +31,11 @@ import type {
   ApiToken,
   ApiTokenCreated,
   Channel,
+  ChannelConnection,
   ChannelTest,
   ChannelTypeDescriptor,
   Cluster,
+  CreateChannelConnectionRequest,
   CreateChannelRequest,
   CreateClusterRequest,
   CreatePolicyRequest,
@@ -62,6 +64,8 @@ import type {
   PolicyPreviewRequest,
   Rejection,
   RejectionListQuery,
+  ResolvedConversation,
+  ResolveConversationRequest,
   RuleHistory,
   RuleSnapshot,
   RuleSnapshotQuery,
@@ -74,6 +78,7 @@ import type {
   SourceTest,
   StatsOverview,
   TimelineQuery,
+  UpdateChannelConnectionRequest,
   UpdateChannelRequest,
   UpdateOrgSettingsRequest,
   UpdatePolicyRequest,
@@ -662,6 +667,46 @@ export function deleteChannel(id: Uuid): Promise<void> {
 /** Send one synthetic card through the real renderer and the real validator. */
 export function testChannel(id: Uuid): Promise<ChannelTest> {
   return postItem<ChannelTest>(`${V1}/channels/${id}/test`, {});
+}
+
+/**
+ * Every connection — the org-wide setup a Settings admin owns. A channel
+ * created from the notification policy screen picks one of these; it never
+ * carries a credential of its own.
+ */
+export function listChannelConnections(c: Ctx = {}): Promise<ListEnvelope<ChannelConnection>> {
+  return getList<ChannelConnection>(`${V1}/channel-connections`, ctx(c));
+}
+
+export function createChannelConnection(
+  body: CreateChannelConnectionRequest,
+  key: string,
+): Promise<ChannelConnection> {
+  return postItem<ChannelConnection>(`${V1}/channel-connections`, body, { idempotencyKey: key });
+}
+
+export function updateChannelConnection(
+  id: Uuid,
+  body: UpdateChannelConnectionRequest,
+): Promise<ChannelConnection> {
+  return patchItem<ChannelConnection>(`${V1}/channel-connections/${id}`, body);
+}
+
+export function deleteChannelConnection(id: Uuid): Promise<void> {
+  return del(`${V1}/channel-connections/${id}`);
+}
+
+/**
+ * Ask a Slack connection for the other half of one channel: a name resolves
+ * to its id, or the reverse. Backed by `conversations.list`/`.info` against
+ * the connection's own bot token — settings-time metadata lookup, not oto
+ * reading Slack back to reconstruct its own delivery state.
+ */
+export function resolveSlackConversation(
+  connectionID: Uuid,
+  body: ResolveConversationRequest,
+): Promise<ResolvedConversation> {
+  return postItem<ResolvedConversation>(`${V1}/channel-connections/${connectionID}/slack/resolve`, body);
 }
 
 export function listPolicies(c: Ctx = {}): Promise<ListEnvelope<Policy>> {

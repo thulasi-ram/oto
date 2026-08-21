@@ -173,6 +173,14 @@ export type ReconcileResult = S["ReconcileResultDTO"];
 export type ChannelTypeDescriptor = S["ChannelTypeDTO"];
 export type Channel = S["ChannelDTO"];
 export type ChannelTest = S["ChannelTestDTO"];
+/**
+ * One org-wide provider setup — a Slack workspace's bot token, or a webhook
+ * receiver family's shared credential — that several Channels reference by
+ * `connection_id`.
+ */
+export type ChannelConnection = S["ChannelConnectionDTO"];
+/** Both halves of one Slack channel, as Slack itself answered. */
+export type ResolvedConversation = S["ResolveConversationDTO"];
 export type Matcher = S["MatcherDTO"];
 export type Throttle = S["ThrottleDTO"];
 export type Policy = S["PolicyDTO"];
@@ -222,6 +230,10 @@ export type CreateSourceRequest = S["CreateSourceRequest"];
 export type UpdateSourceRequest = S["UpdateSourceRequest"];
 export type CreateChannelRequest = S["CreateChannelRequest"];
 export type UpdateChannelRequest = S["UpdateChannelRequest"];
+export type CreateChannelConnectionRequest = S["CreateChannelConnectionRequest"];
+export type UpdateChannelConnectionRequest = S["UpdateChannelConnectionRequest"];
+/** Exactly one of `name` or `conversation_id` — the response fills in the other. */
+export type ResolveConversationRequest = S["ResolveConversationRequest"];
 export type CreatePolicyRequest = S["CreatePolicyRequest"];
 export type UpdatePolicyRequest = S["UpdatePolicyRequest"];
 export type PolicyPreviewRequest = S["PolicyPreviewRequest"];

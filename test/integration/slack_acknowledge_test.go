@@ -704,24 +704,35 @@ func seedSlackWorld(t *testing.T, e *env) slackWorld {
 
 		exec(`UPDATE alerts SET current_case_id = $2 WHERE id = $1`, alertID, caseID)
 
-		// The Slack destination. `channels_cred_ck` requires a credential on a
-		// slack channel, and the sealed blob has a 29-byte floor; the seed
-		// satisfies the real constraint rather than relaxing it.
+		// The Slack workspace's shared setup. `channel_connections_cred_ck` requires
+		// a credential on a slack CONNECTION — that constraint moved off `channels`
+		// in 00075 — and the sealed blob has a 29-byte floor; the seed satisfies the
+		// real constraint rather than relaxing it.
 		// `created_at` is NAMED for the reason 00033 gives: this table's clock is
 		// the application's, and `rotated_at` is compared against this value.
 		exec(`INSERT INTO channel_credentials (id, org_id, kind, sealed, key_version, created_at)
 		      VALUES ($1,$2,'slack_bot_token', decode(repeat('00', 32), 'hex'), 1, $3)`,
 			credID, orgID, now)
+		// ⛔ `team_id` MOVED HERE AND IS NOT ON THE CHANNEL ANY MORE (ADR 0047). The
+		// workspace is a property of the connection every destination under it shares;
+		// `schema.json` is `additionalProperties: false`, so leaving it on the channel
+		// config below would be a `config_invalid` refusal rather than a stale field.
+		connID := id.New()
+		exec(`INSERT INTO channel_connections (id, org_id, type, name, config, credential_id,
+		         created_at, updated_at)
+		      VALUES ($1,$2,'slack',$3,$4::jsonb,$5,$6,$6)`,
+			connID, orgID, slug+"-workspace",
+			fmt.Sprintf(`{"team_id":%q}`, slackTeam), credID, now)
 		// `created_at` and `updated_at` are NAMED: 00032 removed the database
 		// default so that no row on this table can take the database's clock while
 		// its `updated_at` writers take the application's.
-		exec(`INSERT INTO channels (id, org_id, type, name, config, credential_id,
+		exec(`INSERT INTO channels (id, org_id, type, name, config, connection_id,
 		         created_at, updated_at)
 		      VALUES ($1,$2,'slack',$3,$4::jsonb,$5,$6,$6)`,
 			id.New(), orgID, slug+"-alerts",
-			fmt.Sprintf(`{"team_id":%q,"conversation_id":%q,"conversation_name":"%s-alerts"}`,
-				slackTeam, conversation, slug),
-			credID, now)
+			fmt.Sprintf(`{"conversation_id":%q,"conversation_name":"%s-alerts"}`,
+				conversation, slug),
+			connID, now)
 
 		return alertID, caseID
 	}

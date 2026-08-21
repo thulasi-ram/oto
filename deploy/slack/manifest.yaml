@@ -19,20 +19,24 @@
 #   Every scope below is justified by a specific Slack API method that oto's code
 #   actually calls. The complete set of methods oto can invoke is fixed by the
 #   `API` interface in `internal/channels/providers/slack/channel.go`, which has
-#   exactly THREE methods: chat.postMessage, chat.update and auth.test. There is
-#   nothing else. In particular oto NEVER reads Slack back — no
-#   conversations.history, no conversations.replies, no conversations.info, no
-#   search. oto's own database is its memory of Slack (ADR 0008).
+#   exactly FIVE methods: chat.postMessage, chat.update, auth.test,
+#   conversations.list and conversations.info. oto still never reads Slack back
+#   to reconstruct its own delivery state — no conversations.history, no
+#   conversations.replies, no search — that argument (ADR 0008, C9) is unchanged.
+#   The two read methods below are settings-time metadata lookups, not a
+#   delivery-path read.
 #
-#   ⛔ THE LIST IS ONE SCOPE LONG, AND IT USED TO BE SIX. The first live run
-#   settled it by observation rather than by argument: the only calls oto made
-#   were chat.postMessage, chat.update and auth.test. `channels:read` and
-#   `groups:read` existed for a `conversations.info` probe that NOTHING CALLED —
-#   `Channel.Probe` and `Channel.ResolveConversation` had zero callers — and
-#   `files:write`, `channels:history` and `incoming-webhook` were never reachable
-#   from any code path at all. A scope an app cannot use is a scope an admin
-#   approved for nothing, and it is exactly the kind of thing that makes the next
-#   request harder to justify.
+#   ⛔ THIS LIST WAS ONE SCOPE LONG for one release, and `channels:read` /
+#   `groups:read` are back in it on purpose (ADR 0047). They were cut once
+#   already: the first live run found `conversations.info` served a
+#   `Channel.Probe` and a `Channel.ResolveConversation` with ZERO CALLERS, and "a
+#   scope an app cannot use is a scope an admin approved for nothing" — that
+#   reasoning stands, and it is exactly why the scopes stayed out until
+#   `ResolveConversation` had a real caller. It has one now:
+#   `POST /api/v1/channel-connections/{id}/slack/resolve`, which lets an operator
+#   type a channel's NAME and get its id back (or the reverse) instead of
+#   copying an id out of Slack's own UI by hand. ADR 0047 has the full argument
+#   for why this is worth two scopes where the previous unused probe was not.
 #
 #   Each scope cites the Slack documentation page that states the requirement.
 #   Scopes deliberately NOT requested are listed at the bottom with the reason,
@@ -98,12 +102,33 @@ oauth_config:
       - chat:write
 
       # ---------------------------------------------------------------------
+      # channels:read, groups:read — "View basic information about public/private
+      # channels" (ADR 0047)
+      #
+      # WHY: `conversations.list` (name → id) and `conversations.info` (id →
+      # name) are how `POST /api/v1/channel-connections/{id}/slack/resolve`
+      # answers "what is the other half of this Slack channel" for the settings
+      # UI. `channels:read` covers public channels, `groups:read` covers private
+      # ones the bot is a member of — `conversations.list` needs both to see
+      # across the types oto's channel schema accepts.
+      #
+      # CODE: Provider.ResolveConversation,
+      #       internal/channels/providers/slack/resolve.go
+      #
+      # SOURCE (conversations.list, "Bot token scopes: channels:read,
+      # groups:read"): https://docs.slack.dev/reference/methods/conversations.list/
+      # SOURCE (conversations.info, "Bot token scopes: channels:read,
+      # groups:read"): https://docs.slack.dev/reference/methods/conversations.info/
+      # STATUS: VERIFIED
+      - channels:read
+      - groups:read
+
+      # ---------------------------------------------------------------------
       # THAT IS THE WHOLE LIST.
       #
-      # `auth.test` — the third and last method oto calls — requires NO SCOPE.
-      # oto uses it to prove a token is alive and to render "connected to
-      # <workspace> as @oto" in the settings UI, and it is the whole of
-      # `Channel.Probe`.
+      # `auth.test` requires NO SCOPE. oto uses it to prove a token is alive and
+      # to render "connected to <workspace> as @oto" in the settings UI, and it
+      # is the whole of `Channel.Probe`.
       #   SOURCE: https://docs.slack.dev/reference/methods/auth.test/  [VERIFIED]
 
 settings:
@@ -177,20 +202,15 @@ settings:
 #   anywhere.
 #   SOURCE: https://docs.slack.dev/reference/scopes/chat.write.public/  [VERIFIED]
 #
-# channels:read / groups:read — REFUSED (they were requested until the first live
-#   run). They existed for one `conversations.info` call in `Channel.Probe`,
-#   which confirmed the destination existed and was not archived before an alert
-#   depended on it. `Probe` had ZERO CALLERS, so the scopes bought nothing that
-#   was happening; and even had it been wired, §H.9 already classifies
-#   `channel_not_found`, `is_archived` and `not_in_channel` as terminal at
-#   DELIVERY time — marking the thread dead, degrading the channel and surfacing
-#   the fix in oto's UI. Two workspace-wide metadata read scopes to learn the same
-#   fact a few minutes earlier is not a trade worth asking an admin to approve.
-#   `conversations.info` is no longer in the `API` interface, so nothing can
-#   regress into needing them without the interface changing first.
+# channels:read / groups:read — GRANTED ABOVE (ADR 0047), after having been
+#   refused for one release. §H.9 still classifies `channel_not_found`,
+#   `is_archived` and `not_in_channel` as terminal at DELIVERY time regardless —
+#   these scopes answer a SETTINGS-time question (what is this channel's id or
+#   name), never a delivery-time one, and `Channel.Probe` still calls neither.
 #
-# im:read / mpim:read — REFUSED, and now moot. They applied only to
-#   `conversations.info` against a DM, which oto no longer calls at all.
+# im:read / mpim:read — REFUSED. `conversations.list`/`.info` are called only
+#   against public and private channels (`types: public_channel,
+#   private_channel` in `resolve.go`), never a DM or multi-person DM.
 #
 # files:write — REFUSED. oto uploads nothing. It was in the manifest and there has
 #   never been a code path that could use it: the card is Block Kit, and a chart

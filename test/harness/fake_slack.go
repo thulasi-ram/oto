@@ -114,12 +114,23 @@ func (s *Slack) TeamID() string { return s.team }
 
 // Config is a schema-valid `channels.config` for this fake workspace.
 //
-// It exists so a test does not have to re-derive the two patterns schema.json
-// enforces (`^T[A-Z0-9]{2,}$`, `^[CGD][A-Z0-9]{2,}$`). ⛔ A CONVERSATION ID, NEVER
-// A #NAME: a name is ambiguous, mutable, and resolves differently per token.
+// It exists so a test does not have to re-derive the pattern schema.json
+// enforces (`^[CGD][A-Z0-9]{2,}$`). ⛔ A CONVERSATION ID, NEVER A #NAME: a name
+// is ambiguous, mutable, and resolves differently per token.
+//
+// ⛔ AND NO `team_id`, WHICH IS ADR 0047 AND NOT AN OMISSION. The workspace is a
+// property of the CONNECTION a channel answers to, so `schema.json` dropped the
+// field and is `additionalProperties: false` — sending it here is now a
+// `config_invalid` refusal rather than a harmless extra. `TeamID()` above is
+// still how a test names the workspace; it belongs on the connection's config.
 func (s *Slack) Config(conversationID string) json.RawMessage {
-	return json.RawMessage(fmt.Sprintf(
-		`{"team_id":%q,"conversation_id":%q}`, s.team, conversationID))
+	return json.RawMessage(fmt.Sprintf(`{"conversation_id":%q}`, conversationID))
+}
+
+// ConnectionConfig is a schema-valid `channel_connections.config` for this fake
+// workspace — the other half of what `Config` used to carry alone.
+func (s *Slack) ConnectionConfig() json.RawMessage {
+	return json.RawMessage(fmt.Sprintf(`{"team_id":%q}`, s.team))
 }
 
 // Credential is a sealed-shaped bot-token credential for this fake workspace.

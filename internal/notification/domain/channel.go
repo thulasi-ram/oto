@@ -71,6 +71,12 @@ type Channel struct {
 	Config json.RawMessage
 	// CredentialID names the sealed secret. This module never unseals it; that is
 	// the credential store's job, behind a port.
+	//
+	// ⛔ IT IS NO LONGER A COLUMN ON `channels`. A channel now references a
+	// connection, and the connection carries the credential — `repository`'s
+	// channelColumns joins channel_connections to recover it, so this field
+	// keeps the same meaning to every reader in this module without them
+	// needing to know the join exists.
 	CredentialID *uuid.UUID
 
 	Capabilities Capability

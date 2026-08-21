@@ -275,12 +275,22 @@ func (e *env) seed(encodedKey string) {
 	// wire contract, and the two would drift the first time a bit was added.
 	caps := int64(slackprov.NewProvider(slackprov.Options{}).Descriptor().Capabilities)
 
+	// The workspace's shared setup. ADR 0047 (migration 00075) moved the credential
+	// off the destination and onto a connection, and `channels.connection_id` is NOT
+	// NULL — so this row is a prerequisite, not scenery. `ConnectionConfig()` is the
+	// fake's `team_id`, which used to travel in the channel config below.
+	connID := id.New()
+	e.exec(`INSERT INTO channel_connections (id, org_id, type, name, config, credential_id,
+	          created_at, updated_at)
+	        VALUES ($1, $2, 'slack', $3, $4::jsonb, $5, $6, $6)`,
+		connID, e.orgID, "load-workspace", []byte(e.slack.ConnectionConfig()), credID, now)
+
 	e.channelID = id.New()
-	e.exec(`INSERT INTO channels (id, org_id, type, name, config, credential_id, capabilities,
+	e.exec(`INSERT INTO channels (id, org_id, type, name, config, connection_id, capabilities,
 	          renderer, verbosity, thread_updates, enabled, created_at, updated_at)
 	        VALUES ($1, $2, 'slack', $3, $4::jsonb, $5, $6, 'default', 'all', true, true, $7, $7)`,
 		e.channelID, e.orgID, "load-alerts", []byte(e.slack.Config(conversation)),
-		credID, caps, now)
+		connID, caps, now)
 
 	// One policy, no matchers, every Reason. A load case must not be able to lose
 	// a delivery to a routing decision it did not intend to make.

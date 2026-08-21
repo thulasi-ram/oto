@@ -41,12 +41,13 @@
  * never opens a menu can still hear every axis, its value, and the total.
  *
  * The toolbar is deliberately quiet, and quieter than the rail was. **It spends
- * no accent at all.** An active control lifts with neutrals — a raised surface,
- * a stronger hairline, and a `text-ink-muted` → `text-ink` weight lift — so it
- * reads correctly in greyscale and costs the severity column nothing (§0.6,
- * §M.2). The one accent left in the whole band is the current *view* inside the
- * Status menu, because that is the only control here that answers "where am I"
- * rather than "what am I looking through".
+ * no accent at all, anywhere, including inside its menus.** An active control
+ * lifts with neutrals — a raised surface, a stronger hairline, and a
+ * `text-ink-muted` → `text-ink` weight lift — so it reads correctly in greyscale
+ * and costs the severity column nothing (§0.6, §M.2). The last accent in the band
+ * was the current *view* row inside the Status menu; the views are gone (see the
+ * note where they used to be), and every control here now answers "what am I
+ * looking through" rather than "where am I", which is what the tab bar is for.
  *
  * ⭐ THE GLYPH ALPHABET IS THE SIGNATURE (§0.3, `~/components/glyphs`). The
  * severity ruler on the Severity trigger is the same ruler the table's rows
@@ -94,10 +95,6 @@ import {
   FILTER_TRIGGER_OFF,
   FILTER_TRIGGER_ON,
   FilterMenu,
-  MenuSection,
-  MENU_ROW,
-  MENU_ROW_ACTIVE,
-  MENU_ROW_QUIET,
   summarise,
 } from "~/components/ui/FilterMenu";
 import {
@@ -735,40 +732,27 @@ const SearchBox: Component<{
  */
 
 /**
- * The saved views.
+ * ⛔ THERE ARE NO SAVED VIEWS IN THE STATUS MENU, AND THAT IS THE SIMPLIFICATION.
  *
- * Each is a *statement about three axes* rather than a stored filter blob, so a
- * view stays legible when the operator has also typed a matcher or picked a
- * cluster: switching to "Firing" narrows the lifecycle and leaves everything
- * else exactly where it was. `matches` is what lights the row up, and it is
- * deliberately strict — a view claims to be current only when those three axes
- * say what it says, never merely "close enough".
+ * Two rows — `All` and `Firing` — sat above the lifecycle checkboxes as a
+ * one-of-many list, and once the axis underneath them became checkboxes they
+ * stopped earning the space: `All` was `Any state` under a second name, and
+ * `Firing` was the `Firing` box with nothing else ticked. Two controls for one
+ * fact, in one 288 px panel, and the accent row could disagree with the boxes
+ * below it the moment an operator ticked a second state — a "view" that claimed
+ * to be current while the checkboxes said otherwise, or none current while the
+ * boxes said exactly one thing.
+ *
+ * A preset earns its row when it is a statement about SEVERAL axes at once, which
+ * is what makes it un-reachable by one press on the axis itself. Neither of these
+ * was. `CheckList`'s own `All` row is the whole of what they said, so the menu is
+ * one axis and one control, like Severity and Episode beside it.
+ *
+ * (The `Snoozed` view went earlier and for a different reason: it set
+ * `snoozed: true` on the same list, which is a TAB — a preset that silently moved
+ * the operator to a different tab while the tab bar carried on showing the other
+ * one is the disagreement `AlertTabs` exists to prevent.)
  */
-interface ViewPreset {
-  readonly id: string;
-  readonly label: string;
-  readonly matches: (f: AlertFilters) => boolean;
-  readonly apply: (f: AlertFilters) => AlertFilters;
-}
-
-const VIEW_PRESETS: readonly ViewPreset[] = [
-  {
-    id: "all",
-    label: "All",
-    matches: (f) => f.state.length === 0,
-    apply: (f) => ({ ...f, state: [] }),
-  },
-  {
-    id: "firing",
-    label: "Firing",
-    matches: (f) => f.state.length === 1 && f.state[0] === "firing",
-    apply: (f) => ({ ...f, state: ["firing"] }),
-  },
-  // ⛔ THE `Snoozed` VIEW IS GONE AND IS NOT COMING BACK HERE. It set
-  // `snoozed: true` on the same list, which is now a TAB — and a preset that
-  // silently moved the operator to a different tab while the tab bar carried on
-  // showing the other one is the disagreement `AlertTabs` exists to prevent.
-];
 
 /**
  * One applied filter, said in words and undoable on its own.
@@ -922,10 +906,6 @@ export const AlertFilterToolbar: Component<FilterBarProps> = (props) => {
     return match?.label ?? "Custom";
   };
 
-  const activeView = createMemo<string | null>(
-    () => VIEW_PRESETS.find((v) => v.matches(props.filters))?.id ?? null,
-  );
-
   /* ---- what each trigger says about itself ------------------------------- */
 
   /**
@@ -943,16 +923,8 @@ export const AlertFilterToolbar: Component<FilterBarProps> = (props) => {
     return out;
   });
 
-  /**
-   * A view is three axes agreeing, so when one matches exactly it is the truer
-   * thing to show: "Firing" says what `Firing +1` only implies. `all` is the
-   * default and narrows nothing, so it never lights the trigger.
-   */
-  const statusValue = (): string | undefined => {
-    const view = VIEW_PRESETS.find((v) => v.id !== "all" && v.matches(props.filters));
-    if (view !== undefined) return view.label;
-    return summarise(statusParts());
-  };
+  /** `Firing`, or `Firing +1` — the axis, said in its own words. */
+  const statusValue = (): string | undefined => summarise(statusParts());
 
   const statusTitle = (): string | undefined => {
     const parts = statusParts();
@@ -1068,51 +1040,32 @@ export const AlertFilterToolbar: Component<FilterBarProps> = (props) => {
         {/* ---- what to look through ------------------------------------- */}
         <div class="flex flex-wrap items-center gap-xs">
           <FilterMenu label="Status" value={statusValue()} title={statusTitle()}>
-            {/* The views first, because they are the gesture, and the axes they
-                are made of underneath — so picking "Firing" and then loosening
-                one axis is one continuous motion instead of two mental models.
-                This is the file's only accent: it marks where you are. */}
-            <MenuSection label="View">
-              <div class="-mx-xs flex flex-col">
-                <For each={VIEW_PRESETS}>
-                  {(view) => (
-                    <button
-                      type="button"
-                      aria-current={activeView() === view.id ? "true" : undefined}
-                      onClick={() => props.onChange(view.apply(props.filters))}
-                      class={cn(MENU_ROW, activeView() === view.id ? MENU_ROW_ACTIVE : MENU_ROW_QUIET)}
-                    >
-                      <span class="min-w-0 flex-1 truncate text-left">{view.label}</span>
-                    </button>
-                  )}
-                </For>
-              </div>
-            </MenuSection>
-
             {/* U1: never colour alone — and here, never colour at all. The mark
                 is the §0.3 state shape drawn `tone="inherit"`, so the row carries
                 the same alphabet the table's rows do without spending a Tier B
                 hue on chrome (§M.2).
 
-                ⭐ AND THEY ARE CHECKBOXES NOW, NOT A SEGMENTED STRIP. Four
-                lifecycle states as pills inside a 288 px panel wrapped to two
-                rows and read as a tab bar directly beneath a list of views that
-                genuinely IS one — two rows of pills, one meaning "go here" and
-                one meaning "and also these". A checkbox says "several at once"
-                without being read. */}
-            <MenuSection label="Lifecycle state">
-              <CheckList<State>
-                legend="Lifecycle state"
-                options={ALL_STATES.map((s) => ({
-                  value: s,
-                  label: STATE_LABEL[s],
-                  icon: <StateGlyph state={s} tone="inherit" />,
-                }))}
-                value={props.filters.state}
-                onChange={(next) => patch({ state: [...next] })}
-                allLabel="Any state"
-              />
-            </MenuSection>
+                ⭐ AND THEY ARE CHECKBOXES, NOT A SEGMENTED STRIP. Four lifecycle
+                states as pills inside a 288 px panel wrapped to two rows and read
+                as a tab bar. A checkbox says "several at once" without being read.
+
+                ⛔ AND NO `MenuSection` HEADING OVER IT. The panel holds one axis
+                now that the views are gone, and the trigger that opened it already
+                says `Status`; a `Lifecycle state` label above the only control in
+                the menu would be the axis named twice, two lines apart. The
+                `legend` still carries the accessible name, which is where a
+                reader that cannot see the trigger gets it. */}
+            <CheckList<State>
+              legend="Lifecycle state"
+              options={ALL_STATES.map((s) => ({
+                value: s,
+                label: STATE_LABEL[s],
+                icon: <StateGlyph state={s} tone="inherit" />,
+              }))}
+              value={props.filters.state}
+              onChange={(next) => patch({ state: [...next] })}
+              allLabel="Any state"
+            />
           </FilterMenu>
 
           {/* Severity gets its own trigger rather than a line in Status, because
@@ -1216,6 +1169,29 @@ export const AlertFilterToolbar: Component<FilterBarProps> = (props) => {
             <SelectHiddenSelect />
             <SelectContent />
           </Select>
+
+          {/* ⭐ THE COUNT IS NEVER BEHIND ANYTHING. Whatever else a menu is
+              hiding, the *number* of axes narrowing this list is on screen at
+              rest — which is half of what the always-open sections used to buy
+              and the half that matters when the table is empty.
+
+              ⛔ AND IT SITS AT THE END OF THE NARROWING GROUP, NOT AT THE FAR
+              RIGHT. It used to be the last child of the `ml-auto` group, where
+              it was wrong twice. It MOVED THINGS: that group is pinned to the
+              right edge, so a button appearing inside it shoves `Group` and
+              `Sort` left by its own width — a layout shift on the most ordinary
+              gesture in the band, ticking one checkbox, and a shift under the
+              cursor that just left the menu. And it was FILED WITH THE WRONG
+              NEIGHBOURS: that group is the controls that narrow nothing, and
+              this one un-narrows everything. Here it grows the left cluster into
+              the slack the band already has, so nothing pinned moves, and it
+              reads as the last word in the sentence the filters are making. */}
+          <Show when={activeFilterCount(props.filters) > 0}>
+            <Button variant="ghost" size="sm" onClick={props.onReset}>
+              Clear {activeFilterCount(props.filters)} filter
+              {activeFilterCount(props.filters) === 1 ? "" : "s"}
+            </Button>
+          </Show>
         </div>
 
         {/* ---- how to arrange it ----------------------------------------
@@ -1275,16 +1251,6 @@ export const AlertFilterToolbar: Component<FilterBarProps> = (props) => {
               beside the other two preferences of exactly that kind (ADR 0033).
               Offering it in both places was two controls for one fact. */}
 
-          {/* ⭐ THE COUNT IS NEVER BEHIND ANYTHING. Whatever else a menu is
-              hiding, the *number* of axes narrowing this list is on screen at
-              rest — which is half of what the always-open sections used to buy
-              and the half that matters when the table is empty. */}
-          <Show when={activeFilterCount(props.filters) > 0}>
-            <Button variant="ghost" size="sm" onClick={props.onReset}>
-              Clear {activeFilterCount(props.filters)} filter
-              {activeFilterCount(props.filters) === 1 ? "" : "s"}
-            </Button>
-          </Show>
         </div>
       </div>
 

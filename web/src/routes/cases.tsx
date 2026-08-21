@@ -70,11 +70,18 @@ import {
   MenuSection,
   summarise,
 } from "~/components/ui/FilterMenu";
-import { Chip } from "~/components/ui/surfaces";
-import { ErrorState, PageEmptyState, TableSkeleton } from "~/components/ui/states";
+import {
+  ErrorState,
+  PageEmptyState,
+  TableSkeleton,
+} from "~/components/ui/states";
 import { cn } from "~/lib/cn";
 import { count as fmtCount, idempotencyKey } from "~/lib/format";
-import { createKeysetFeed, keepPrevious, type KeysetFeed } from "~/lib/keysetFeed";
+import {
+  createKeysetFeed,
+  keepPrevious,
+  type KeysetFeed,
+} from "~/lib/keysetFeed";
 
 const PAGE_SIZE = 100;
 
@@ -136,8 +143,10 @@ const ACK_LABEL: Record<AckState, string> = {
 };
 
 const ACK_TITLE: Record<AckState, string> = {
-  unacked: "Firings nobody has recorded seeing yet. This is the queue, and paired with Open it is the shape `case_ack_idx` exists for.",
-  acked: "Firings somebody has signed for. A receipt belongs to ONE firing and clears itself when the next one opens.",
+  unacked:
+    "Firings nobody has recorded seeing yet. This is the queue, and paired with Open it is the shape `case_ack_idx` exists for.",
+  acked:
+    "Firings somebody has signed for. A receipt belongs to ONE firing and clears itself when the next one opens.",
 };
 
 /* -------------------------------------------------------------------------- */
@@ -261,7 +270,9 @@ export default function CasesRoute() {
    * being a magic option inside it.
    */
   const acks = createMemo<readonly AckState[]>(() =>
-    csv("ack").filter((s): s is AckState => (ALL_ACK as readonly string[]).includes(s)),
+    csv("ack").filter((s): s is AckState =>
+      (ALL_ACK as readonly string[]).includes(s),
+    ),
   );
 
   const severities = createMemo<readonly string[]>(() => csv("severity"));
@@ -274,12 +285,16 @@ export default function CasesRoute() {
    * for a severity nobody told us how to order.
    */
   const customSeverities = createMemo<readonly string[]>(() =>
-    severities().filter((s) => !(COMMON_SEVERITIES as readonly string[]).includes(s)),
+    severities().filter(
+      (s) => !(COMMON_SEVERITIES as readonly string[]).includes(s),
+    ),
   );
 
   /** How the loaded rows are laid out. Junk falls back to the flat list. */
   const group = createMemo<GroupMode>(() =>
-    (GROUP_MODES as readonly string[]).includes(str("group")) ? (str("group") as GroupMode) : "none",
+    (GROUP_MODES as readonly string[]).includes(str("group"))
+      ? (str("group") as GroupMode)
+      : "none",
   );
 
   /**
@@ -378,7 +393,8 @@ export default function CasesRoute() {
 
   const cases = useQuery(() => ({
     queryKey: qk.cases.list(query()),
-    queryFn: ({ signal }: { signal: AbortSignal }) => listCases(query(), { signal }),
+    queryFn: ({ signal }: { signal: AbortSignal }) =>
+      listCases(query(), { signal }),
     placeholderData: keepPrevious,
   }));
 
@@ -431,8 +447,8 @@ export default function CasesRoute() {
           three selects spread across the full width — and the six chips read as a
           TAB STRIP: a row of pills with one lit, which says "you are in one of
           these" when the fact is "the list is narrowed to these". The two
-          sentences disagree the moment two chips are on, which for `Open + Ended`
-          is the normal case. `FilterMenu`'s header argues the trade in full.
+          sentences disagree the moment two chips are on, which for an operator
+          asking for open AND ended episodes is the normal case. `FilterMenu`'s header argues the trade in full.
 
           ⛔ AND STILL NO SORT CONTROL. The file header spends a paragraph on why:
           `GET /api/v1/cases` takes no `sort`, because a keyset cursor is only
@@ -440,7 +456,10 @@ export default function CasesRoute() {
           Group menu below is a LAYOUT, not an order — it re-folds the rows the
           cursor already handed over and leaves their sequence alone. */}
       <div class="shrink-0">
-        <FilterRow gap="tight">
+        {/* ⛔ NO BOTTOM BORDER. `FilterRow`'s `standalone` default draws one —
+            right, `/alerts`'s toolbar sits flush on the page background with
+            no dividing line, and the two screens have to read as one product. */}
+        <FilterRow gap="tight" class="border-b-0">
           <FilterMenu
             label="Ack"
             value={summarise(acks().map((a) => ACK_LABEL[a]))}
@@ -458,7 +477,9 @@ export default function CasesRoute() {
                 title: ACK_TITLE[a],
               }))}
               value={acks()}
-              onChange={(next) => setParams({ ack: next.length > 0 ? next.join(",") : null })}
+              onChange={(next) =>
+                setParams({ ack: next.length > 0 ? next.join(",") : null })
+              }
               allLabel="Either way"
               allTitle="Both acknowledged and unacknowledged firings — the same thing as omitting the filter."
             />
@@ -468,7 +489,10 @@ export default function CasesRoute() {
               how you ask for everything in retention; turning both off is not a
               third answer, so it falls back to the queue rather than to a list
               that could not contain anything — which is why this axis's `All` row
-              is spelled `Open + Ended` and not left as the empty set. */}
+              EMITS both values instead of the empty set. It is spelled `All` like
+              every other axis's: `Open + Ended` was the mechanism written out
+              where a word was wanted, and it made this one menu read as the
+              exception in a band of four. */}
           <FilterMenu
             label="Episode"
             value={summarise(states().map((s) => CASE_STATE_LABEL[s]))}
@@ -488,10 +512,12 @@ export default function CasesRoute() {
               // ⛔ CLEARING THIS AXIS IS NOT "EVERYTHING", WHICH IS WHY `allValue`
               // NAMES BOTH VALUES. An absent `?state=` reads back as the QUEUE
               // (see `DEFAULT_STATES`), so emitting the empty set here would turn
-              // a press on "Open + Ended" into a press on "Open".
+              // a press on "All" into a press on "Open".
               allValue={CASE_STATES}
-              onChange={(next) => setParams({ state: next.length > 0 ? next.join(",") : null })}
-              allLabel="Open + Ended"
+              onChange={(next) =>
+                setParams({ state: next.length > 0 ? next.join(",") : null })
+              }
+              allLabel="All"
               allTitle="Everything in retention. The queue is the default because a list of every episode oto has ever opened answers a question nobody asked."
             />
           </FilterMenu>
@@ -499,18 +525,27 @@ export default function CasesRoute() {
           <FilterMenu
             label="Severity"
             value={summarise(severities())}
-            leading={<SeverityEnso level={worstSeverityRank(severities())} class="size-3" />}
+            leading={
+              <SeverityEnso
+                level={worstSeverityRank(severities())}
+                class="size-3"
+              />
+            }
             title="Matched against the alert's promoted `severity` label. A free vocabulary, so the three offered here are a convenience and never the closed set."
           >
             <CheckList<string>
               legend="Severity"
-              options={[...COMMON_SEVERITIES, ...customSeverities()].map((s) => ({
-                value: s,
-                label: s,
-                icon: <SeverityEnso level={severityRank(s)} />,
-              }))}
+              options={[...COMMON_SEVERITIES, ...customSeverities()].map(
+                (s) => ({
+                  value: s,
+                  label: s,
+                  icon: <SeverityEnso level={severityRank(s)} />,
+                }),
+              )}
               value={severities()}
-              onChange={(next) => setParams({ severity: next.length > 0 ? next.join(",") : null })}
+              onChange={(next) =>
+                setParams({ severity: next.length > 0 ? next.join(",") : null })
+              }
               allLabel="Any severity"
             />
           </FilterMenu>
@@ -528,7 +563,9 @@ export default function CasesRoute() {
               <ChoiceList<GroupMode>
                 legend="Group cases by"
                 value={group()}
-                onChange={(next) => setParams({ group: next === "none" ? null : next })}
+                onChange={(next) =>
+                  setParams({ group: next === "none" ? null : next })
+                }
                 options={GROUP_MODES.map((g) => ({
                   value: g,
                   label: GROUP_LABEL[g],
@@ -540,8 +577,9 @@ export default function CasesRoute() {
                   to page over. A count that reads as total and is not is worse
                   than no count at all. */}
               <p class="px-xs pt-2xs text-meta leading-snug text-ink-subtle">
-                Folds the pages already loaded. An alert that fired forty times shows the firings
-                oto has handed over so far, not all forty — “Load more” brings the rest.
+                Folds the pages already loaded. An alert that fired forty times
+                shows the firings oto has handed over so far, not all forty —
+                “Load more” brings the rest.
               </p>
             </MenuSection>
           </FilterMenu>
@@ -554,7 +592,7 @@ export default function CasesRoute() {
           mutation inside a region that already existed. */}
       <header
         id="case-status"
-        class="flex h-9 shrink-0 items-center gap-md border-b border-line px-md"
+        class="flex h-9 shrink-0 items-center gap-md px-md"
         aria-live="polite"
       >
         <span class="text-body tabular-nums text-ink-muted">{status()}</span>
@@ -585,7 +623,7 @@ export default function CasesRoute() {
           {(n) => (
             <button
               type="button"
-              class="inline-flex items-center gap-1 rounded-chip border border-line-strong bg-raised px-1.5 py-px text-meta text-ink hover:bg-sunken"
+              class="inline-flex items-center gap-1 rounded-chip bg-raised px-sm py-2xs text-meta text-ink hover:bg-sunken"
               /* The chips are built from adjacent spans, so their text content
                  runs together into one word for a screen reader. The label is
                  written out rather than inferred. */
@@ -603,7 +641,10 @@ export default function CasesRoute() {
 
       <Switch>
         <Match when={cases.isError}>
-          <ErrorState error={cases.error} onRetry={() => void cases.refetch()} />
+          <ErrorState
+            error={cases.error}
+            onRetry={() => void cases.refetch()}
+          />
         </Match>
 
         <Match when={cases.isPending && rows().length === 0}>
@@ -630,7 +671,11 @@ export default function CasesRoute() {
                 title="No cases match these filters."
                 body="The filters are doing something — that is not the same as there being nothing here. Clear them to see the whole queue."
                 action={
-                  <Button variant="secondary" size="sm" onClick={() => navigate("/cases")}>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => navigate("/cases")}
+                  >
                     Clear filters
                   </Button>
                 }
@@ -640,17 +685,27 @@ export default function CasesRoute() {
         </Match>
 
         <Match when={true}>
-          <div class="min-h-0 flex-1 overflow-auto">
-            <ul>
-              <Show
-                when={group() === "alert"}
-                fallback={<For each={rows()}>{(c) => <CaseRow item={c} />}</For>}
-              >
-                <For each={groups()}>{(g) => <AlertGroupRows group={g} />}</For>
-              </Show>
-            </ul>
+          {/* The footer is a sibling of the scroller, not a last row inside it —
+              the same `shrink-0` split `case-status` uses at the top. A pager
+              that scrolls away with the last page is a control the operator has
+              to scroll to find right when they want to reach for it. */}
+          <>
+            <div class="min-h-0 flex-1 overflow-auto">
+              <ul>
+                <Show
+                  when={group() === "alert"}
+                  fallback={
+                    <For each={rows()}>{(c) => <CaseRow item={c} />}</For>
+                  }
+                >
+                  <For each={groups()}>
+                    {(g) => <AlertGroupRows group={g} />}
+                  </For>
+                </Show>
+              </ul>
+            </div>
 
-            <div class="flex items-center justify-center gap-3 border-t border-line bg-surface px-3 py-2">
+            <div class="flex shrink-0 items-center justify-center gap-3 border-t border-line bg-surface px-3 py-4">
               <Show
                 when={feed.hasMore()}
                 fallback={
@@ -668,12 +723,13 @@ export default function CasesRoute() {
                   Load {fmtCount(PAGE_SIZE)} more
                 </Button>
                 <span class="text-meta text-ink-subtle">
-                  {fmtCount(rows().length)} loaded across {feed.pageCount()} page
+                  {fmtCount(rows().length)} loaded across {feed.pageCount()}{" "}
+                  page
                   {feed.pageCount() === 1 ? "" : "s"}
                 </span>
               </Show>
             </div>
-          </div>
+          </>
         </Match>
       </Switch>
     </div>
@@ -713,7 +769,7 @@ const AlertGroupRows = (props: { readonly group: AlertGroup }) => {
       <CaseRow item={props.group.latest} />
 
       <Show when={n() > 0}>
-        <li class="border-b border-line bg-surface">
+        <li class="bg-surface">
           <button
             type="button"
             class={
@@ -815,64 +871,73 @@ const CaseRow = (props: {
   return (
     <li
       class={cn(
-        "border-b border-line",
         // ⭐ THE ENDED ROW IS WASHED, AND IT IS THE ONE THING ON THIS SCREEN THAT
         // ENCODES `state` WITHOUT A WORD — which is allowed because the word is
         // still there. An episode that has ended is history: it cannot be
         // acknowledged, it will never change again, and in a list holding both it
         // is the row you are scanning PAST. Tier A only — the sunken surface and
         // one tier off the title's ink, no hue, and both halves measured pairs.
+        //
+        // ⛔ NO `border-b` BETWEEN ROWS. A hairline under every row is a rule
+        // for each one of them; the wash above already tells the ended rows
+        // apart, and the padding below gives the open ones room to breathe
+        // instead of a line to lean on. Space is the separator here, not ink.
         open() ? "bg-surface" : "bg-sunken",
       )}
     >
       <div
         class={cn(
-          "flex items-center gap-3 py-2 pr-3 hover:bg-raised/60",
+          "flex items-center gap-3 py-3 pr-3 hover:bg-raised/60",
           // The fold's indent, and the guide that makes it read as a fold rather
           // than as a row that lost its left margin.
-          props.nested === true ? "border-l-2 border-line-strong pl-6 ml-3" : "pl-3",
+          props.nested === true
+            ? "border-l-2 border-line-strong pl-6 ml-3"
+            : "pl-3",
         )}
       >
-        <A href={`/cases/${c().id}`} class="flex min-w-0 flex-1 items-start gap-3">
+        <A
+          href={`/cases/${c().id}`}
+          class="flex min-w-0 flex-1 items-start gap-3"
+        >
+          {/* The firing number is the fastest thing to scan a case list by —
+              faster than the alertname or its labels — so it leads every row,
+              folded or not, in its own column ahead of the severity glyph. */}
+          <span
+            class={cn(
+              "mt-0.5 w-9 shrink-0 text-right font-mono text-title font-semibold tabular-nums",
+              open() ? "text-ink" : "text-ink-muted",
+            )}
+            title="Which firing of this alert this is, counted since oto first saw the identity. A re-fire opens the next one rather than reopening this one."
+          >
+            #{c().seq}
+          </span>
           <SeverityMark severity={c().alert.severity} class="mt-0.5" />
 
           <div class="min-w-0 flex-1">
             <div class="flex flex-wrap items-center gap-2">
-              {/* Under a fold the identity is already named by the row above, so
-                  the earlier firing leads with what distinguishes it — `#seq` —
-                  and does not repeat the name a second and fifth time. */}
-              <Show
-                when={props.nested !== true}
-                fallback={
-                  <span class="shrink-0 text-item tabular-nums text-ink-muted">
-                    firing #{c().seq}
-                  </span>
-                }
-              >
+              {/* Under a fold the identity is already named by the row above —
+                  the alertname repeated five times down a stack of earlier
+                  firings is noise — so a nested row's title line says nothing
+                  here; its number is already in the lead column, to the left. */}
+              <Show when={props.nested !== true}>
                 <span
                   class={cn(
-                    "min-w-0 truncate text-item font-medium",
+                    "min-w-0 truncate text-title font-medium",
                     open() ? "text-ink" : "text-ink-muted",
                   )}
                 >
                   {c().alert.alertname}
                 </span>
               </Show>
-              <CaseStateChip state={c().state} resolveReason={c().resolve_reason} size="sm" />
+              <CaseStateChip
+                state={c().state}
+                resolveReason={c().resolve_reason}
+                size="sm"
+              />
               <AckChip ackState={c().ack_state} />
-              {/* Which firing of this alert this is. `#1` is its first ever, and
-                  a high number is a fact worth seeing from the list — it is also
-                  the whole of what a re-fire does now, since a case is terminal
-                  and the next one opens at the next `seq`. Under a fold it has
-                  already been said, in the lead position, so it is not repeated. */}
-              <Show when={props.nested !== true}>
-                <Chip title="Which firing of this alert this is, counted since oto first saw the identity. A re-fire opens the next one rather than reopening this one.">
-                  #{c().seq}
-                </Chip>
-              </Show>
             </div>
 
-            <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-meta text-ink-muted">
+            <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-body text-ink-muted">
               <span
                 title={
                   open()
@@ -880,7 +945,8 @@ const CaseRow = (props: {
                     : "How long this firing ran. oto times the signal, never anyone's response."
                 }
               >
-                <Elapsed from={c().started_at} to={c().ended_at ?? null} /> firing
+                <Elapsed from={c().started_at} to={c().ended_at ?? null} />{" "}
+                firing
               </span>
               {/* The identity's own labels belong to the row that names it. An
                   earlier firing shares them by construction, so repeating
@@ -898,7 +964,7 @@ const CaseRow = (props: {
             </div>
           </div>
 
-          <span class="shrink-0 text-right text-meta text-ink-subtle">
+          <span class="shrink-0 text-right text-body text-ink-subtle">
             <RelativeTime value={c().started_at} label="Started" /> ago
           </span>
         </A>
@@ -937,7 +1003,10 @@ const CaseRow = (props: {
  * It writes no note either way. Prose on the record belongs on `/cases/:id`, one
  * click away, where the dialog is.
  */
-const RowAck = (props: { readonly item: CaseListItem; readonly disabled: boolean }) => {
+const RowAck = (props: {
+  readonly item: CaseListItem;
+  readonly disabled: boolean;
+}) => {
   const client = useQueryClient();
 
   const acked = (): boolean => props.item.ack_state === "acked";
@@ -960,10 +1029,13 @@ const RowAck = (props: { readonly item: CaseListItem; readonly disabled: boolean
   }));
 
   const failure = (): string | null =>
-    receipt.error === null ? null : ((receipt.error as Error).message ?? "The request failed.");
+    receipt.error === null
+      ? null
+      : ((receipt.error as Error).message ?? "The request failed.");
 
   /** The verb this press would perform, for every sentence about it. */
-  const verb = (): string => (acked() ? "withdraw the acknowledgement of" : "acknowledge");
+  const verb = (): string =>
+    acked() ? "withdraw the acknowledgement of" : "acknowledge";
 
   /**
    * The accessible name, and it is the ONLY place the two directions are told

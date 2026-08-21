@@ -228,6 +228,7 @@ func seedFanOut(t *testing.T, e *env) fanOut {
 		suppressedID:   id.New(),
 	}
 	clusterID, sourceID, credentialID := id.New(), id.New(), id.New()
+	connectionID := id.New()
 
 	exec := func(sql string, args ...any) {
 		t.Helper()
@@ -275,6 +276,17 @@ func seedFanOut(t *testing.T, e *env) fanOut {
 	exec(`INSERT INTO channel_credentials (id, org_id, kind, sealed, key_version, created_at)
 	      VALUES ($1,$2,'slack_bot_token', decode(repeat('00', 32), 'hex'), 1, $3)`,
 		credentialID, orgID, now)
+
+	// ⛔ THE CREDENTIAL HANGS OFF A CONNECTION NOW, NOT OFF EACH CHANNEL (ADR 0047,
+	// migration 00075). That is exactly the shape this fixture wants anyway: the
+	// seven channels below are seven destinations in ONE Slack workspace, which is
+	// the case that used to mean the same sealed token pasted seven times.
+	// `channels.connection_id` is NOT NULL, so this row is a prerequisite and not
+	// extra scenery.
+	exec(`INSERT INTO channel_connections (id, org_id, type, name, config, credential_id,
+	         created_at, updated_at)
+	      VALUES ($1,$2,'slack',$3,'{"team_id":"T9TK3CUKW"}'::jsonb,$4,$5,$5)`,
+		connectionID, orgID, "workspace-"+orgID.String()[:8], credentialID, now)
 
 	// ⛔ The intent is CASE-scoped, with alert_id NULL — which is what a `fired`
 	// notification actually looks like now that a conversation is a Case (git-bug
@@ -324,10 +336,10 @@ func seedFanOut(t *testing.T, e *env) fanOut {
 		// loop share a prefix and collide on `channels_name_uniq`.
 		// `created_at`/`updated_at` are named because 00032 removed the database
 		// default: `channels` timestamps come from the application, never from now().
-		exec(`INSERT INTO channels (id, org_id, type, name, config, credential_id,
+		exec(`INSERT INTO channels (id, org_id, type, name, config, connection_id,
 		         created_at, updated_at)
 		      VALUES ($1,$2,'slack',$3,'{"channel":"#sre"}'::jsonb,$4,$5,$5)`,
-			channelID, orgID, "sre-"+d.status, credentialID, now)
+			channelID, orgID, "sre-"+d.status, connectionID, now)
 
 		var (
 			providerMessageID *string
@@ -383,10 +395,10 @@ func seedFanOut(t *testing.T, e *env) fanOut {
 		decoyNotification, orgID, decoyCase, now)
 	for i := range 2 {
 		channelID := id.New()
-		exec(`INSERT INTO channels (id, org_id, type, name, config, credential_id,
+		exec(`INSERT INTO channels (id, org_id, type, name, config, connection_id,
 		         created_at, updated_at)
 		      VALUES ($1,$2,'slack',$3,'{"channel":"#other"}'::jsonb,$4,$5,$5)`,
-			channelID, orgID, "other-"+string(rune('a'+i)), credentialID, now)
+			channelID, orgID, "other-"+string(rune('a'+i)), connectionID, now)
 		exec(`INSERT INTO notification_deliveries (id, org_id, notification_id, channel_id, mode,
 		         status, attempts, provider_message_id, sent_at, created_at, updated_at)
 		      VALUES ($1,$2,$3,$4,'post_root','sent',1,'1712345678.000900',$5,$5,$5)`,

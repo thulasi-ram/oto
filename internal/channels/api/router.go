@@ -28,15 +28,19 @@ const TestTimeout = 15 * time.Second
 // Options are the Router's dependencies. Everything is a port, so the whole
 // surface is exercisable with fakes and an httptest.Server.
 type Options struct {
-	Registry ProviderRegistry
-	Channels ChannelStore
-	Creds    CredentialWriter
+	Registry    ProviderRegistry
+	Channels    ChannelStore
+	Connections ConnectionStore
+	Creds       CredentialWriter
 	// Writes owns `createChannel` and `testChannel`. It is a DIFFERENT
 	// collaborator from Channels — the service rather than the repository —
 	// because an `Idempotency-Key` claim has to join the transaction of the act it
 	// guards, and the transaction boundary is not an HTTP concern. Nil is a
 	// declared `503` on those two and nothing at all to the rest.
-	Writes       ChannelWriter
+	Writes ChannelWriter
+	// Resolver answers a Slack name↔id lookup. Nil is a declared `503` on that
+	// one endpoint and nothing at all to the rest.
+	Resolver     ConnectionResolver
 	Interactions SlackInteractions
 	// SigningSecret is Slack's HMAC signing secret for the HTTP interactivity
 	// transport. Empty DISABLES the endpoint entirely rather than accepting
@@ -50,8 +54,10 @@ type Options struct {
 type Router struct {
 	registry     ProviderRegistry
 	channels     ChannelStore
+	connections  ConnectionStore
 	creds        CredentialWriter
 	writes       ChannelWriter
+	resolver     ConnectionResolver
 	interactions SlackInteractions
 	signing      []byte
 	clk          clock.Clock
@@ -66,8 +72,10 @@ func NewRouter(o Options) *Router {
 	return &Router{
 		registry:     o.Registry,
 		channels:     o.Channels,
+		connections:  o.Connections,
 		creds:        o.Creds,
 		writes:       o.Writes,
+		resolver:     o.Resolver,
 		interactions: o.Interactions,
 		signing:      []byte(o.SigningSecret),
 		clk:          clk,
@@ -87,6 +95,17 @@ func (rt *Router) Register(r chi.Router) {
 			r.Patch("/", rt.updateChannel)
 			r.Delete("/", rt.deleteChannel)
 			r.Post("/test", rt.testChannel)
+		})
+	})
+
+	r.Route("/channel-connections", func(r chi.Router) {
+		r.Get("/", rt.listConnections)
+		r.Post("/", rt.createConnection)
+		r.Route("/{id}", func(r chi.Router) {
+			r.Get("/", rt.getConnection)
+			r.Patch("/", rt.updateConnection)
+			r.Delete("/", rt.deleteConnection)
+			r.Post("/slack/resolve", rt.resolveSlackConversation)
 		})
 	})
 }

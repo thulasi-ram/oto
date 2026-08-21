@@ -29,6 +29,9 @@ type ProviderRegistry interface {
 	// cannot express — an `Authorization` header in a webhook's `headers`, a URL
 	// resolving to a loopback address.
 	ValidateConfig(ctx context.Context, t domain.Type, raw json.RawMessage) error
+	// ValidateConnectionConfig is ValidateConfig's counterpart for a Connection's
+	// org-wide config.
+	ValidateConnectionConfig(ctx context.Context, t domain.Type, raw json.RawMessage) error
 	Types() []domain.Type
 }
 
@@ -93,6 +96,40 @@ type ChannelWriter interface {
 
 // Compile-time proof that the writer satisfies the port this layer declares.
 var _ ChannelWriter = (*service.Writer)(nil)
+
+// ConnectionStore is the persistence side for connections, satisfied by
+// `*channels/repository.ConnectionRepository`.
+//
+// Unlike ChannelStore, `Create` stays on this port rather than moving to a
+// service-owned writer: a connection is admin setup, created rarely, and
+// nothing about creating one is the kind of unrepeatable act (a6cc834's
+// `TestChannel`) that needs an `Idempotency-Key` claim in the same
+// transaction. `channels_connections_name_uniq` is the same duplicate guard
+// `channels_name_uniq` was for channels before that ticket, and it is enough
+// here.
+type ConnectionStore interface {
+	Create(ctx context.Context, s db.TenantScope, in domain.NewConnection) (domain.Connection, error)
+	Get(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Connection, error)
+	List(ctx context.Context, s db.TenantScope, includeDeleted bool, p db.Keyset) ([]domain.Connection, db.Cursor, error)
+	Update(ctx context.Context, s db.TenantScope, id uuid.UUID, p domain.ConnectionPatch) (domain.Connection, error)
+	SoftDelete(ctx context.Context, s db.TenantScope, id uuid.UUID) error
+	// ReferencingChannels names the live channels still open through this
+	// connection. A connection still in use is a 409, never a cascade — deleting
+	// it would leave those channels unable to open a provider at all.
+	ReferencingChannels(ctx context.Context, s db.TenantScope, id uuid.UUID) ([]string, error)
+}
+
+// ConnectionResolver answers "what is the other half of this Slack channel" —
+// a channel name resolves to an id, or an id resolves to a name — through the
+// connection's own credential. Satisfied by `*channels/service.Resolver`.
+type ConnectionResolver interface {
+	ResolveConversation(
+		ctx context.Context, s db.TenantScope, connectionID uuid.UUID, query domain.ConversationQuery,
+	) (domain.ConversationResult, error)
+}
+
+// Compile-time proof that the resolver satisfies the port this layer declares.
+var _ ConnectionResolver = (*service.Resolver)(nil)
 
 // SlackInteractions receives an already-verified Slack block-action payload.
 //

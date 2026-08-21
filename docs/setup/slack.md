@@ -51,29 +51,38 @@ The manifest is commented with a justification for every scope it asks for, and 
 list of the scopes it deliberately does **not** ask for. If your security team
 reviews app installs, that file is the document to send them.
 
-**What it requests: `chat:write`. That is the entire list.**
+**What it requests: `chat:write`, `channels:read`, `groups:read`. That is the
+entire list.**
 
-It asks for one scope because oto makes exactly three Slack calls —
-`chat.postMessage`, `chat.update` and `auth.test` — and the third needs no scope
-at all. The first live verification run is what fixed the number: it proved those
-three were the only calls, and the manifest was trimmed to match.
+oto makes exactly five Slack calls — `chat.postMessage`, `chat.update`,
+`auth.test`, `conversations.list` and `conversations.info` — and the third
+needs no scope at all. The other two are `channels:read`/`groups:read`, added
+back in [ADR 0047](../adr/0047-a-channel-answers-to-a-connection.md) so the
+settings screen can turn a typed channel **name** into its **id**, or the
+reverse, instead of you copying an id out of Slack's own UI by hand: **Settings
+→ Connections → (your Slack connection) →** creating or editing a channel now
+resolves one from the other live. They were requested once, cut for having no
+caller, and are back with one: `POST
+/api/v1/channel-connections/{id}/slack/resolve`.
 
 Notably absent:
 
 - `chat:write.public` — oto must be invited to a channel; it cannot post itself
   into any public channel in the workspace.
-- `channels:read` / `groups:read` — **requested until the live run, and never
-  used.** They served one `conversations.info` probe that had zero callers. oto no
-  longer calls `conversations.info` at all.
 - `users:read` — oto never reads your member directory. An acknowledgement is
   attributed from the signed interaction payload.
-- every `*:history` scope — oto never reads messages back (see
-  [ADR 0008](../adr/0008-slack-update-in-place-primary.md)).
+- every `*:history` scope, and `conversations.replies` — oto never reads
+  messages back (see [ADR 0008](../adr/0008-slack-update-in-place-primary.md)).
+  `conversations.list`/`.info` return channel **metadata** (name, id, archive
+  state), never message content.
 - `files:write`, `incoming-webhook` — oto uploads nothing and posts under a bot
   token to destinations configured in oto, not to an install-time channel picker.
+- `im:read` / `mpim:read` — the two calls above only ever ask about public and
+  private channels, never a DM.
 
-If you installed oto before this change, the extra scopes are harmless but
-pointless: reinstall from the current manifest to drop them.
+If you installed oto before this change, **reinstall from the current
+manifest** to add the two scopes — the name/id resolver in Settings needs them
+and will answer a plain "not configured" error without them.
 
 ---
 
@@ -196,8 +205,29 @@ oto refuses to boot with `mode=http` and an empty signing secret. That is
 deliberate: an empty secret would accept forged requests, which means anyone on
 the internet could acknowledge anyone's alert.
 
-The **bot token is not an environment variable.** It is attached to a channel,
-because one oto install can post into several workspaces:
+The **bot token is not an environment variable.** It is attached to a
+**connection**, not to a channel — one oto install can post into several
+workspaces, and one workspace usually has several channels sharing the one
+bot token that talks to it. Set the connection up once, in **Settings →
+Connections**:
+
+```http
+POST /api/v1/channel-connections
+Content-Type: application/json
+
+{
+  "type": "slack",
+  "name": "Acme Slack workspace",
+  "config": { "team_id": "T9TK3CUKW" },
+  "credential": {
+    "kind": "slack_bot_token",
+    "values": { "bot_token": "xoxb-..." }
+  }
+}
+```
+
+Then create each channel against that connection — from the notification
+policy screen where you are already naming a destination, or directly:
 
 ```http
 POST /api/v1/channels
@@ -206,21 +236,30 @@ Content-Type: application/json
 {
   "type": "slack",
   "name": "platform-alerts",
-  "config": {
-    "team_id": "T9TK3CUKW",
-    "conversation_id": "C0123456789",
-    "conversation_name": "platform-alerts"
-  },
-  "credential": {
-    "kind": "slack_bot_token",
-    "values": { "bot_token": "xoxb-..." }
-  }
+  "connection_id": "<the connection's id, from the response above>",
+  "config": { "conversation_id": "C0123456789", "conversation_name": "platform-alerts" }
 }
 ```
 
-`conversation_id` is a **channel ID, never a `#name`**. Names are ambiguous,
-mutable, and resolve differently for different tokens. Get the ID from the channel
-detail dialog in Slack (bottom of **About**), or from the channel URL.
+You do not have to know both halves of `config` by hand. Type just the name or
+just the id and `POST /api/v1/channel-connections/{id}/slack/resolve` fills in
+the other — that is what the Settings UI does behind its channel dialog. If
+you are scripting against the API directly:
+
+```http
+POST /api/v1/channel-connections/<connection id>/slack/resolve
+Content-Type: application/json
+
+{ "name": "platform-alerts" }
+```
+
+```json
+{ "conversation_id": "C0123456789", "conversation_name": "platform-alerts" }
+```
+
+(Or supply `"conversation_id"` instead of `"name"` to resolve the other way.)
+This is the one place oto reads Slack back at all — a metadata lookup at
+configuration time, never on the delivery path (ADR 0047).
 
 ### How oto stores these
 
@@ -231,10 +270,12 @@ All three are secret material and all three are treated as such.
   key comes from `OTO_SECURITY_SECRET_KEY` (base64 of 32 random bytes —
   `openssl rand -base64 32`). The keyring is versioned so keys can be rotated
   without re-entering credentials.
-- The oto API is **write-only** for secrets. `GET /api/v1/channels` will tell you
-  *which kind* of credential is attached and *when it was last rotated*. There is
-  no endpoint, anywhere, that returns a credential value. Nothing in the web UI
-  can display one.
+- The oto API is **write-only** for secrets. `GET /api/v1/channel-connections`
+  will tell you *which kind* of credential is attached and *when it was last
+  rotated* — the channel itself (`GET /api/v1/channels`) carries none of that
+  any more, only the `connection_id` to look it up by. There is no endpoint,
+  anywhere, that returns a credential value. Nothing in the web UI can display
+  one.
 - The signing secret is process configuration and lives wherever you put your
   other environment secrets.
 
@@ -268,11 +309,13 @@ it a member.
    channel in the settings UI. This runs the same probe oto uses for health: an
    `auth.test`, which proves the token is alive and needs no scope.
 
-   It deliberately does **not** check that the destination exists — that would
-   cost `channels:read` and `groups:read`, and oto learns the same thing at the
-   first delivery: `channel_not_found`, `is_archived` and `not_in_channel` are all
-   terminal, and oto marks the channel degraded and tells you which one it was
-   rather than retrying into a wall. So a green probe means "the token works";
+   It deliberately does **not** check that the destination exists, even though
+   oto now holds `channels:read`/`groups:read` for the settings resolver above —
+   the probe stays scope-minimal in spirit and learns the same fact at the
+   first delivery instead: `channel_not_found`, `is_archived` and
+   `not_in_channel` are all terminal, and oto marks the channel degraded and
+   tells you which one it was rather than retrying into a wall. So a green
+   probe means "the token works";
    send a test alert to prove the destination.
 2. The channel row should show the workspace and bot identity (`connected to Acme
    Corp as @oto`) rather than a bare green tick.

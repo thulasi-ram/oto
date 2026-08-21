@@ -234,6 +234,16 @@ func (r *Registry) ValidateConfig(ctx context.Context, t domain.Type, raw json.R
 	return p.ValidateConfig(ctx, raw)
 }
 
+// ValidateConnectionConfig validates a stored connection config against its
+// provider's ConnectionConfigSchema — the org-wide setup, not one channel's.
+func (r *Registry) ValidateConnectionConfig(ctx context.Context, t domain.Type, raw json.RawMessage) error {
+	p, err := r.Provider(t)
+	if err != nil {
+		return err
+	}
+	return p.ValidateConnectionConfig(ctx, raw)
+}
+
 // Open mints a Channel for one configured destination.
 func (r *Registry) Open(
 	ctx context.Context, t domain.Type, cfg domain.ChannelConfig, cred domain.Credential,
@@ -243,6 +253,26 @@ func (r *Registry) Open(
 		return nil, err
 	}
 	return p.Open(ctx, cfg, cred)
+}
+
+// ResolveConversation answers "what is the id of the channel named X" (or the
+// reverse), through a provider's OPTIONAL domain.ConversationResolver
+// capability. A provider that does not implement it — the generic webhook has
+// nothing to resolve — refuses with a validation error naming the type, rather
+// than a panic on a failed type assertion.
+func (r *Registry) ResolveConversation(
+	ctx context.Context, t domain.Type, cred domain.Credential, query domain.ConversationQuery,
+) (domain.ConversationResult, error) {
+	p, err := r.Provider(t)
+	if err != nil {
+		return domain.ConversationResult{}, err
+	}
+	resolver, ok := p.(domain.ConversationResolver)
+	if !ok {
+		return domain.ConversationResult{}, errs.Newf(errs.KindValidation, "conversation_resolution_unsupported",
+			"the %q provider cannot resolve a conversation name or id", t)
+	}
+	return resolver.ResolveConversation(ctx, cred, query)
 }
 
 // Types lists the registered channel types, sorted.

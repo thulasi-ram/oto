@@ -19,15 +19,15 @@ import (
 // this package: the three-model rule (CONTEXT.md §5.5) says a DTO may not embed a
 // row and a domain type may not be one. Mapping is explicit, in toDomain.
 type channelRow struct {
-	id        uuid.UUID
-	orgID     uuid.UUID
-	kind      string
-	name      string
-	config    []byte
-	credID    *uuid.UUID
-	caps      int64
-	renderer  string
-	verbosity string
+	id           uuid.UUID
+	orgID        uuid.UUID
+	kind         string
+	name         string
+	config       []byte
+	connectionID uuid.UUID
+	caps         int64
+	renderer     string
+	verbosity    string
 
 	threadUpdates  bool
 	showFieldEmoji bool
@@ -40,32 +40,27 @@ type channelRow struct {
 	createdAt time.Time
 	updatedAt time.Time
 	deletedAt *time.Time
-
-	// Joined from channel_credentials. Never the sealed blob.
-	credKind      *string
-	credRotatedAt *time.Time
 }
 
 // channelColumns is the projection every channel query selects, in scan order.
-// `c.` and `cc.` are spelled out because every read joins the credential meta.
+// `c.` is spelled out for symmetry with the connection join earlier callers
+// used to need for credential meta — the credential now lives a hop further
+// away, on the connection, and nothing here needs to see it.
 const channelColumns = `
-	c.id, c.org_id, c.type, c.name::text, c.config, c.credential_id, c.capabilities,
+	c.id, c.org_id, c.type, c.name::text, c.config, c.connection_id, c.capabilities,
 	c.renderer, c.verbosity, c.thread_updates, c.show_field_emoji, c.enabled,
 	c.health_status, c.health_error, c.health_checked_at,
-	c.created_at, c.updated_at, c.deleted_at,
-	cc.kind, cc.rotated_at`
+	c.created_at, c.updated_at, c.deleted_at`
 
 const channelFrom = `
-  FROM channels c
-  LEFT JOIN channel_credentials cc ON cc.id = c.credential_id AND cc.org_id = c.org_id`
+  FROM channels c`
 
 func (r *channelRow) scanDest() []any {
 	return []any{
-		&r.id, &r.orgID, &r.kind, &r.name, &r.config, &r.credID, &r.caps,
+		&r.id, &r.orgID, &r.kind, &r.name, &r.config, &r.connectionID, &r.caps,
 		&r.renderer, &r.verbosity, &r.threadUpdates, &r.showFieldEmoji, &r.enabled,
 		&r.healthStatus, &r.healthError, &r.healthCheckedAt,
 		&r.createdAt, &r.updatedAt, &r.deletedAt,
-		&r.credKind, &r.credRotatedAt,
 	}
 }
 
@@ -92,26 +87,24 @@ func (r *channelRow) toDomain() (domain.Instance, error) {
 	}
 
 	return domain.Instance{
-		ID:                  r.id,
-		OrgID:               r.orgID,
-		Type:                t,
-		Name:                r.name,
-		Config:              cfg,
-		CredentialID:        r.credID,
-		CredentialKind:      strOrEmpty(r.credKind),
-		CredentialRotatedAt: r.credRotatedAt,
-		Capabilities:        domain.Capability(uint32(r.caps)), //nolint:gosec // channels_caps_ck bounds it
-		Renderer:            domain.RendererID(r.renderer),
-		Verbosity:           domain.Verbosity(r.verbosity),
-		ThreadUpdates:       r.threadUpdates,
-		ShowFieldEmoji:      r.showFieldEmoji,
-		Enabled:             r.enabled,
-		Health:              h,
-		HealthError:         strOrEmpty(r.healthError),
-		HealthCheckedAt:     r.healthCheckedAt,
-		CreatedAt:           r.createdAt,
-		UpdatedAt:           r.updatedAt,
-		DeletedAt:           r.deletedAt,
+		ID:              r.id,
+		OrgID:           r.orgID,
+		Type:            t,
+		Name:            r.name,
+		Config:          cfg,
+		ConnectionID:    r.connectionID,
+		Capabilities:    domain.Capability(uint32(r.caps)), //nolint:gosec // channels_caps_ck bounds it
+		Renderer:        domain.RendererID(r.renderer),
+		Verbosity:       domain.Verbosity(r.verbosity),
+		ThreadUpdates:   r.threadUpdates,
+		ShowFieldEmoji:  r.showFieldEmoji,
+		Enabled:         r.enabled,
+		Health:          h,
+		HealthError:     strOrEmpty(r.healthError),
+		HealthCheckedAt: r.healthCheckedAt,
+		CreatedAt:       r.createdAt,
+		UpdatedAt:       r.updatedAt,
+		DeletedAt:       r.deletedAt,
 	}, nil
 }
 
@@ -244,7 +237,7 @@ func (r *ChannelRepository) List(
 // database would fail the FIRST health write on a new channel with a 23514: a
 // 500 on the first delivery, with nothing actually wrong.
 const insertChannelSQL = `
-INSERT INTO channels (id, org_id, type, name, config, credential_id, capabilities,
+INSERT INTO channels (id, org_id, type, name, config, connection_id, capabilities,
                       renderer, verbosity, thread_updates, show_field_emoji, enabled,
                       created_at, updated_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13)
@@ -269,6 +262,10 @@ func (r *ChannelRepository) Create(
 		return domain.Instance{}, errs.Internal("channel_name_missing",
 			errsMissing("a channel name is required"))
 	}
+	if in.ConnectionID == uuid.Nil {
+		return domain.Instance{}, errs.Internal("channel_connection_missing",
+			errsMissing("a channel connection is required"))
+	}
 	cfg := in.Config
 	if len(cfg) == 0 {
 		cfg = json.RawMessage(`{}`)
@@ -290,7 +287,7 @@ func (r *ChannelRepository) Create(
 
 	var stored uuid.UUID
 	err := r.db(ctx).QueryRow(ctx, insertChannelSQL,
-		newID, s.OrgID(), string(in.Type), in.Name, []byte(cfg), in.CredentialID,
+		newID, s.OrgID(), string(in.Type), in.Name, []byte(cfg), in.ConnectionID,
 		int64(in.Capabilities), string(renderer), string(verbosity),
 		in.ThreadUpdates, in.ShowFieldEmoji, in.Enabled, now,
 	).Scan(&stored)
@@ -318,14 +315,14 @@ const updateChannelSQL = `
 UPDATE channels SET
     name             = COALESCE($3, name),
     config           = COALESCE($4, config),
-    credential_id    = CASE WHEN $5 THEN $6 ELSE credential_id END,
-    capabilities     = COALESCE($7, capabilities),
-    renderer         = COALESCE($8, renderer),
-    verbosity        = COALESCE($9, verbosity),
-    thread_updates   = COALESCE($10, thread_updates),
-    show_field_emoji = COALESCE($11, show_field_emoji),
-    enabled          = COALESCE($12, enabled),
-    updated_at       = GREATEST(updated_at, $13)
+    connection_id    = COALESCE($5, connection_id),
+    capabilities     = COALESCE($6, capabilities),
+    renderer         = COALESCE($7, renderer),
+    verbosity        = COALESCE($8, verbosity),
+    thread_updates   = COALESCE($9, thread_updates),
+    show_field_emoji = COALESCE($10, show_field_emoji),
+    enabled          = COALESCE($11, enabled),
+    updated_at       = GREATEST(updated_at, $12)
  WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL
 RETURNING id`
 
@@ -346,19 +343,18 @@ func (r *ChannelRepository) Update(
 	}
 
 	var (
-		cfg     *[]byte
-		setCred bool
-		credVal *uuid.UUID
-		caps    *int64
-		rend    *string
-		verb    *string
+		cfg  *[]byte
+		conn *uuid.UUID
+		caps *int64
+		rend *string
+		verb *string
 	)
 	if p.Config != nil {
 		b := []byte(*p.Config)
 		cfg = &b
 	}
-	if p.CredentialID != nil {
-		setCred, credVal = true, *p.CredentialID
+	if p.ConnectionID != nil {
+		conn = p.ConnectionID
 	}
 	if p.Capabilities != nil {
 		v := int64(*p.Capabilities)
@@ -375,7 +371,7 @@ func (r *ChannelRepository) Update(
 
 	var stored uuid.UUID
 	err := r.db(ctx).QueryRow(ctx, updateChannelSQL,
-		s.OrgID(), channelID, p.Name, cfg, setCred, credVal, caps, rend, verb,
+		s.OrgID(), channelID, p.Name, cfg, conn, caps, rend, verb,
 		p.ThreadUpdates, p.ShowFieldEmoji, p.Enabled, r.clock.Now().UTC(),
 	).Scan(&stored)
 	if err != nil {

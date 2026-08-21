@@ -6,8 +6,10 @@
  * screen makes for itself; this component has no opinion on them.
  *
  * `standalone` (default) is for a row that *is* the whole filter bar, carrying
- * its own border and background — `/cases`, and the alert Timeline's
- * event-kind row. Pass `standalone={false}` for a row that is one of several
+ * its own border and background — the alert Timeline's event-kind row.
+ * `/cases` opts out of the border with `class="border-b-0"`, to read flush
+ * against the page the way `/alerts`'s toolbar does. Pass `standalone={false}`
+ * for a row that is one of several
  * sharing an ancestor which already supplies the border and background:
  * `FilterBar` stacks three such rows under one shell, so each row contributes
  * only its own bottom padding and the top inset comes from the shell (its

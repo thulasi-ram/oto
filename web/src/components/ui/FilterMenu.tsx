@@ -52,17 +52,53 @@ import { cn } from "~/lib/cn";
  * reads as one set of instruments rather than as whatever each screen reached
  * for. Exported because `/alerts` puts real Kobalte `Select`s in the same band
  * and they have to match.
+ *
+ * No border. Depth instead comes from one hue at three strengths, so a
+ * trigger's state reads as the same fill going deeper rather than as a
+ * different object switching on:
+ *
+ *   rest 35 % → hover 60 % → narrowing 100 % + `font-medium`
+ *
+ * A flat `bg-sunken` at rest was tried and dropped: it sits only one step
+ * off `bg-raised` (`#e9ddc0` vs `#f1e9d5`) as an *opaque* fill, so every
+ * trigger read as the same solid beige box whether it was narrowing anything
+ * or not — a second, competing chip language, and a harder call to make than
+ * a border was. A translucent low percentage of the same token gives every
+ * trigger a barely-there presence (so the bar reads as a row of controls, not
+ * bare words floating in space) while keeping the narrowing one unmistakably
+ * the deepest fill in the row — the eye still has exactly one place to land.
+ *
+ * `border-0` is explicit, not just an omission: `selectClass` in
+ * `features/alerts/FilterBar.tsx` lays this recipe over Kobalte's
+ * `SelectTrigger`, whose own base class hardcodes `border border-line` and a
+ * `bg-surface` fill (`components/ui/Select.tsx`) — a plain absence here would
+ * leave that default standing, and `Cluster`/`Since` would grow the border
+ * and the wrong opaque fill back while `Status`/`Severity`/`Group` sat on
+ * the translucent one.
  */
 export const FILTER_TRIGGER =
-  "inline-flex h-8 shrink-0 items-center gap-2xs rounded-control border px-sm text-item " +
-  "transition-colors duration-100";
+  "inline-flex h-7 shrink-0 cursor-pointer items-center gap-2xs rounded-control border-0 px-xs " +
+  "text-item transition-colors duration-100";
 export const FILTER_TRIGGER_OFF =
-  "border-line bg-transparent text-ink-muted hover:bg-raised hover:text-ink";
-export const FILTER_TRIGGER_ON = "border-line-strong bg-raised font-medium text-ink";
+  "bg-raised/35 text-ink-muted hover:bg-raised/60 hover:text-ink";
+export const FILTER_TRIGGER_ON = "bg-raised font-medium text-ink";
 
-/** A full-width control row inside a menu. */
+/**
+ * A full-width control row inside a menu.
+ *
+ * ⛔ `cursor-pointer` IS NOT DECORATION AND IT IS NOT REDUNDANT. Tailwind v4's
+ * preflight sets `button { cursor: default }` — reversing v3 — so a row that
+ * lights up under the cursor was still showing the arrow, which says "this
+ * highlight is not a click target" one pixel above a checkbox that is. The rows
+ * in `DropdownMenu`/`Select`/`Combobox` keep `cursor-default` on purpose: those
+ * are real listbox and menu items and they follow the platform's own menus.
+ * These are checkbox and choice rows inside a plain popover panel — the same
+ * thing `ToggleGroup` was before ADR 0033, and it has carried `cursor-pointer`
+ * all along.
+ */
 export const MENU_ROW =
-  "flex min-h-8 w-full items-center gap-xs rounded-control px-xs text-item transition-colors duration-100";
+  "flex min-h-8 w-full cursor-pointer items-center gap-xs rounded-control px-xs text-item " +
+  "transition-colors duration-100";
 export const MENU_ROW_QUIET = "text-ink-muted hover:bg-raised hover:text-ink";
 /** The one accent a menu may spend: the single-choice row you are currently in. */
 export const MENU_ROW_ACTIVE = "bg-accent-fill text-ink";
@@ -115,46 +151,67 @@ export interface FilterMenuProps {
  * anything and the trigger shows only its name, quietly; a string means it is,
  * and the trigger lifts and says what to. The axis name stays `text-ink-subtle`
  * in both cases, so the *value* is what the eye lands on — hierarchy from weight
- * and tone, at one size, because there is only one size a 32 px control can hold.
+ * and tone, at one size, because there is only one size a 28 px control can hold.
  *
  * The trigger's own text is its accessible name. No `aria-label` is added on
  * top: it would have to repeat the same two words, and a label that drifts from
  * the text beside it is worse than no label at all.
  */
-export const FilterMenu: ParentComponent<FilterMenuProps> = (props) => (
-  <Popover>
-    <PopoverTrigger
-      class={cn(
-        "group",
-        FILTER_TRIGGER,
-        props.value === undefined ? FILTER_TRIGGER_OFF : FILTER_TRIGGER_ON,
-      )}
-      title={props.title}
-    >
-      {props.leading}
-      <span class={cn("font-normal", props.value === undefined ? "" : "text-ink-subtle")}>
-        {props.label}
-      </span>
-      {/* ⛔ A REAL SPACE, NOT THE FLEX GAP. `gap-2xs` separates these two spans
-          on screen and not at all in the accessibility tree, where the name
-          would concatenate to "Severitycritical +1". A whitespace-only text run
-          is not rendered as a flex item (CSS Flexbox §4), so this costs no
-          layout and buys the trigger a name a screen reader can say. */}
-      {" "}
-      <Show when={props.value}>
-        {(value) => <span class="max-w-[9rem] truncate">{value()}</span>}
-      </Show>
-      <CaretGlyph />
-    </PopoverTrigger>
-    {/* `p-md` and a column of `gap-md` bands: a menu holding three axes needs
-        the axes to read as three things, and the only separator used here is
-        space — a hairline between every pair would draw more ink than the
-        controls do. */}
-    <PopoverContent class={cn(props.width ?? "w-72", "p-md")}>
-      <div class="flex flex-col gap-md">{props.children}</div>
-    </PopoverContent>
-  </Popover>
-);
+export const FilterMenu: ParentComponent<FilterMenuProps> = (props) => {
+  // ⛔ FOCUS LANDS ON THE PANEL, NOT ON ITS FIRST ROW. Kobalte's default
+  // `onOpenAutoFocus` moves focus straight to the first tabbable descendant —
+  // here, the `All`/currently-checked row — so the very act of clicking the
+  // trigger leaves a keyboard user's element focused, and the browser's own
+  // `:focus-visible` heuristic (see `index.css`'s U7 rule) reads a script-moved
+  // focus as keyboard-worthy and rings it, on a plain mouse open. Focusing the
+  // panel itself instead — `tabIndex={-1}`, already `outline-none` in
+  // `Popover.tsx` — gives the popover a focus target with nothing to ring, and
+  // a keyboard user who then presses Tab still reaches the first row and gets
+  // a real, deserved ring.
+  let panel: HTMLDivElement | undefined;
+  return (
+    <Popover>
+      <PopoverTrigger
+        class={cn(
+          "group",
+          FILTER_TRIGGER,
+          props.value === undefined ? FILTER_TRIGGER_OFF : FILTER_TRIGGER_ON,
+        )}
+        title={props.title}
+      >
+        {props.leading}
+        <span class={cn("font-normal", props.value === undefined ? "" : "text-ink-subtle")}>
+          {props.label}
+        </span>
+        {/* ⛔ A REAL SPACE, NOT THE FLEX GAP. `gap-2xs` separates these two spans
+            on screen and not at all in the accessibility tree, where the name
+            would concatenate to "Severitycritical +1". A whitespace-only text run
+            is not rendered as a flex item (CSS Flexbox §4), so this costs no
+            layout and buys the trigger a name a screen reader can say. */}
+        {" "}
+        <Show when={props.value}>
+          {(value) => <span class="max-w-[9rem] truncate">{value()}</span>}
+        </Show>
+        <CaretGlyph />
+      </PopoverTrigger>
+      {/* `p-md` and a column of `gap-md` bands: a menu holding three axes needs
+          the axes to read as three things, and the only separator used here is
+          space — a hairline between every pair would draw more ink than the
+          controls do. */}
+      <PopoverContent
+        ref={panel}
+        tabIndex={-1}
+        class={cn(props.width ?? "w-72", "p-md")}
+        onOpenAutoFocus={(e) => {
+          e.preventDefault();
+          panel?.focus();
+        }}
+      >
+        <div class="flex flex-col gap-md">{props.children}</div>
+      </PopoverContent>
+    </Popover>
+  );
+};
 
 /**
  * A labelled band inside a menu.

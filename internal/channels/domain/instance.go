@@ -92,9 +92,11 @@ func (t Type) Valid() bool { return t == TypeSlack || t == TypeWebhook }
 
 // Instance is one CONFIGURED DESTINATION INSTANCE — a row of `channels`.
 //
-// ⛔ It carries a `CredentialID` and NEVER credential material. The secret lives
-// sealed in `channel_credentials` and is unsealed only at the moment a provider
-// is opened, which is why no field here could hold one even by accident.
+// ⛔ IT NO LONGER CARRIES A CREDENTIAL AT ALL, sealed or otherwise. The secret
+// lives on the Connection this Instance references (`ConnectionID`), sealed in
+// `channel_credentials` and unsealed only at the moment a provider is opened. A
+// Connection is set up once per Slack workspace or webhook receiver family;
+// several Instances share one.
 type Instance struct {
 	ID    uuid.UUID
 	OrgID uuid.UUID
@@ -106,13 +108,11 @@ type Instance struct {
 	// served back verbatim.
 	Config json.RawMessage
 
-	// CredentialID names the sealed secret, or is nil. channels_cred_ck makes it
-	// MANDATORY for a `slack` instance.
-	CredentialID *uuid.UUID
-	// CredentialKind and CredentialRotatedAt are the safe-to-show half of the
-	// credential, joined in for the detail view.
-	CredentialKind      string
-	CredentialRotatedAt *time.Time
+	// ConnectionID names the org-wide connection this destination opens through.
+	// Mandatory for every type: `channels.connection_id` is NOT NULL. A channel's
+	// type must equal its connection's type — no CHECK can see across the two
+	// tables, so `channels/api` enforces it.
+	ConnectionID uuid.UUID
 
 	Capabilities Capability
 	// Renderer is `channels.renderer`; "default" resolves to the provider's own.
@@ -182,9 +182,9 @@ type NewInstance struct {
 	Type   Type
 	Name   string
 	Config json.RawMessage
-	// CredentialID is nil when the provider needs no secret. channels_cred_ck
-	// makes it MANDATORY for `slack`, and that rule is the database's.
-	CredentialID *uuid.UUID
+	// ConnectionID names the org-wide connection this destination opens through.
+	// Mandatory: `channels.connection_id` is NOT NULL.
+	ConnectionID uuid.UUID
 	Capabilities Capability
 	Renderer     RendererID
 	Verbosity    Verbosity
@@ -208,9 +208,10 @@ type NewInstance struct {
 type InstancePatch struct {
 	Name   *string
 	Config *json.RawMessage
-	// CredentialID is a double pointer: nil leaves it, a pointer to nil detaches
-	// it, a pointer to a pointer attaches a new one.
-	CredentialID   **uuid.UUID
+	// ConnectionID re-points this destination at a different connection.
+	// ⛔ THE PATCH DOES NOT CHECK the new connection's type matches — that is
+	// `channels/api`'s job, for the same reason `Type` itself is absent below.
+	ConnectionID   *uuid.UUID
 	Capabilities   *Capability
 	Renderer       *RendererID
 	Verbosity      *Verbosity
@@ -221,7 +222,7 @@ type InstancePatch struct {
 
 // IsEmpty reports whether the patch would change nothing.
 func (p InstancePatch) IsEmpty() bool {
-	return p.Name == nil && p.Config == nil && p.CredentialID == nil &&
+	return p.Name == nil && p.Config == nil && p.ConnectionID == nil &&
 		p.Capabilities == nil && p.Renderer == nil && p.Verbosity == nil &&
 		p.ThreadUpdates == nil && p.ShowFieldEmoji == nil && p.Enabled == nil
 }

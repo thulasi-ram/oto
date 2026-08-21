@@ -13,6 +13,7 @@ import type {
   AlertRef,
   ApiToken,
   Channel,
+  ChannelConnection,
   Cluster,
   DeliveryDrill,
   Notification,
@@ -200,12 +201,27 @@ export function channel(patch: Partial<Channel> = {}): Channel {
     type: "slack",
     name: "#sre-alerts",
     config: { channel_id: "C0123456789" },
+    connection_id: "7c1d8e9f-6a0b-4c1d-8e9f-6a0b4c1d8e9f",
     renderer: "slack.default",
     verbosity: "status_changes",
     thread_updates: true,
     show_field_emoji: true,
     enabled: true,
     health_status: "healthy",
+    created_at: T0,
+    updated_at: T0,
+    ...patch,
+  };
+}
+
+export function channelConnection(patch: Partial<ChannelConnection> = {}): ChannelConnection {
+  return {
+    id: "7c1d8e9f-6a0b-4c1d-8e9f-6a0b4c1d8e9f",
+    type: "slack",
+    name: "Acme Slack workspace",
+    config: { team_id: "T9TK3CUKW" },
+    credential_kind: "slack_bot_token",
+    credential_rotated_at: T0,
     created_at: T0,
     updated_at: T0,
     ...patch,

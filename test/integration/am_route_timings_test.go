@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 74 {
-		t.Fatalf("latest migration is %d, want 74 — this test pins the number so that a "+
+	if latest != 75 {
+		t.Fatalf("latest migration is %d, want 75 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1594,7 +1594,7 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// and nothing else — see its own ⛔ block for why an `UPDATE` restoring a grace
 	// nobody wrote would be worse than restoring nothing.
 	//
-	// ⛔ THE STEPS BELOW ARE CONTIGUOUS AND MUST STAY THAT WAY: 74, 73, 72, 71, 70, 69, and then
+	// ⛔ THE STEPS BELOW ARE CONTIGUOUS AND MUST STAY THAT WAY: 75, 74, 73, 72, 71, 70, 69, and then
 	// every migration under 69 in turn. `down` asserts the top applied version before it
 	// rolls anything back, so a skipped step does not silently roll back an unasserted
 	// migration — it fails as "about to roll back 00069, but the top applied migration is
@@ -1607,7 +1607,75 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// ⚠️ A NEW MIGRATION IS THEREFORE TWO EDITS AND NOT ONE: the pin at the top of this
 	// function, AND a `down(N)` step here with assertions on both sides of it. Bumping
 	// only the pin is how this test quietly shrinks.
-	// ⭐ 00074'S DOWN IS THE FIRST STEP, AND ITS GUARD IS THE ONE AN OPERATOR WILL
+	// ⭐ 00075'S DOWN IS THE FIRST STEP, AND IT IS THE ONE THAT CANNOT BE HALF-DONE.
+	// ADR 0047 split a `channels` row in two: the org-wide credential became a
+	// `channel_connections` row, and `channels.credential_id` was replaced by a NOT
+	// NULL `connection_id`. Rolling that back is three coupled edits — drop the
+	// column, restore the old one with its CHECK, drop the table — and any one of
+	// them alone leaves a schema no release has ever run against.
+	//
+	// ⛔ ITS GUARD IS DELIBERATELY NOT EXERCISED HERE, for the reason 00073's and
+	// 00074's are not: the Down raises if any channel or connection exists, because
+	// there is no honest answer to "which of the five channels sharing this bot
+	// token keeps it". Firing it would abort the rollback and take all forty steps
+	// below with it. What is proven here is the CLEAN path — no channels seeded yet
+	// at this height, so the `DO $$` block runs, counts zero and falls through,
+	// which is the failure mode an unrun Down actually has: a wrong column name in
+	// the guard fails on its first execution, and this is it.
+	//
+	// ⚠️ AND THE CREDENTIAL-KIND CHECK IS ASSERTED SEPARATELY FROM THE COLUMNS. Up
+	// widened `channel_credentials_kind_ck` to admit `webhook_signing_secret`; a
+	// Down that restored the two columns and forgot the enum leaves a database that
+	// accepts a kind the release below it cannot interpret. No column reading can
+	// see that, and it is the half most likely to be forgotten because nothing
+	// references it.
+	if n := countTables("channel_connections"); n != 1 {
+		t.Fatalf("channel_connections is absent at migration 75 (found %d); 00075's Up exists "+
+			"to create the table a channel now answers to", n)
+	}
+	if n := countColumns("channels", "connection_id"); n != 1 {
+		t.Fatalf("channels.connection_id is absent at migration 75 (found %d)", n)
+	}
+	if n := countColumns("channels", "credential_id"); n != 0 {
+		t.Fatal("channels.credential_id still exists at migration 75; 00075's Up moves the " +
+			"credential onto the connection and drops this column")
+	}
+	if got := columnNullability("channels", "connection_id"); got != "NO" {
+		t.Fatalf("channels.connection_id is is_nullable=%q at migration 75, want NO — a "+
+			"nullable one would let a channel exist with no provider setup at all, which is "+
+			"the state ADR 0047 exists to make unrepresentable", got)
+	}
+
+	down(75)
+
+	if n := countTables("channel_connections"); n != 0 {
+		t.Fatalf("channel_connections survives 00075's Down (found %d); the table is the whole "+
+			"of what the Up added and a rolled-back database must not carry it", n)
+	}
+	if n := countColumns("channels", "connection_id"); n != 0 {
+		t.Fatal("channels.connection_id survives 00075's Down — the column references a table " +
+			"the same Down drops, so leaving it is a dangling FK the release below cannot write")
+	}
+	if n := countColumns("channels", "credential_id"); n != 1 {
+		t.Fatalf("channels.credential_id was not restored by 00075's Down (found %d); the "+
+			"release this rolls back to reads a channel's credential off this column, and "+
+			"without it every Slack send is a scan error rather than a delivery", n)
+	}
+	if def := constraintDef("channels_cred_ck", "channels"); def == "" {
+		t.Fatal("channels_cred_ck was not restored by 00075's Down; the column came back " +
+			"without the CHECK that makes a slack channel carry a credential, so the schema " +
+			"admits a Slack destination with no token — exactly what 00011 forbade")
+	}
+	if def := constraintDef("channel_credentials_kind_ck", "channel_credentials"); def == "" {
+		t.Fatal("channel_credentials_kind_ck is absent after 00075's Down")
+	} else if strings.Contains(def, "webhook_signing_secret") {
+		t.Fatalf("channel_credentials_kind_ck still admits webhook_signing_secret after "+
+			"00075's Down: %s\n\nThe kind was added by the Up and nothing below this "+
+			"migration can interpret it — a stored row of that kind would be unopenable by "+
+			"the release this rolls back to", def)
+	}
+
+	// ⭐ 00074'S DOWN IS ALSO GUARDED, AND ITS GUARD IS THE ONE AN OPERATOR WILL
 	// ACTUALLY MEET. Re-adding `NOT NULL` is the CONTRACT direction: it can fail, and it
 	// fails on real data rather than on a schema mistake. The Down carries a `DO $$`
 	// block that counts the NULL-email rows, names what they are — Slack pressers oto

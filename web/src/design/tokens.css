@@ -267,14 +267,15 @@
   --oto-type-page: 18px; /* the page heading, and nothing else */
 
   /* Radius. Three tiers, and the tier is chosen by what the corner belongs to,
-     not by how big it looks: inline things, controls, surfaces. All three are
-     0px as of ADR 0031 — sharp corners, Bloomberg-terminal/Swiss-Modernist
-     geometry — an explicit override of the census this scale was originally
-     derived from (§M.8), not a re-derivation. `rounded-full`/`rounded-none`
-     stay available for shapes (dots, avatars). */
-  --oto-radius-chip: 0px; /* inline: badges, chips, code spans, skeletons */
-  --oto-radius-control: 0px; /* buttons, inputs, wells, nav items, bordered boxes */
-  --oto-radius-surface: 0px; /* panels, dialogs — anything that holds controls */
+     not by how big it looks: inline things, controls, surfaces. ADR 0031 took
+     all three to 0px for a Bloomberg-terminal/Swiss-Modernist sharp-corners
+     read; ADR 0046 restores the values ADR 0029's census derived them from —
+     the tier structure was never in dispute, only whether the corner itself
+     should be visible. `rounded-full`/`rounded-none` stay available for
+     shapes (dots, avatars). */
+  --oto-radius-chip: 3px; /* inline: badges, chips, code spans, skeletons */
+  --oto-radius-control: 4px; /* buttons, inputs, wells, nav items, bordered boxes */
+  --oto-radius-surface: 6px; /* panels, dialogs — anything that holds controls */
 
   /* Spacing. Named by size rather than by role, unlike type/radius above —
      padding and gap are used in too many structural contexts for a role name

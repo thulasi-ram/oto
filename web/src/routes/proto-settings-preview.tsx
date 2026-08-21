@@ -140,7 +140,20 @@ const CHANNEL_TYPES: readonly ChannelTypeDescriptor[] = [
   {
     type: "slack",
     display_name: "Slack",
-    credential_kinds: ["slack_bot_token"],
+    credential_kinds: [],
+    connection_credential_kinds: ["slack_bot_token"],
+    connection_config_schema: {
+      type: "object",
+      required: ["team_id"],
+      properties: {
+        team_id: {
+          type: "string",
+          title: "Workspace",
+          description: "The Slack team id the bot token belongs to.",
+          maxLength: 32,
+        },
+      },
+    },
     capabilities: ["threading", "amend", "rich_layout"],
     renderers: ["slack.default"],
     config_schema: {
@@ -151,12 +164,6 @@ const CHANNEL_TYPES: readonly ChannelTypeDescriptor[] = [
           type: "string",
           title: "Conversation",
           description: "The channel id oto posts into. Not the name — ids survive renames.",
-          maxLength: 32,
-        },
-        team_id: {
-          type: "string",
-          title: "Workspace",
-          description: "The Slack team id the bot token belongs to.",
           maxLength: 32,
         },
         max_instances: {
@@ -177,7 +184,9 @@ const CHANNEL_TYPES: readonly ChannelTypeDescriptor[] = [
   {
     type: "webhook",
     display_name: "Webhook",
-    credential_kinds: ["bearer", "basic", "none"],
+    credential_kinds: [],
+    connection_credential_kinds: ["bearer", "basic", "webhook_signing_secret", "none"],
+    connection_config_schema: { type: "object", properties: {} },
     capabilities: ["dedupe_key"],
     renderers: ["webhook.json"],
     config_schema: {

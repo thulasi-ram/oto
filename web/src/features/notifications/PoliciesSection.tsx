@@ -35,9 +35,12 @@ import * as v from "valibot";
 import { maxLengthOf, maxValueOf, minLengthOf, minValueOf } from "~/api/bounds";
 import { violationsByField } from "~/api/client";
 import {
+  createChannel,
   createPolicy,
   deletePolicy,
   previewPolicy,
+  resolveSlackConversation,
+  updateChannel,
   updatePolicy,
 } from "~/api/endpoints";
 import {
@@ -45,18 +48,28 @@ import {
   MatcherDTOSchema,
   NotificationReasonSchema,
   UuidSchema,
+  VerbositySchema,
 } from "~/api/generated/validators";
 import { qk } from "~/api/keys";
-import { channelsQuery, policiesQuery, recentAlertsQuery } from "~/api/queries";
+import {
+  channelConnectionsQuery,
+  channelsQuery,
+  channelTypesQuery,
+  policiesQuery,
+  recentAlertsQuery,
+} from "~/api/queries";
 import type {
   Alert,
   Channel,
+  ChannelConnection,
+  ChannelTypeDescriptor,
   CreatePolicyRequest,
   Matcher,
   NotificationReason,
   NotificationSuppressedReason,
   Policy,
   PolicyPreview,
+  Verbosity,
 } from "~/api/types";
 import { Button } from "~/components/ui/Button";
 import { Checkbox } from "~/components/ui/Checkbox";
@@ -80,6 +93,7 @@ import {
 import {
   Select,
   SelectContent,
+  SelectErrorMessage,
   SelectHiddenSelect,
   SelectItem,
   SelectLabel,
@@ -100,6 +114,14 @@ import { cn } from "~/lib/cn";
 import { idempotencyKey } from "~/lib/format";
 import { formatMatchers, parseMatchers } from "~/lib/matchers";
 import { MatcherInput } from "~/features/alerts/MatcherInput";
+import { SchemaForm } from "~/features/settings/SchemaForm";
+import {
+  cleanConfig,
+  initialConfig,
+  readFields,
+  validateConfig,
+  type JsonValue,
+} from "~/features/settings/jsonSchema";
 
 /*
  * The form rhythm is `features/settings`', and the import path is the only thing
@@ -441,6 +463,8 @@ const PolicyDialog: Component<{
   const [matcherText, setMatcherText] = createSignal("");
   const [reasons, setReasons] = createSignal<readonly NotificationReason[]>(["fired", "all_resolved"]);
   const [channelIds, setChannelIds] = createSignal<readonly string[]>([]);
+  // "new" opens the create flow; a Channel opens it pre-filled for editing.
+  const [channelDialog, setChannelDialog] = createSignal<Channel | "new" | null>(null);
   const [seeded, setSeeded] = createSignal(false);
   // Nothing complains until something has been typed: a dialog that opens
   // already shouting at an empty name is a dialog people learn to ignore.
@@ -533,6 +557,7 @@ const PolicyDialog: Component<{
   const violations = (): ReadonlyMap<string, string> => violationsByField(mutation.error);
 
   return (
+    <>
     <Modal
       open={props.open}
       onOpenChange={(isOpen) => {
@@ -640,6 +665,8 @@ const PolicyDialog: Component<{
             setChannelIds(next);
           }}
           error={localError("channel_ids") ?? violations().get("channel_ids")}
+          onCreateNew={() => setChannelDialog("new")}
+          onEdit={(c) => setChannelDialog(c)}
         />
 
         <div class={FIELD}>
@@ -697,6 +724,20 @@ const PolicyDialog: Component<{
         </ModalFooter>
       </ModalContent>
     </Modal>
+
+    <ChannelCreateDialog
+      open={channelDialog() !== null}
+      channel={(() => {
+        const cd = channelDialog();
+        return cd === "new" ? null : cd;
+      })()}
+      onClose={() => setChannelDialog(null)}
+      onCreated={(id) => {
+        setTouched(true);
+        setChannelIds([...channelIds(), id]);
+      }}
+    />
+    </>
   );
 };
 
@@ -735,6 +776,13 @@ const ChannelPicker: Component<{
   readonly value: readonly string[];
   readonly onChange: (next: readonly string[]) => void;
   readonly error: string | undefined;
+  /** Opens the create-a-channel dialog. Channel creation lives here now, not
+   * in Settings (ADR 0047) — this is where an operator is already naming a
+   * destination for a routing rule. */
+  readonly onCreateNew: () => void;
+  /** Opens the same dialog against an already-picked channel, so its
+   * verbosity/enabled/config can be changed without a trip anywhere else. */
+  readonly onEdit: (channel: Channel) => void;
 }> = (props) => {
   /**
    * The chosen channels as the OBJECTS the picker offers, resolved out of
@@ -764,9 +812,15 @@ const ChannelPicker: Component<{
         when={props.channels.length > 0}
         fallback={
           <>
-            <span class={LABEL}>Tell these channels</span>
+            <div class="flex items-center justify-between">
+              <span class={LABEL}>Tell these channels</span>
+              <Button size="sm" variant="secondary" onClick={props.onCreateNew}>
+                + New channel
+              </Button>
+            </div>
             <p class={HELP}>
-              There are no channels yet, so this policy would have nowhere to send.
+              There are no channels yet, so this policy would have nowhere to send. Create one
+              under an existing connection — see Settings → Connections if none exist either.
             </p>
           </>
         }
@@ -794,7 +848,12 @@ const ChannelPicker: Component<{
             </ComboboxItem>
           )}
         >
-          <ComboboxLabel class="block">Tell these channels</ComboboxLabel>
+          <div class="flex items-center justify-between">
+            <ComboboxLabel class="block">Tell these channels</ComboboxLabel>
+            <Button size="sm" variant="secondary" onClick={props.onCreateNew}>
+              + New channel
+            </Button>
+          </div>
           <ComboboxControl<Channel>>
             {(state) => (
               <>
@@ -804,7 +863,14 @@ const ChannelPicker: Component<{
                 <For each={state.selectedOptions()}>
                   {(c) => (
                     <span class="inline-flex items-center gap-2xs rounded-chip border border-line bg-raised py-0.5 pl-1.5 pr-0.5 text-meta text-ink">
-                      {c.name}
+                      <button
+                        type="button"
+                        class="hover:underline"
+                        aria-label={`Edit ${c.name}`}
+                        onClick={() => props.onEdit(c)}
+                      >
+                        {c.name}
+                      </button>
                       <button
                         type="button"
                         class="flex size-4 items-center justify-center rounded-chip text-ink-subtle hover:bg-surface hover:text-ink"
@@ -859,6 +925,419 @@ const ChannelPicker: Component<{
         )}
       </Show>
     </div>
+  );
+};
+
+/* -------------------------------------------------------------------------- */
+/* Creating (or editing) one channel, inline                                  */
+/* -------------------------------------------------------------------------- */
+
+/** Every verbosity, read from the contract's own enum — same reasoning as REASONS. */
+const VERBOSITIES: readonly Verbosity[] = VerbositySchema.options;
+
+/**
+ * The channel dialog that used to live in Settings.
+ *
+ * ⭐ THE CONNECTION IS PICKED FIRST, AND IT DECIDES EVERYTHING ELSE. A channel's
+ * `type` is its connection's `type` — there is no separate provider choice
+ * here, because asking for one would let an operator name a mismatch the
+ * server would refuse anyway (`checkConnectionType`, ADR 0047). Once a
+ * connection is picked, Slack gets the name↔id resolver; a webhook gets its
+ * ordinary schema-driven config form.
+ */
+const ChannelCreateDialog: Component<{
+  readonly open: boolean;
+  readonly channel: Channel | null;
+  readonly onClose: () => void;
+  /** Fired once, on a successful CREATE only, so the new channel can be
+   * added straight to the policy's own selection. */
+  readonly onCreated: (id: string) => void;
+}> = (props) => {
+  const client = useQueryClient();
+  const editing = (): boolean => props.channel !== null;
+
+  const connections = useQuery(() => channelConnectionsQuery());
+  const types = useQuery(() => channelTypesQuery());
+
+  const [connectionId, setConnectionId] = createSignal<string | null>(null);
+  const [name, setName] = createSignal("");
+  const [verbosity, setVerbosity] = createSignal<Verbosity>("status_changes");
+  const [enabled, setEnabled] = createSignal(true);
+  const [config, setConfig] = createSignal<Record<string, JsonValue>>({});
+
+  // Slack-only: the name↔id resolver's state. `locked` names which field was
+  // TYPED — the other was DERIVED from it by the connection's own bot token,
+  // and stays read-only until "Clear" gives both fields back.
+  const [conversationName, setConversationName] = createSignal("");
+  const [conversationId, setConversationId] = createSignal("");
+  const [locked, setLocked] = createSignal<"name" | "id" | null>(null);
+  const [resolving, setResolving] = createSignal<"name" | "id" | null>(null);
+
+  const [showErrors, setShowErrors] = createSignal(false);
+  const [dirty, setDirty] = createSignal(false);
+
+  const connection = createMemo(() =>
+    connections.data?.data.find((c) => c.id === connectionId()) ?? null,
+  );
+  const descriptor = createMemo<ChannelTypeDescriptor | undefined>(() =>
+    types.data?.find((t) => t.type === connection()?.type),
+  );
+  const isSlack = createMemo(() => connection()?.type === "slack");
+  const fields = createMemo(() => (isSlack() ? [] : readFields(descriptor()?.config_schema)));
+
+  const seed = (): void => {
+    const channel = props.channel;
+    setLocked(null);
+    setResolving(null);
+    if (channel !== null) {
+      setConnectionId(channel.connection_id);
+      setName(channel.name);
+      setVerbosity(channel.verbosity);
+      setEnabled(channel.enabled);
+      const cfg = channel.config as Record<string, JsonValue>;
+      setConversationId(typeof cfg.conversation_id === "string" ? cfg.conversation_id : "");
+      setConversationName(typeof cfg.conversation_name === "string" ? cfg.conversation_name : "");
+      setConfig(cfg);
+    } else {
+      setConnectionId(null);
+      setName("");
+      setVerbosity("status_changes");
+      setEnabled(true);
+      setConversationId("");
+      setConversationName("");
+      setConfig({});
+    }
+    setShowErrors(false);
+  };
+
+  createEffect(() => {
+    if (props.open && !dirty()) {
+      setDirty(true);
+      seed();
+    } else if (!props.open && dirty()) {
+      setDirty(false);
+    }
+  });
+
+  // Switching connections on a fresh create clears whatever the previous
+  // provider's fields held — a webhook URL means nothing once Slack is picked.
+  createEffect(() => {
+    const id = connectionId();
+    if (editing() || id === null) return;
+    setConversationId("");
+    setConversationName("");
+    setLocked(null);
+    queueMicrotask(() => setConfig(initialConfig(fields())));
+  });
+
+  const resolve = useMutation(() => ({
+    mutationFn: (query: { name?: string; conversation_id?: string }) => {
+      const id = connectionId();
+      if (id === null) throw new Error("no connection selected");
+      return resolveSlackConversation(id, query);
+    },
+    onSuccess: (result) => {
+      if (resolving() === "name") {
+        setConversationId(result.conversation_id);
+        setLocked("name");
+      } else if (resolving() === "id") {
+        setConversationName(result.conversation_name);
+        setLocked("id");
+      }
+      setResolving(null);
+    },
+    onError: () => setResolving(null),
+  }));
+
+  const resolveFromName = (): void => {
+    if (locked() === "id") return;
+    const value = conversationName().trim();
+    if (value === "") return;
+    setResolving("name");
+    resolve.mutate({ name: value });
+  };
+
+  const resolveFromId = (): void => {
+    if (locked() === "name") return;
+    const value = conversationId().trim();
+    if (value === "") return;
+    setResolving("id");
+    resolve.mutate({ conversation_id: value });
+  };
+
+  const localErrors = createMemo(() => (isSlack() ? new Map() : validateConfig(fields(), config())));
+
+  const canSubmit = createMemo(
+    () =>
+      connectionId() !== null &&
+      name().trim() !== "" &&
+      (isSlack() ? conversationId().trim() !== "" : localErrors().size === 0),
+  );
+
+  const mutation = useMutation(() => ({
+    mutationFn: () => {
+      const cfg = isSlack()
+        ? {
+            conversation_id: conversationId().trim(),
+            ...(conversationName().trim() !== "" ? { conversation_name: conversationName().trim() } : {}),
+          }
+        : cleanConfig(fields(), config());
+      const channel = props.channel;
+      if (channel !== null) {
+        return updateChannel(channel.id, {
+          name: name().trim(),
+          config: cfg,
+          // The connection Select is disabled while editing, so this only ever
+          // restates the channel's own connection_id.
+          connection_id: connectionId() ?? channel.connection_id,
+          verbosity: verbosity(),
+          enabled: enabled(),
+        });
+      }
+      return createChannel(
+        {
+          type: connection()?.type ?? "slack",
+          name: name().trim(),
+          config: cfg,
+          connection_id: connectionId() ?? "",
+          verbosity: verbosity(),
+          enabled: enabled(),
+          thread_updates: true,
+          show_field_emoji: true,
+        },
+        idempotencyKey(),
+      );
+    },
+    onSuccess: (result) => {
+      void client.invalidateQueries({ queryKey: qk.settings.channels() });
+      if (props.channel === null) props.onCreated(result.id);
+      props.onClose();
+    },
+  }));
+
+  const violations = (): ReadonlyMap<string, string> => violationsByField(mutation.error);
+
+  return (
+    <Modal
+      open={props.open}
+      onOpenChange={(isOpen) => {
+        if (!isOpen) {
+          setDirty(false);
+          props.onClose();
+        }
+      }}
+    >
+      <ModalContent>
+        <ModalHeader>
+          <ModalTitle>{editing() ? `Edit ${props.channel?.name ?? "channel"}` : "Add a channel"}</ModalTitle>
+          <ModalDescription>
+            One destination under an existing connection. The connection carries the credential;
+            nothing about it is set here.
+          </ModalDescription>
+        </ModalHeader>
+
+        <div class={cn(FORM, "text-item leading-relaxed text-ink")}>
+          <Show when={mutation.error !== null}>
+            <ErrorBanner error={mutation.error} />
+          </Show>
+
+          <Show
+            when={(connections.data?.data.length ?? 0) > 0}
+            fallback={
+              <p class={HELP}>
+                No connections are set up yet. An admin sets one up once, in Settings →
+                Connections — a Slack workspace's bot token, or a webhook receiver's shared
+                credential.
+              </p>
+            }
+          >
+            <Select<ChannelConnection>
+              class={FIELD}
+              options={connections.data?.data ?? []}
+              optionValue="id"
+              optionTextValue={(c) => `${c.name} ${c.type}`}
+              value={connection()}
+              onChange={(next) => setConnectionId(next?.id ?? null)}
+              disabled={editing()}
+              itemComponent={(itemProps) => (
+                <SelectItem item={itemProps.item}>
+                  {itemProps.item.rawValue.name}
+                  <span class="ml-sm text-meta text-ink-subtle">{itemProps.item.rawValue.type}</span>
+                </SelectItem>
+              )}
+            >
+              <SelectLabel>
+                Connection
+                <span class="ml-0.5 text-ink-subtle" aria-hidden="true">
+                  *
+                </span>
+              </SelectLabel>
+              <SelectTrigger id="ch-connection">
+                <SelectValue<ChannelConnection>>
+                  {(state) => `${state.selectedOption().name} (${state.selectedOption().type})`}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectHiddenSelect />
+              <SelectContent />
+            </Select>
+          </Show>
+
+          <TextField
+            class={FIELD}
+            value={name()}
+            validationState={
+              (violations().get("name") ??
+              (showErrors() && name().trim() === "" ? "A name is required." : undefined))
+                ? "invalid"
+                : "valid"
+            }
+            onChange={setName}
+          >
+            <TextFieldLabel>
+              Name
+              <span class="ml-0.5 text-ink-subtle" aria-hidden="true">
+                *
+              </span>
+            </TextFieldLabel>
+            <TextFieldInput id="ch-name" placeholder="#sre-alerts" />
+            <TextFieldDescription class={HELP}>
+              Unique within the org, compared case-insensitively.
+            </TextFieldDescription>
+            <TextFieldErrorMessage role="alert">
+              {violations().get("name") ??
+                (showErrors() && name().trim() === "" ? "A name is required." : undefined)}
+            </TextFieldErrorMessage>
+          </TextField>
+
+          <Show when={connection() !== null && isSlack()}>
+            <fieldset>
+              <legend class={LEGEND}>Slack channel</legend>
+              <div class={FIELD_ROW}>
+                <TextField
+                  class={cn(FIELD, "flex-1")}
+                  value={conversationName()}
+                  disabled={locked() === "id"}
+                  onChange={setConversationName}
+                >
+                  <TextFieldLabel>Channel name</TextFieldLabel>
+                  <TextFieldInput
+                    id="ch-conv-name"
+                    placeholder="sre-alerts"
+                    onBlur={resolveFromName}
+                  />
+                  <TextFieldDescription class={HELP}>
+                    {locked() === "id"
+                      ? "Filled in from the id — read-only until you clear it."
+                      : "Leave the box to resolve its id."}
+                  </TextFieldDescription>
+                </TextField>
+                <TextField
+                  class={cn(FIELD, "flex-1")}
+                  value={conversationId()}
+                  disabled={locked() === "name"}
+                  validationState={violations().get("config/conversation_id") ? "invalid" : "valid"}
+                  onChange={setConversationId}
+                >
+                  <TextFieldLabel>Channel id</TextFieldLabel>
+                  <TextFieldInput
+                    id="ch-conv-id"
+                    placeholder="C0123456789"
+                    onBlur={resolveFromId}
+                  />
+                  <TextFieldDescription class={HELP}>
+                    {locked() === "name"
+                      ? "Filled in from the name — read-only until you clear it."
+                      : "Or paste the id directly."}
+                  </TextFieldDescription>
+                  <TextFieldErrorMessage role="alert">
+                    {violations().get("config/conversation_id")}
+                  </TextFieldErrorMessage>
+                </TextField>
+              </div>
+              <Show when={resolving() !== null}>
+                <p class={HELP}>Asking Slack…</p>
+              </Show>
+              <Show when={resolve.isError}>
+                <p class="text-meta font-medium text-ink" role="alert">
+                  Could not resolve that channel — check the spelling and that oto's bot has been
+                  invited to it.
+                </p>
+              </Show>
+              <Show when={locked() !== null}>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => setLocked(null)}
+                >
+                  Clear, type both again
+                </Button>
+              </Show>
+            </fieldset>
+          </Show>
+
+          <Show when={connection() !== null && !isSlack() && fields().length > 0}>
+            <fieldset>
+              <legend class={LEGEND}>Provider configuration</legend>
+              <SchemaForm
+                fields={fields()}
+                value={config()}
+                prefix="config"
+                showErrors={showErrors()}
+                violations={violations()}
+                onChange={(key, next) => setConfig({ ...config(), [key]: next })}
+              />
+            </fieldset>
+          </Show>
+
+          <Select<Verbosity>
+            class={FIELD}
+            options={[...VERBOSITIES]}
+            value={verbosity()}
+            onChange={(next) => {
+              if (next !== null) setVerbosity(next);
+            }}
+            validationState={violations().get("verbosity") ? "invalid" : "valid"}
+            itemComponent={(itemProps) => (
+              <SelectItem item={itemProps.item}>{itemProps.item.rawValue}</SelectItem>
+            )}
+          >
+            <SelectLabel>Verbosity</SelectLabel>
+            <SelectTrigger>
+              <SelectValue<Verbosity>>{(state) => state.selectedOption()}</SelectValue>
+            </SelectTrigger>
+            <SelectHiddenSelect id="ch-verbosity" />
+            <SelectErrorMessage role="alert">{violations().get("verbosity")}</SelectErrorMessage>
+            <SelectContent />
+          </Select>
+
+          <div class={CHECK_ROW}>
+            <Checkbox id="ch-enabled" checked={enabled()} onChange={setEnabled} />
+            <label for="ch-enabled-input" class={CHECK_LABEL}>
+              Enabled
+            </label>
+          </div>
+        </div>
+
+        <ModalFooter>
+          <Button size="sm" variant="secondary" onClick={props.onClose}>
+            Cancel
+          </Button>
+          <Button
+            size="sm"
+            variant="default"
+            busy={mutation.isPending}
+            disabled={!canSubmit()}
+            onClick={() => {
+              setShowErrors(true);
+              if (!canSubmit()) return;
+              mutation.mutate();
+            }}
+          >
+            {editing() ? "Save" : "Create"}
+          </Button>
+        </ModalFooter>
+      </ModalContent>
+    </Modal>
   );
 };
 

@@ -43,10 +43,13 @@ type Registry interface {
 
 // TesterOptions are the Tester's dependencies.
 type TesterOptions struct {
-	Store    InstanceStore
-	Creds    CredentialResolver
-	Registry Registry
-	Clock    clock.Clock
+	Store InstanceStore
+	// Connections resolves a channel's ConnectionID to the Connection that
+	// carries its credential. A channel no longer carries one directly.
+	Connections ConnectionStore
+	Creds       CredentialResolver
+	Registry    Registry
+	Clock       clock.Clock
 	// BaseURL is oto's public root, so the synthetic card's deep links point
 	// somewhere real rather than at a placeholder.
 	BaseURL string
@@ -62,24 +65,28 @@ type TesterOptions struct {
 // renderer's output survives validation. A passing test has to mean the real path
 // works, or it is worse than no test at all.
 type Tester struct {
-	store    InstanceStore
-	creds    CredentialResolver
-	registry Registry
-	clk      clock.Clock
-	baseURL  string
+	store       InstanceStore
+	connections ConnectionStore
+	creds       CredentialResolver
+	registry    Registry
+	clk         clock.Clock
+	baseURL     string
 }
 
 // NewTester builds the tester.
 func NewTester(o TesterOptions) (*Tester, error) {
-	if o.Store == nil || o.Registry == nil {
+	if o.Store == nil || o.Registry == nil || o.Connections == nil {
 		return nil, errs.New(errs.KindInternal, "channel_tester_deps",
-			"a channel store and a registry are required")
+			"a channel store, a connection store and a registry are required")
 	}
 	clk := o.Clock
 	if clk == nil {
 		clk = clock.New()
 	}
-	return &Tester{store: o.Store, creds: o.Creds, registry: o.Registry, clk: clk, baseURL: o.BaseURL}, nil
+	return &Tester{
+		store: o.Store, connections: o.Connections, creds: o.Creds,
+		registry: o.Registry, clk: clk, baseURL: o.BaseURL,
+	}, nil
 }
 
 // Test renders and sends one synthetic card.
@@ -189,16 +196,23 @@ func (t *Tester) Test(ctx context.Context, scope db.TenantScope, channelID uuid.
 	}, nil
 }
 
-// credential unseals the destination's secret, or returns the empty credential.
+// credential unseals the destination's secret, or returns the empty
+// credential. The secret is no longer on the Instance itself — it belongs to
+// the Connection the Instance references, so this now reads that Connection
+// first.
 func (t *Tester) credential(ctx context.Context, scope db.TenantScope, inst domain.Instance) (domain.Credential, error) {
-	if inst.CredentialID == nil {
+	conn, err := t.connections.Get(ctx, scope, inst.ConnectionID)
+	if err != nil {
+		return domain.Credential{}, err
+	}
+	if conn.CredentialID == nil {
 		return domain.Credential{}, nil
 	}
 	if t.creds == nil {
 		return domain.Credential{}, errs.New(errs.KindInternal, "credential_resolver_missing",
 			"this deployment cannot unseal channel credentials")
 	}
-	kind, values, err := t.creds.Resolve(ctx, scope, *inst.CredentialID)
+	kind, values, err := t.creds.Resolve(ctx, scope, *conn.CredentialID)
 	if err != nil {
 		return domain.Credential{}, err
 	}

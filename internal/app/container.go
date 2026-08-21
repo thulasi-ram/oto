@@ -407,13 +407,27 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		AllowInsecureWebhookTLS: o.Config.Security.AllowInsecureTLS,
 	})
 	channelRepo := channelsrepo.NewChannelRepository(general, clk)
+	connectionRepo := channelsrepo.NewConnectionRepository(general, clk)
 	credentialRepo := channelsrepo.NewCredentialRepository(general, keyringSealer(c.Keyring), channelsUnsealer(c.Keyring), clk)
 	tester, err := channelsservice.NewTester(channelsservice.TesterOptions{
-		Store:    channelRepo,
+		Store:       channelRepo,
+		Connections: connectionRepo,
+		Creds:       credentialRepo,
+		Registry:    c.ChannelRegistry,
+		Clock:       clk,
+		BaseURL:     o.Config.HTTP.BaseURL,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// ⭐ THE SETTINGS-TIME SLACK NAME↔ID LOOKUP. Unlike the tester, this never
+	// mints a delivery Channel — it only unseals a connection's credential long
+	// enough to ask the provider's optional ConversationResolver capability.
+	channelResolver, err := channelsservice.NewResolver(channelsservice.ResolverOptions{
+		Store:    connectionRepo,
 		Creds:    credentialRepo,
 		Registry: c.ChannelRegistry,
-		Clock:    clk,
-		BaseURL:  o.Config.HTTP.BaseURL,
 	})
 	if err != nil {
 		return nil, err
@@ -763,7 +777,7 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	}
 	c.enqueuer.set(c.Jobs)
 
-	c.buildRouters(channelRepo, credentialRepo, clusterRepo, identityTx, enricherRegistry, clk)
+	c.buildRouters(channelRepo, connectionRepo, credentialRepo, channelResolver, clusterRepo, identityTx, enricherRegistry, clk)
 	return c, nil
 }
 
@@ -960,7 +974,9 @@ func (c *Container) buildJobs(
 // relationship that exists.
 func (c *Container) buildRouters(
 	channelRepo *channelsrepo.ChannelRepository,
+	connectionRepo *channelsrepo.ConnectionRepository,
 	credentialRepo *channelsrepo.CredentialRepository,
+	channelResolver *channelsservice.Resolver,
 	clusterRepo *sourcesrepo.ClusterRepository,
 	identityTx *identityrepo.TxRunner,
 	enricherRegistry *enrichservice.Registry,
@@ -1021,10 +1037,12 @@ func (c *Container) buildRouters(
 			BaseURL:          c.Config.HTTP.BaseURL,
 		}),
 		channels: channelsapi.NewRouter(channelsapi.Options{
-			Registry: c.ChannelRegistry,
-			Channels: channelRepo,
-			Creds:    credentialRepo,
-			Writes:   c.ChannelWrites,
+			Registry:    c.ChannelRegistry,
+			Channels:    channelRepo,
+			Connections: connectionRepo,
+			Creds:       credentialRepo,
+			Writes:      c.ChannelWrites,
+			Resolver:    channelResolver,
 			// ⭐ THE ACKNOWLEDGE BUTTON, WIRED. It was `nil` here for the whole of
 			// the product's life, and the comment that stood in its place claimed
 			// the endpoint "answers 503"; it did not — it verified the HMAC and

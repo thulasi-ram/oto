@@ -241,9 +241,17 @@ func (s *SlackConformance) Provider(opts slackprov.Options) *slackprov.Provider 
 func (s *SlackConformance) TeamID() string { return s.team }
 
 // Config is a schema-valid `channels.config` for this fake workspace.
+//
+// ⛔ NO `team_id` — the workspace belongs to the CONNECTION now (ADR 0047), and
+// `schema.json` is `additionalProperties: false`, so sending it is a refusal.
 func (s *SlackConformance) Config(conversationID string) json.RawMessage {
-	return json.RawMessage(fmt.Sprintf(
-		`{"team_id":%q,"conversation_id":%q}`, s.team, conversationID))
+	return json.RawMessage(fmt.Sprintf(`{"conversation_id":%q}`, conversationID))
+}
+
+// ConnectionConfig is a schema-valid `channel_connections.config` for this fake
+// workspace — where `team_id` lives now.
+func (s *SlackConformance) ConnectionConfig() json.RawMessage {
+	return json.RawMessage(fmt.Sprintf(`{"team_id":%q}`, s.team))
 }
 
 // Credential is a sealed-shaped bot-token credential.

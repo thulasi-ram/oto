@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oto.dev/schemas/channel-connection/webhook/v1.json",
+  "title": "Webhook connection",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {}
+}

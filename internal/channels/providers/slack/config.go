@@ -19,12 +19,10 @@ var Schema = configschema.MustCompile("https://oto.dev/schemas/channel/slack/v1.
 
 // Config is the validated, non-secret configuration of one Slack channel.
 //
-// Note what is NOT here: no token, no signing secret. Credentials live in
-// channel_credentials, sealed, and reach a provider only as a domain.Credential.
+// Note what is NOT here: no token, no signing secret, and no longer a
+// `team_id` — the workspace is a property of the Connection this channel
+// references (connection_schema.json), not of one destination within it.
 type Config struct {
-	// TeamID is the workspace. It is carried so a multi-workspace install can tell
-	// two identically named channels apart in the UI.
-	TeamID string `json:"team_id"`
 	// ConversationID is a Slack channel ID, never a #name. A name is ambiguous,
 	// mutable, and resolves differently for different tokens.
 	ConversationID string `json:"conversation_id"`

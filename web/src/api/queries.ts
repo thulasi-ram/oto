@@ -40,6 +40,7 @@
 import { qk } from "./keys";
 import {
   listAlerts,
+  listChannelConnections,
   listChannelTypes,
   listChannels,
   listClusters,
@@ -150,6 +151,17 @@ export function channelsQuery() {
   return {
     queryKey: qk.settings.channels(),
     queryFn: ({ signal }: { signal: AbortSignal }) => listChannels({ signal }),
+  };
+}
+
+/**
+ * Every connection — the org-wide setup a Settings admin owns. The channel
+ * dialog on the notification policy screen picks one of these by id.
+ */
+export function channelConnectionsQuery() {
+  return {
+    queryKey: qk.settings.channelConnections(),
+    queryFn: ({ signal }: { signal: AbortSignal }) => listChannelConnections({ signal }),
   };
 }
 
@@ -337,6 +349,7 @@ export const FRESHNESS: Readonly<Record<string, Freshness>> = {
   // question answered by looking rather than by watching.
   "settings.apiTokens": { by: "mutation" },
   "settings.channels": { by: "mutation" },
+  "settings.channelConnections": { by: "mutation" },
   "settings.policies": { by: "mutation" },
   // `TuningSection` writes the saved settings back with `setQueryData`, which is
   // the same guarantee by a shorter route: the entry holds the server's answer.

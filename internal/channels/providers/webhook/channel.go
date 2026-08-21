@@ -3,6 +3,9 @@ package webhook
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +22,12 @@ import (
 )
 
 const providerName = "webhook"
+
+// signatureHeader carries the HMAC-SHA256 of the outbound body, when the
+// channel's connection has a CredSigningSecret. It is set only when there is
+// a secret to sign with — an unsigned request carries no header at all, never
+// an empty one, so a receiver checking for its presence gets an honest answer.
+const signatureHeader = "X-Oto-Signature"
 
 // maxResponseBytes bounds what oto reads back before giving up on draining the
 // body. The bytes are COUNTED AND DISCARDED, never kept — an unbounded read is a
@@ -41,6 +50,7 @@ const maxRetryAfter = time.Hour
 // branch anywhere (R5).
 type Channel struct {
 	cfg    Config
+	cred   domain.Credential
 	client *http.Client
 	guard  *netguard.Guard
 	clock  clock.Clock
@@ -115,6 +125,12 @@ func (c *Channel) send(
 		// CheckHeaders already refused the reserved names at configuration time.
 		req.Header.Set(k, v)
 	}
+	if signature := c.signaturePayload(msg.Payload); signature != "" {
+		// Set AFTER the configured headers, same as the framing headers above: a
+		// receiver's own signature check must never be shadowable by a typo'd
+		// static header.
+		req.Header.Set(signatureHeader, signature)
+	}
 
 	started := c.clock.Now()
 	resp, err := c.client.Do(req)
@@ -143,6 +159,21 @@ func (c *Channel) send(
 		DeliveredAt: c.clock.Now().UTC(),
 		Raw:         recordResponse(resp.StatusCode, bodyBytes, elapsed),
 	}, nil
+}
+
+// signaturePayload returns the header value to sign body with, or "" when the
+// channel's connection carries no signing secret at all.
+func (c *Channel) signaturePayload(body json.RawMessage) string {
+	if c.cred.Kind != CredSigningSecret {
+		return ""
+	}
+	secret := firstValue(c.cred.Values, "secret", "value")
+	if secret == "" {
+		return ""
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
 }
 
 // Probe checks the destination without delivering an alert.

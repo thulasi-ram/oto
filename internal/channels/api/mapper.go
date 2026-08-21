@@ -55,7 +55,15 @@ func descriptorDTO(d domain.Descriptor) ChannelTypeDTO {
 	for _, r := range d.Renderers {
 		renderers = append(renderers, string(r))
 	}
-	kinds := append([]string(nil), d.CredentialKinds...)
+	// ⛔ `make` + `append`, NOT `append([]string(nil), ...)`. That idiom returns
+	// `nil` when the source is empty — nothing grows the underlying array — and
+	// `credential_kinds` is legitimately empty now that every credential lives on
+	// the connection: a nil slice marshals to JSON `null`, which the contract's
+	// `type: array` rejects. `make(…, 0, …)` is non-nil even at length zero.
+	kinds := make([]string, 0, len(d.CredentialKinds))
+	kinds = append(kinds, d.CredentialKinds...)
+	connKinds := make([]string, 0, len(d.ConnectionCredentialKinds))
+	connKinds = append(connKinds, d.ConnectionCredentialKinds...)
 
 	schema := d.ConfigSchema
 	if len(schema) == 0 {
@@ -65,23 +73,25 @@ func descriptorDTO(d domain.Descriptor) ChannelTypeDTO {
 		// rather than silently permissive.
 		schema = json.RawMessage(`{}`)
 	}
+	connSchema := d.ConnectionConfigSchema
+	if len(connSchema) == 0 {
+		connSchema = json.RawMessage(`{}`)
+	}
 
 	return ChannelTypeDTO{
-		Type:            string(d.Type),
-		DisplayName:     d.DisplayName,
-		ConfigSchema:    schema,
-		CredentialKinds: kinds,
-		Capabilities:    capabilityList(d.Capabilities),
-		Renderers:       renderers,
-		RateLimitClass:  d.RateLimitClass,
+		Type:                      string(d.Type),
+		DisplayName:               d.DisplayName,
+		ConfigSchema:              schema,
+		CredentialKinds:           kinds,
+		ConnectionConfigSchema:    connSchema,
+		ConnectionCredentialKinds: connKinds,
+		Capabilities:              capabilityList(d.Capabilities),
+		Renderers:                 renderers,
+		RateLimitClass:            d.RateLimitClass,
 	}
 }
 
 // channelDTO maps a stored destination onto the wire.
-//
-// ⛔ It reads `CredentialKind` and `CredentialRotatedAt` and NOTHING ELSE about
-// the secret. `domain.Instance` has no field that could carry the material, so
-// the omission is structural rather than a discipline this function has to keep.
 func channelDTO(i domain.Instance) ChannelDTO {
 	cfg := i.Config
 	if len(cfg) == 0 {
@@ -92,22 +102,52 @@ func channelDTO(i domain.Instance) ChannelDTO {
 		renderer = "default"
 	}
 	return ChannelDTO{
-		ID:                  i.ID,
-		Type:                string(i.Type),
-		Name:                i.Name,
+		ID:              i.ID,
+		Type:            string(i.Type),
+		Name:            i.Name,
+		Config:          cfg,
+		ConnectionID:    i.ConnectionID,
+		Renderer:        renderer,
+		Verbosity:       string(i.Verbosity.Normalise()),
+		ThreadUpdates:   i.ThreadUpdates,
+		ShowFieldEmoji:  i.ShowFieldEmoji,
+		Enabled:         i.Enabled,
+		HealthStatus:    string(healthOr(i.Health)),
+		HealthError:     optionalString(i.HealthError),
+		HealthCheckedAt: utcPtr(i.HealthCheckedAt),
+		CreatedAt:       i.CreatedAt.UTC(),
+		UpdatedAt:       i.UpdatedAt.UTC(),
+	}
+}
+
+// connectionDTO maps a stored connection onto the wire.
+//
+// ⛔ It reads `CredentialKind` and `CredentialRotatedAt` and NOTHING ELSE about
+// the secret, for the same structural reason channelDTO used to say about
+// `domain.Instance`: `domain.Connection` has no field that could carry the
+// material.
+func connectionDTO(c domain.Connection) ChannelConnectionDTO {
+	cfg := c.Config
+	if len(cfg) == 0 {
+		cfg = json.RawMessage(`{}`)
+	}
+	return ChannelConnectionDTO{
+		ID:                  c.ID,
+		Type:                string(c.Type),
+		Name:                c.Name,
 		Config:              cfg,
-		CredentialKind:      optionalString(i.CredentialKind),
-		CredentialRotatedAt: utcPtr(i.CredentialRotatedAt),
-		Renderer:            renderer,
-		Verbosity:           string(i.Verbosity.Normalise()),
-		ThreadUpdates:       i.ThreadUpdates,
-		ShowFieldEmoji:      i.ShowFieldEmoji,
-		Enabled:             i.Enabled,
-		HealthStatus:        string(healthOr(i.Health)),
-		HealthError:         optionalString(i.HealthError),
-		HealthCheckedAt:     utcPtr(i.HealthCheckedAt),
-		CreatedAt:           i.CreatedAt.UTC(),
-		UpdatedAt:           i.UpdatedAt.UTC(),
+		CredentialKind:      optionalString(c.CredentialKind),
+		CredentialRotatedAt: utcPtr(c.CredentialRotatedAt),
+		CreatedAt:           c.CreatedAt.UTC(),
+		UpdatedAt:           c.UpdatedAt.UTC(),
+	}
+}
+
+// resolveConversationDTO maps a provider's resolved conversation onto the wire.
+func resolveConversationDTO(r domain.ConversationResult) ResolveConversationDTO {
+	return ResolveConversationDTO{
+		ConversationID:   r.ID,
+		ConversationName: r.Name,
 	}
 }
 
@@ -140,12 +180,12 @@ func testDTO(r domain.TestResult) ChannelTestDTO {
 // publishes them: a client that omits `enabled` expects the documented `true`
 // rather than Go's zero value, and a channel created silently disabled is a
 // channel whose first missed alert is blamed on oto.
-func (r CreateChannelRequest) toNewInstance(credentialID *uuid.UUID, caps domain.Capability) domain.NewInstance {
+func (r CreateChannelRequest) toNewInstance(caps domain.Capability) domain.NewInstance {
 	return domain.NewInstance{
 		Type:           domain.Type(r.Type),
 		Name:           r.Name,
 		Config:         r.Config,
-		CredentialID:   credentialID,
+		ConnectionID:   r.ConnectionID,
 		Capabilities:   caps,
 		Renderer:       domain.RendererID(stringOr(r.Renderer, "default")),
 		Verbosity:      domain.Verbosity(stringOr(r.Verbosity, string(domain.VerbosityStatusChanges))),
@@ -156,11 +196,11 @@ func (r CreateChannelRequest) toNewInstance(credentialID *uuid.UUID, caps domain
 }
 
 // toPatch maps an update request onto the domain command.
-func (r UpdateChannelRequest) toPatch(credential **uuid.UUID) domain.InstancePatch {
+func (r UpdateChannelRequest) toPatch() domain.InstancePatch {
 	p := domain.InstancePatch{
 		Name:           r.Name,
 		Config:         r.Config,
-		CredentialID:   credential,
+		ConnectionID:   r.ConnectionID,
 		ThreadUpdates:  r.ThreadUpdates,
 		ShowFieldEmoji: r.ShowFieldEmoji,
 		Enabled:        r.Enabled,
@@ -174,6 +214,27 @@ func (r UpdateChannelRequest) toPatch(credential **uuid.UUID) domain.InstancePat
 		p.Verbosity = &v
 	}
 	return p
+}
+
+// ------------------------------------------------------------- connections
+
+// toNewConnection maps a create request onto the domain command.
+func (r CreateChannelConnectionRequest) toNewConnection(credentialID *uuid.UUID) domain.NewConnection {
+	return domain.NewConnection{
+		Type:         domain.Type(r.Type),
+		Name:         r.Name,
+		Config:       r.Config,
+		CredentialID: credentialID,
+	}
+}
+
+// toPatch maps an update request onto the domain command.
+func (r UpdateChannelConnectionRequest) toPatch(credential **uuid.UUID) domain.ConnectionPatch {
+	return domain.ConnectionPatch{
+		Name:         r.Name,
+		Config:       r.Config,
+		CredentialID: credential,
+	}
 }
 
 // ------------------------------------------------------------------- helpers

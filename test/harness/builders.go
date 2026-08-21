@@ -101,6 +101,61 @@ func (h *H) User(org Org) User {
 	return u
 }
 
+// ChannelConnection is one seeded org-wide provider setup.
+type ChannelConnection struct {
+	// ID is channel_connections.id — what a channel's `connection_id` names.
+	ID uuid.UUID
+	// OrgID is the tenant.
+	OrgID uuid.UUID
+	// CredentialID is the sealed shared secret, or nil for an unauthenticated
+	// webhook connection.
+	CredentialID *uuid.UUID
+}
+
+// WebhookConnection seeds the org-wide setup a webhook destination hangs off.
+//
+// ⛔ EVERY CHANNEL NEEDS ONE OF THESE NOW, WHICH IS WHY IT IS A BUILDER AND NOT
+// THREE LINES OF SQL PER TEST. ADR 0047 (migration 00075) split a `channels` row
+// in two — the org-wide credential became `channel_connections`, the destination
+// stayed `channels` — and `channels.connection_id` is NOT NULL. A test that
+// inserts a channel without one gets a 23502 that names a column rather than the
+// decision, which is how ten tests in three packages failed for one reason.
+//
+// A webhook connection carries no credential: `channel_connections_cred_ck` only
+// demands one of `slack`, so this stays clear of the credential sealer entirely.
+func (h *H) WebhookConnection(org Org) ChannelConnection {
+	h.T.Helper()
+	conn := ChannelConnection{ID: id.New(), OrgID: org.ID}
+	// `created_at`/`updated_at` are NAMED and take the harness clock, like every
+	// other timestamp a builder writes — 00075 gave this table no default, for the
+	// reason 00032 took `channels`' away.
+	h.Exec(`INSERT INTO channel_connections (id, org_id, type, name, config, created_at, updated_at)
+	        VALUES ($1, $2, 'webhook', $3, '{}'::jsonb, $4, $4)`,
+		conn.ID, conn.OrgID, "conn-"+uniqueSlug("wh"), h.Now())
+	return conn
+}
+
+// SlackConnection seeds a Slack workspace's setup, sealed credential included.
+//
+// `channel_connections_cred_ck` requires a `slack` connection to carry one, and
+// the sealed blob has a 29-byte floor, so this satisfies the real constraints
+// rather than relaxing them. `team_id` lives here and NOT on the channel: that
+// is the whole of what ADR 0047 moved.
+func (h *H) SlackConnection(org Org, teamID string) ChannelConnection {
+	h.T.Helper()
+	cred := id.New()
+	conn := ChannelConnection{ID: id.New(), OrgID: org.ID, CredentialID: &cred}
+	h.Exec(`INSERT INTO channel_credentials (id, org_id, kind, sealed, key_version, created_at)
+	        VALUES ($1, $2, 'slack_bot_token', decode(repeat('00', 32), 'hex'), 1, $3)`,
+		cred, org.ID, h.Now())
+	h.Exec(`INSERT INTO channel_connections
+	          (id, org_id, type, name, config, credential_id, created_at, updated_at)
+	        VALUES ($1, $2, 'slack', $3, $4::jsonb, $5, $6, $6)`,
+		conn.ID, conn.OrgID, "conn-"+uniqueSlug("slack"),
+		fmt.Sprintf(`{"team_id":%q}`, teamID), cred, h.Now())
+	return conn
+}
+
 // Cluster is one seeded identity and failure domain.
 type Cluster struct {
 	// ID is clusters.id.

@@ -200,12 +200,53 @@ func plan() []probe {
 		/* ------------------------------------------------------------ channels */
 		{method: http.MethodGet, tmpl: "/api/v1/channel-types", want: http.StatusOK},
 		{method: http.MethodGet, tmpl: "/api/v1/channels", want: http.StatusOK},
+
+		// ⭐ THE CONNECTION IS CREATED BEFORE THE CHANNEL, BECAUSE THE CHANNEL
+		// CANNOT EXIST WITHOUT ONE (ADR 0047). `channels.connection_id` is NOT
+		// NULL, so this is not probe ordering for convenience — it is the order
+		// the schema enforces, and the `{{connection}}` fixture below is what
+		// `createChannel` spends.
+		{method: http.MethodGet, tmpl: "/api/v1/channel-connections", want: http.StatusOK},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/channel-connections",
+			body: map[string]any{
+				"type":   "webhook",
+				"name":   "gate-g2-webhook-connection",
+				"config": map[string]any{},
+			},
+			want:    http.StatusCreated,
+			capture: map[string][]string{"connection": {"data", "id"}},
+			why:     "a webhook connection may carry no credential at all; a slack one must have a bot token",
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/channel-connections/{id}",
+			url:  "/api/v1/channel-connections/{{connection}}",
+			want: http.StatusOK,
+		},
+		{
+			method: http.MethodPatch, tmpl: "/api/v1/channel-connections/{id}",
+			url:  "/api/v1/channel-connections/{{connection}}",
+			body: map[string]any{"name": "gate-g2-webhook-connection-renamed"},
+			want: http.StatusOK,
+		},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/channel-connections/{id}/slack/resolve",
+			url:  "/api/v1/channel-connections/{{connection}}/slack/resolve",
+			body: map[string]any{"name": "sre-alerts"},
+			want: http.StatusUnprocessableEntity,
+			why: "the fixture connection is a WEBHOOK one, and only Slack can resolve a name to an id — " +
+				"the registry refuses the provider rather than reaching for a network this gate has no " +
+				"business depending on. Driving the 200 would need a live Slack workspace, which would " +
+				"make this gate fail for a reason that is not about oto",
+		},
+
 		{
 			method: http.MethodPost, tmpl: "/api/v1/channels",
 			body: map[string]any{
-				"type":   "webhook",
-				"name":   "gate-g2-webhook",
-				"config": map[string]any{"url": "{{webhook}}"},
+				"type":          "webhook",
+				"name":          "gate-g2-webhook",
+				"connection_id": "{{connection}}",
+				"config":        map[string]any{"url": "{{webhook}}"},
 			},
 			want:    http.StatusCreated,
 			capture: map[string][]string{"channel": {"data", "id"}},
@@ -580,6 +621,14 @@ func plan() []probe {
 		},
 		{
 			method: http.MethodDelete, tmpl: "/api/v1/channels/{id}", url: "/api/v1/channels/{{channel}}",
+			want: http.StatusNoContent,
+		},
+		// ⛔ AND ONLY NOW. `channels.connection_id` is ON DELETE RESTRICT, so this
+		// probe is a 409 for as long as the channel above still stands — which is
+		// the invariant, not an ordering nuisance.
+		{
+			method: http.MethodDelete, tmpl: "/api/v1/channel-connections/{id}",
+			url:  "/api/v1/channel-connections/{{connection}}",
 			want: http.StatusNoContent,
 		},
 		{

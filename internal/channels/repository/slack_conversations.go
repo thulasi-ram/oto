@@ -75,14 +75,22 @@ type SlackDestination struct {
 // ⚠️ IT IS ALSO WHY `LIMIT 2` CAN STILL BE TRUSTED. The ambiguity this query
 // refuses is "more than one LIVE org claims this conversation"; counting dead
 // orgs towards that ceiling turns a deletion into somebody else's lockout.
+// ⛔ `team_id` NO LONGER LIVES ON `channels.config`. It moved to
+// `channel_connections.config` when a channel stopped carrying its own
+// workspace and started referencing a connection that does (see the ADR
+// introducing ChannelConnection) — so this resolver now joins through
+// `connection_id` to find it. The org-blindness argument above is unchanged:
+// the join adds a hop, not a scope.
 const resolveSlackConversationSQL = `
 SELECT c.org_id, c.id
   FROM channels c
+  JOIN channel_connections cx ON cx.id = c.connection_id AND cx.org_id = c.org_id
   JOIN orgs o ON o.id = c.org_id AND o.deleted_at IS NULL
  WHERE c.type = 'slack'
    AND c.deleted_at IS NULL
    AND c.enabled
-   AND c.config->>'team_id' = $1
+   AND cx.deleted_at IS NULL
+   AND cx.config->>'team_id' = $1
    AND c.config->>'conversation_id' = $2
  ORDER BY c.id
  LIMIT 2`

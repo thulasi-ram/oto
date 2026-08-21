@@ -38,7 +38,8 @@ type Unsealer interface {
 // (channel_credentials_kind_ck). It is exported because the API layer validates
 // against it and a second copy would drift.
 var CredentialKinds = []string{
-	"slack_bot_token", "slack_app_token", "slack_signing_secret", "basic", "bearer", "none",
+	"slack_bot_token", "slack_app_token", "slack_signing_secret", "basic", "bearer",
+	"webhook_signing_secret", "none",
 }
 
 // ValidCredentialKind reports whether kind is in the closed set.

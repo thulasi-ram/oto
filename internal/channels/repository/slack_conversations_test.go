@@ -27,13 +27,15 @@ import (
 // are pinned by `auth_resolvers_test.go`; the invariant they share is the `orgs`
 // join, and this file is where it is pinned for `channels`.
 
-// seedSlackChannel configures one Slack destination for an org.
+// seedSlackChannel configures one Slack destination for an org, under a
+// connection created for the same (team, name) pair.
 //
-// A `slack` row MUST carry a credential (`channels_cred_ck`), so the credential
-// repository seals a throwaway one through `fakeSealer` — the same one
-// `credentials_clock_test.go` uses. The config blob carries the (team_id,
-// conversation_id) pair that `resolveSlackConversationSQL` selects on, in the
-// shape the provider's schema publishes and `fake_slack.go` reproduces.
+// A `slack` connection MUST carry a credential (`channel_connections_cred_ck`),
+// so the credential repository seals a throwaway one through `fakeSealer` —
+// the same one `credentials_clock_test.go` uses. The connection's config
+// carries `team_id`; the channel's own config carries only `conversation_id` —
+// `resolveSlackConversationSQL` now joins the two, matching `cx.config` for the
+// workspace and `c.config` for the conversation.
 func seedSlackChannel(t *testing.T, h *harness.H, org harness.Org, name, team, conversation string) uuid.UUID {
 	t.Helper()
 
@@ -41,11 +43,19 @@ func seedSlackChannel(t *testing.T, h *harness.H, org harness.Org, name, team, c
 	cred, err := creds.Create(h.Ctx, org.Scope, "slack_bot_token", map[string]string{"token": "xoxb-" + name})
 	require.NoError(t, err)
 
+	conn, err := repository.NewConnectionRepository(h.Pool, h.Clock).Create(h.Ctx, org.Scope, domain.NewConnection{
+		Type:         domain.TypeSlack,
+		Name:         name + "-connection",
+		Config:       json.RawMessage(fmt.Sprintf(`{"team_id":%q}`, team)),
+		CredentialID: &cred.ID,
+	})
+	require.NoError(t, err)
+
 	inst, err := repository.NewChannelRepository(h.Pool, h.Clock).Create(h.Ctx, org.Scope, domain.NewInstance{
 		Type:         domain.TypeSlack,
 		Name:         name,
-		Config:       json.RawMessage(fmt.Sprintf(`{"team_id":%q,"conversation_id":%q}`, team, conversation)),
-		CredentialID: &cred.ID,
+		Config:       json.RawMessage(fmt.Sprintf(`{"conversation_id":%q}`, conversation)),
+		ConnectionID: conn.ID,
 		Renderer:     "slack.default",
 		Verbosity:    domain.VerbosityAll,
 		Enabled:      true,

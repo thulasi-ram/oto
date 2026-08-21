@@ -1,14 +1,23 @@
 /**
- * Channels — the configured destinations.
+ * Connections — the org-wide provider setup.
  *
- * The whole form below is generated from the provider's `config_schema`, served
- * verbatim by `GET /api/v1/channel-types`. Those are the same bytes the server
- * validates against, so there is exactly one copy of the rules and a new
+ * ⭐ THIS USED TO BE WHERE INDIVIDUAL CHANNELS WERE CREATED, AND IT NO LONGER
+ * IS. A connection is a Slack workspace's bot token, or a webhook receiver
+ * family's shared credential — set up ONCE, here, by an admin. A specific
+ * destination (`#sre-alerts`, a specific URL) is a Channel, and a Channel is
+ * created from the Notification Policy screen, where an operator is already
+ * naming a destination for a routing rule (`PoliciesSection.tsx`'s
+ * `ChannelPicker`). Requiring an admin-Settings round trip for every new
+ * `#channel` was the cost that split removes.
+ *
+ * The whole form below is generated from the provider's `connection_schema`,
+ * served verbatim by `GET /api/v1/channel-types`. Those are the same bytes the
+ * server validates against, so there is exactly one copy of the rules and a new
  * provider needs no UI code.
  *
  * Credentials are write-only everywhere in this API: no endpoint ever returns
  * one. So the credential control only ever *sets* a value, and an existing
- * channel shows the credential's **kind and rotation date** rather than
+ * connection shows the credential's **kind and rotation date** rather than
  * pretending to show a masked secret it does not have.
  */
 import {
@@ -25,24 +34,15 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/solid-query";
 
 import { violationsByField } from "~/api/client";
 import {
-  createChannel,
-  deleteChannel,
-  testChannel,
-  updateChannel,
+  createChannelConnection,
+  deleteChannelConnection,
+  updateChannelConnection,
 } from "~/api/endpoints";
-import { VerbositySchema } from "~/api/generated/validators";
 import { qk } from "~/api/keys";
-import { channelTypesQuery, channelsQuery } from "~/api/queries";
-import type {
-  Channel,
-  ChannelHealthStatus,
-  ChannelType,
-  ChannelTypeDescriptor,
-  Verbosity,
-} from "~/api/types";
+import { channelConnectionsQuery, channelTypesQuery } from "~/api/queries";
+import type { ChannelConnection, ChannelType, ChannelTypeDescriptor } from "~/api/types";
 import { RelativeTime } from "~/components/Time";
 import { Button } from "~/components/ui/Button";
-import { Checkbox } from "~/components/ui/Checkbox";
 import {
   Modal,
   ModalContent,
@@ -54,8 +54,6 @@ import {
 import {
   Select,
   SelectContent,
-  SelectDescription,
-  SelectErrorMessage,
   SelectHiddenSelect,
   SelectItem,
   SelectLabel,
@@ -81,70 +79,42 @@ import {
   validateConfig,
   type JsonValue,
 } from "./jsonSchema";
-import {
-  CHECK_LABEL,
-  CHECK_ROW,
-  FIELD,
-  FORM,
-  HELP,
-  LEGEND,
-  PANEL_BODY,
-  PANEL_HEADER,
-  ROW,
-  SECTION,
-} from "./rhythm";
-
-const HEALTH_NOTE: Record<ChannelHealthStatus, string> = {
-  healthy: "Delivering.",
-  degraded: "Delivering, but some attempts are failing.",
-  auth_failed:
-    "The credential was rejected. oto stops retrying rather than hammering the provider — nothing is being delivered here.",
-  config_invalid: "The provider rejected the configuration. Nothing is being delivered here.",
-  unknown: "Not checked yet.",
-};
-
-/** What each verbosity level actually carries, in the product's own words. */
-const VERBOSITY_NOTE: Record<Verbosity, string> = {
-  all: "Every fact, including comments and enrichment arrivals.",
-  status_changes: "Lifecycle changes and acknowledgements, but not commentary.",
-  firing_and_resolved: "Only the start and the end.",
-  firing_only: "Only the start. Nothing about it ending.",
-};
+import { FIELD, FORM, HELP, LEGEND, PANEL_BODY, PANEL_HEADER, ROW, SECTION } from "./rhythm";
 
 export const ChannelsSection: Component = () => {
-  const [editing, setEditing] = createSignal<Channel | null>(null);
+  const [editing, setEditing] = createSignal<ChannelConnection | null>(null);
   const [creating, setCreating] = createSignal(false);
 
   const types = useQuery(() => channelTypesQuery());
-  const channels = useQuery(() => channelsQuery());
+  const connections = useQuery(() => channelConnectionsQuery());
 
   return (
     <div class={SECTION}>
       <Panel>
         <PanelHeader class={PANEL_HEADER}>
-          <PanelTitle>Channels</PanelTitle>
+          <PanelTitle>Connections</PanelTitle>
           <Button size="sm" variant="default" onClick={() => setCreating(true)}>
-            Add a channel
+            Add a connection
           </Button>
         </PanelHeader>
 
         <Switch>
-          <Match when={channels.isPending}>
+          <Match when={connections.isPending}>
             <LoadingLine />
           </Match>
-          <Match when={channels.isError}>
-            <ErrorState error={channels.error} onRetry={() => void channels.refetch()} />
+          <Match when={connections.isError}>
+            <ErrorState error={connections.error} onRetry={() => void connections.refetch()} />
           </Match>
-          <Match when={(channels.data?.data.length ?? 0) === 0}>
+          <Match when={(connections.data?.data.length ?? 0) === 0}>
             <EmptyState
-              title="No channels configured."
-              body="Without a channel oto records everything and tells nobody. That is a valid way to run it, but it is worth doing on purpose rather than by omission."
+              title="No connections configured."
+              body="A connection is a Slack workspace's bot token, or a webhook receiver's shared credential, set up once. Without one, no channel of that type can be created from the notification policy screen."
             />
           </Match>
           <Match when={true}>
             <ul>
-              <For each={channels.data?.data ?? []}>
-                {(c) => <ChannelRow channel={c} onEdit={() => setEditing(c)} />}
+              <For each={connections.data?.data ?? []}>
+                {(c) => <ConnectionRow connection={c} onEdit={() => setEditing(c)} />}
               </For>
             </ul>
           </Match>
@@ -169,9 +139,9 @@ export const ChannelsSection: Component = () => {
         </Panel>
       </Show>
 
-      <ChannelDialog
+      <ConnectionDialog
         open={creating() || editing() !== null}
-        channel={editing()}
+        connection={editing()}
         types={types.data ?? []}
         onClose={() => {
           setCreating(false);
@@ -184,16 +154,16 @@ export const ChannelsSection: Component = () => {
 
 /* -------------------------------------------------------------------------- */
 
-const ChannelRow: Component<{ readonly channel: Channel; readonly onEdit: () => void }> = (
-  props,
-) => {
+const ConnectionRow: Component<{
+  readonly connection: ChannelConnection;
+  readonly onEdit: () => void;
+}> = (props) => {
   const client = useQueryClient();
-  const c = (): Channel => props.channel;
+  const c = (): ChannelConnection => props.connection;
 
-  const test = useMutation(() => ({ mutationFn: () => testChannel(c().id) }));
   const remove = useMutation(() => ({
-    mutationFn: () => deleteChannel(c().id),
-    onSuccess: () => void client.invalidateQueries({ queryKey: qk.settings.channels() }),
+    mutationFn: () => deleteChannelConnection(c().id),
+    onSuccess: () => void client.invalidateQueries({ queryKey: qk.settings.channelConnections() }),
   }));
 
   return (
@@ -201,28 +171,8 @@ const ChannelRow: Component<{ readonly channel: Channel; readonly onEdit: () => 
       <div class="flex min-h-8 flex-wrap items-center gap-sm">
         <span class="text-item font-medium text-ink">{c().name}</span>
         <Chip>{c().type}</Chip>
-        <span
-          class={cn(
-            "rounded-chip border px-1.5 text-meta leading-5",
-            c().health_status === "healthy"
-              ? "border-line bg-surface text-ink-muted"
-              : "border-line-strong bg-raised font-medium text-ink",
-          )}
-          title={HEALTH_NOTE[c().health_status]}
-        >
-          {c().health_status}
-        </span>
-        <Show when={!c().enabled}>
-          <Chip title="Disabled channels are skipped, and the skip is recorded with a reason.">
-            disabled
-          </Chip>
-        </Show>
-        <Chip title={VERBOSITY_NOTE[c().verbosity]}>{c().verbosity}</Chip>
 
         <div class="ml-auto flex items-center gap-sm">
-          <Button size="sm" variant="secondary" busy={test.isPending} onClick={() => test.mutate()}>
-            Send a test card
-          </Button>
           <Button size="sm" variant="secondary" onClick={props.onEdit}>
             Edit
           </Button>
@@ -231,7 +181,7 @@ const ChannelRow: Component<{ readonly channel: Channel; readonly onEdit: () => 
             variant="destructive"
             busy={remove.isPending}
             onClick={() => remove.mutate()}
-            title="Removes the destination. Delivery history is kept — the record is not rewritten."
+            title="A connection still open by a channel cannot be removed."
           >
             Remove
           </Button>
@@ -251,42 +201,10 @@ const ChannelRow: Component<{ readonly channel: Channel; readonly onEdit: () => 
             </span>
           )}
         </Show>
-        <Show when={c().health_checked_at}>
-          {(at) => (
-            <span>
-              checked <RelativeTime value={at()} label="Health checked" /> ago
-            </span>
-          )}
-        </Show>
       </div>
 
-      <Show when={c().health_error}>
-        {(err) => (
-          <p class="border-l-2 border-line-strong pl-sm text-meta leading-snug text-ink">
-            {err()}
-          </p>
-        )}
-      </Show>
-
-      <Show when={test.data}>
-        {(result) => (
-          <p
-            class={cn(
-              "rounded-control border px-sm py-xs text-meta leading-snug",
-              result().ok
-                ? "border-line bg-sunken text-ink-muted"
-                : "border-line-strong bg-raised font-medium text-ink",
-            )}
-          >
-            {result().ok
-              ? "Sent. The card went through the same renderer and the same outbound validator a real notification uses, so the destination and the payload are both good. It does not prove an alert would ever be routed here — for that, run a delivery drill from the source on the Sources panel."
-              : `Failed: ${result().error ?? "no detail given"}${result().error_class ? ` (${result().error_class})` : ""}`}
-          </p>
-        )}
-      </Show>
-
-      <Show when={test.error !== null || remove.error !== null}>
-        <ErrorBanner error={test.error ?? remove.error} />
+      <Show when={remove.error !== null}>
+        <ErrorBanner error={remove.error} />
       </Show>
     </li>
   );
@@ -294,55 +212,38 @@ const ChannelRow: Component<{ readonly channel: Channel; readonly onEdit: () => 
 
 /* -------------------------------------------------------------------------- */
 
-/**
- * Every verbosity the contract publishes, READ from its own enum.
- *
- * ⛔ IT WAS FOUR LITERALS, AND THIS IS THE THIRD PLACE THE SAME ENUM LIVED —
- * `tuningCopy.ts` holds the labelled version and the generated schema holds the
- * truth. A copy cannot fail: the day `Verbosity` grows a member, a hand-written
- * list simply stops offering it, and no screen looks wrong.
- */
-const VERBOSITIES: readonly Verbosity[] = VerbositySchema.options;
-
-const ChannelDialog: Component<{
+const ConnectionDialog: Component<{
   readonly open: boolean;
-  readonly channel: Channel | null;
+  readonly connection: ChannelConnection | null;
   readonly types: readonly ChannelTypeDescriptor[];
   readonly onClose: () => void;
 }> = (props) => {
   const client = useQueryClient();
-  const editing = (): boolean => props.channel !== null;
+  const editing = (): boolean => props.connection !== null;
 
   const [type, setType] = createSignal<ChannelType>("slack");
   const [name, setName] = createSignal("");
-  const [verbosity, setVerbosity] = createSignal<Verbosity>("status_changes");
-  const [enabled, setEnabled] = createSignal(true);
   const [config, setConfig] = createSignal<Record<string, JsonValue>>({});
   const [secret, setSecret] = createSignal("");
   const [showErrors, setShowErrors] = createSignal(false);
   const [dirty, setDirty] = createSignal(false);
 
   const descriptor = createMemo<ChannelTypeDescriptor | undefined>(() =>
-    props.types.find((t) => t.type === (props.channel?.type ?? type())),
+    props.types.find((t) => t.type === (props.connection?.type ?? type())),
   );
 
-  const fields = createMemo(() => readFields(descriptor()?.config_schema));
+  const fields = createMemo(() => readFields(descriptor()?.connection_config_schema));
 
-  // Seed once per *opening*. The dialog element stays mounted, so this has to
-  // be an effect keyed on `open` — reading `props.open` in the component body
-  // would only ever see the closed state it mounted in.
+  // Seed once per *opening*, the same reasoning ChannelDialog used: the dialog
+  // element stays mounted, so this has to be an effect keyed on `open`.
   const seed = (): void => {
-    const channel = props.channel;
-    if (channel !== null) {
-      setType(channel.type);
-      setName(channel.name);
-      setVerbosity(channel.verbosity);
-      setEnabled(channel.enabled);
-      setConfig(channel.config as Record<string, JsonValue>);
+    const connection = props.connection;
+    if (connection !== null) {
+      setType(connection.type);
+      setName(connection.name);
+      setConfig(connection.config as Record<string, JsonValue>);
     } else {
       setName("");
-      setVerbosity("status_changes");
-      setEnabled(true);
       setConfig(initialConfig(fields()));
     }
     setSecret("");
@@ -365,36 +266,26 @@ const ChannelDialog: Component<{
       const body = {
         name: name().trim(),
         config: cleanConfig(fields(), config()),
-        verbosity: verbosity(),
-        enabled: enabled(),
         ...(secret().trim() !== "" && descriptor() !== undefined
           ? {
               credential: {
-                kind: descriptor()?.credential_kinds[0] ?? ("none" as const),
+                kind: descriptor()?.connection_credential_kinds[0] ?? ("none" as const),
                 values: { token: secret().trim() },
               },
             }
           : {}),
       };
-      const channel = props.channel;
-      return channel !== null
-        ? updateChannel(channel.id, body)
-        : createChannel(
-            { ...body, type: type(), thread_updates: true, show_field_emoji: true },
-            idempotencyKey(),
-          );
+      const connection = props.connection;
+      return connection !== null
+        ? updateChannelConnection(connection.id, body)
+        : createChannelConnection({ ...body, type: type() }, idempotencyKey());
     },
     onSuccess: () => {
-      void client.invalidateQueries({ queryKey: qk.settings.channels() });
+      void client.invalidateQueries({ queryKey: qk.settings.channelConnections() });
       props.onClose();
     },
   }));
 
-  /**
-   * Violations arrive as JSON Pointers (`config/conversation_id`) and are
-   * normalised to dotted paths by the client, so they land on the exact control
-   * the schema names. This is the whole reason the form is schema-driven.
-   */
   const violations = (): ReadonlyMap<string, string> => violationsByField(mutation.error);
 
   return (
@@ -410,12 +301,12 @@ const ChannelDialog: Component<{
       <ModalContent>
         <ModalHeader>
           <ModalTitle>
-            {editing() ? `Edit ${props.channel?.name ?? "channel"}` : "Add a channel"}
+            {editing() ? `Edit ${props.connection?.name ?? "connection"}` : "Add a connection"}
           </ModalTitle>
           <ModalDescription>
-            The fields below are generated from this provider's own JSON Schema — the same bytes
-            the server validates against, so what the form accepts and what the server accepts
-            cannot drift.
+            An org-wide provider setup — a Slack workspace's bot token, or a webhook receiver's
+            shared credential. Individual channels reference this by name from the notification
+            policy screen; nothing about one destination is configured here.
           </ModalDescription>
         </ModalHeader>
 
@@ -447,7 +338,7 @@ const ChannelDialog: Component<{
                   *
                 </span>
               </SelectLabel>
-              <SelectTrigger id="ch-type">
+              <SelectTrigger id="conn-type">
                 <SelectValue<ChannelType>>
                   {(state) =>
                     props.types.find((t) => t.type === state.selectedOption())?.display_name ??
@@ -477,7 +368,7 @@ const ChannelDialog: Component<{
                 *
               </span>
             </TextFieldLabel>
-            <TextFieldInput id="ch-name" placeholder="#sre-alerts" />
+            <TextFieldInput id="conn-name" placeholder="Acme Slack workspace" />
             <TextFieldDescription class={HELP}>
               Unique within the org, compared case-insensitively.
             </TextFieldDescription>
@@ -488,22 +379,8 @@ const ChannelDialog: Component<{
           </TextField>
 
           <Show
-            when={descriptor()}
-            fallback={
-              <p class={HELP}>
-                oto has not published a schema for this provider, so there is nothing to configure.
-              </p>
-            }
+            when={descriptor() !== undefined && fields().length > 0}
           >
-            {/*
-              ⛔ A NAMED GROUP, NOT A BOX. This was a `rounded-control border
-              px-lg py-md` fieldset, and the padding put every provider field
-              17px to the right of Name, Credential and Verbosity and made it
-              34px narrower — two left edges and two control widths inside one
-              form, which is what "the settings forms are not aligned" looked
-              like from here. `LEGEND` names the group in small caps, the same
-              voice `PanelTitle` uses one level up, on the shared left edge.
-            */}
             <fieldset>
               <legend class={LEGEND}>Provider configuration</legend>
               <SchemaForm
@@ -517,7 +394,7 @@ const ChannelDialog: Component<{
             </fieldset>
           </Show>
 
-          <Show when={(descriptor()?.credential_kinds ?? []).some((k) => k !== "none")}>
+          <Show when={(descriptor()?.connection_credential_kinds ?? []).some((k) => k !== "none")}>
             <TextField
               class={FIELD}
               value={secret()}
@@ -527,67 +404,17 @@ const ChannelDialog: Component<{
               <TextFieldLabel>
                 {editing() ? "Replace credential (optional)" : "Credential"}
               </TextFieldLabel>
-              <TextFieldInput id="ch-secret" type="password" autocomplete="off" />
+              <TextFieldInput id="conn-secret" type="password" autocomplete="off" />
               <TextFieldDescription class={HELP}>
                 {editing()
                   ? "Leave blank to keep the current one. oto can never show you the existing value — only a hash is kept."
-                  : `This provider accepts: ${(descriptor()?.credential_kinds ?? []).join(", ")}. It is sealed before it touches disk and no endpoint ever returns it.`}
+                  : `This provider accepts: ${(descriptor()?.connection_credential_kinds ?? []).join(", ")}. It is sealed before it touches disk and no endpoint ever returns it.`}
               </TextFieldDescription>
               <TextFieldErrorMessage role="alert">
                 {violations().get("credential.values.token")}
               </TextFieldErrorMessage>
             </TextField>
           </Show>
-
-          <Select<Verbosity>
-            class={FIELD}
-            options={[...VERBOSITIES]}
-            value={verbosity()}
-            onChange={(next) => {
-              if (next !== null) setVerbosity(next);
-            }}
-            validationState={violations().get("verbosity") ? "invalid" : "valid"}
-            itemComponent={(itemProps) => (
-              <SelectItem item={itemProps.item}>{itemProps.item.rawValue}</SelectItem>
-            )}
-          >
-            <SelectLabel>Verbosity</SelectLabel>
-            <SelectTrigger>
-              <SelectValue<Verbosity>>{(state) => state.selectedOption()}</SelectValue>
-            </SelectTrigger>
-            {/* `id="ch-verbosity"` on the hidden native `<select>` (rendered for
-                browser autofill/form-submission semantics) rather than on the
-                Kobalte trigger button: it is the one element in this composite
-                that is still a real `<select>` with real `<option>`s, so it is
-                what a test — or a password manager — can query by id. */}
-            <SelectHiddenSelect id="ch-verbosity" />
-            <SelectDescription class={HELP}>{VERBOSITY_NOTE[verbosity()]}</SelectDescription>
-            <SelectErrorMessage role="alert">{violations().get("verbosity")}</SelectErrorMessage>
-            <SelectContent />
-          </Select>
-
-          {/*
-            The one checkbox on this screen whose label is a sentence and
-            therefore wraps. `items-center` on the row centres the box against
-            the WHOLE wrapped block, which left it ~10px below the line it
-            labels; starting the row and centring the box inside its own 24px
-            floor instead puts it on the first line, where the words are.
-          */}
-          <div class={cn(CHECK_ROW, "items-start")}>
-            <Checkbox
-              class="min-h-6 items-center"
-              id="ch-enabled"
-              checked={enabled()}
-              onChange={setEnabled}
-            />
-            <label for="ch-enabled-input" class={CHECK_LABEL}>
-              Enabled
-              <span class="ml-sm text-meta text-ink-subtle">
-                a disabled channel is skipped, and the skip is recorded with a reason rather than
-                dropped
-              </span>
-            </label>
-          </div>
         </div>
 
         <ModalFooter>

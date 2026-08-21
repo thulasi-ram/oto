@@ -60,6 +60,35 @@ import (
 // firing, and never because somebody clicked.
 var resolutionVerbs = []string{"resolve", "close", "merge", "dismiss", "reopen"}
 
+// allowedResolutionRoutes is the exact-match exemption list, and it is EXACT for
+// a reason: one (method, pattern) pair per entry, with the argument for it.
+//
+// ⭐⭐ THE VERB MATCHER IS NOT LOOSENED, AND THAT IS THE POINT. AC-51 forbids
+// five verbs because they CLOSE A SIGNAL ON A HUMAN'S SAY-SO — oto has three
+// human verbs and a fourth would make it an incident tool. `resolutionVerbs`
+// matches on segment-contains precisely so that `resolve-all` and `bulk-close`
+// cannot slip past it, and that breadth is what makes it worth having. Teaching
+// the predicate to understand "resolve, but the other sense of resolve" is how a
+// gate stops meaning anything: the next `/resolve` would have to argue with a
+// regex instead of with a reviewer.
+//
+// So the breadth stays and the exception is named, one route at a time, here —
+// where a reviewer sees it in the diff.
+//
+// ⛔ THE ONE ENTRY IS NOT A SIGNAL VERB AT ALL. `POST
+// /api/v1/channel-connections/{id}/slack/resolve` (ADR 0047) resolves a Slack
+// channel NAME to its ID, or the reverse — it is a metadata lookup at
+// configuration time, on a `channel_connections` row, triggered by an admin
+// typing into a settings form. It closes nothing, it touches no Alert and no
+// Case, and the noun it is mounted under is a credential, not a signal. §E.1.1's
+// property — "there is no POST /api/v1/alerts/{id}/resolve, ever" — is untouched
+// by it. The English collision is total and the semantic overlap is zero.
+var allowedResolutionRoutes = map[string]string{
+	"POST /api/v1/channel-connections/{id}/slack/resolve": "ADR 0047: resolves a Slack " +
+		"channel name to its id at configuration time. Not a signal verb — it closes " +
+		"nothing and is mounted on a connection, not on an alert or a case.",
+}
+
 // route is one entry in the mounted trie.
 type route struct {
 	method  string
@@ -99,6 +128,9 @@ func walkRoutes(t *testing.T, routes chi.Routes) []route {
 func resolutionRoutes(rs []route) []route {
 	var bad []route
 	for _, r := range rs {
+		if _, allowed := allowedResolutionRoutes[r.String()]; allowed {
+			continue
+		}
 		for _, seg := range strings.Split(r.pattern, "/") {
 			if seg == "" || strings.HasPrefix(seg, "{") || seg == "*" {
 				continue
@@ -237,6 +269,82 @@ func TestNoResolutionRouteIsMounted(t *testing.T) {
 
 	if bad := resolutionRoutes(rs); len(bad) > 0 {
 		t.Error(forbiddenRouteFailure(bad))
+	}
+}
+
+// TestEveryResolutionExemptionIsRealAndNarrow keeps the allowlist honest.
+//
+// ⛔ AN ALLOWLIST NOBODY CHECKS IS HOW A GATE DIES QUIETLY. Two failure modes,
+// both asserted here:
+//
+//   - a DEAD entry — the route was renamed or deleted and its exemption stayed,
+//     so the next route that happens to match that pattern is pre-forgiven;
+//   - a WIDE entry — a `{placeholder}` or a `*` where a literal segment should
+//     be, which would exempt a subtree rather than one route.
+//
+// Every entry also has to carry a reason, for the same cause `notDriven` does in
+// the conformance gate: an exemption costs an argument.
+func TestEveryResolutionExemptionIsRealAndNarrow(t *testing.T) {
+	mounted := map[string]bool{}
+	for _, r := range walkRoutes(t, mountedRouter(t)) {
+		mounted[r.String()] = true
+	}
+
+	for key, why := range allowedResolutionRoutes {
+		if !mounted[key] {
+			t.Errorf("allowedResolutionRoutes exempts %q, which the mounted router does not "+
+				"serve. A stale exemption pre-forgives whatever arrives at that pattern next; "+
+				"delete it with the route.", key)
+		}
+		if strings.TrimSpace(why) == "" {
+			t.Errorf("allowedResolutionRoutes[%q] has no reason. AC-51 is a decision, and an "+
+				"exception to it costs an argument a reviewer can read.", key)
+		}
+		// The exempted route must itself be one the predicate WOULD have caught,
+		// or the entry is noise that hides nothing and explains nothing.
+		method, pattern, ok := strings.Cut(key, " ")
+		if !ok {
+			t.Errorf("allowedResolutionRoutes key %q is not `METHOD /pattern`", key)
+			continue
+		}
+		bare := []route{{method: method, pattern: pattern}}
+		withoutList := allowedResolutionRoutes
+		allowedResolutionRoutes = nil
+		caught := len(resolutionRoutes(bare)) == 1
+		allowedResolutionRoutes = withoutList
+		if !caught {
+			t.Errorf("allowedResolutionRoutes exempts %q, which the predicate would not have "+
+				"flagged anyway. An exemption that forgives nothing is a comment pretending "+
+				"to be a gate.", key)
+		}
+	}
+}
+
+// TestTheExemptionDoesNotForgiveASignalVerb is the other half of the teeth.
+//
+// The allowlist is consulted by exact (method, pattern) match, so a real
+// `/resolve` on an alert must still be caught while the connection lookup is
+// waved through — the two live in the same walk and only one of them is allowed.
+func TestTheExemptionDoesNotForgiveASignalVerb(t *testing.T) {
+	rs := []route{
+		{method: "POST", pattern: "/api/v1/channel-connections/{id}/slack/resolve"},
+		{method: "POST", pattern: "/api/v1/alerts/{id}/resolve"},
+		// The same lookup on a DIFFERENT noun is not the exempted route, and an
+		// exact-match allowlist has to say so.
+		{method: "POST", pattern: "/api/v1/alerts/{id}/slack/resolve"},
+		// And not by method either.
+		{method: "DELETE", pattern: "/api/v1/channel-connections/{id}/slack/resolve"},
+	}
+
+	got := routeStrings(resolutionRoutes(rs))
+	sort.Strings(got)
+	want := []string{
+		"DELETE /api/v1/channel-connections/{id}/slack/resolve",
+		"POST /api/v1/alerts/{id}/resolve",
+		"POST /api/v1/alerts/{id}/slack/resolve",
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("the exemption forgave the wrong routes:\n got  %v\n want %v", got, want)
 	}
 }
 

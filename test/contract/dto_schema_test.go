@@ -146,6 +146,17 @@ var bindings = []binding{
 	{"channels", "CreateChannelRequest", channelsapi.CreateChannelRequest{}},
 	{"channels", "UpdateChannelRequest", channelsapi.UpdateChannelRequest{}},
 	{"channels", "CredentialInput", channelsapi.CredentialInputDTO{}},
+	// The org-wide setup a channel answers to (ADR 0047). A connection carries the
+	// credential and the workspace; a channel carries one destination and a
+	// `connection_id`, which is why these are bound in the same tag as the channel
+	// rather than a settings one — same module, same owner.
+	{"channels", "ChannelConnectionDTO", channelsapi.ChannelConnectionDTO{}},
+	{"channels", "CreateChannelConnectionRequest", channelsapi.CreateChannelConnectionRequest{}},
+	{"channels", "UpdateChannelConnectionRequest", channelsapi.UpdateChannelConnectionRequest{}},
+	// `POST /channel-connections/{id}/slack/resolve` — the name↔id lookup ADR 0047
+	// reopened two Slack scopes for. Settings-time only, never on the send path.
+	{"channels", "ResolveConversationRequest", channelsapi.ResolveConversationRequest{}},
+	{"channels", "ResolveConversationDTO", channelsapi.ResolveConversationDTO{}},
 
 	// ------------------------------------------------------- notification
 	{"notification", "PolicyDTO", notificationapi.PolicyDTO{}},

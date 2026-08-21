@@ -77,11 +77,14 @@ func newFixture(t *testing.T, caps domain.Capability) fixture {
 	// differ by exactly that much and this fixture failed roughly one run in two.
 	// 00032 plus the monotonic `updated_at` writers fixed it where it lived, so the
 	// fudge is gone: seed the honest instant and let the constraint mean something.
+	// ADR 0047: a destination references an org-wide connection, and the column is
+	// NOT NULL — the credential that used to sit on this row lives there now.
+	conn := h.WebhookConnection(org)
 	h.Exec(`INSERT INTO channels
-	          (id, org_id, type, name, config, capabilities, renderer, thread_updates,
-	           created_at, updated_at)
-	        VALUES ($1,$2,'webhook',$3,'{}'::jsonb,$4,'webhook.json',true,$5,$5)`,
-		channelID, org.ID, "chan-"+suffix, int64(caps), h.Now())
+	          (id, org_id, type, name, config, connection_id, capabilities, renderer,
+	           thread_updates, created_at, updated_at)
+	        VALUES ($1,$2,'webhook',$3,'{}'::jsonb,$4,$5,'webhook.json',true,$6,$6)`,
+		channelID, org.ID, "chan-"+suffix, conn.ID, int64(caps), h.Now())
 	// Same story on `notification_policies`, which 00034 took the database's
 	// `DEFAULT now()` away from for the same reason.
 	//

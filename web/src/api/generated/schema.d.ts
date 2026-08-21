@@ -1318,6 +1318,90 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/channel-connections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List org-wide connections
+         * @description A connection is the org-wide setup a provider needs once — a Slack workspace's bot token and
+         *     team id, or a webhook receiver family's shared basic/bearer credential or outbound signing
+         *     secret. Several channels reference one connection; this is where it is set up.
+         */
+        get: operations["listChannelConnections"];
+        put?: never;
+        /**
+         * Create a connection
+         * @description Create an org-wide provider setup. `config` is validated against the provider's published
+         *     `connection_config_schema` (from `GET /api/v1/channel-types`), and a slack connection must carry
+         *     a `slack_bot_token` credential.
+         */
+        post: operations["createChannelConnection"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/channel-connections/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get one connection */
+        get: operations["getChannelConnection"];
+        put?: never;
+        post?: never;
+        /**
+         * Soft-delete a connection
+         * @description A connection still open by a channel is a `409` — deleting it would leave those channels unable
+         *     to open a provider at all, which is a worse silence than the `channel_disabled` suppression a
+         *     deleted channel records.
+         */
+        delete: operations["deleteChannelConnection"];
+        options?: never;
+        head?: never;
+        /**
+         * Update a connection
+         * @description Partial update. Supplying `config` replaces it wholesale and re-validates against the provider's
+         *     connection schema; supplying `credential` rotates the secret in place, so every channel
+         *     referencing this connection never spends a moment pointing at nothing. `type` cannot change —
+         *     a connection's provider is its identity.
+         */
+        patch: operations["updateChannelConnection"];
+        trace?: never;
+    };
+    "/api/v1/channel-connections/{id}/slack/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resolve a Slack channel name to its id, or the reverse
+         * @description Given a channel name, answers its id; given an id, answers its name. Exactly one of `name` or
+         *     `conversation_id` is expected. Backed by `conversations.list` (name → id) or `conversations.info`
+         *     (id → name) against this connection's own bot token — this is settings-time metadata lookup, not
+         *     oto reading Slack back to reconstruct its own delivery state (ADR 0008 is unchanged by this).
+         *
+         *     Only defined for a `slack` connection; a webhook connection answers `422` — the connection
+         *     exists, it simply cannot do this.
+         */
+        post: operations["resolveSlackConversation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/notification-policies": {
         parameters: {
             query?: never;
@@ -4298,15 +4382,17 @@ export interface components {
             truncated_alerts: number;
         };
         /**
-         * @description A static provider descriptor. `GET /api/v1/channel-types` is what makes the settings UI dynamic:
-         *     the form is generated from `config_schema`, so the UI has no per-provider code.
+         * @description A static provider descriptor. `GET /api/v1/channel-types` is what makes both the connection and
+         *     the channel settings UI dynamic: each form is generated from its own schema, so the UI has no
+         *     per-provider code.
          */
         ChannelTypeDTO: {
             type: components["schemas"]["ChannelType"];
             /** @example Slack */
             display_name: string;
             /**
-             * @description The provider's JSON Schema (draft 2020-12) for its `config` object, served **verbatim**.
+             * @description The provider's JSON Schema (draft 2020-12) for one **channel's** `config` object, served
+             *     **verbatim**.
              *
              *     These are the same bytes the server validates against on every create and update, and the
              *     same bytes the settings form renders and pre-validates itself from. There is no second copy
@@ -4320,8 +4406,23 @@ export interface components {
             config_schema: {
                 [key: string]: unknown;
             };
-            /** @description Which credential kinds this provider accepts. Secrets are write-only everywhere in this API. */
-            credential_kinds: ("slack_bot_token" | "slack_app_token" | "slack_signing_secret" | "basic" | "bearer" | "none")[];
+            /**
+             * @description Which credential kinds a **channel** of this type accepts directly. v1 has none that do —
+             *     every credential now lives on the connection a channel references — but the field stays for
+             *     a future provider that needs one per destination rather than one per connection.
+             */
+            credential_kinds: ("slack_bot_token" | "slack_app_token" | "slack_signing_secret" | "basic" | "bearer" | "webhook_signing_secret" | "none")[];
+            /**
+             * @description The provider's JSON Schema for a **connection's** `config` object — the org-wide setup, not
+             *     one channel's. A Slack connection's schema asks for `team_id`; a webhook connection's is
+             *     currently empty, published anyway so every provider's connection-creation form is generated
+             *     the same schema-driven way.
+             */
+            connection_config_schema: {
+                [key: string]: unknown;
+            };
+            /** @description Which credential kinds a **connection** of this type accepts. */
+            connection_credential_kinds: ("slack_bot_token" | "slack_app_token" | "slack_signing_secret" | "basic" | "bearer" | "webhook_signing_secret" | "none")[];
             /**
              * @description What the provider can do. Capabilities are negotiated centrally by oto's dispatcher, never
              *     asserted by a provider at send time.
@@ -4347,10 +4448,10 @@ export interface components {
              */
             name: string;
             /**
-             * @description Non-secret provider configuration, validated against this provider's `config_schema`.
-             *     Credentials are never part of `config` and never appear in a response.
+             * @description Non-secret, per-destination provider configuration, validated against this provider's
+             *     `config_schema`. Credentials are never part of `config` and never appear in a response — and
+             *     neither is the workspace: a Slack channel's `team_id` lives on its connection now, not here.
              * @example {
-             *       "team_id": "T9TK3CUKW",
              *       "conversation_id": "C7F2X9QLM",
              *       "conversation_name": "sre-alerts",
              *       "max_instances": 10
@@ -4360,12 +4461,11 @@ export interface components {
                 [key: string]: unknown;
             };
             /**
-             * @description Which kind of credential is attached. **The credential itself is never returned** — only its
-             *     kind and rotation timestamp.
-             * @enum {string|null}
+             * @description The org-wide connection this destination opens through. The connection carries the
+             *     credential; nothing about it appears here beyond the id — fetch
+             *     `GET /api/v1/channel-connections/{connection_id}` for its kind and rotation timestamp.
              */
-            credential_kind?: "slack_bot_token" | "slack_app_token" | "slack_signing_secret" | "basic" | "bearer" | "none" | null;
-            credential_rotated_at?: components["schemas"]["Timestamp"] | null;
+            connection_id: components["schemas"]["Uuid"];
             renderer: components["schemas"]["RendererId"];
             verbosity: components["schemas"]["Verbosity"];
             /**
@@ -5774,12 +5874,12 @@ export interface components {
             credential?: components["schemas"]["CredentialInput"];
         };
         /**
-         * @description Secret material for an upstream or a channel. Supplying this replaces any existing credential and
-         *     stamps a new rotation timestamp.
+         * @description Secret material for an upstream, a connection, or a channel. Supplying this replaces any
+         *     existing credential and stamps a new rotation timestamp.
          */
         CredentialInput: {
             /** @enum {string} */
-            kind: "slack_bot_token" | "slack_app_token" | "slack_signing_secret" | "basic" | "bearer" | "none";
+            kind: "slack_bot_token" | "slack_app_token" | "slack_signing_secret" | "basic" | "bearer" | "webhook_signing_secret" | "none";
             /**
              * @description Secret material, sealed with AES-256-GCM before it touches disk. **Write-only: no endpoint
              *     in this API ever returns it**, and it is never logged.
@@ -5789,19 +5889,19 @@ export interface components {
             };
         };
         /**
-         * @description Create a destination instance. A `slack` channel must carry a credential; the `webhook` provider
-         *     may not need one.
+         * @description Create a destination instance under an existing connection. There is no `credential` field here
+         *     any more — the connection carries it, and several channels can reference the same one.
          */
         CreateChannelRequest: {
             type: components["schemas"]["ChannelType"];
             /** @description Must not be blank after trimming. Unique within the org, compared case-insensitively. */
             name: string;
             /**
-             * @description Provider configuration, validated against that provider's published JSON Schema — the same
-             *     bytes served by `GET /api/v1/channel-types` and used to render the settings form. Schema
-             *     failures come back as ordinary `violations[]` with the JSON Pointer as `field` and the
-             *     failing keyword as `code`, so a `#channel-name` where a channel ID belongs highlights the
-             *     exact control.
+             * @description Per-destination provider configuration, validated against that provider's published JSON
+             *     Schema — the same bytes served by `GET /api/v1/channel-types` and used to render the
+             *     settings form. Schema failures come back as ordinary `violations[]` with the JSON Pointer as
+             *     `field` and the failing keyword as `code`, so a `#channel-name` where a channel ID belongs
+             *     highlights the exact control.
              *
              *     Two rules the schema cannot express are enforced server-side: an `Authorization` header in a
              *     webhook channel's `headers` is rejected (credentials belong in the credential store), and a
@@ -5811,7 +5911,13 @@ export interface components {
             config: {
                 [key: string]: unknown;
             };
-            credential?: components["schemas"]["CredentialInput"];
+            /**
+             * @description The org-wide connection this destination opens through — create one first with
+             *     `POST /api/v1/channel-connections`. `connection_id`'s own `type` must match this request's
+             *     `type`; a mismatch is a `422` on this field, because a Slack destination pointed at a webhook
+             *     connection would carry a credential that means nothing to the Slack provider.
+             */
+            connection_id: components["schemas"]["Uuid"];
             renderer?: components["schemas"]["RendererId"];
             verbosity?: components["schemas"]["Verbosity"];
             /** @default true */
@@ -5830,12 +5936,91 @@ export interface components {
             config?: {
                 [key: string]: unknown;
             };
-            credential?: components["schemas"]["CredentialInput"];
+            /** @description Re-points this destination at a different connection. The same type-match rule as `CreateChannelRequest.connection_id` applies. */
+            connection_id?: components["schemas"]["Uuid"];
             renderer?: components["schemas"]["RendererId"];
             verbosity?: components["schemas"]["Verbosity"];
             thread_updates?: boolean;
             show_field_emoji?: boolean;
             enabled?: boolean;
+        };
+        /**
+         * @description One **org-wide provider setup** — a Slack workspace's bot token, or a webhook receiver family's
+         *     shared credential — set up once and referenced by several channels.
+         */
+        ChannelConnectionDTO: {
+            id: components["schemas"]["Uuid"];
+            type: components["schemas"]["ChannelType"];
+            /**
+             * @description Unique within the org, compared case-insensitively.
+             * @example Acme Slack workspace
+             */
+            name: string;
+            /**
+             * @description Non-secret, org-wide provider configuration, validated against this provider's
+             *     `connection_config_schema`. A Slack connection's carries `team_id`; a webhook connection's is
+             *     currently empty.
+             * @example {
+             *       "team_id": "T9TK3CUKW"
+             *     }
+             */
+            config: {
+                [key: string]: unknown;
+            };
+            /**
+             * @description Which kind of credential is attached. **The credential itself is never returned** — only its
+             *     kind and rotation timestamp.
+             * @enum {string|null}
+             */
+            credential_kind?: "slack_bot_token" | "slack_app_token" | "slack_signing_secret" | "basic" | "bearer" | "webhook_signing_secret" | "none" | null;
+            credential_rotated_at?: components["schemas"]["Timestamp"] | null;
+            created_at: components["schemas"]["Timestamp"];
+            updated_at: components["schemas"]["Timestamp"];
+        };
+        /**
+         * @description Create a connection. A `slack` connection must carry a `slack_bot_token` credential; a `webhook`
+         *     connection may have none, a `basic`/`bearer` credential to authenticate outbound to a shared
+         *     receiver, or a `webhook_signing_secret` to sign the outbound payload for the receiver to verify.
+         */
+        CreateChannelConnectionRequest: {
+            type: components["schemas"]["ChannelType"];
+            /** @description Must not be blank after trimming. Unique within the org, compared case-insensitively. */
+            name: string;
+            /**
+             * @description Connection-level provider configuration, validated against that provider's published
+             *     `connection_config_schema`.
+             */
+            config: {
+                [key: string]: unknown;
+            };
+            credential?: components["schemas"]["CredentialInput"];
+        };
+        /**
+         * @description Partial update. `type` is absent because a connection's provider is its identity; supplying
+         *     `credential` rotates the secret in place, so every channel referencing this connection never
+         *     spends a moment pointing at nothing.
+         */
+        UpdateChannelConnectionRequest: {
+            name?: string;
+            config?: {
+                [key: string]: unknown;
+            };
+            credential?: components["schemas"]["CredentialInput"];
+        };
+        /**
+         * @description Ask for the other half of one Slack channel. Supply exactly one of `name` or `conversation_id` —
+         *     the response fills in the one you didn't send.
+         */
+        ResolveConversationRequest: {
+            /** @description A Slack channel display name, with or without a leading `#`. */
+            name?: string;
+            /** @description A Slack channel id. */
+            conversation_id?: string;
+        };
+        /** @description Both halves of one Slack channel, as Slack itself answered. */
+        ResolveConversationDTO: {
+            conversation_id: string;
+            conversation_name: string;
         };
         /** @description Create a routing policy. Use the preview endpoint to see what it would do before saving. */
         CreatePolicyRequest: {
@@ -6173,6 +6358,19 @@ export interface components {
         };
         ChannelTestResponse: {
             data: components["schemas"]["ChannelTestDTO"];
+            meta: components["schemas"]["Meta"];
+        };
+        ChannelConnectionListResponse: {
+            data: components["schemas"]["ChannelConnectionDTO"][];
+            page: components["schemas"]["PageInfo"];
+            meta: components["schemas"]["Meta"];
+        };
+        ChannelConnectionResponse: {
+            data: components["schemas"]["ChannelConnectionDTO"];
+            meta: components["schemas"]["Meta"];
+        };
+        ResolveConversationResponse: {
+            data: components["schemas"]["ResolveConversationDTO"];
             meta: components["schemas"]["Meta"];
         };
         PolicyListResponse: {
@@ -9974,6 +10172,203 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             412: components["responses"]["PreconditionFailed"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            502: components["responses"]["BadGateway"];
+            503: components["responses"]["ServiceUnavailable"];
+            504: components["responses"]["GatewayTimeout"];
+        };
+    };
+    listChannelConnections: {
+        parameters: {
+            query?: {
+                /** @description Maximum items to return in one page. */
+                limit?: components["parameters"]["LimitParam"];
+                /**
+                 * @description Opaque keyset cursor, taken verbatim from `page.next_cursor` of the previous response. A cursor
+                 *     minted under a different filter set is rejected with `400 cursor_filter_mismatch` — reset
+                 *     pagination when the user changes a filter.
+                 */
+                cursor?: components["parameters"]["CursorParam"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of connections. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChannelConnectionListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    createChannelConnection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateChannelConnectionRequest"];
+            };
+        };
+        responses: {
+            /** @description The created connection. Credentials are never echoed back. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChannelConnectionResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    getChannelConnection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The connection. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChannelConnectionResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    deleteChannelConnection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: components["responses"]["NoContent"];
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    updateChannelConnection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateChannelConnectionRequest"];
+            };
+        };
+        responses: {
+            /** @description The updated connection. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChannelConnectionResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    resolveSlackConversation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResolveConversationRequest"];
+            };
+        };
+        responses: {
+            /** @description Both halves of the conversation, filled in. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResolveConversationResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["UnprocessableContent"];
             429: components["responses"]["RateLimited"];
             500: components["responses"]["InternalError"];
             502: components["responses"]["BadGateway"];

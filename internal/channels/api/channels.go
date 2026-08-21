@@ -155,32 +155,13 @@ func (rt *Router) createChannel(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
-
-	credentialID, err := rt.sealCredential(r.Context(), scope, dto.Credential)
-	if err != nil {
+	if err := rt.checkConnectionType(r.Context(), scope, kind, dto.ConnectionID); err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
-	// channels_cred_ck: a slack channel MUST carry a credential. Saying so here
-	// turns a 23514 (which is a 500, and tells the operator nothing) into a field
-	// violation that names the control they left empty.
-	if kind == domain.TypeSlack && credentialID == nil {
-		httpx.WriteProblem(w, r, errs.Validation("validation_failed",
-			"1 field failed validation.",
-			errs.Violation{
-				Field: "credential", Code: "required",
-				Message: "a slack channel requires a bot token",
-			}))
-		return
-	}
 
-	// ⚠️ THE CREDENTIAL IS STILL SEALED IN ITS OWN COMMIT, above. Folding it into
-	// the create's transaction is the same correction `createSource` made and is a
-	// separate change; what it would buy is an orphaned `channel_credentials` row
-	// on a failed create, which is invisible and harmless. What the claim below
-	// buys is a channel that is not created twice, which is neither.
 	inst, err := rt.writes.CreateChannel(r.Context(), scope,
-		dto.toNewInstance(credentialID, rt.capabilitiesOf(kind)), idem)
+		dto.toNewInstance(rt.capabilitiesOf(kind)), idem)
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
@@ -266,29 +247,17 @@ func (rt *Router) updateChannel(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
-
-	// A supplied credential ROTATES the existing secret in place, so the channel
-	// never spends a moment pointing at nothing.
-	var credential **uuid.UUID
-	if dto.Credential != nil {
-		newID, cerr := rt.rotateCredential(r.Context(), scope, existing.CredentialID, dto.Credential)
-		if cerr != nil {
-			httpx.WriteProblem(w, r, cerr)
+	// A supplied connection_id re-points this destination — checkConnectionType
+	// refuses one whose provider does not match, the cross-table invariant no
+	// CHECK constraint can see.
+	if dto.ConnectionID != nil {
+		if err := rt.checkConnectionType(r.Context(), scope, existing.Type, *dto.ConnectionID); err != nil {
+			httpx.WriteProblem(w, r, err)
 			return
 		}
-		if existing.Type == domain.TypeSlack && newID == nil {
-			httpx.WriteProblem(w, r, errs.Validation("validation_failed",
-				"1 field failed validation.",
-				errs.Violation{
-					Field: "credential", Code: "required",
-					Message: "a slack channel requires a bot token",
-				}))
-			return
-		}
-		credential = &newID
 	}
 
-	inst, err := rt.channels.Update(r.Context(), scope, id, dto.toPatch(credential))
+	inst, err := rt.channels.Update(r.Context(), scope, id, dto.toPatch())
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
@@ -401,8 +370,44 @@ func (rt *Router) requireWriteDeps() error {
 		"the channel store is not configured in this deployment"); err != nil {
 		return err
 	}
+	if err := requireDependency(rt.connections != nil, "channels_connections_store_unavailable",
+		"the connection store is not configured in this deployment"); err != nil {
+		return err
+	}
 	return requireDependency(rt.registry != nil, "channels_registry_unavailable",
 		"no channel providers are registered in this deployment")
+}
+
+// checkConnectionType refuses a connection whose provider does not match a
+// channel's own type, and one that has been deleted.
+//
+// ⛔ THIS IS THE CROSS-TABLE INVARIANT NO CHECK CONSTRAINT CAN SEE. A Slack
+// channel pointed at a webhook connection would carry a bot-token credential
+// that means nothing to the webhook provider — the same shape of defect
+// `checkRenderer` catches for a cross-provider renderer, one hop further out.
+func (rt *Router) checkConnectionType(
+	ctx context.Context, scope db.TenantScope, kind domain.Type, connectionID uuid.UUID,
+) error {
+	conn, err := rt.connections.Get(ctx, scope, connectionID)
+	if err != nil {
+		return err
+	}
+	if conn.Deleted() {
+		return errs.Validation("validation_failed", "1 field failed validation.",
+			errs.Violation{
+				Field: "connection_id", Code: "deleted",
+				Message: "this connection has been deleted",
+			})
+	}
+	if conn.Type != kind {
+		return errs.Validation("validation_failed", "1 field failed validation.",
+			errs.Violation{
+				Field: "connection_id", Code: "type_mismatch",
+				Message: "this connection is a " + string(conn.Type) +
+					" connection and cannot back a " + string(kind) + " channel",
+			})
+	}
+	return nil
 }
 
 // validateConfig runs layer 4 (§L.5).

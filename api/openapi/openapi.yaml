@@ -3047,6 +3047,232 @@ paths:
         '504':
           $ref: '#/components/responses/GatewayTimeout'
 
+  /api/v1/channel-connections:
+    get:
+      operationId: listChannelConnections
+      summary: List org-wide connections
+      tags: [Channels]
+      description: |
+        A connection is the org-wide setup a provider needs once — a Slack workspace's bot token and
+        team id, or a webhook receiver family's shared basic/bearer credential or outbound signing
+        secret. Several channels reference one connection; this is where it is set up.
+      parameters:
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/CursorParam'
+      responses:
+        '200':
+          description: A page of connections.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelConnectionListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    post:
+      operationId: createChannelConnection
+      summary: Create a connection
+      tags: [Channels]
+      description: |
+        Create an org-wide provider setup. `config` is validated against the provider's published
+        `connection_config_schema` (from `GET /api/v1/channel-types`), and a slack connection must carry
+        a `slack_bot_token` credential.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateChannelConnectionRequest'
+      responses:
+        '201':
+          description: The created connection. Credentials are never echoed back.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelConnectionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/channel-connections/{id}:
+    get:
+      operationId: getChannelConnection
+      summary: Get one connection
+      tags: [Channels]
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      responses:
+        '200':
+          description: The connection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelConnectionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    patch:
+      operationId: updateChannelConnection
+      summary: Update a connection
+      tags: [Channels]
+      description: |
+        Partial update. Supplying `config` replaces it wholesale and re-validates against the provider's
+        connection schema; supplying `credential` rotates the secret in place, so every channel
+        referencing this connection never spends a moment pointing at nothing. `type` cannot change —
+        a connection's provider is its identity.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateChannelConnectionRequest'
+      responses:
+        '200':
+          description: The updated connection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelConnectionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    delete:
+      operationId: deleteChannelConnection
+      summary: Soft-delete a connection
+      tags: [Channels]
+      description: |
+        A connection still open by a channel is a `409` — deleting it would leave those channels unable
+        to open a provider at all, which is a worse silence than the `channel_disabled` suppression a
+        deleted channel records.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/channel-connections/{id}/slack/resolve:
+    post:
+      operationId: resolveSlackConversation
+      summary: Resolve a Slack channel name to its id, or the reverse
+      tags: [Channels]
+      description: |
+        Given a channel name, answers its id; given an id, answers its name. Exactly one of `name` or
+        `conversation_id` is expected. Backed by `conversations.list` (name → id) or `conversations.info`
+        (id → name) against this connection's own bot token — this is settings-time metadata lookup, not
+        oto reading Slack back to reconstruct its own delivery state (ADR 0008 is unchanged by this).
+
+        Only defined for a `slack` connection; a webhook connection answers `422` — the connection
+        exists, it simply cannot do this.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResolveConversationRequest'
+      responses:
+        '200':
+          description: Both halves of the conversation, filled in.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResolveConversationResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+
   # =================================================================================================
   # Notification
   # =================================================================================================
@@ -8241,7 +8467,7 @@ components:
 
     ChannelTypeDTO:
       type: object
-      required: [type, display_name, config_schema, credential_kinds, capabilities, renderers]
+      required: [type, display_name, config_schema, credential_kinds, connection_config_schema, connection_credential_kinds, capabilities, renderers]
       properties:
         type:
           $ref: '#/components/schemas/ChannelType'
@@ -8253,7 +8479,8 @@ components:
           type: object
           additionalProperties: true
           description: |
-            The provider's JSON Schema (draft 2020-12) for its `config` object, served **verbatim**.
+            The provider's JSON Schema (draft 2020-12) for one **channel's** `config` object, served
+            **verbatim**.
 
             These are the same bytes the server validates against on every create and update, and the
             same bytes the settings form renders and pre-validates itself from. There is no second copy
@@ -8265,11 +8492,29 @@ components:
             is going to refuse with a 422.
         credential_kinds:
           type: array
-          maxItems: 6
+          maxItems: 7
           items:
             type: string
-            enum: [slack_bot_token, slack_app_token, slack_signing_secret, basic, bearer, none]
-          description: Which credential kinds this provider accepts. Secrets are write-only everywhere in this API.
+            enum: [slack_bot_token, slack_app_token, slack_signing_secret, basic, bearer, webhook_signing_secret, none]
+          description: |
+            Which credential kinds a **channel** of this type accepts directly. v1 has none that do —
+            every credential now lives on the connection a channel references — but the field stays for
+            a future provider that needs one per destination rather than one per connection.
+        connection_config_schema:
+          type: object
+          additionalProperties: true
+          description: |
+            The provider's JSON Schema for a **connection's** `config` object — the org-wide setup, not
+            one channel's. A Slack connection's schema asks for `team_id`; a webhook connection's is
+            currently empty, published anyway so every provider's connection-creation form is generated
+            the same schema-driven way.
+        connection_credential_kinds:
+          type: array
+          maxItems: 7
+          items:
+            type: string
+            enum: [slack_bot_token, slack_app_token, slack_signing_secret, basic, bearer, webhook_signing_secret, none]
+          description: Which credential kinds a **connection** of this type accepts.
         capabilities:
           type: array
           maxItems: 6
@@ -8290,8 +8535,9 @@ components:
           enum: [slack, none]
           description: Which pre-send token bucket applies.
       description: |
-        A static provider descriptor. `GET /api/v1/channel-types` is what makes the settings UI dynamic:
-        the form is generated from `config_schema`, so the UI has no per-provider code.
+        A static provider descriptor. `GET /api/v1/channel-types` is what makes both the connection and
+        the channel settings UI dynamic: each form is generated from its own schema, so the UI has no
+        per-provider code.
 
     ChannelDTO:
       type: object
@@ -8300,6 +8546,7 @@ components:
         - type
         - name
         - config
+        - connection_id
         - renderer
         - verbosity
         - thread_updates
@@ -8323,23 +8570,19 @@ components:
           type: object
           additionalProperties: true
           description: |
-            Non-secret provider configuration, validated against this provider's `config_schema`.
-            Credentials are never part of `config` and never appear in a response.
+            Non-secret, per-destination provider configuration, validated against this provider's
+            `config_schema`. Credentials are never part of `config` and never appear in a response — and
+            neither is the workspace: a Slack channel's `team_id` lives on its connection now, not here.
           examples:
-            - team_id: T9TK3CUKW
-              conversation_id: C7F2X9QLM
+            - conversation_id: C7F2X9QLM
               conversation_name: sre-alerts
               max_instances: 10
-        credential_kind:
-          type: ['string', 'null']
-          enum: [slack_bot_token, slack_app_token, slack_signing_secret, basic, bearer, none, null]
+        connection_id:
+          $ref: '#/components/schemas/Uuid'
           description: |
-            Which kind of credential is attached. **The credential itself is never returned** — only its
-            kind and rotation timestamp.
-        credential_rotated_at:
-          oneOf:
-            - $ref: '#/components/schemas/Timestamp'
-            - type: 'null'
+            The org-wide connection this destination opens through. The connection carries the
+            credential; nothing about it appears here beyond the id — fetch
+            `GET /api/v1/channel-connections/{connection_id}` for its kind and rotation timestamp.
         renderer:
           $ref: '#/components/schemas/RendererId'
         verbosity:
@@ -10531,7 +10774,7 @@ components:
       properties:
         kind:
           type: string
-          enum: [slack_bot_token, slack_app_token, slack_signing_secret, basic, bearer, none]
+          enum: [slack_bot_token, slack_app_token, slack_signing_secret, basic, bearer, webhook_signing_secret, none]
         values:
           type: object
           additionalProperties:
@@ -10542,10 +10785,130 @@ components:
             Secret material, sealed with AES-256-GCM before it touches disk. **Write-only: no endpoint
             in this API ever returns it**, and it is never logged.
       description: |
-        Secret material for an upstream or a channel. Supplying this replaces any existing credential and
-        stamps a new rotation timestamp.
+        Secret material for an upstream, a connection, or a channel. Supplying this replaces any
+        existing credential and stamps a new rotation timestamp.
 
     CreateChannelRequest:
+      type: object
+      required: [type, name, config, connection_id]
+      additionalProperties: false
+      properties:
+        type:
+          $ref: '#/components/schemas/ChannelType'
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+          description: Must not be blank after trimming. Unique within the org, compared case-insensitively.
+        config:
+          type: object
+          additionalProperties: true
+          description: |
+            Per-destination provider configuration, validated against that provider's published JSON
+            Schema — the same bytes served by `GET /api/v1/channel-types` and used to render the
+            settings form. Schema failures come back as ordinary `violations[]` with the JSON Pointer as
+            `field` and the failing keyword as `code`, so a `#channel-name` where a channel ID belongs
+            highlights the exact control.
+
+            Two rules the schema cannot express are enforced server-side: an `Authorization` header in a
+            webhook channel's `headers` is rejected (credentials belong in the credential store), and a
+            webhook URL resolving to a loopback or link-local address is rejected unless the deployment
+            explicitly allows private targets.
+        connection_id:
+          $ref: '#/components/schemas/Uuid'
+          description: |
+            The org-wide connection this destination opens through — create one first with
+            `POST /api/v1/channel-connections`. `connection_id`'s own `type` must match this request's
+            `type`; a mismatch is a `422` on this field, because a Slack destination pointed at a webhook
+            connection would carry a credential that means nothing to the Slack provider.
+        renderer:
+          $ref: '#/components/schemas/RendererId'
+        verbosity:
+          $ref: '#/components/schemas/Verbosity'
+        thread_updates:
+          type: boolean
+          default: true
+        show_field_emoji:
+          type: boolean
+          default: true
+        enabled:
+          type: boolean
+          default: true
+      description: |
+        Create a destination instance under an existing connection. There is no `credential` field here
+        any more — the connection carries it, and several channels can reference the same one.
+
+    UpdateChannelRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        config:
+          type: object
+          additionalProperties: true
+        connection_id:
+          $ref: '#/components/schemas/Uuid'
+          description: Re-points this destination at a different connection. The same type-match rule as `CreateChannelRequest.connection_id` applies.
+        renderer:
+          $ref: '#/components/schemas/RendererId'
+        verbosity:
+          $ref: '#/components/schemas/Verbosity'
+        thread_updates:
+          type: boolean
+        show_field_emoji:
+          type: boolean
+        enabled:
+          type: boolean
+      description: |
+        Partial update. `type` is absent because a channel's provider is its identity; `config` is
+        replaced wholesale and re-validated against the provider schema.
+
+    ChannelConnectionDTO:
+      type: object
+      required: [id, type, name, config, created_at, updated_at]
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        type:
+          $ref: '#/components/schemas/ChannelType'
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+          description: Unique within the org, compared case-insensitively.
+          examples: ['Acme Slack workspace']
+        config:
+          type: object
+          additionalProperties: true
+          description: |
+            Non-secret, org-wide provider configuration, validated against this provider's
+            `connection_config_schema`. A Slack connection's carries `team_id`; a webhook connection's is
+            currently empty.
+          examples:
+            - team_id: T9TK3CUKW
+        credential_kind:
+          type: ['string', 'null']
+          enum: [slack_bot_token, slack_app_token, slack_signing_secret, basic, bearer, webhook_signing_secret, none, null]
+          description: |
+            Which kind of credential is attached. **The credential itself is never returned** — only its
+            kind and rotation timestamp.
+        credential_rotated_at:
+          oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        updated_at:
+          $ref: '#/components/schemas/Timestamp'
+      description: |
+        One **org-wide provider setup** — a Slack workspace's bot token, or a webhook receiver family's
+        shared credential — set up once and referenced by several channels.
+
+    CreateChannelConnectionRequest:
       type: object
       required: [type, name, config]
       additionalProperties: false
@@ -10561,36 +10924,16 @@ components:
           type: object
           additionalProperties: true
           description: |
-            Provider configuration, validated against that provider's published JSON Schema — the same
-            bytes served by `GET /api/v1/channel-types` and used to render the settings form. Schema
-            failures come back as ordinary `violations[]` with the JSON Pointer as `field` and the
-            failing keyword as `code`, so a `#channel-name` where a channel ID belongs highlights the
-            exact control.
-
-            Two rules the schema cannot express are enforced server-side: an `Authorization` header in a
-            webhook channel's `headers` is rejected (credentials belong in the credential store), and a
-            webhook URL resolving to a loopback or link-local address is rejected unless the deployment
-            explicitly allows private targets.
+            Connection-level provider configuration, validated against that provider's published
+            `connection_config_schema`.
         credential:
           $ref: '#/components/schemas/CredentialInput'
-        renderer:
-          $ref: '#/components/schemas/RendererId'
-        verbosity:
-          $ref: '#/components/schemas/Verbosity'
-        thread_updates:
-          type: boolean
-          default: true
-        show_field_emoji:
-          type: boolean
-          default: true
-        enabled:
-          type: boolean
-          default: true
       description: |
-        Create a destination instance. A `slack` channel must carry a credential; the `webhook` provider
-        may not need one.
+        Create a connection. A `slack` connection must carry a `slack_bot_token` credential; a `webhook`
+        connection may have none, a `basic`/`bearer` credential to authenticate outbound to a shared
+        receiver, or a `webhook_signing_secret` to sign the outbound payload for the receiver to verify.
 
-    UpdateChannelRequest:
+    UpdateChannelConnectionRequest:
       type: object
       additionalProperties: false
       minProperties: 1
@@ -10604,19 +10947,37 @@ components:
           additionalProperties: true
         credential:
           $ref: '#/components/schemas/CredentialInput'
-        renderer:
-          $ref: '#/components/schemas/RendererId'
-        verbosity:
-          $ref: '#/components/schemas/Verbosity'
-        thread_updates:
-          type: boolean
-        show_field_emoji:
-          type: boolean
-        enabled:
-          type: boolean
       description: |
-        Partial update. `type` is absent because a channel's provider is its identity; `config` is
-        replaced wholesale and re-validated against the provider schema.
+        Partial update. `type` is absent because a connection's provider is its identity; supplying
+        `credential` rotates the secret in place, so every channel referencing this connection never
+        spends a moment pointing at nothing.
+
+    ResolveConversationRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+          description: A Slack channel display name, with or without a leading `#`.
+        conversation_id:
+          type: string
+          pattern: '^[CGD][A-Z0-9]{2,}$'
+          description: A Slack channel id.
+      description: |
+        Ask for the other half of one Slack channel. Supply exactly one of `name` or `conversation_id` —
+        the response fills in the one you didn't send.
+
+    ResolveConversationDTO:
+      type: object
+      required: [conversation_id, conversation_name]
+      properties:
+        conversation_id:
+          type: string
+        conversation_name:
+          type: string
+      description: Both halves of one Slack channel, as Slack itself answered.
 
     CreatePolicyRequest:
       type: object
@@ -11313,6 +11674,40 @@ components:
       properties:
         data:
           $ref: '#/components/schemas/ChannelTestDTO'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    ChannelConnectionListResponse:
+      type: object
+      required: [data, page, meta]
+      additionalProperties: false
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChannelConnectionDTO'
+        page:
+          $ref: '#/components/schemas/PageInfo'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    ChannelConnectionResponse:
+      type: object
+      required: [data, meta]
+      additionalProperties: false
+      properties:
+        data:
+          $ref: '#/components/schemas/ChannelConnectionDTO'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    ResolveConversationResponse:
+      type: object
+      required: [data, meta]
+      additionalProperties: false
+      properties:
+        data:
+          $ref: '#/components/schemas/ResolveConversationDTO'
         meta:
           $ref: '#/components/schemas/Meta'
 
