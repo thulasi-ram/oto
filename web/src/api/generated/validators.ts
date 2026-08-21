@@ -2520,6 +2520,140 @@ export const ResolveConversationDTOSchema = v.looseObject({
   "conversation_name": v.string(),
 });
 
+export const WordingStanzaSchema = v.picklist(["title", "body", "fields", "members", "trail", "rule", "actions", "footer"]);
+
+export const WordingDTOSchema = v.looseObject({
+  "id": UuidSchema,
+  "channel_id": v.exactOptional(v.nullable(UuidSchema)),
+  "stanza": WordingStanzaSchema,
+  "template": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(2048),
+  ),
+  "matchers": v.pipe(
+    v.array(MatcherDTOSchema),
+    v.maxLength(32),
+  ),
+  "reasons": v.pipe(
+    v.array(v.pipe(
+      v.string(),
+      v.maxLength(64),
+    )),
+    v.maxLength(32),
+    v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
+  ),
+  "priority": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+    v.maxValue(100000),
+  ),
+  "enabled": v.boolean(),
+  "created_at": TimestampSchema,
+  "updated_at": TimestampSchema,
+  "deleted_at": v.exactOptional(v.nullable(TimestampSchema)),
+});
+
+export const WordingSpellingDTOSchema = v.looseObject({
+  "dialect": v.picklist(["slack", "plain"]),
+  "text": v.pipe(
+    v.string(),
+    v.maxLength(8192),
+  ),
+  "error": v.exactOptional(v.nullable(v.pipe(
+    v.string(),
+    v.maxLength(500),
+  ))),
+});
+
+export const WordingRenderingDTOSchema = v.looseObject({
+  "fixture": v.picklist(["firing", "resolved", "digest", "empty-labels", "oversized-annotation", "hostile-text", "zero-value"]),
+  "representative": v.boolean(),
+  "spellings": v.pipe(
+    v.array(WordingSpellingDTOSchema),
+    v.minLength(1),
+  ),
+});
+
+export const WordingPreviewDTOSchema = v.looseObject({
+  "stanza": WordingStanzaSchema,
+  "template": v.pipe(
+    v.string(),
+    v.maxLength(2048),
+  ),
+  "problems": v.array(ViolationSchema),
+  "renderings": v.array(WordingRenderingDTOSchema),
+});
+
+export const CreateWordingRequestSchema = v.strictObject({
+  "channel_id": v.exactOptional(v.nullable(UuidSchema)),
+  "stanza": WordingStanzaSchema,
+  "template": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(2048),
+  ),
+  "matchers": v.exactOptional(v.pipe(
+    v.array(MatcherDTOSchema),
+    v.maxLength(32),
+  )),
+  "reasons": v.exactOptional(v.pipe(
+    v.array(v.pipe(
+      v.string(),
+      v.maxLength(64),
+    )),
+    v.maxLength(32),
+    v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
+  )),
+  "priority": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+    v.maxValue(100000),
+  ), 100),
+  "enabled": v.exactOptional(v.boolean(), true),
+});
+
+export const UpdateWordingRequestSchema = v.pipe(
+  v.strictObject({
+    "template": v.exactOptional(v.pipe(
+      v.string(),
+      v.minLength(1),
+      v.maxLength(2048),
+    )),
+    "matchers": v.exactOptional(v.pipe(
+      v.array(MatcherDTOSchema),
+      v.maxLength(32),
+    )),
+    "reasons": v.exactOptional(v.pipe(
+      v.array(v.pipe(
+        v.string(),
+        v.maxLength(64),
+      )),
+      v.maxLength(32),
+      v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
+    )),
+    "priority": v.exactOptional(v.pipe(
+      v.number(),
+      v.integer(),
+      v.minValue(0),
+      v.maxValue(100000),
+    )),
+    "enabled": v.exactOptional(v.boolean()),
+  }),
+  v.check((value) => Object.keys(value).length >= 1, "at least 1 property required"),
+);
+
+export const PreviewWordingRequestSchema = v.strictObject({
+  "stanza": WordingStanzaSchema,
+  "template": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(2048),
+  ),
+});
+
 export const CreatePolicyRequestSchema = v.strictObject({
   "name": v.pipe(
     v.string(),
@@ -2880,6 +3014,22 @@ export const ChannelConnectionResponseSchema = v.looseObject({
 
 export const ResolveConversationResponseSchema = v.looseObject({
   "data": ResolveConversationDTOSchema,
+  "meta": MetaSchema,
+});
+
+export const WordingListResponseSchema = v.looseObject({
+  "data": v.array(WordingDTOSchema),
+  "page": PageInfoSchema,
+  "meta": MetaSchema,
+});
+
+export const WordingResponseSchema = v.looseObject({
+  "data": WordingDTOSchema,
+  "meta": MetaSchema,
+});
+
+export const WordingPreviewResponseSchema = v.looseObject({
+  "data": WordingPreviewDTOSchema,
   "meta": MetaSchema,
 });
 

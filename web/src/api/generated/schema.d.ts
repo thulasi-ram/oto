@@ -1402,6 +1402,125 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/wordings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List wordings
+         * @description A **Wording** is one Liquid template that writes the text of one Stanza of a notification
+         *     (ADR 0037). Structure stays oto's: Go builds every block, assigns every `block_id`, and owns the
+         *     attachment, colour and emoji. A Wording's output type is a string, never a block.
+         *
+         *     Newest first, keyset-paginated. With no `channel_id` this is every Wording in the org, org-wide
+         *     rows included; with one it is **that destination's own rows only**, without the org-wide
+         *     fallback — the settings screen for a channel is editing that channel's exceptions, and showing
+         *     the tenant's rows there would invite editing the wrong one.
+         */
+        get: operations["listWordings"];
+        put?: never;
+        /**
+         * Create a wording
+         * @description Saving **executes** the template rather than merely parsing it, and that is not belt and braces:
+         *     an unknown filter is a render-time error in Liquid, so a save that only parsed would accept
+         *     `{{ x | no_such_filter }}` and discover it at 03:00 on a real card. The template is rendered
+         *     against the whole shipped fixture corpus — the ordinary cards and the nasty ones — and every
+         *     failure comes back as a field-level violation on `template`.
+         *
+         *     Four of SPEC §H.7's eight stanzas take a Wording: `title`, `body`, `rule` and `footer`, the ones
+         *     that are prose. The other four are **refused with a sentence** saying which kind of structure
+         *     they are, rather than being quietly absent from the enum — a name that is missing from a menu
+         *     teaches nobody why.
+         *
+         *     Preview first with `POST /api/v1/wordings/preview`, which runs the same gate and shows the
+         *     output beside the refusals without saving anything.
+         */
+        post: operations["createWording"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/wordings/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Render a candidate wording without saving it
+         * @description **The authoring loop.** Give it a stanza and a template body and it answers with what that
+         *     template says on every fixture of the shipped corpus — `firing`, `resolved`, `digest`,
+         *     `empty-labels`, `oversized-annotation`, `hostile-text`, `zero-value` — together with the
+         *     refusals the save-time gate would raise. Nothing is written and no `Idempotency-Key` applies.
+         *
+         *     **Each fixture is spelled by every Dialect, and that is the point (ADR 0048).** A curated filter
+         *     emits a NEUTRAL mark, never a provider's punctuation, and a per-provider Dialect spells it:
+         *     `{{ service | code }}` is a backtick on Slack and nothing at all for a webhook consumer, and
+         *     `*x*` would be bold in Slack and italic in Discord if a template were ever allowed to write it.
+         *     An author shown one spelling concludes that markup is theirs to write; an author shown both
+         *     cannot.
+         *
+         *     **A template that fails validation is still a `200`.** The refusal and the output belong in the
+         *     same round trip, because the fix is usually visible only when both are on screen — a preview
+         *     that refused would tell an author strictly less. `422` is reserved for a malformed *request*: an
+         *     absent `stanza`, an absent `template`, or a source over the one-line-of-prose ceiling.
+         */
+        post: operations["previewWording"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/wordings/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get one wording
+         * @description A soft-deleted row is served here rather than hidden, unlike `getChannel`'s. A delivery records
+         *     the wordings that produced its card, so "why did my card read like that" has to stay answerable
+         *     after the Wording is gone — which is the same argument that makes the delete soft.
+         */
+        get: operations["getWording"];
+        put?: never;
+        post?: never;
+        /**
+         * Soft-delete a wording
+         * @description The Stanza goes back to reading in oto's own voice on the next delivery. The row is retained,
+         *     because a delivery's recorded wording set names the rows that produced a card and a hard delete
+         *     would make an old card's provenance unreadable. There is no `409` counterpart to
+         *     `deleteChannel`'s: nothing references a Wording.
+         */
+        delete: operations["deleteWording"];
+        options?: never;
+        head?: never;
+        /**
+         * Update a wording
+         * @description Partial update, re-validated as the **whole row it would produce** rather than as the fields it
+         *     carries — a template is refused or accepted on the stanza it lands in, so validating the delta
+         *     alone would let two individually-legal patches build an illegal row.
+         *
+         *     `stanza` is absent, and so is `channel_id`. Moving a Wording from `body` to `title` is not an
+         *     edit of that Wording, it is a different one: the read set differs, the budget differs, and the
+         *     row's history would claim it had always been the new one. Re-binding an org-wide house voice to
+         *     one destination changes which cards it wins on, and precedence is the one thing an operator must
+         *     be able to read straight off the row. Delete and create.
+         */
+        patch: operations["updateWording"];
+        trace?: never;
+    };
     "/api/v1/notification-policies": {
         parameters: {
             query?: never;
@@ -2761,6 +2880,11 @@ export interface components {
              *     `matcher_op`, `cluster_key`, `cursor`, `invalid`. Provider-config failures additionally use
              *     the JSON Schema keyword that failed (`type`, `pattern`, `minimum`, `maxLength`,
              *     `additionalProperties`).
+             *
+             *     A Wording's save-time gate adds its own, because a refused template is refused for a reason
+             *     no generic code can carry: `unsupported_stanza`, `unsupported_op`, `out_of_range`,
+             *     `too_many`, and — from the template engine, which must RENDER to find out — `parse`,
+             *     `unknown_field`, `render`, `empty` and `too_long`.
              * @example labelname
              */
             code: string;
@@ -6022,6 +6146,190 @@ export interface components {
             conversation_id: string;
             conversation_name: string;
         };
+        /**
+         * @description One of SPEC §H.7's eight block names.
+         *
+         *     **Four of them take a Wording** — `title`, `body`, `rule` and `footer`, the ones that are prose.
+         *     The other four are **listed here and refused at save time with a sentence**, rather than being
+         *     left out: SPEC §H.7 names eight, a seven-name enum would fork the vocabulary, and a stanza that
+         *     is silently absent from a menu teaches nobody why it is absent.
+         *
+         *     - `fields` is a grid of up to ten separately-budgeted cells in a binding order that decides what
+         *       is shed on overflow, so one line of prose would *replace* the grid rather than re-word it.
+         *     - `members` and `trail` are sequences, and a loop-free template cannot iterate: one line would
+         *       drop the instances, or the transitions, the stanza exists to name.
+         *     - `actions` carries interactive buttons whose visible labels are bound to their stable
+         *       `action_id`s, so its text is structure rather than wording.
+         * @example body
+         * @enum {string}
+         */
+        WordingStanza: "title" | "body" | "fields" | "members" | "trail" | "rule" | "actions" | "footer";
+        /**
+         * @description One Liquid template producing the **text** of one Stanza (ADR 0037).
+         *
+         *     ⛔ It chooses words and nothing else. There is no colour, no block, no destination and no
+         *     mention on this shape, and there never will be: structure stays oto's, which is what makes it
+         *     impossible for a Wording to mark a delivery dead. A customer who wants a layout oto does not
+         *     emit is pointed at the `webhook` provider; one who wants a computed value is pointed at an
+         *     Enricher.
+         */
+        WordingDTO: {
+            id: components["schemas"]["Uuid"];
+            /**
+             * @description `null` is the **org-wide house voice**: every card this tenant sends. A non-null destination
+             *     is the exception for one channel and **wins** over the org-wide row — a rule naming one
+             *     destination is more specific than one naming a whole tenant (ADR 0049).
+             */
+            channel_id?: components["schemas"]["Uuid"] | null;
+            stanza: components["schemas"]["WordingStanza"];
+            /**
+             * @description Liquid, on `NewBasicEngine`: no tags and no filters except the ones oto registers by name,
+             *     so there is no `{% if %}`, no `{% for %}`, no branching and no iteration. The ceiling is one
+             *     line of prose per Stanza, and it is a shape limit rather than a safety one — output is
+             *     bounded by the renderer's own escape-and-truncate sink regardless.
+             * @example {{ alert.name }} firing {{ group.firing_for | human_duration }}, {{ alert.total_cases | plural: "case", "cases" }} this week
+             */
+            template: string;
+            /**
+             * @description Half of the `when` clause, in ADR 0017's vocabulary verbatim. All matchers must match; an
+             *     empty list matches everything, which is what makes one org-wide row the natural way to set a
+             *     house voice.
+             */
+            matchers: components["schemas"]["MatcherDTO"][];
+            /**
+             * @description The other half of the `when` clause: which facts this Wording speaks for. An empty list
+             *     speaks for all of them.
+             *
+             *     ⚠️ It is **not** constrained to the `NotificationReason` enum here, and that is deliberate
+             *     rather than an omission. The channels module does not depend on the notification module, so
+             *     a Reason is compared as a string on both sides; a name that matches nothing simply never
+             *     selects the Wording, and the built-in Go text is used. That is the safe direction.
+             */
+            reasons: string[];
+            /**
+             * Format: int32
+             * @description **Lower first, and the first match wins** — the same sentence `notification_policies.priority`
+             *     carries, deliberately. Two orderings that read the same way and behave differently is how an
+             *     operator learns to distrust both. Scope beats priority: every channel-scoped Wording is
+             *     considered before any org-wide one.
+             * @default 100
+             * @example 100
+             */
+            priority: number;
+            /** @default true */
+            enabled: boolean;
+            created_at: components["schemas"]["Timestamp"];
+            updated_at: components["schemas"]["Timestamp"];
+            /**
+             * @description Non-null only on a row `include_deleted` asked for. The delete is soft because a delivery
+             *     records the wordings that produced its card, and a hard delete would make an old card's
+             *     provenance unreadable.
+             */
+            deleted_at?: components["schemas"]["Timestamp"] | null;
+        };
+        /** @description One fixture's text as **one** provider writes it. */
+        WordingSpellingDTO: {
+            /**
+             * @description Which provider's typography spelled this text. `slack` writes mrkdwn's emphasis characters;
+             *     `plain` drops every mark and keeps every word, which is what a webhook consumer receives —
+             *     handing a program `&amp;` where the alert said `&` is not safety, it is corruption of a
+             *     value that program is about to process.
+             * @enum {string}
+             */
+            dialect: "slack" | "plain";
+            /** @description The Stanza's finished text, marks spelled and audience spellings refused. */
+            text: string;
+            /**
+             * @description Why this fixture did not render. A real delivery falls back to oto's own Go text for the
+             *     Stanza rather than dying, so this is a degradation and never a dead card.
+             */
+            error?: string | null;
+        };
+        /**
+         * @description One fixture of the shipped corpus, spelled by every Dialect. Seeing the same template render two
+         *     ways is what teaches an author that markup is not theirs to write (ADR 0048).
+         */
+        WordingRenderingDTO: {
+            /**
+             * @description Which card of the shipped corpus this is.
+             * @enum {string}
+             */
+            fixture: "firing" | "resolved" | "digest" | "empty-labels" | "oversized-annotation" | "hostile-text" | "zero-value";
+            /**
+             * @description Marks the **ordinary** cards — `firing`, `resolved`, `digest`. A template that renders empty
+             *     on one of these is refused at save time, while rendering empty on a hostile fixture is
+             *     expected and degrades one Stanza at delivery.
+             */
+            representative: boolean;
+            spellings: components["schemas"]["WordingSpellingDTO"][];
+        };
+        /** @description What a candidate template would say, and why it would be refused, in one round trip. */
+        WordingPreviewDTO: {
+            stanza: components["schemas"]["WordingStanza"];
+            /**
+             * @description The **sanitised** source, not the bytes that were sent. Every private-use codepoint, every
+             *     other-format codepoint (where the bidi overrides live) and every control character is
+             *     stripped before a filter runs, because forging one of oto's own neutral marks is how a
+             *     customer would otherwise get raw markup — and eventually an audience ping — past the sink.
+             *     Echoing the result back is the only way an author learns something was removed.
+             */
+            template: string;
+            /**
+             * @description Exactly what `POST /api/v1/wordings` would refuse this template with, in the same
+             *     `field`/`code`/`message` shape a `422` carries in `violations` — so one client control
+             *     highlights a preview failure and a save failure alike. An empty array means it would save.
+             */
+            problems: components["schemas"]["Violation"][];
+            /** @description Empty only when the template did not compile; `problems` then says why. */
+            renderings: components["schemas"]["WordingRenderingDTO"][];
+        };
+        /**
+         * @description Create one Wording. A stanza that takes none is a `422` **naming which kind of structure it is**,
+         *     not a generic enum failure.
+         */
+        CreateWordingRequest: {
+            /**
+             * @description Omit it, or send `null`, for the org-wide house voice. A channel named here must belong to
+             *     the caller's organisation and must not be deleted: `wordings.channel_id` references
+             *     `channels(id)` alone, with no org term, so another tenant's id satisfies the foreign key
+             *     perfectly and produces a row that could never spell a word on anybody's card. That is
+             *     refused with a `422` on this field rather than saved and left inert.
+             */
+            channel_id?: components["schemas"]["Uuid"] | null;
+            stanza: components["schemas"]["WordingStanza"];
+            template: string;
+            matchers?: components["schemas"]["MatcherDTO"][];
+            reasons?: string[];
+            /**
+             * Format: int32
+             * @default 100
+             */
+            priority: number;
+            /** @default true */
+            enabled: boolean;
+        };
+        /**
+         * @description Partial update. `stanza` and `channel_id` are absent on purpose — see `updateWording`. Supplying
+         *     `matchers` or `reasons` replaces that half of the `when` clause wholesale, and `[]` widens the
+         *     Wording rather than leaving it alone.
+         */
+        UpdateWordingRequest: {
+            template?: string;
+            matchers?: components["schemas"]["MatcherDTO"][];
+            reasons?: string[];
+            /** Format: int32 */
+            priority?: number;
+            enabled?: boolean;
+        };
+        /**
+         * @description Ask what a template would say. There is no `when` clause here: selection decides *which* card a
+         *     Wording writes on, and a preview is about *what* it writes — matchers would change nothing in
+         *     the answer and would invite reading the fixture corpus as a routing rehearsal.
+         */
+        PreviewWordingRequest: {
+            stanza: components["schemas"]["WordingStanza"];
+            template: string;
+        };
         /** @description Create a routing policy. Use the preview endpoint to see what it would do before saving. */
         CreatePolicyRequest: {
             /** @description Must not be blank after trimming. Unique within the org, compared case-insensitively. */
@@ -6371,6 +6679,19 @@ export interface components {
         };
         ResolveConversationResponse: {
             data: components["schemas"]["ResolveConversationDTO"];
+            meta: components["schemas"]["Meta"];
+        };
+        WordingListResponse: {
+            data: components["schemas"]["WordingDTO"][];
+            page: components["schemas"]["PageInfo"];
+            meta: components["schemas"]["Meta"];
+        };
+        WordingResponse: {
+            data: components["schemas"]["WordingDTO"];
+            meta: components["schemas"]["Meta"];
+        };
+        WordingPreviewResponse: {
+            data: components["schemas"]["WordingPreviewDTO"];
             meta: components["schemas"]["Meta"];
         };
         PolicyListResponse: {
@@ -6874,6 +7195,21 @@ export interface components {
          *     `synthetic=true` is normally reached from a drill's own result screen, not from the filter bar.
          */
         SyntheticParam: boolean;
+        /**
+         * @description Restrict the list to one destination's **own** wordings, without the org-wide house voice.
+         *
+         *     Omitting it lists every Wording in the org, org-wide rows included. Supplying it does NOT merge
+         *     the two: the settings screen for a channel is editing that channel's exceptions, and showing the
+         *     tenant's rows beside them would invite editing the wrong one. Resolution is what merges them, at
+         *     delivery time, most-specific first.
+         */
+        WordingChannelParam: components["schemas"]["Uuid"];
+        /**
+         * @description Include soft-deleted rows. Off by default, because a settings list is about what is configured
+         *     now; on, because a delivery records the wordings that produced its card and the row a past card
+         *     points at has to remain findable.
+         */
+        IncludeDeletedParam: boolean;
         /**
          * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
          *     body within the retention window returns the original result rather than acting twice; replaying
@@ -10374,6 +10710,216 @@ export interface operations {
             502: components["responses"]["BadGateway"];
             503: components["responses"]["ServiceUnavailable"];
             504: components["responses"]["GatewayTimeout"];
+        };
+    };
+    listWordings: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Restrict the list to one destination's **own** wordings, without the org-wide house voice.
+                 *
+                 *     Omitting it lists every Wording in the org, org-wide rows included. Supplying it does NOT merge
+                 *     the two: the settings screen for a channel is editing that channel's exceptions, and showing the
+                 *     tenant's rows beside them would invite editing the wrong one. Resolution is what merges them, at
+                 *     delivery time, most-specific first.
+                 */
+                channel_id?: components["parameters"]["WordingChannelParam"];
+                /**
+                 * @description Include soft-deleted rows. Off by default, because a settings list is about what is configured
+                 *     now; on, because a delivery records the wordings that produced its card and the row a past card
+                 *     points at has to remain findable.
+                 */
+                include_deleted?: components["parameters"]["IncludeDeletedParam"];
+                /** @description Maximum items to return in one page. */
+                limit?: components["parameters"]["LimitParam"];
+                /**
+                 * @description Opaque keyset cursor, taken verbatim from `page.next_cursor` of the previous response. A cursor
+                 *     minted under a different filter set is rejected with `400 cursor_filter_mismatch` — reset
+                 *     pagination when the user changes a filter.
+                 */
+                cursor?: components["parameters"]["CursorParam"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of wordings. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WordingListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    createWording: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateWordingRequest"];
+            };
+        };
+        responses: {
+            /** @description The created wording. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WordingResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    previewWording: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PreviewWordingRequest"];
+            };
+        };
+        responses: {
+            /**
+             * @description What the template would say, and why it would be refused. `problems` may be non-empty on a
+             *     `200`; `renderings` is empty only when the template did not compile at all.
+             */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WordingPreviewResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    getWording: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The wording. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WordingResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    deleteWording: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: components["responses"]["NoContent"];
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    updateWording: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateWordingRequest"];
+            };
+        };
+        responses: {
+            /** @description The updated wording. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WordingResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
         };
     };
     listNotificationPolicies: {

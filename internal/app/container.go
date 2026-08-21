@@ -185,6 +185,10 @@ type Container struct {
 	NotifyWorkers   *notifworker.Workers
 	NotifyScopes    *notifrepo.ScopeResolver
 	notifConfigRepo *notifrepo.ConfigRepository
+	// wordings is held on the container because it is read at BOTH ends of the
+	// feature — the authoring API and the delivery-time resolver — and those are
+	// wired by two different methods.
+	wordings *channelsrepo.WordingRepository
 
 	// --- routers --------------------------------------------------------
 
@@ -408,6 +412,15 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	})
 	channelRepo := channelsrepo.NewChannelRepository(general, clk)
 	connectionRepo := channelsrepo.NewConnectionRepository(general, clk)
+	// ⭐ ONE WORDING REPOSITORY FOR TWO READERS, and they read it at opposite ends
+	// of the product. `buildRouters` gives it to the authoring API; the
+	// notification service resolves against it at claim time. It was constructed
+	// inline at the second site alone while the first did not exist; two
+	// constructions would be two connection-pool users where one will do, and — the
+	// part that actually bites — two places to change when the constructor gains an
+	// argument.
+	wordingRepo := channelsrepo.NewWordingRepository(general, clk)
+	c.wordings = wordingRepo
 	credentialRepo := channelsrepo.NewCredentialRepository(general, keyringSealer(c.Keyring), channelsUnsealer(c.Keyring), clk)
 	tester, err := channelsservice.NewTester(channelsservice.TesterOptions{
 		Store:       channelRepo,
@@ -889,8 +902,7 @@ func (c *Container) buildNotification(
 		// pure function of (NotificationView, RenderOptions) and its golden files
 		// keep meaning something. A deployment that has configured no Wording
 		// resolves none and every card reads in oto's own voice.
-		Wordings: channelsservice.NewWordings(
-			channelsrepo.NewWordingRepository(general, clk)),
+		Wordings: channelsservice.NewWordings(c.wordings),
 	}); err != nil {
 		return err
 	}
@@ -1065,7 +1077,11 @@ func (c *Container) buildRouters(
 			// actually costs happens on `slack.interaction`, off the request.
 			Interactions:  c.SlackInteractions,
 			SigningSecret: c.Config.Slack.SigningSecret,
-			Clock:         clk,
+			// The authoring half of ADR 0037: the six /wordings routes, including
+			// the preview that renders a candidate template against the shipped
+			// fixture corpus in every Dialect and saves nothing.
+			Wordings: c.wordings,
+			Clock:    clk,
 		}),
 		notifs: notifapi.NewRouter(notifapi.Options{
 			Policies: c.notifConfigRepo,

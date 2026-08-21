@@ -74,6 +74,7 @@ noread:github.com/thulasiram/oto/internal/channels/domain.DeliverResult.Delivere
 noread:github.com/thulasiram/oto/internal/channels/domain.RenderOptions.Verbosity	field is never read in production — the value goes nowhere (internal/channels/domain/ports.go:238)
 noread:github.com/thulasiram/oto/internal/channels/domain.RenderedMessage.Metadata	field is never read in production — the value goes nowhere (internal/channels/domain/ports.go:187)
 noread:github.com/thulasiram/oto/internal/channels/domain.RenderedMessage.Summary	field is never read in production — the value goes nowhere (internal/channels/domain/ports.go:184)
+noread:github.com/thulasiram/oto/internal/channels/domain.Wording.OrgID	field is never read in production — the value goes nowhere (internal/channels/domain/wording.go:41)
 noread:github.com/thulasiram/oto/internal/channels/providers/slack.Config.ConversationName	field is never read in production — the value goes nowhere (internal/channels/providers/slack/config.go:32)
 noread:github.com/thulasiram/oto/internal/channels/providers/slack.Config.Transport	field is never read in production — the value goes nowhere (internal/channels/providers/slack/config.go:52)
 noread:github.com/thulasiram/oto/internal/channels/providers/slack.ConnectionConfig.TeamID	field is never read in production — the value goes nowhere (internal/channels/providers/slack/connection_config.go:28)

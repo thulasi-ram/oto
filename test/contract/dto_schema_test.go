@@ -157,6 +157,24 @@ var bindings = []binding{
 	// reopened two Slack scopes for. Settings-time only, never on the send path.
 	{"channels", "ResolveConversationRequest", channelsapi.ResolveConversationRequest{}},
 	{"channels", "ResolveConversationDTO", channelsapi.ResolveConversationDTO{}},
+	// Wordings (ADR 0037): customer-authored Liquid that writes the TEXT of one
+	// Stanza. `channels.MatcherDTO` is a deliberate TWIN of the notification one —
+	// this module does not depend on that one, so the Go type is redeclared — and
+	// binding both to the single `MatcherDTO` schema is what stops the copies
+	// drifting from each other.
+	{"channels", "MatcherDTO", channelsapi.MatcherDTO{}},
+	{"channels", "WordingDTO", channelsapi.WordingDTO{}},
+	{"channels", "CreateWordingRequest", channelsapi.CreateWordingRequest{}},
+	{"channels", "UpdateWordingRequest", channelsapi.UpdateWordingRequest{}},
+	{"channels", "PreviewWordingRequest", channelsapi.PreviewWordingRequest{}},
+	{"channels", "WordingPreviewDTO", channelsapi.WordingPreviewDTO{}},
+	{"channels", "WordingRenderingDTO", channelsapi.WordingRenderingDTO{}},
+	{"channels", "WordingSpellingDTO", channelsapi.WordingSpellingDTO{}},
+	// The preview's `problems` are the SAME field/code/message triple a 422 carries
+	// in `violations`, so the contract $refs the shared `Violation` schema rather
+	// than minting a wording-specific twin of it, and the Go struct is bound to
+	// that name.
+	{"channels", "Violation", channelsapi.WordingProblemDTO{}},
 
 	// ------------------------------------------------------- notification
 	{"notification", "PolicyDTO", notificationapi.PolicyDTO{}},
@@ -334,6 +352,12 @@ var unenforceableRequired = map[string]string{
 	// stands as the obligation on the CLIENT that it is: every generated client
 	// sends the key.
 	"notification.MatcherDTO.value": "the empty string is a legal matcher value, " +
+		"so `required` would outlaw it to catch an absent key it cannot see",
+	// The twin, for the same reason. `channels/service.matchOne` reads a missing
+	// label as the empty string exactly as the policy matcher does, so a Wording
+	// whose clause is `severity=""` — "this alert carries no severity label" — is a
+	// legal clause the tag would have to outlaw.
+	"channels.MatcherDTO.value": "the empty string is a legal matcher value, " +
 		"so `required` would outlaw it to catch an absent key it cannot see",
 }
 
