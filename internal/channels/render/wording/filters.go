@@ -126,7 +126,7 @@ func registerFilters(e *liquid.Engine) {
 	})
 }
 
-func wrap(open, close rune) func(any) any {
+func wrap(open, shut rune) func(any) any {
 	return func(v any) any {
 		s := str(v)
 		if strings.TrimSpace(s) == "" {
@@ -135,7 +135,7 @@ func wrap(open, close rune) func(any) any {
 			// value. An empty input stays empty and `default` can catch it.
 			return ""
 		}
-		return string(open) + s + string(close)
+		return string(open) + s + string(shut)
 	}
 }
 

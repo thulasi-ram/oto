@@ -152,8 +152,8 @@ func hostileView() *domain.NotificationView {
 		// A forged mark: if sanitise ever stops running, this is the fixture that
 		// notices, because the private-use codepoints would reach a Dialect and be
 		// spelled as real markup.
-		"forged":  "not code 999fake",
-		"bidi":    "safe‮txet desrever‬",
+		"forged":  "not code \ue000999fake\ue001",
+		"bidi":    "safe\u202Etxet desrever\u202C",
 		"control": "a\x00b\x07c",
 	}
 	v.Alerts[0].Labels = map[string]string{"weird key!@#": "v", "": "empty-key"}

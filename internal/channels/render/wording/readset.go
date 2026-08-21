@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/osteele/liquid"
+
 	"github.com/thulasiram/oto/internal/channels/domain"
 )
 

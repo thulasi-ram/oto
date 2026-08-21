@@ -55,7 +55,7 @@ type Dialect interface {
 	// Emphasis returns the opening and closing literal for one kind of mark. An
 	// empty pair means "this provider cannot show it" and the emphasis is dropped
 	// while the text it wrapped is kept.
-	Emphasis(kind MarkKind) (open, close string)
+	Emphasis(kind MarkKind) (open, shut string)
 	// Timestamp renders an instant. fallback is oto's own pre-formatted UTC string.
 	Timestamp(at time.Time, fallback string) string
 	// StripAudience removes every spelling by which THIS provider addresses a
@@ -82,6 +82,7 @@ type Dialect interface {
 // MarkKind is one emphasis a Wording can ask for.
 type MarkKind int
 
+// The emphases a Wording can ask for. Each Dialect spells them in its own syntax.
 const (
 	MarkCode MarkKind = iota
 	MarkStrike
@@ -114,6 +115,7 @@ func (k MarkKind) String() string {
 // a built-in string are typographically indistinguishable on the card.
 type SlackDialect struct{}
 
+// Name is the provider this dialect speaks for.
 func (SlackDialect) Name() string { return "slack" }
 
 // EscapeText neutralises the three characters Slack's mrkdwn parser treats as
@@ -123,6 +125,7 @@ func (SlackDialect) EscapeText(s string) string {
 	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace(s)
 }
 
+// Emphasis spells one mark as Slack mrkdwn.
 func (SlackDialect) Emphasis(k MarkKind) (string, string) {
 	switch k {
 	case MarkCode:
@@ -182,7 +185,10 @@ func (SlackDialect) StripAudience(s string) string {
 // parse is a worse contract than handing it clean text.
 type PlainDialect struct{}
 
-func (PlainDialect) Name() string                       { return "plain" }
+// Name is the provider this dialect speaks for.
+func (PlainDialect) Name() string { return "plain" }
+
+// Emphasis drops every mark: a webhook consumer is a program, not a reader.
 func (PlainDialect) Emphasis(MarkKind) (string, string) { return "", "" }
 
 // EscapeText is the identity: a webhook consumer receives a JSON string and is
@@ -190,6 +196,7 @@ func (PlainDialect) Emphasis(MarkKind) (string, string) { return "", "" }
 // not safety, it is corruption.
 func (PlainDialect) EscapeText(s string) string { return s }
 
+// Timestamp hands over oto's own UTC rendering, which a program can parse.
 func (PlainDialect) Timestamp(_ time.Time, fallback string) string { return fallback }
 
 // StripAudience removes the bare spellings that read as a broadcast in almost every
@@ -231,11 +238,11 @@ func Spell(d Dialect, s string) string {
 			markBoldOpen, markBoldClose, markItalicOpen, markItalicClose:
 			flush()
 			kind, opening := markMeta(r)
-			open, close := d.Emphasis(kind)
+			open, shut := d.Emphasis(kind)
 			if opening {
 				b.WriteString(open)
 			} else {
-				b.WriteString(close)
+				b.WriteString(shut)
 			}
 		case markTimeOpen:
 			end := indexRune(runes, i+1, markTimeClose)
@@ -352,16 +359,16 @@ func replaceFold(s, tok, with string) string {
 
 // stripBracketed removes open…close spans, used for the id-carrying mention forms
 // whose payload is a user or group id rather than a fixed word.
-func stripBracketed(s, open, close string) string {
+func stripBracketed(s, open, shut string) string {
 	for {
 		i := strings.Index(s, open)
 		if i < 0 {
 			return s
 		}
-		j := strings.Index(s[i+len(open):], close)
+		j := strings.Index(s[i+len(open):], shut)
 		if j < 0 {
 			return s[:i]
 		}
-		s = s[:i] + s[i+len(open)+j+len(close):]
+		s = s[:i] + s[i+len(open)+j+len(shut):]
 	}
 }

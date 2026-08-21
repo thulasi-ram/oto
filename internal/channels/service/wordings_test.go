@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+
 	"github.com/thulasiram/oto/internal/channels/domain"
 	"github.com/thulasiram/oto/internal/channels/service"
 	"github.com/thulasiram/oto/internal/platform/db"

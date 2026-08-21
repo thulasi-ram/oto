@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
 	"github.com/thulasiram/oto/internal/platform/errs"
 )
 
@@ -72,6 +73,7 @@ type Matcher struct {
 // MatchOp is the closed set ADR 0017 chose over an expression language.
 type MatchOp string
 
+// The four operators ADR 0017 chose over an expression language.
 const (
 	MatchEq    MatchOp = "="
 	MatchNotEq MatchOp = "!="

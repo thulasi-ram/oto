@@ -180,6 +180,7 @@ func Validate(stanza StanzaID, src string) []Problem {
 // ProblemKind classifies a save-time refusal.
 type ProblemKind string
 
+// The reasons a Wording is refused at save time.
 const (
 	ProblemStanza       ProblemKind = "stanza"
 	ProblemUnknownField ProblemKind = "unknown_field"

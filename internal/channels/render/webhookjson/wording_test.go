@@ -11,7 +11,23 @@ import (
 	"github.com/thulasiram/oto/internal/platform/clock"
 )
 
-func renderEnvelope(t *testing.T, w map[string]string) (webhookjson.Envelope, []byte) {
+// peek is a LOCAL mirror of the three envelope keys these tests read.
+//
+// ⛔ IT DOES NOT DECODE INTO webhookjson.Envelope, AND THAT IS NOT A STYLE CHOICE.
+// `lintreach` exempts a json-tagged field from its "never read in production" rule
+// only while the field's struct is NOT a decode target (tools/lintreach/main.go:1085),
+// on the reasoning that an encode-only struct is read by the library and a decoded
+// one is read by whoever decoded it. One `json.Unmarshal(&env)` anywhere — including
+// in a test — flips Envelope into a decode target and lands all 110 of its fields on
+// the gate as new unreachable declarations. Decoding into a local struct keeps the
+// analyzer's model of the envelope true.
+type peek struct {
+	Rendered map[string]string `json:"rendered"`
+	Summary  string            `json:"summary"`
+	Group    json.RawMessage   `json:"group"`
+}
+
+func renderEnvelope(t *testing.T, w map[string]string) (peek, []byte) {
 	t.Helper()
 	msg, err := webhookjson.New(clock.New()).Render(context.Background(), baseView(), domain.RenderOptions{
 		Mode:         domain.ModePostRoot,
@@ -22,7 +38,7 @@ func renderEnvelope(t *testing.T, w map[string]string) (webhookjson.Envelope, []
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
-	var env webhookjson.Envelope
+	var env peek
 	if err := json.Unmarshal(msg.Payload, &env); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -63,7 +79,7 @@ func TestTheWebhookIsNotADegradedSlack(t *testing.T) {
 	if env.Summary == "" {
 		t.Error("a wording displaced the frozen summary key")
 	}
-	if env.Group == nil {
+	if len(env.Group) == 0 {
 		t.Error("a wording displaced the frozen group key")
 	}
 }

@@ -69,6 +69,17 @@ export const qk = {
     rule: (id: string) => ["alerts", "rule", id] as const,
     snoozes: (id: string) => ["alerts", "snoozes", id] as const,
     /**
+     * The dead deliveries of one notification, for the retry affordance on the
+     * delivery panel.
+     *
+     * Under `["alerts"]` so `live.tsx`'s `delivery.updated` invalidation already
+     * reaches it: a retry that succeeds must make the row it was offered on go
+     * away, and a key outside the prefix nothing invalidates is a button that
+     * lies about what it did.
+     */
+    deadDeliveries: (notificationId: string) =>
+      ["alerts", "dead-deliveries", notificationId] as const,
+    /**
      * Every quiet period in force across the org — the standing banner of §B.8.6.
      *
      * It sits under the `["alerts"]` prefix on purpose: taking a snooze, ending

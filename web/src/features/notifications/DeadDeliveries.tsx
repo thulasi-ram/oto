@@ -34,10 +34,6 @@ import { Button } from "~/components/ui/Button";
 import { ErrorBanner } from "~/components/ui/states";
 import { idempotencyKey, shortId } from "~/lib/format";
 
-/** See the ⚠️ in this module's header: this belongs in `~/api/keys`. */
-const deadDeliveriesKey = (notificationId: string) =>
-  [...qk.alerts.all(), "dead-deliveries", notificationId] as const;
-
 export interface DeadDeliveriesProps {
   /** The intent whose fan-out gave up. */
   readonly notificationId: string;
@@ -47,7 +43,7 @@ export const DeadDeliveries: Component<DeadDeliveriesProps> = (props) => {
   const client = useQueryClient();
 
   const dead = useQuery(() => ({
-    queryKey: deadDeliveriesKey(props.notificationId),
+    queryKey: qk.alerts.deadDeliveries(props.notificationId),
     queryFn: ({ signal }: { signal: AbortSignal }) =>
       listDeliveries({ notification_id: props.notificationId, status: "dead" }, { signal }),
   }));

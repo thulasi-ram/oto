@@ -8,6 +8,7 @@ package wording
 // vocabulary does not fork.
 type StanzaID string
 
+// The eight §H.7 block names. Four take a Wording; see Wordable for the others.
 const (
 	StanzaTitle StanzaID = "title"
 	StanzaBody  StanzaID = "body"

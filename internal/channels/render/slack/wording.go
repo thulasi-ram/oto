@@ -1,6 +1,7 @@
 package slack
 
 import (
+	"errors"
 	"sync"
 
 	"github.com/thulasiram/oto/internal/channels/domain"
@@ -61,29 +62,6 @@ func (s *stanzas) or(id wording.StanzaID, builtin string) string {
 	return out
 }
 
-// escaped reports whether `or` returned customer text, which has ALREADY been
-// escaped by the dialect and must not be escaped a second time.
-//
-// ⛔ DOUBLE-ESCAPING IS NOT COSMETIC HERE. escape() would turn the "<" of oto's own
-// `<!date^…>` token into "&lt;", and Slack would print the token as literal text
-// instead of a localised timestamp. A caller that escapes Go's own value must ask
-// this first.
-func (s *stanzas) escaped(id wording.StanzaID) bool {
-	if s == nil {
-		return false
-	}
-	src, ok := s.sources[string(id)]
-	if !ok || src == "" {
-		return false
-	}
-	w, err := compiledWording(id, src)
-	if err != nil {
-		return false
-	}
-	_, err = w.Render(s.in, s.dialect)
-	return err == nil
-}
-
 // compiledCache keeps parsed templates across deliveries.
 //
 // A Renderer is built once (`New(clk)`) and shared by every dispatch, and a
@@ -96,13 +74,20 @@ func (s *stanzas) escaped(id wording.StanzaID) bool {
 // no I/O, no clock — and a cold cache differs from a warm one only in speed.
 var compiledCache sync.Map // stanza+"\x00"+source -> *wording.Wording or error
 
+// errCacheCorrupt can only happen if something stores a third type in the cache,
+// which nothing does. It exists so the read has no unchecked assertion.
+var errCacheCorrupt = errors.New("compiled wording cache holds an unexpected type")
+
 func compiledWording(id wording.StanzaID, src string) (*wording.Wording, error) {
 	key := string(id) + "\x00" + src
 	if hit, ok := compiledCache.Load(key); ok {
 		if w, ok := hit.(*wording.Wording); ok {
 			return w, nil
 		}
-		return nil, hit.(error)
+		if err, ok := hit.(error); ok {
+			return nil, err
+		}
+		return nil, errCacheCorrupt
 	}
 	w, err := wording.Compile(id, src)
 	if err != nil {
