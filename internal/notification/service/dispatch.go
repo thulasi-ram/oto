@@ -81,6 +81,7 @@ type DispatchService struct {
 	clk           clock.Clock
 	log           *slog.Logger
 	metrics       *Metrics
+	wordings      WordingResolver
 }
 
 // DispatchConfig is everything NewDispatchService needs.
@@ -111,6 +112,10 @@ type DispatchConfig struct {
 	// Metrics is the delivery-side Prometheus surface. Nil yields unregistered
 	// collectors, so a test needs no registry.
 	Metrics *Metrics
+	// Wordings resolves the customer's per-Stanza templates. Nil means every card
+	// reads in oto's own voice, which is the correct behaviour for a deployment
+	// that has never configured one.
+	Wordings WordingResolver
 }
 
 // NewDispatchService builds the service.
@@ -129,7 +134,8 @@ func NewDispatchService(cfg DispatchConfig) (*DispatchService, error) {
 		gates: cfg.Gates, enqueuer: cfg.Enqueuer,
 		baseURL: cfg.BaseURL, maxInstances: cfg.MaxInstances,
 		lease: cfg.StaleClaimLease, clk: cfg.Clock, log: cfg.Logger,
-		metrics: cfg.Metrics,
+		metrics:  cfg.Metrics,
+		wordings: cfg.Wordings,
 	}
 	if s.maxInstances <= 0 {
 		s.maxInstances = DefaultMaxInstances
@@ -575,6 +581,14 @@ func (s *DispatchService) claim(
 		BaseURL:        s.baseURL,
 		MaxInstances:   s.maxInstances,
 		Continued:      continuedRoot(d, th, mode),
+	}
+	// ⭐ RESOLVED HERE, AT CLAIM TIME, WHICH IS WHERE EVERY OTHER PER-DELIVERY FACT
+	// IS RESOLVED. The renderer must stay a pure function of
+	// (NotificationView, RenderOptions) — SPEC §F.1, and golden-file testability
+	// depends on it — so the database read that decides which Wording won happens
+	// on this side of the call and only the winning template crosses.
+	if s.wordings != nil {
+		opts.Wordings = s.wordings.For(ctx, scope, channel.ID, view)
 	}
 	msg, err := renderer.Render(ctx, view, opts)
 	if err != nil {

@@ -3,7 +3,10 @@ package service
 import (
 	"context"
 
+	"github.com/google/uuid"
+
 	chdomain "github.com/thulasiram/oto/internal/channels/domain"
+	"github.com/thulasiram/oto/internal/platform/db"
 )
 
 // THIS FILE IS THE ENTIRE SEAM BETWEEN `notification` AND `channels`.
@@ -148,4 +151,22 @@ type MessageRenderer = chdomain.Renderer
 type ChannelRegistry interface {
 	Renderer(t ProviderType, id RendererID) (MessageRenderer, error)
 	Open(ctx context.Context, t ProviderType, cfg TargetConfig, cred TargetCredential) (Target, error)
+}
+
+// WordingResolver decides which customer template, if any, writes each Stanza of
+// one delivery (ADR 0037, ADR 0049). It is satisfied by
+// `internal/channels/service.Wordings`.
+//
+// ⭐ IT IS A PORT RATHER THAN A DIRECT CALL FOR THE REASON EVERYTHING ELSE IN THIS
+// FILE IS: the coupling stays one import in one file. It also keeps the renderer a
+// pure function — resolution needs a database read, so it happens HERE, at claim
+// time, and only the winning template per Stanza crosses into RenderOptions.
+//
+// ⛔ IT RETURNS A MAP AND NO ERROR, DELIBERATELY. A presentation lookup must never
+// be able to fail a delivery: an unreadable store yields no wordings, every Stanza
+// falls back to oto's own Go text, and the card goes out reading in the default
+// voice. A card that reads plainly is a small loss; a card that does not arrive
+// because a formatting table was unavailable is not.
+type WordingResolver interface {
+	For(ctx context.Context, s db.TenantScope, channelID uuid.UUID, v *NotificationView) map[string]string
 }

@@ -884,6 +884,13 @@ func (c *Container) buildNotification(
 		// unregistered they are counters nothing could scrape, which is the same
 		// as not having them.
 		Metrics: notifservice.NewMetrics(reg),
+		// The customer's per-Stanza templates (ADR 0037, ADR 0049). Resolution
+		// happens at claim time, on the notification side, so the renderer stays a
+		// pure function of (NotificationView, RenderOptions) and its golden files
+		// keep meaning something. A deployment that has configured no Wording
+		// resolves none and every card reads in oto's own voice.
+		Wordings: channelsservice.NewWordings(
+			channelsrepo.NewWordingRepository(general, clk)),
 	}); err != nil {
 		return err
 	}
