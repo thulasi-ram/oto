@@ -1,12 +1,29 @@
 # 0037 — A Wording is Liquid, and the structure around it stays oto's
 
-**Status:** Proposed · 2026-08-18 · amends SPEC §F.1, §H.1, §H.3, §I.1, §L.5.1
+**Status:** Proposed · 2026-08-18 · **CORRECTED on three points by
+[0048](0048-a-wording-is-spelled-by-its-channel.md) (2026-08-22)** · amends SPEC §F.1, §H.1, §H.3, §I.1, §L.5.1
 **Relates to:** [0008](0008-slack-update-in-place-primary.md) (the card's structure; a broken layout is a
 dead delivery), [0017](0017-matchers-over-cel.md) (matchers, not an expression language — this ADR keeps
 that refusal for predicates and narrows it for prose),
 [0020](0020-broadcast-the-transitions-that-must-be-seen.md) (the typed-knob precedent, and the unread-knob
 trap)
 **Design note:** [notification-content-customisation.md](../design/notification-content-customisation.md)
+
+> ⛔ **READ [0048](0048-a-wording-is-spelled-by-its-channel.md) BEFORE ACTING ON THIS ADR.** Its
+> central ruling — a Wording is Liquid, its output type is a string, and Go builds every block — stands
+> unchanged and is not reopened. Three subsidiary claims below are wrong and 0048 replaces them:
+>
+> 1. **"Slack receives it as the mrkdwn emphasis subset"** (§ Across channels). A filter must emit a
+>    NEUTRAL mark and a per-provider `Dialect` must spell it, because `*x*` is bold in Slack and italic
+>    in Discord — the wrong emphasis, silently, with no error to anyone.
+> 2. **"the sink strips `<!channel>` … Mention audience stays with the existing `MentionPolicy`"**
+>    (§ Refused). **Both halves were false when written.** There was no mention stripper — `escape()`
+>    defeats those tokens only as a side effect of turning `<` into `&lt;` — and there is no
+>    `MentionPolicy`: the whole mention surface was deleted (git-bug `bd0fb1d`). Refusing an audience
+>    is a new per-provider check this feature is what finally requires, not an existing mechanism
+>    pointed at a new input.
+> 3. **The filter named `slack_date`** (design note) is registered as `datetime`. A timestamp is a
+>    fact; `<!date^…>` is one product's spelling of it.
 
 ## Context
 
@@ -86,10 +103,14 @@ lands in neither bucket, the feature does not ship.
 upstream annotation text today (`root.go:100` is literally `truncateSection(escape(body), v.Links.Group)`).
 This is not a new safety system; it is an existing one pointed at an input of the same trust class.
 
-**A Wording is text, so it crosses channels.** Slack receives it as the mrkdwn emphasis subset after
+**A Wording is text, so it crosses channels.** ~~Slack receives it as the mrkdwn emphasis subset after
 escaping; the webhook receives it as a string in a `rendered` map keyed by Stanza and strips the markers,
-because the webhook is not a degraded Slack. This is the part of the cross-channel problem that a
-posture-and-layout abstraction could not solve: **text is portable, layout is not.**
+because the webhook is not a degraded Slack.~~ **CORRECTED by
+[0048](0048-a-wording-is-spelled-by-its-channel.md):** that is a binary — Slack's punctuation or none —
+and it holds only while exactly two providers exist. A filter emits a **neutral mark** and a
+per-provider `Dialect` spells it: `~x~` on Slack, `~~x~~` on a Discord that does not exist yet, dropped
+for the webhook. The conclusion survives the correction and is sharpened by it: **text is portable,
+layout is not** — but only text that carries no provider's punctuation.
 
 **Conditionality is two Wordings with different matchers, not a branch inside one.** The `when` clause reuses
 `Matcher{Name,Op,Value}` and `Reasons` verbatim, so ADR 0017's refusal of a second predicate language stands.
@@ -100,9 +121,15 @@ template body cannot.
 
 - **No structure.** No block authoring, no BYO Block Kit, no raw mrkdwn passthrough, no new
   `channels.renderer` member (SPEC.md:1451), no per-channel custom renderer, no per-org branding.
-- **No mentions.** The sink strips `<!channel>`, `<!here>`, `<@U…>` and `<!subteam^…>` from interpolated
-  values *and* from literals. Mention audience stays with the existing `MentionPolicy` — one mechanism, one
-  code path.
+- **No mentions.** ⛔ **THIS BULLET WAS FALSE IN BOTH HALVES AND IS REPLACED BY
+  [0048](0048-a-wording-is-spelled-by-its-channel.md) §3.** There was no sink-level stripper
+  (`escape()` defeats those tokens as a side effect of generic escaping, and a refactor could remove it
+  without knowing it was load-bearing), and there is no `MentionPolicy` — the surface was deleted whole
+  (git-bug `bd0fb1d`; the tombstones are at `channels/domain/ports.go:350-358` and
+  `render/slack/renderer.go:27-46`). The refusal itself stands and is stated once, neutrally — **no
+  Wording output may address a group of humans** — and is implemented per provider behind
+  `Dialect.StripAudience`, because Discord's `@everyone` is unbracketed and escaping would never touch
+  it.
 - **No user-authored URLs.** `link()` escapes the label but not the url, which is exactly how
   `runbook_url: "<!channel>"` put a channel-wide ping in every push notification (`root.go:787-795`). Links
   come only from the fixed `Links` set.
@@ -138,11 +165,14 @@ ceiling is wrong. The pre-release corpus check behind ADR 0026 is a weaker subst
 what sentence each deserves. The earlier revision's falsifier ("count customer customisation demands") was
 unrunnable: there are no customers yet.
 
-**Field ordering is not decided here.** It remains blocked on a SPEC defect rather than on this ADR:
-SPEC.md:3516 is a drop-order-on-overflow, and `root.go:109-117` makes display order and shed priority one dial,
-so a user-settable order silently decides what sheds. Pre-release that defect is a doc edit — amend §H.7 to
-declare a render order distinct from its shed order and enumerate the twelve terminal fields — after which
-ordering can be revisited.
+**Field ordering is not decided here**, and the SPEC defect that blocked it is now **FIXED**. It was
+never this ADR's blocker: §H.7 was a drop-order-on-overflow, and `fieldsBlock`'s `add` closure
+(`root.go:105-113` — this ADR cited `:109-117`, which is inside the append) makes display order and
+shed priority **one dial**, so a user-settable order silently decides what sheds. **SPEC §H.7.1
+(2026-08-22) declares the two orders apart and enumerates the twelve terminal fields**, so ordering can
+now be revisited on its merits. Enumerating them also surfaced a renderer defect §H.7.1 records: an
+`expired` card renders `*Last seen*` twice, with the same value, spending two of its ten field slots on
+one fact.
 
 **The policy-scoped override ships as an open question**, not a decision. Two things are unanswered: which
 schema validates a `card`/Wording patch on `notification_policies`, a table with no provider context whose

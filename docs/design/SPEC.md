@@ -4732,7 +4732,7 @@ still render. See the † under §H.5.
 |---|---|---|
 | blocks per message | **50** | cap member rows; move detail to a reply |
 | `section.text` | **3 000 chars** | truncate at 2 900 + `"… <link\|see full detail in oto>"` |
-| `section.fields` | **10 items, 2 000 chars each** | drop lowest-priority fields; order is Status, Severity, Service, Namespace, Started, Firing-for, Flapping, Team |
+| `section.fields` | **10 items, 2 000 chars each** | drop the lowest-priority fields. **Render order and shed order are two orders and both are declared below** — this cell used to carry the single list `Status, Severity, Service, Namespace, Started, Firing-for, Flapping, Team`, and one list is what made ordering unshippable |
 | `header.text` | 150 chars, `plain_text` only | **not used at all** (S1) |
 | `context.elements` | **10 items** | merge into one mrkdwn element |
 | `actions.elements` | **25 elements** | v1 renders at most **5**: up to 4 buttons, at most one snooze select, and the links overflow. §B.8.6 requires the snooze pair to be VISIBLE ("the `Snooze` action becomes `:bell: Unsnooze`"), so the budget moved rather than the requirement; the row is 4 buttons + overflow, or 3 buttons + the select + overflow. **This line read "at most 4" and was widened by [ADR 0043](../adr/0043-the-slack-action-row-renders-five-elements.md)** (git-bug `78388fb`), which records the foreclosed alternatives — the overflow is at its five-option ceiling, and a modal needs a `trigger_id` on §H.8's 3-second path. Five is the SMALLEST number that satisfies §B.8.6; the next widening owes its own ADR |
@@ -4744,6 +4744,64 @@ still render. See the † under §H.5.
 | attachments | 1 (oto) / 100 (Slack hard cap) | exactly one, always (S3) |
 | top-level `text` | no documented cap; keep ≤ 300 chars | one sentence |
 | thread replies before a fresh root | **30** (oto policy) | post `continued` reply + new root (S14) |
+
+#### H.7.1 The field grid has TWO orders, and they are declared separately
+
+**⭐ RENDER ORDER IS WHAT A READER SEES. SHED ORDER IS WHAT A BUSY CARD GIVES UP. They were one dial,
+and that is the whole reason field ordering is not user-settable.**
+
+`fieldsBlock`'s `add` closure (`internal/channels/render/slack/root.go:105-113`) refuses silently once
+`len(fields) >= maxFields`, and every field is appended by a straight-line sequence of `add` calls. So
+position in that sequence decides two unrelated questions at once: where a reader sees a field, and
+whether they see it at all. The field appended LAST is the field absent FIRST. An operator dragging
+`Team` above `Status` would not be choosing a layout — they would be choosing to drop `Status` on a
+card that has twelve facts and room for ten, and no surface would tell them so.
+[ADR 0037](../adr/0037-wordings-are-liquid-and-structure-stays-otos.md) left field ordering undecided
+for exactly this reason and named this section as the defect to fix first. This is that fix: the two
+orders are named apart here so that a later ordering control can move the first without touching the
+second.
+
+Until a renderer reads them as two lists, **shed order is DERIVED from render order by reversal.** It
+is written out anyway, because an order that exists only as the reverse of an append loop cannot be
+reviewed, and a change to it would not appear in any diff.
+
+**The twelve terminal fields**, in render order. Twelve is the count on a `resolved` or `expired`
+card, which is the widest the grid ever gets; the budget is ten, so **two always shed**, and they are
+the last two in render order whose value is non-empty.
+
+| # | Field | Rendered when | Shed rank |
+|---|---|---|---|
+| 1 | `Status` | always | 12th (last to go) |
+| 2 | `Severity` | always | 11th |
+| 3 | `Service` | group label or focus alert carries one | 10th |
+| 4 | `Namespace` | group label or focus alert carries one | 9th |
+| 5 | `Started` | upstream `startsAt` is known (S16) | 8th |
+| 6 | `Duration` — `Firing for` while open, `Silenced for` while suppressed, `Last seen` when expired | always | 7th |
+| 7 | `Resolved` / `Last seen` | terminal only (§H.4) | 6th |
+| 8 | `Instances affected` | terminal only, `TotalCount > 0` (S11) | 5th |
+| 9 | `Notifications` | terminal only, count `> 0` | 4th |
+| 10 | `Acknowledged` | terminal only | 3rd |
+| 11 | `Flapping` | a stored flap verdict exists (§B.6.2) | 2nd |
+| 12 | `Team` | the focus alert carries a `team` label | 1st (first to go) |
+
+`Flapping` and `Team` shedding first is deliberate and is stated in the renderer: they are the two
+facts that matter least once an episode is over. **Row 6 is one field with four spellings, not four
+fields** — `durationLabel(state)` picks the word and the row keeps its position, which is why the
+count is twelve and not fifteen.
+
+A **non-terminal** card renders a subset of the same sequence: rows 7–10 are terminal-only, and one
+further field takes their place in the sequence — `*Notifications*\n:zzz: Snoozed … until …`, §B.8.6's
+single added field, appended between rows 6 and 11 and guarded by `!state.IsTerminal()`. It shares the
+`*Notifications*` label with row 9 and the two can never both apply: row 9 renders only on a terminal
+card, and a card oto has gone quiet about is one it is still tracking. So the widest non-terminal grid
+is nine fields, comfortably inside the budget, and shedding is a terminal-card concern.
+
+> ⚠️ **DEFECT, RECORDED HERE BECAUSE ENUMERATION IS WHAT FOUND IT.** On an `expired` card rows 6 and 7
+> collide: `durationLabel(CardExpired)` and `terminalTimeLabel(CardExpired)` both return `Last seen`,
+> and `durationValue(v, CardExpired, now)` returns `slackDate(v.Group.LastActivityAt)` — the same value
+> row 7 renders. An expired card therefore shows the field `*Last seen*` **twice, identically**, and
+> spends two of its ten slots saying one thing. §H.4 promises one. The fix is a renderer change and is
+> not made here; the count above stays twelve because twelve is what the code names.
 
 ### H.8 Interactivity
 
@@ -5944,10 +6002,27 @@ loopback address unless `OTO_ALLOW_PRIVATE_WEBHOOK_TARGETS=true` (SSRF guard).
 > correctness failure, not a cosmetic one.
 
 `render/slack.Validate(payload)` runs on every rendered message, **before** the API call and
-before `notification_deliveries.rendered` is persisted. Checks, in order:
+before `notification_deliveries.rendered` is persisted. There are **nineteen** checks, `V0`–`V18`.
+
+⛔ **THIS TABLE SAID EIGHTEEN AND THE CODE HAS ALWAYS RUN NINETEEN.** `V0` is the JSON-decode guard,
+and it was undocumented here because it is the one check that is not a Slack limit — it fires when the
+bytes oto is about to send do not decode as a Slack message at all. It is named in the table now for
+the same reason every other check is: `Check` is the closed vocabulary that lands in
+`notification_deliveries.error`, so a check with no row is a delivery whose failure a reader cannot
+look up. The count matters beyond tidiness — ADR 0037 makes an **exhaustiveness test over these
+identifiers** the gate artifact for user-authored Wordings, and an exhaustiveness test that has
+counted wrong proves nothing.
+
+⚠️ The checks do not run in numeric order, and the table is written in the order they run rather than
+the order they are numbered. `V18` is first because an oversized payload is cheap to detect and
+expensive to walk; `V0` is second because nothing else can be read until the bytes decode.
+
+Checks, in the order they run:
 
 | # | Check | Limit | Failure |
 |---|---|---|---|
+| V18 | total payload size, checked before anything is parsed | `<= 100 000` bytes | `render_invalid` |
+| V0 | the payload decodes as a Slack message | `json.Unmarshal` into `render/slack.Payload` succeeds | `render_invalid` |
 | V1 | exactly one attachment | `len(attachments) == 1` | `render_invalid` |
 | V2 | attachment `color` is `good`/`warning`/`danger` or `^#[0-9a-fA-F]{6}$` | — | `render_invalid` |
 | V3 | block count | `<= 50` | `render_invalid` |
@@ -5955,7 +6030,7 @@ before `notification_deliveries.rendered` is persisted. Checks, in order:
 | V5 | `section.text` length | `<= 3000` | `render_invalid` |
 | V6 | `section.fields` | `<= 10` items, each `<= 2000` chars | `render_invalid` |
 | V7 | `context.elements` | `<= 10` | `render_invalid` |
-| V8 | `actions.elements` | `<= 25` (oto renders `<= 4`) | `render_invalid` |
+| V8 | `actions.elements` | `<= 25` (oto renders `<= 5` — [ADR 0043](../adr/0043-the-slack-action-row-renders-five-elements.md); this cell said `<= 4` and contradicted §H.7 in the same document) | `render_invalid` |
 | V9 | `button.text` | `<= 75` chars, `plain_text` | `render_invalid` |
 | V10 | `button.url` / `image.image_url` | `<= 3000` chars, absolute http(s) | `render_invalid` |
 | V11 | `button.value` | `<= 2000`; oto asserts it is a bare UUID (S8) | `render_invalid` |
@@ -5965,7 +6040,6 @@ before `notification_deliveries.rendered` is persisted. Checks, in order:
 | V15 | `unfurl_links == false` and `unfurl_media == false` (S6) | — | `render_invalid` |
 | V16 | every `block_id` unique within the payload | — | `render_invalid` |
 | V17 | `metadata.event_payload` serialises to `<= 8000` bytes | — | `render_invalid` |
-| V18 | total payload size | `<= 100 000` bytes | `render_invalid` |
 
 **On failure the delivery goes straight to `status='dead'`, `error_class='config_invalid'`, with
 the offending payload persisted in `notification_deliveries.rendered` and the failing check named
@@ -6133,7 +6207,7 @@ service's job, and duplicating it in SQL produces two subtly different rulebooks
 | `TestNoDirectDecode` | no `internal/*/api` package calls `json.NewDecoder` or `validate.Struct` directly (only `httpx.Bind`) |
 | `TestDomainHasNoIOImports` | no `internal/*/domain` package imports `pgx`, `net/http`, `encoding/json` or `slack-go` |
 | `TestSchemasCompile` | every provider's `ConfigSchema` compiles under draft 2020-12 at boot |
-| `TestGoldenBlocksValidate` | every `testdata/*.golden.json` passes all of L.6 V1–V18 |
+| `TestGoldenBlocksValidate` | every `testdata/*.golden.json` passes all nineteen of L.6 `V0`–`V18` |
 | `TestIngestBoundsFuzz` | a Go fuzz target over `decode` never panics and never returns 4xx for a bound violation |
 | `TestIngestNever4xx` | property test: for any non-empty body under 8 MiB with a valid token, the status is 202 or 503 |
 | `TestDTOSchemaDrift` (G1) | Go DTOs match `api/openapi/components/*.yaml` |
