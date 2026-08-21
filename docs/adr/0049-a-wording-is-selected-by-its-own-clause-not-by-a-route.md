@@ -85,10 +85,19 @@ guard rail exists precisely to keep it single-purpose. Nothing here goes near it
 **`notifications.policy_id` keeps meaning exactly what it meant.** It records which policy routed the
 notification. It never had to also mean "which policy decided how this reads", and now it never will.
 
-**The resolved Wording set is persisted on the delivery row**, beside the rendered payload
-`dispatch.go` already stores under §L.6. "Why did my card read like that" is answerable from one row rather
-than from a replay against configuration that may since have changed — which is the same argument that put
-the rendered payload there, applied to the thing that produced it.
+**The resolved Wording set is persisted on the delivery row.** `notification_deliveries.wordings`
+(migration 00077) is a JSONB object of stanza → template SOURCE, written in the same statement as
+`rendered` and before the network call. "Why did my card read like that" is answerable from one row
+rather than from a replay against configuration that may since have changed — a Wording gets edited,
+disabled, soft-deleted or outranked, and a replay answers a question about last Tuesday with today's
+settings, confidently and wrongly. That is the same argument that put the rendered payload there,
+applied to the thing that produced it. It stores the SOURCE rather than a row id because a
+soft-deleted wording's id explains nothing on its own, and because an id survives an edit while
+meaning something different afterwards.
+
+⚠️ It is STORED and not yet SERVED: `GET /api/v1/deliveries/{id}` does not return it, so today it is
+readable by anyone who can read the row and by nobody else. That is exactly the status `rendered`
+itself had until this run wired the dead-delivery retry screen.
 
 **Resolution happens where the facts are, and the renderer stays pure.** The `when` clause is matched in
 `notification/service`, which is where `Matcher` and the closed `Reason` enum live; only the winning
