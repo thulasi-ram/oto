@@ -338,6 +338,35 @@ export function severityLevel(severity: string | null | undefined): number {
   return known === null ? 0 : SEVERITY_LEVEL[known];
 }
 
+/**
+ * ⭐⭐ THE MARK IS BIGGER THAN THE REST OF THE ALPHABET, AND THAT IS THE POINT.
+ *
+ * Every glyph in `./glyphs` inks a 14 px box, and that box was sized for the
+ * GEOMETRIC state shapes — a triangle, a struck square, a dashed ring — where the
+ * distinction is which shape it is and 14 px is plenty to tell six shapes apart.
+ * The severity mark is the one glyph whose entire signal is stroke WEIGHT, and
+ * weight is the one visual variable that does not survive being shrunk: at 14 px
+ * the gap between `regular` and `heavy` is a pixel or so of brush, which means
+ * hue was quietly carrying the ordinal reading on its own — the exact U1 failure
+ * the shape channel exists to prevent.
+ *
+ * So the mark is 22 px. On the size ladder 14 px is legible but thin, 18 px is
+ * comfortable, and 22 px is where `critical` reads as heavier than `warning`
+ * without its colour — in greyscale, at a glance, past a colour-vision
+ * deficiency. Severity is the axis this product is about, and it is the one mark
+ * allowed to be the loudest thing in the row.
+ *
+ * ⛔ IT COSTS NO ROW HEIGHT, WHICH IS WHY IT IS AFFORDABLE. Every surface that
+ * draws this puts it beside at least two lines of text — an alert name over a
+ * meta line — so a 22 px glyph sits inside a box the row already occupied. It
+ * would not be affordable in a single-line list, and there is not one.
+ *
+ * ⛔ AND IT IS ON `SeverityMark`, NOT ON `SeverityEnso`. The raw glyph keeps the
+ * alphabet's 14 px default because the filter menus draw it at chrome scale, where
+ * it is a legend for the rows rather than the reading itself.
+ */
+const MARK_SIZE = "size-[22px]";
+
 export interface SeverityMarkProps {
   readonly severity: string | null | undefined;
   /** Show the raw label next to the glyph. */
@@ -358,7 +387,10 @@ export const SeverityMark: Component<SeverityMarkProps> = (props) => {
       )}
       title={`Severity: ${text()}`}
     >
-      <SeverityEnso level={known() === null ? 0 : SEVERITY_LEVEL[known() as KnownSeverity]} />
+      <SeverityEnso
+        level={known() === null ? 0 : SEVERITY_LEVEL[known() as KnownSeverity]}
+        class={MARK_SIZE}
+      />
       {/* U1: the glyph is never the only channel — the word is always available,
           visually when asked for and to assistive tech always. */}
       {props.withLabel === true ? (
