@@ -95,6 +95,16 @@ func encodeMatchers(ms []domain.Matcher) ([]byte, error) {
 	return json.Marshal(out)
 }
 
+// maxResolvedWordings bounds what one delivery will read.
+//
+// ⛔ AN UNBOUNDED READ ON THE DELIVERY PATH IS A LATENCY BUG WAITING FOR ONE
+// CUSTOMER. Only four stanzas are wordable and only the first match per stanza is
+// used, so a tenant needs a handful of rows; the ceiling exists so that an org
+// that accumulates thousands cannot make every card slower. It is deliberately far
+// above any sane configuration, and the ORDER BY means the rows that would have
+// won are the ones kept.
+const maxResolvedWordings = 512
+
 // WordingRepository reads and writes `wordings`.
 type WordingRepository struct {
 	q     db.Querier
@@ -121,7 +131,8 @@ const resolveWordingsSQL = `SELECT ` + wordingColumns + wordingFrom + `
    AND w.enabled
    AND w.deleted_at IS NULL
    AND (w.channel_id = $2 OR w.channel_id IS NULL)
- ORDER BY (w.channel_id IS NULL), w.priority, w.created_at, w.id`
+ ORDER BY w.channel_id NULLS LAST, w.priority, w.created_at, w.id
+ LIMIT $3`
 
 // Resolve returns every live Wording that could apply to one destination, already
 // in precedence order: destination-specific first, then the org-wide house voice,
@@ -143,7 +154,7 @@ func (r *WordingRepository) Resolve(
 	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
-	rows, err := r.db(ctx).Query(ctx, resolveWordingsSQL, s.OrgID(), channelID)
+	rows, err := r.db(ctx).Query(ctx, resolveWordingsSQL, s.OrgID(), channelID, maxResolvedWordings)
 	if err != nil {
 		return nil, mapErr(err, "wording_not_found", "resolve wordings")
 	}
@@ -231,7 +242,7 @@ func (r *WordingRepository) List(
 	}
 	defer rows.Close()
 
-	out := make([]domain.Wording, 0, limit)
+	out := make([]domain.Wording, 0, limit+1)
 	for rows.Next() {
 		var row wordingRow
 		if err := rows.Scan(row.scanDest()...); err != nil {
@@ -247,13 +258,18 @@ func (r *WordingRepository) List(
 		return nil, db.Cursor{}, mapErr(err, "wording_not_found", "list wordings")
 	}
 
-	var cur db.Cursor
-	if len(out) > limit {
-		out = out[:limit]
-		last := out[len(out)-1]
-		cur = db.Cursor{SortKey: last.CreatedAt, ID: last.ID}
+	// ⛔ THE HOUSE HELPERS, NOT A HAND-ROLLED SLICE. This trimmed the extra row and
+	// built a bare Cursor{SortKey, ID}, leaving HasMore false and dropping the
+	// cursor Hash — so `httpx.PageOf` emitted `has_more: false` and no
+	// `next_cursor`, and every list was permanently stuck on page one. It read as
+	// equivalent to channels.go and was not.
+	page, hasMore := db.PageOf(out, limit)
+	cur := db.Cursor{Hash: p.Cursor.Hash}
+	if len(page) > 0 {
+		last := page[len(page)-1]
+		cur = db.NextCursor(last.CreatedAt, last.ID, p.Cursor.Hash, hasMore)
 	}
-	return out, cur, nil
+	return page, cur, nil
 }
 
 // ------------------------------------------------------------------ writes
@@ -275,6 +291,26 @@ func (r *WordingRepository) Create(
 	if err != nil {
 		return domain.Wording{}, errs.Internal("wording_encode_failed", err)
 	}
+	// ⛔ THE FOREIGN KEY IS ORG-BLIND, SO THE ORG CHECK HAS TO BE HERE.
+	// `wordings.channel_id REFERENCES channels(id)` proves the channel EXISTS, not
+	// that it is this tenant's — a caller naming another org's channel id would get
+	// a row accepted by the database. `Resolve` is org-filtered so nothing would
+	// ever render, which makes it a silent no-op rather than a leak; a 404 at the
+	// point of the mistake is a better answer than a wording that never fires and
+	// never says why.
+	if n.ChannelID != nil {
+		var exists bool
+		if err := r.db(ctx).QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM channels WHERE org_id = $1 AND id = $2)`,
+			s.OrgID(), *n.ChannelID).Scan(&exists); err != nil {
+			return domain.Wording{}, mapErr(err, "wording_not_found", "check a wording's channel")
+		}
+		if !exists {
+			return domain.Wording{}, errs.NotFound("channel_not_found",
+				"no such channel in this organisation")
+		}
+	}
+
 	newID := n.ID
 	if newID == uuid.Nil {
 		newID = id.New()
@@ -293,7 +329,7 @@ func (r *WordingRepository) Create(
 		n.Priority, n.Enabled, now,
 	).Scan(row.scanDest()...)
 	if err != nil {
-		return domain.Wording{}, mapErr(err, "wording_not_created", "create a wording")
+		return domain.Wording{}, mapErr(err, "wording_not_found", "create a wording")
 	}
 	return row.toDomain()
 }
@@ -351,7 +387,7 @@ func (r *WordingRepository) Update(
 		if isNoRows(err) {
 			return domain.Wording{}, errs.NotFound("wording_not_found", "no such wording")
 		}
-		return domain.Wording{}, mapErr(err, "wording_not_updated", "update a wording")
+		return domain.Wording{}, mapErr(err, "wording_not_found", "update a wording")
 	}
 	return row.toDomain()
 }
@@ -373,7 +409,7 @@ func (r *WordingRepository) Delete(
 	}
 	tag, err := r.db(ctx).Exec(ctx, deleteWordingSQL, s.OrgID(), wordingID, r.clock.Now().UTC())
 	if err != nil {
-		return mapErr(err, "wording_not_deleted", "delete a wording")
+		return mapErr(err, "wording_not_found", "delete a wording")
 	}
 	if tag.RowsAffected() == 0 {
 		return errs.NotFound("wording_not_found", "no such wording")

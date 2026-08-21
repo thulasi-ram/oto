@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/thulasiram/oto/internal/channels/render/wording"
 )
 
 // Slack's limits (§H.7). They are constants here so that the renderer truncates
@@ -396,41 +398,14 @@ func plainMoment(t, ref time.Time) string {
 	return u.Format("2 Jan 15:04 MST")
 }
 
-// humanDuration renders a duration the way an operator reads one: two units at
-// most, largest first, never "0s" padding. Durations are computed server-side and
-// re-rendered on every update (S13).
-func humanDuration(d time.Duration) string {
-	if d < 0 {
-		d = -d
-	}
-	switch {
-	case d < time.Second:
-		return "under a second"
-	case d < time.Minute:
-		return strconv.Itoa(int(d.Seconds())) + "s"
-	case d < time.Hour:
-		m := int(d.Minutes())
-		s := int(d.Seconds()) % 60
-		if s == 0 {
-			return strconv.Itoa(m) + "m"
-		}
-		return strconv.Itoa(m) + "m " + strconv.Itoa(s) + "s"
-	case d < 24*time.Hour:
-		h := int(d.Hours())
-		m := int(d.Minutes()) % 60
-		if m == 0 {
-			return strconv.Itoa(h) + "h"
-		}
-		return strconv.Itoa(h) + "h " + strconv.Itoa(m) + "m"
-	default:
-		days := int(d.Hours()) / 24
-		h := int(d.Hours()) % 24
-		if h == 0 {
-			return strconv.Itoa(days) + "d"
-		}
-		return strconv.Itoa(days) + "d " + strconv.Itoa(h) + "h"
-	}
-}
+// humanDuration renders a duration the way an operator reads one.
+//
+// ⭐ IT DELEGATES, AND IT USED TO BE THE ORIGINAL OF A COPY. `render/wording` needed
+// the same phrasing for every provider and duplicated this function byte for byte,
+// with a comment promising a test would catch drift — the test asserted literals
+// and never called this one, so nothing would have. One implementation, one
+// phrasing, and two channels can no longer disagree about how old a signal is.
+func humanDuration(d time.Duration) string { return wording.HumanDuration(d) }
 
 // plural renders "1 instance" / "3 instances" without the "(s)" that makes a
 // product feel unfinished.

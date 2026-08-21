@@ -105,11 +105,13 @@ const continuedMarker = "_continued from an earlier card_"
 
 // escapedOr returns the customer's text for id, or builds Go's.
 //
-// ⛔ builtin IS A CLOSURE, NOT A STRING, AND THAT IS DELIBERATE. Go's version of a
-// stanza is sometimes expensive to compose — the footer joins nine parts, the rule
-// block truncates a 900-rune expression — and composing it only to throw it away on
-// every delivery that has a Wording would be pure waste. It also documents the
-// order: the customer's text is preferred, and Go's is what happens otherwise.
+// ⚠️ builtin IS A CLOSURE SO THAT THE ORDER READS CORRECTLY — the customer's text
+// is preferred, Go's is what happens otherwise — and NOT, as this comment used to
+// claim, to defer expensive composition. It does defer it for the rule stanza,
+// which truncates a 900-rune expression inside the closure; it does NOT for the
+// footer, which builds all nine of its parts before calling here and only defers
+// the `Join`. A reason that is false for the example it names is worse than no
+// reason, because the next reader restructures the caller to preserve it.
 //
 // ⚠️ NEITHER SIDE IS ESCAPED HERE. Go's builder escapes its own inputs as it always
 // has; a Wording's output was escaped run-by-run by its Dialect, which is the only

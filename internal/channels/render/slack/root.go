@@ -750,16 +750,71 @@ func (r *Renderer) footerBlock(v *domain.NotificationView, o domain.RenderOption
 		parts = append(parts, continuedMarker)
 	}
 
-	text := escapedOr(st, wording.StanzaFooter, func() string { return strings.Join(parts, "  ·  ") })
+	builtin := strings.Join(parts, "  ·  ")
+	worded := escapedOr(st, wording.StanzaFooter, func() string { return builtin })
+
+	if worded == builtin {
+		// No Wording. Byte-for-byte what it always was, which is what keeps the
+		// golden files meaningful.
+		return contextBlock(blockID("footer", nonce),
+			Text{Type: TypeMrkdwn, Text: truncateField(builtin, v.Links.Group)})
+	}
+
+	// ⛔ A WORDED FOOTER KEEPS OTO'S PROVENANCE, IT DOES NOT REPLACE IT. The footer
+	// is where the facts that make a card ATTRIBUTABLE live — which oto sent it,
+	// for which group, on which generation, and when it was last updated — and a
+	// Wording that returned "sent by oto" silently deleted all of them. That is a
+	// structural loss wearing a wording's clothes: the reader cannot tell which
+	// signal a card belongs to, and §H.4's argument that a terminal card is the only
+	// remaining record applies to the footer more than to anything else on it.
+	// So the customer writes the PROSE and Go re-appends the identity, exactly as
+	// the rule stanza re-appends its link.
+	text := worded
+	if identity := footerIdentity(v, now); identity != "" {
+		text += "  ·  " + identity
+	}
+
+	// ⛔ THE MARKER IS FITTED BEFORE THE CUT, NOT APPENDED AFTER IT. §H.9's sentence
+	// is what stops a recovered card reading as a second incident, and appending it
+	// to an over-long footer just moved it past the truncation point — a 2 048-byte
+	// template is legal in both Go and the CHECK, so a customer could drop the
+	// marker by being verbose. The worded part is cut to leave room, and the marker
+	// is then always present.
+	//
+	// ⚠️ AND IT IS STRIPPED FIRST, so a Wording cannot FORGE it. Claiming a card
+	// continues an earlier one when it does not is the same lie in the other
+	// direction, and the previous `strings.Contains` guard actively enabled it: a
+	// template containing the marker suppressed Go's own append and stood in for it.
+	text = replaceAll(text, continuedMarker, "")
 	if o.Continued {
-		// §H.9's marker is re-appended after a Wording for the same reason the rule
-		// link is: it is the sentence that stops a recovered card reading as a
-		// second incident, and it must not be something a customer can drop.
-		if !strings.Contains(text, continuedMarker) {
-			text += "  ·  " + continuedMarker
-		}
+		room := maxFieldText - len(continuedMarker) - len("  ·  ")
+		text = truncateAt(text, room, v.Links.Group) + "  ·  " + continuedMarker
 	}
 	return contextBlock(blockID("footer", nonce), Text{Type: TypeMrkdwn, Text: truncateField(text, v.Links.Group)})
+}
+
+// footerIdentity is the part of the footer a Wording may not remove: the facts
+// that let a reader say which signal, from which oto, this card is about.
+func footerIdentity(v *domain.NotificationView, now time.Time) string {
+	parts := make([]string, 0, 4)
+	parts = append(parts, "oto")
+	if k := v.Group.GroupKey; k != "" {
+		parts = append(parts, code(shortKey(k)))
+	}
+	if v.Group.Generation > 1 {
+		parts = append(parts, "generation "+strconv.Itoa(v.Group.Generation))
+	}
+	parts = append(parts, "updated "+slackDate(now))
+	return strings.Join(parts, "  ·  ")
+}
+
+// replaceAll removes every occurrence of tok, repeatedly, so that removing one
+// cannot spell another out of the halves it joins.
+func replaceAll(s, tok, with string) string {
+	for i := 0; i < 8 && strings.Contains(s, tok); i++ {
+		s = strings.ReplaceAll(s, tok, with)
+	}
+	return s
 }
 
 // leadEmoji is the emoji at the head of the title and of the top-level text.

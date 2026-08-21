@@ -9,15 +9,16 @@ import (
 	"github.com/osteele/liquid"
 )
 
-// humanise renders a duration the way an operator reads one: two units at most,
-// largest first, never "0s" padding.
+// HumanDuration renders a duration the way an operator reads one: two units at
+// most, largest first, never "0s" padding.
 //
-// ⚠️ IT IS A DELIBERATE TWIN OF slack.humanDuration AND MUST STAY ONE. That
-// function is unexported and golden-tested inside its own package; this one serves
-// every provider. TestHumaniseMatchesSlackWording pins the shared cases so the two
-// cannot drift into telling the same operator two different firing durations for
-// the same signal on two different channels.
-func humanise(d time.Duration) string {
+// ⭐ IT IS EXPORTED BECAUSE THE SLACK RENDERER DELEGATES TO IT, and it used to be a
+// copy. The copy's comment claimed a test pinned the two together; the test only
+// asserted eight literals and never called the Slack function at all — it is
+// unexported in another package — so the guarantee that justified the duplication
+// did not exist and drift would have been silent. `render/slack` already imports
+// this package, so there was never a cycle to avoid.
+func HumanDuration(d time.Duration) string {
 	if d < 0 {
 		d = -d
 	}
@@ -27,11 +28,11 @@ func humanise(d time.Duration) string {
 	case d < time.Minute:
 		return strconv.Itoa(int(d.Seconds())) + "s"
 	case d < time.Hour:
-		m, s := int(d.Minutes()), int(d.Seconds())%60
-		if s == 0 {
+		m, sec := int(d.Minutes()), int(d.Seconds())%60
+		if sec == 0 {
 			return strconv.Itoa(m) + "m"
 		}
-		return strconv.Itoa(m) + "m " + strconv.Itoa(s) + "s"
+		return strconv.Itoa(m) + "m " + strconv.Itoa(sec) + "s"
 	case d < 24*time.Hour:
 		h, m := int(d.Hours()), int(d.Minutes())%60
 		if m == 0 {
@@ -46,6 +47,8 @@ func humanise(d time.Duration) string {
 		return strconv.Itoa(days) + "d " + strconv.Itoa(h) + "h"
 	}
 }
+
+func humanise(d time.Duration) string { return HumanDuration(d) }
 
 // FilterNames is oto's entire curated filter set, and the list is the contract.
 //
@@ -67,6 +70,11 @@ var FilterNames = []string{
 }
 
 // registerFilters installs exactly FilterNames on e.
+//
+// ⚠️ THE LIST AND THE REGISTRATIONS ARE CHECKED AGAINST EACH OTHER, because
+// FilterNames is described as the contract and nothing read it: the twelve calls
+// below were the real set and the slice was a comment that happened to compile.
+// TestFilterNamesIsTheRegisteredSet renders a probe through each name.
 func registerFilters(e *liquid.Engine) {
 	// default is load-bearing for TOTALITY: every field reference in a Wording is
 	// meant to carry one, so a Stanza can never render empty and no zero-information
@@ -94,13 +102,32 @@ func registerFilters(e *liquid.Engine) {
 	// ceiling is Slack's, and both apply.
 	e.RegisterFilter("truncate_runes", func(v any, n int) any {
 		s := str(v)
+		// ⛔ A TIME MARK IS NOT TEXT AND MUST NOT BE CUT. It carries the epoch and
+		// oto's own formatted fallback between private-use delimiters; slicing it
+		// leaves a half-mark that Spell cannot parse and that degrades to the raw
+		// unix seconds printed on the card. Truncating a timestamp is meaningless
+		// anyway, so the value passes through whole.
+		if strings.ContainsRune(s, markTimeOpen) {
+			return s
+		}
 		if n <= 0 || utf8.RuneCountInString(s) <= n {
 			return s
 		}
 		return string([]rune(s)[:n]) + "…"
 	})
 
-	e.RegisterFilter("code", wrap(markCodeOpen, markCodeClose))
+	// ⛔ BACKTICKS ARE STRIPPED FROM THE VALUE, as slack.code() already does for
+	// upstream text. Without it an annotation containing a backtick closes the span
+	// early and the rest of the value lands as ordinary prose carrying whatever
+	// markup it likes — a breakout from the one construct whose whole job is to
+	// render a value literally.
+	e.RegisterFilter("code", func(v any) any {
+		s := strings.ReplaceAll(str(v), "`", "'")
+		if strings.TrimSpace(s) == "" {
+			return ""
+		}
+		return string(markCodeOpen) + s + string(markCodeClose)
+	})
 	e.RegisterFilter("strike", wrap(markStrikeOpen, markStrikeClose))
 	e.RegisterFilter("bold", wrap(markBoldOpen, markBoldClose))
 	e.RegisterFilter("italic", wrap(markItalicOpen, markItalicClose))

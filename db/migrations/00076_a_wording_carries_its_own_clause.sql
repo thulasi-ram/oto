@@ -85,8 +85,13 @@ COMMENT ON COLUMN wordings.stanza IS
 -- Serves: wording resolution on every delivery -- walk this org's live wordings for
 -- the destination and the org-wide fallback together, most-specific first, then
 -- priority. Partial, because a disabled or deleted wording is never resolved.
+-- The column order matches the query exactly: `stanza` is NOT in it, because
+-- resolution reads every stanza's candidates in one go and filters in Go. A
+-- `stanza` column in position two would leave only the `org_id` prefix usable and
+-- push the whole ORDER BY into a sort, which is the opposite of what this index's
+-- name claims. `created_at, id` are here so the tie-break is served too.
 CREATE INDEX wordings_resolve_idx
-  ON wordings (org_id, stanza, channel_id NULLS LAST, priority)
+  ON wordings (org_id, channel_id NULLS LAST, priority, created_at, id)
   WHERE enabled AND deleted_at IS NULL;
 
 -- +goose Down
@@ -95,10 +100,14 @@ CREATE INDEX wordings_resolve_idx
 DO $$
 DECLARE n BIGINT;
 BEGIN
-  SELECT count(*) INTO n FROM wordings WHERE deleted_at IS NULL;
+  -- ⚠️ EVERY ROW, NOT JUST THE LIVE ONES. A soft-deleted Wording is still the
+  -- customer's own prose, and it is what a delivery's recorded wording set points
+  -- at when somebody asks why a card from last month read the way it did. Counting
+  -- only `deleted_at IS NULL` would let the DROP take that history silently.
+  SELECT count(*) INTO n FROM wordings;
   IF n > 0 THEN
     RAISE EXCEPTION
-      'refusing to drop `wordings`: % live row(s) would be destroyed, and a Wording is customer-authored prose that exists nowhere else. Inspect with: SELECT id, org_id, channel_id, stanza, template FROM wordings WHERE deleted_at IS NULL;', n;
+      'refusing to drop `wordings`: % row(s) would be destroyed, and a Wording is customer-authored prose that exists nowhere else. Inspect with: SELECT id, org_id, channel_id, stanza, template, deleted_at FROM wordings;', n;
   END IF;
 END $$;
 -- +goose StatementEnd

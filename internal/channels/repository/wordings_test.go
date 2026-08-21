@@ -8,6 +8,7 @@ import (
 
 	"github.com/thulasiram/oto/internal/channels/domain"
 	"github.com/thulasiram/oto/internal/channels/repository"
+	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/test/harness"
 )
 
@@ -157,4 +158,64 @@ func TestTheStanzaIsNotPatchable(t *testing.T) {
 	updated, err := wordings.Update(h.Ctx, org.Scope, w.ID, domain.WordingPatch{Template: &tmpl})
 	require.NoError(t, err)
 	require.Equal(t, "body", updated.Stanza, "no patch field can move a wording's stanza")
+}
+
+// TestListPaginates. The first version trimmed the extra row by hand and returned
+// a bare Cursor{SortKey, ID}, so HasMore stayed false and the cursor Hash was
+// dropped — `httpx.PageOf` then emitted `has_more: false` and no `next_cursor`,
+// and every list was permanently stuck on page one. It read as equivalent to
+// channels.go and was not, which is why this walks two pages rather than checking
+// one call's shape.
+func TestListPaginates(t *testing.T) {
+	t.Parallel()
+
+	h := harness.New(t)
+	org := h.Org()
+	wordings := repository.NewWordingRepository(h.Pool, h.Clock)
+
+	const total = 5
+	for i := 0; i < total; i++ {
+		_, err := wordings.Create(h.Ctx, org.Scope,
+			newWording("body", "w"+string(rune('a'+i)), nil, 100+i))
+		require.NoError(t, err)
+	}
+
+	first, cur, err := wordings.List(h.Ctx, org.Scope, nil, false, db.Keyset{Limit: 2})
+	require.NoError(t, err)
+	require.Len(t, first, 2)
+	require.True(t, cur.HasMore, "a full page with rows behind it must say so")
+
+	seen := map[uuid.UUID]bool{}
+	for _, w := range first {
+		seen[w.ID] = true
+	}
+	var page []domain.Wording
+	for guard := 0; cur.HasMore && guard < 10; guard++ {
+		page, cur, err = wordings.List(h.Ctx, org.Scope, nil, false, db.Keyset{Limit: 2, Cursor: cur})
+		require.NoError(t, err)
+		for _, w := range page {
+			require.False(t, seen[w.ID], "a row appeared on two pages")
+			seen[w.ID] = true
+		}
+	}
+	require.Len(t, seen, total, "walking the cursor must reach every row exactly once")
+}
+
+// TestCreateRefusesAnotherOrgsChannel. The foreign key proves the channel EXISTS,
+// not that it belongs to the caller — so without this check a row naming another
+// tenant's channel is accepted, then never resolves, and never says why.
+func TestCreateRefusesAnotherOrgsChannel(t *testing.T) {
+	t.Parallel()
+
+	h := harness.New(t)
+	mineOrg, otherOrg := h.Org(), h.Org()
+	conn := newWebhookConnection(t, h, otherOrg, "theirs")
+	channels := repository.NewChannelRepository(h.Pool, h.Clock)
+	theirs, err := channels.Create(h.Ctx, otherOrg.Scope, newWebhook("theirs", conn))
+	require.NoError(t, err)
+
+	wordings := repository.NewWordingRepository(h.Pool, h.Clock)
+	_, err = wordings.Create(h.Ctx, mineOrg.Scope, newWording("body", "x", &theirs.ID, 100))
+	require.Error(t, err, "a wording must not bind to a channel in another organisation")
+	require.Contains(t, err.Error(), "channel_not_found")
 }

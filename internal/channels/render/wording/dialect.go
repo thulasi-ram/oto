@@ -90,20 +90,6 @@ const (
 	MarkItalic
 )
 
-func (k MarkKind) String() string {
-	switch k {
-	case MarkCode:
-		return "code"
-	case MarkStrike:
-		return "strike"
-	case MarkBold:
-		return "bold"
-	case MarkItalic:
-		return "italic"
-	}
-	return "unknown"
-}
-
 // ---------------------------------------------------------------------------
 // Slack
 // ---------------------------------------------------------------------------
@@ -159,19 +145,106 @@ func (SlackDialect) Timestamp(at time.Time, fallback string) string {
 // an unrelated function that a future refactor could remove without knowing it was
 // load-bearing here. ADR 0037 promises a Wording "can never emit a mention"; a
 // promise that rests on a side effect is not a promise.
-func (SlackDialect) StripAudience(s string) string {
+func (SlackDialect) StripAudience(s string) string { return stripCommonAudience(s) }
+
+// stripCommonAudience removes the audience spellings NO provider may carry out of
+// a Wording, whoever is going to read them.
+//
+// ⛔ IT IS SHARED BECAUSE THE THREAT IS SHARED. It used to live only on
+// SlackDialect, and PlainDialect refused four bare words and nothing else — so a
+// Wording emitting `<!channel>` or `<@U0123>` reached `envelope.rendered` verbatim,
+// and a webhook consumer forwarding oto's text into a chat product delivered the
+// ping. That is the exact laundering step PlainDialect's own comment claimed to
+// prevent. A dialect adds its provider's extra spellings; it does not get to skip
+// these.
+func stripCommonAudience(s string) string {
 	for _, tok := range []string{
 		"<!channel>", "<!here>", "<!everyone>",
 		"&lt;!channel&gt;", "&lt;!here&gt;", "&lt;!everyone&gt;",
-		"@channel", "@here", "@everyone",
+		"@channel", "@here", "@everyone", "@room", "@all",
 	} {
 		s = replaceFold(s, tok, "")
 	}
-	s = stripBracketed(s, "<@", ">")
-	s = stripBracketed(s, "&lt;@", "&gt;")
-	s = stripBracketed(s, "<!subteam^", ">")
-	s = stripBracketed(s, "&lt;!subteam^", "&gt;")
+	for _, pair := range [][2]string{
+		{"<@", ">"}, {"&lt;@", "&gt;"},
+		{"<!subteam^", ">"}, {"&lt;!subteam^", "&gt;"},
+	} {
+		s = stripBracketed(s, pair[0], pair[1])
+	}
 	return s
+}
+
+// defuseLinks makes a URL in a Wording's output unclickable without hiding it.
+//
+// ⛔ THE BRACKETED FORM WAS DEFENDED AND THE BARE FORM WAS NOT, WHICH IS THE WHOLE
+// BUG. `<https://x|label>` never survives escaping, so it looked handled — but
+// Slack auto-links a bare `https://…` in mrkdwn, so a Wording of
+// `{{ annotations.summary }}` over an annotation containing a URL put a live,
+// customer-controlled link on the card. ADR 0037 refuses user-authored URLs
+// outright ("Links come only from the fixed `Links` set"), and it refuses them
+// because `runbook_url: "<!channel>"` once put a channel-wide ping in every push
+// notification.
+//
+// ⭐ IT WRAPS RATHER THAN REMOVES, AND THAT IS THE POINT. Slack does not linkify
+// inside a code span, so the reader still sees the exact URL the alert carried —
+// they simply cannot click it, and it is visibly marked as a literal. Deleting it
+// would tell them a smaller truth than the one that exists, which is the doctrine
+// truncateAt already states for a cut sentence.
+func defuseLinks(s, open, shut string) string {
+	if !strings.Contains(s, "://") && !strings.Contains(s, "www.") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s) + 8)
+	for i := 0; i < len(s); {
+		start, n := urlAt(s, i)
+		if n == 0 {
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+		b.WriteString(s[i:start])
+		b.WriteString(open)
+		b.WriteString(s[start : start+n])
+		b.WriteString(shut)
+		i = start + n
+	}
+	return b.String()
+}
+
+// urlAt reports a URL-looking run beginning at or after i, and its length.
+func urlAt(s string, i int) (int, int) {
+	for _, prefix := range []string{"http://", "https://", "www."} {
+		if idx := indexFoldFrom(s, prefix, i); idx >= 0 {
+			end := idx
+			for end < len(s) && !isURLBreak(s[end]) {
+				end++
+			}
+			// Trailing punctuation belongs to the sentence, not the address.
+			for end > idx && strings.IndexByte(".,;:!?)]}'\"", s[end-1]) >= 0 {
+				end--
+			}
+			if end > idx {
+				return idx, end - idx
+			}
+		}
+	}
+	return 0, 0
+}
+
+func isURLBreak(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '<' || c == '>' || c == '|' || c == '`'
+}
+
+func indexFoldFrom(s, sub string, from int) int {
+	if from >= len(s) {
+		return -1
+	}
+	i := strings.Index(strings.ToLower(s[from:]), sub)
+	if i < 0 {
+		return -1
+	}
+	return from + i
 }
 
 // ---------------------------------------------------------------------------
@@ -202,12 +275,7 @@ func (PlainDialect) Timestamp(_ time.Time, fallback string) string { return fall
 // StripAudience removes the bare spellings that read as a broadcast in almost every
 // chat product, so a webhook consumer that forwards oto's text into one cannot be
 // used as a laundering step for a ping a Wording was not allowed to send.
-func (PlainDialect) StripAudience(s string) string {
-	for _, tok := range []string{"@channel", "@here", "@everyone", "@room"} {
-		s = replaceFold(s, tok, "")
-	}
-	return s
-}
+func (PlainDialect) StripAudience(s string) string { return stripCommonAudience(s) }
 
 // ---------------------------------------------------------------------------
 // Spelling the marks
@@ -222,13 +290,23 @@ func Spell(d Dialect, s string) string {
 	}
 	var b, run strings.Builder
 	b.Grow(len(s))
-	// flush escapes the words accumulated so far. Markup is written straight to b,
-	// bypassing this, which is the point.
+	codeOpen, codeShut := d.Emphasis(MarkCode)
+	inCode := 0
+	// flush escapes the words accumulated so far and defuses any address in them.
+	// Markup is written straight to b, bypassing this, which is the point.
 	flush := func() {
-		if run.Len() > 0 {
-			b.WriteString(d.EscapeText(run.String()))
-			run.Reset()
+		if run.Len() == 0 {
+			return
 		}
+		text := d.EscapeText(run.String())
+		// Inside a code span there is nothing to defuse — no provider linkifies
+		// there, which is exactly why defuseLinks wraps in one — and wrapping again
+		// would emit a delimiter inside its own span.
+		if inCode == 0 && codeOpen != "" {
+			text = defuseLinks(text, codeOpen, codeShut)
+		}
+		b.WriteString(text)
+		run.Reset()
 	}
 	runes := []rune(s)
 	for i := 0; i < len(runes); i++ {
@@ -237,6 +315,11 @@ func Spell(d Dialect, s string) string {
 		case markCodeOpen, markCodeClose, markStrikeOpen, markStrikeClose,
 			markBoldOpen, markBoldClose, markItalicOpen, markItalicClose:
 			flush()
+			if r == markCodeOpen {
+				inCode++
+			} else if r == markCodeClose && inCode > 0 {
+				inCode--
+			}
 			kind, opening := markMeta(r)
 			open, shut := d.Emphasis(kind)
 			if opening {
@@ -338,8 +421,34 @@ func sanitise(s string) string {
 	}, s)
 }
 
-// replaceFold removes every case-insensitive occurrence of tok.
+// replaceFold removes every case-insensitive occurrence of tok, REPEATEDLY, until
+// the string stops changing.
+//
+// ⛔ ONE PASS IS NOT ENOUGH, AND THE COUNTEREXAMPLE IS SHORT. A single left-to-right
+// pass writes the text before each hit and resumes AFTER it, so the two halves it
+// just joined are never re-examined — and joining them can create the very token
+// being removed. An alert label of `@ch@channelannel` contains one `@channel`; strip
+// it and the remainder is `@ch` + `annel` = `@channel`, which reaches the card. The
+// value comes from upstream alert data, so this is not an admin typing something
+// odd, it is anything that can set a label.
+//
+// Each pass strictly shortens the string, so the loop terminates; the bound is
+// belt-and-braces against a future `with` that is not empty.
 func replaceFold(s, tok, with string) string {
+	if tok == "" || len(with) >= len(tok) {
+		return replaceFoldOnce(s, tok, with)
+	}
+	for i := 0; i < 16; i++ {
+		next := replaceFoldOnce(s, tok, with)
+		if next == s {
+			return s
+		}
+		s = next
+	}
+	return s
+}
+
+func replaceFoldOnce(s, tok, with string) string {
 	if tok == "" {
 		return s
 	}
@@ -360,15 +469,23 @@ func replaceFold(s, tok, with string) string {
 // stripBracketed removes open…close spans, used for the id-carrying mention forms
 // whose payload is a user or group id rather than a fixed word.
 func stripBracketed(s, open, shut string) string {
-	for {
+	for n := 0; n < 64; n++ {
 		i := strings.Index(s, open)
 		if i < 0 {
 			return s
 		}
 		j := strings.Index(s[i+len(open):], shut)
 		if j < 0 {
-			return s[:i]
+			// ⛔ AN UNCLOSED OPENER REMOVES THE OPENER, NOT THE REST OF THE STANZA.
+			// This used to `return s[:i]`, which silently deleted everything after
+			// a label value containing a bare "<@" — an operator would have read a
+			// truncated sentence with no ellipsis, no link and no way to know, which
+			// is precisely the failure text.go's truncation doctrine exists to
+			// refuse. There is no mention here to strip: an unterminated token is
+			// not a mention, it is a stray bracket.
+			return s[:i] + s[i+len(open):]
 		}
 		s = s[:i] + s[i+len(open)+j+len(shut):]
 	}
+	return s
 }

@@ -50,46 +50,94 @@ func unknownFields(src string) []string {
 	}
 	probe := maximalInput()
 	var unknown []string
+	seen := map[string]bool{}
 	for i := 0; i < maxReferenceProbes; i++ {
 		_, err := t.Render(liquid.Bindings(probe))
 		if err == nil {
 			break
 		}
-		path, ok := undefinedPath(err.Error())
-		if !ok {
+		// ⛔ EVERY PATH IN THE EXPRESSION IS PLANTED, NOT JUST THE FIRST. Liquid's
+		// message quotes the whole offending expression and does not say WHICH of
+		// its references was undefined. Taking the text before the first `|` named
+		// the wrong one whenever the typo was in a FILTER ARGUMENT —
+		// `{{ alert.name | default: alert.nmae }}` reported `alert.name`, which is
+		// a real field, so planting it changed nothing, the loop burned all its
+		// probes, and the save was refused naming a field the author had spelled
+		// correctly. Planting every reference guarantees progress, and only the ones
+		// that were genuinely absent are reported.
+		paths := referencedPaths(err.Error())
+		if len(paths) == 0 {
 			break // a different failure; Validate's render pass reports it
 		}
-		if root := strings.SplitN(path, ".", 2)[0]; !freeFormRoots[root] {
-			unknown = append(unknown, path)
+		progressed := false
+		for _, path := range paths {
+			if lookup(probe, path) {
+				continue // already resolvable, so it was not the undefined one
+			}
+			progressed = true
+			plant(probe, path)
+			if root := strings.SplitN(path, ".", 2)[0]; !freeFormRoots[root] && !seen[path] {
+				seen[path] = true
+				unknown = append(unknown, path)
+			}
 		}
-		// Plant the path either way, so the next probe finds the NEXT reference
-		// instead of stopping at this one.
-		plant(probe, path)
+		// ⚠️ NO PROGRESS MEANS STOP, rather than spin to the probe ceiling. It also
+		// means this loop can no longer mask a second typo behind a first: the old
+		// version `break`ed the entire pass on any message it could not parse, so
+		// `{{ labls["team"] }} {{ alert.nmae }}` reported nothing at all and the
+		// typo shipped.
+		if !progressed {
+			break
+		}
 	}
 	return unknown
 }
 
-// undefinedPath pulls the referenced path out of liquid's message, which reads
-// `undefined variable in {{ alert.nmae | default: "-" }}` and carries no line or
-// column. For a one-line Stanza the expression is enough to point at.
-func undefinedPath(msg string) (string, bool) {
+// referencedPaths pulls every dotted identifier out of liquid's quoted expression.
+func referencedPaths(msg string) []string {
 	const marker = "undefined variable in {{"
 	i := strings.Index(msg, marker)
 	if i < 0 {
-		return "", false
+		return nil
 	}
-	rest := msg[i+len(marker):]
-	if j := strings.Index(rest, "}}"); j >= 0 {
-		rest = rest[:j]
+	expr := msg[i+len(marker):]
+	if j := strings.Index(expr, "}}"); j >= 0 {
+		expr = expr[:j]
 	}
-	if j := strings.IndexAny(rest, "|"); j >= 0 {
-		rest = rest[:j]
+	var out []string
+	for _, tok := range strings.FieldsFunc(expr, func(r rune) bool {
+		return r != '.' && r != '_' && (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') &&
+			(r < '0' || r > '9')
+	}) {
+		tok = strings.Trim(tok, ".")
+		// A bare number, a filter name with no dot, or a quoted literal's contents
+		// are not field references. A reference oto could satisfy always has a root
+		// in StanzaInput or is a dotted path.
+		if tok == "" || !strings.Contains(tok, ".") {
+			continue
+		}
+		if r := tok[0]; r >= '0' && r <= '9' {
+			continue
+		}
+		out = append(out, tok)
 	}
-	path := strings.TrimSpace(rest)
-	if path == "" || strings.ContainsAny(path, " \"'()[]") {
-		return "", false
+	return out
+}
+
+// lookup reports whether a dotted path already resolves in the probe.
+func lookup(in StanzaInput, path string) bool {
+	var cur any = map[string]any(in)
+	for _, p := range strings.Split(path, ".") {
+		m, ok := cur.(map[string]any)
+		if !ok {
+			return false
+		}
+		cur, ok = m[p]
+		if !ok {
+			return false
+		}
 	}
-	return path, true
+	return true
 }
 
 // plant inserts a placeholder at a dotted path so the probe can continue past it.

@@ -58,15 +58,12 @@ type Wording struct {
 	compiled *liquid.Template
 }
 
-// ErrRefusedStanza reports a Wording aimed at a Stanza that takes none.
-var ErrRefusedStanza = errors.New("stanza takes no wording")
-
 // Compile parses src for delivery. It does NOT prove the template renders — an
 // unknown filter is a render-time error in Liquid, not a parse-time one, which is
 // exactly why Validate exists and why saving must execute rather than merely parse.
 func Compile(stanza StanzaID, src string) (*Wording, error) {
 	if !stanza.Wordable() {
-		return nil, fmt.Errorf("%w: %s — %s", ErrRefusedStanza, stanza, stanza.RefusalReason())
+		return nil, fmt.Errorf("%s takes no wording: %s", stanza, stanza.RefusalReason())
 	}
 	if len(src) > MaxTemplateBytes {
 		return nil, fmt.Errorf("wording is %d bytes, and the limit is %d: a stanza is one line of prose",
@@ -108,6 +105,77 @@ func (w *Wording) Render(in StanzaInput, d Dialect) (string, error) {
 		return "", fmt.Errorf("wording for %s rendered empty", w.Stanza)
 	}
 	return spelled, nil
+}
+
+// compiledCache keeps parsed templates across deliveries, for every renderer.
+//
+// A Renderer is built once and shared by every dispatch, and a customer's Wording
+// changes rarely while their alerts do not — so parsing one per delivery would be
+// pure waste. Keyed by stanza and source, so a changed template is a different key
+// and there is nothing to invalidate.
+//
+// ⚠️ IT DOES NOT MAKE A RENDERER IMPURE. SPEC §F.1 requires a renderer to be a pure
+// function of its input: the cache is transparent — same input, same output, no
+// I/O, no clock — and a cold cache differs from a warm one only in speed.
+//
+// ⛔ IT IS BOUNDED BY WHAT A SAVED WORDING CAN BE, NOT BY A SIZE LIMIT, and that is
+// only sound because nothing reaches it before the save-time gate: the key space is
+// the set of templates an org has persisted, which is small and administrator-
+// controlled. A caller that compiled arbitrary text per request would need an
+// eviction policy. `Preview` therefore does NOT use this path.
+var compiledCache sync.Map // stanza + "\x00" + source -> *Wording or error
+
+// Compiled returns a parsed Wording for a stanza and source, reusing the parse
+// across deliveries.
+func Compiled(stanza StanzaID, src string) (*Wording, error) {
+	key := string(stanza) + "\x00" + src
+	if hit, ok := compiledCache.Load(key); ok {
+		if w, ok := hit.(*Wording); ok {
+			return w, nil
+		}
+		if err, ok := hit.(error); ok {
+			return nil, err
+		}
+		return nil, errors.New("compiled wording cache holds an unexpected type")
+	}
+	w, err := Compile(stanza, src)
+	if err != nil {
+		compiledCache.Store(key, err)
+		return nil, err
+	}
+	compiledCache.Store(key, w)
+	return w, nil
+}
+
+// RenderAll resolves every wordable stanza's text for one delivery, spelled by d.
+//
+// It is the shape both renderers actually need, and having it here is what stops
+// the second one re-implementing the loop — and re-parsing every template on every
+// delivery, which is what the webhook renderer was doing.
+func RenderAll(sources map[string]string, in StanzaInput, d Dialect) map[string]string {
+	if len(sources) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(sources))
+	for _, id := range AllStanzas {
+		src, ok := sources[string(id)]
+		if !ok || src == "" || !id.Wordable() {
+			continue
+		}
+		w, err := Compiled(id, src)
+		if err != nil {
+			continue
+		}
+		text, err := w.Render(in, d)
+		if err != nil {
+			continue
+		}
+		out[string(id)] = text
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // Validate is the SAVE-TIME gate. It parses strictly and then RENDERS against a

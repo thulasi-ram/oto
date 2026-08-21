@@ -213,3 +213,67 @@ func TestOnlyProseStanzasAcceptAWording(t *testing.T) {
 		}
 	}
 }
+
+// TestAWordedFooterKeepsOtosProvenance. The footer is where the facts that make a
+// card ATTRIBUTABLE live, and a Wording returning "sent by oto" silently deleted
+// all of them — a structural loss wearing a wording's clothes.
+func TestAWordedFooterKeepsOtosProvenance(t *testing.T) {
+	_, plain := renderWith(t, nil)
+	_, worded := renderWith(t, map[string]string{
+		"footer": `our own words and nothing else`,
+	})
+
+	got := blockText(worded, "footer")
+	if !strings.Contains(got, "our own words") {
+		t.Fatalf("the wording did not reach the footer: %q", got)
+	}
+	if !strings.Contains(got, "oto") {
+		t.Errorf("a worded footer must still say which product sent the card: %q", got)
+	}
+	if !strings.Contains(got, "updated") {
+		t.Errorf("a worded footer must still carry the update time: %q", got)
+	}
+	// The group key is what says WHICH signal this card is about.
+	before := blockText(plain, "footer")
+	for _, chip := range []string{"`"} {
+		if strings.Contains(before, chip) && !strings.Contains(got, chip) {
+			t.Errorf("the group key chip was dropped by a wording:\n before %q\n after  %q", before, got)
+		}
+	}
+}
+
+// TestAWordingCannotForgeTheContinuedMarker. Claiming a card continues an earlier
+// one when it does not is the same lie as dropping the marker, and the previous
+// `Contains` guard actively enabled it: a template carrying the marker suppressed
+// Go's own append and stood in for it.
+func TestAWordingCannotForgeTheContinuedMarker(t *testing.T) {
+	_, p := renderWith(t, map[string]string{
+		"footer": `all is well ` + continuedMarkerText,
+	})
+	if got := blockText(p, "footer"); strings.Contains(got, continuedMarkerText) {
+		t.Errorf("a wording forged §H.9's continued marker on a card that is not continued: %q", got)
+	}
+}
+
+// TestAVerboseWordingCannotDropTheContinuedMarker. It used to be appended after
+// the worded text and then cut from the front by truncateField, so a long-but-legal
+// template dropped it by being verbose.
+func TestAVerboseWordingCannotDropTheContinuedMarker(t *testing.T) {
+	long := strings.Repeat("padding words that go on and on ", 70) // ~2240 bytes
+	_, p := renderOpts(t, func(o *domain.RenderOptions) {
+		o.Continued = true
+		o.Wordings = map[string]string{"footer": long}
+	})
+	got := blockText(p, "footer")
+	if !strings.Contains(got, continuedMarkerText) {
+		t.Errorf("a verbose wording dropped §H.9's marker: ...%q", got[tailFrom(got, 160):])
+	}
+}
+
+// tailFrom is the start index of the last n bytes of s.
+func tailFrom(s string, n int) int {
+	if len(s) <= n {
+		return 0
+	}
+	return len(s) - n
+}

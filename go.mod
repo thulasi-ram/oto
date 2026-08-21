@@ -14,6 +14,7 @@ require (
 	github.com/knadh/koanf/providers/file v1.2.1
 	github.com/knadh/koanf/providers/structs v1.0.1
 	github.com/knadh/koanf/v2 v2.3.6
+	github.com/osteele/liquid v1.9.2
 	github.com/pressly/goose/v3 v3.27.3
 	github.com/prometheus/client_golang v1.24.1
 	github.com/riverqueue/river v0.43.0
@@ -31,7 +32,6 @@ require (
 )
 
 require (
-	github.com/osteele/liquid v1.9.2 // indirect
 	github.com/osteele/tuesday v1.1.1 // indirect
 	golang.org/x/mod v0.38.0 // indirect
 	golang.org/x/tools v0.48.0 // indirect

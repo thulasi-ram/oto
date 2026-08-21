@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 	"unicode"
+
+	"github.com/osteele/liquid"
 )
 
 // walkLeaves visits every scalar leaf of a StanzaInput tree.
@@ -325,22 +327,52 @@ func TestSourceIsBounded(t *testing.T) {
 	}
 }
 
-// TestHumaniseMatchesSlackWording pins the twin. If slack.humanDuration changes,
-// this is what notices before two channels disagree about one signal's age.
-func TestHumaniseMatchesSlackWording(t *testing.T) {
-	cases := map[time.Duration]string{
-		500 * time.Millisecond: "under a second",
-		45 * time.Second:       "45s",
-		90 * time.Second:       "1m 30s",
-		20 * time.Minute:       "20m",
-		time.Hour:              "1h",
-		95 * time.Minute:       "1h 35m",
-		25 * time.Hour:         "1d 1h",
-		48 * time.Hour:         "2d",
+// TestFilterNamesIsTheRegisteredSet. FilterNames is described as "the contract"
+// and, until this test, nothing read it: registerFilters made twelve hardcoded
+// calls and the slice was a comment that happened to compile. Either could have
+// gained an entry the other lacked.
+func TestFilterNamesIsTheRegisteredSet(t *testing.T) {
+	for _, name := range FilterNames {
+		src := `{{ "x" | ` + name + argsFor(name) + ` }}`
+		if _, err := laxly().ParseAndRenderString(src, map[string]any{}); err != nil &&
+			strings.Contains(err.Error(), "undefined filter") {
+			t.Errorf("FilterNames lists %q and nothing registers it", name)
+		}
 	}
-	for d, want := range cases {
-		if got := humanise(d); got != want {
-			t.Errorf("humanise(%s) = %q, want %q", d, got, want)
+	// And nothing is registered that the list does not name. NewBasicEngine ships
+	// zero filters, so anything answering is oto's.
+	for _, absent := range []string{"upcase", "downcase", "date", "escape", "size",
+		"join", "replace", "strip", "append", "split", "map", "where", "sort", "json"} {
+		src := `{{ "x" | ` + absent + ` }}`
+		if _, err := laxly().ParseAndRenderString(src, map[string]any{}); err == nil {
+			t.Errorf("%q is registered but is not in FilterNames", absent)
+		}
+	}
+}
+
+// argsFor supplies the arguments a filter needs to reach its body.
+func argsFor(name string) string {
+	switch name {
+	case "default":
+		return `: "-"`
+	case "truncate_runes", "human_duration":
+		return `: 4`
+	case "plural":
+		return `: "one", "many"`
+	case "strike":
+		return ``
+	}
+	return ""
+}
+
+// TestNewBasicEngineShipsNoFiltersOfItsOwn is the premise the curated set rests
+// on: the list is the WHOLE surface, not a subset of somebody else's that must be
+// re-audited on every upgrade.
+func TestNewBasicEngineShipsNoFiltersOfItsOwn(t *testing.T) {
+	bare := liquid.NewBasicEngine()
+	for _, f := range []string{"default", "upcase", "truncate", "date", "escape", "size", "join"} {
+		if _, err := bare.ParseAndRenderString(`{{ "x" | `+f+` }}`, map[string]any{}); err == nil {
+			t.Errorf("NewBasicEngine ships %q; the curated set is not the whole surface", f)
 		}
 	}
 }

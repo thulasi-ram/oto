@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"strconv"
 	"strings"
 	"time"
 
@@ -93,10 +94,6 @@ func (o MatchOp) Valid() bool {
 // Live reports whether this Wording is eligible for resolution.
 func (w Wording) Live() bool { return w.Enabled && w.DeletedAt == nil }
 
-// OrgWide reports whether this Wording is the house voice rather than one
-// destination's exception.
-func (w Wording) OrgWide() bool { return w.ChannelID == nil }
-
 // NewWording is the create command. Server-owned fields are absent so a caller
 // cannot assert them.
 type NewWording struct {
@@ -163,10 +160,10 @@ func ValidateWording(stanza, template string, matchers []Matcher, reasons []stri
 	}
 	for i, m := range matchers {
 		if strings.TrimSpace(m.Name) == "" {
-			add("matchers", "required", "matcher "+itoa(i)+" has no label name")
+			add("matchers", "required", "matcher "+strconv.Itoa(i)+" has no label name")
 		}
 		if !m.Op.Valid() {
-			add("matchers", "unsupported_op", "matcher "+itoa(i)+" uses "+string(m.Op)+
+			add("matchers", "unsupported_op", "matcher "+strconv.Itoa(i)+" uses "+string(m.Op)+
 				`; the operators are "=", "!=", "=~" and "!~"`)
 		}
 	}
@@ -200,16 +197,4 @@ func stanzaRefusal(stanza string) string {
 		return "not a stanza of an oto notification; the ones that take a wording are " +
 			strings.Join(WordableStanzas, ", ")
 	}
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var b []byte
-	for n > 0 {
-		b = append([]byte{byte('0' + n%10)}, b...)
-		n /= 10
-	}
-	return string(b)
 }

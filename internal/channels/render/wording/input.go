@@ -1,6 +1,8 @@
 package wording
 
 import (
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -89,7 +91,22 @@ func BuildInput(v *domain.NotificationView, at time.Time) StanzaInput {
 			"last_seen_at":  stamp(focus.LastSeenAt),
 			"value":         floatOrNil(focus.Value),
 		}
-		in["annotations"] = stringMap(focus.Annotations)
+		// ⚠️ ANNOTATIONS ARE MERGED THE WAY THE RENDERER RESOLVES THEM, not taken
+		// from the focus alone. `slack.annotation()` looks at the focused alert, then
+		// the group, then the RULE snapshot — so a title Wording that took only the
+		// focus could not reach the very `summary` the built-in subtitle it is
+		// replacing was showing. Precedence runs lowest-first here so the focus wins,
+		// matching the renderer.
+		merged := map[string]string{}
+		if v.Rule != nil {
+			for k, val := range v.Rule.Annotations {
+				merged[k] = val
+			}
+		}
+		for k, val := range focus.Annotations {
+			merged[k] = val
+		}
+		in["annotations"] = stringMap(merged)
 		if len(focus.Labels) > 0 {
 			in["labels"] = stringMap(focus.Labels)
 		}
@@ -159,19 +176,28 @@ func BuildInput(v *domain.NotificationView, at time.Time) StanzaInput {
 	// shape that makes a Wording's read set statically analysable.
 	if len(v.Enrichments) > 0 {
 		en := map[string]any{}
-		for name, e := range v.Enrichments {
+		// Sorted, first-writer-wins, for the reason stringMap states: an enricher
+		// named `alert.history` and one named `alert_history` both normalise to
+		// `alert_history`, and Go's map order would pick a different winner per
+		// render.
+		for _, name := range sortedKeys(v.Enrichments) {
+			e := v.Enrichments[name]
 			entry := map[string]any{
 				"status":      text(e.Status),
 				"error":       text(e.Error),
 				"warnings":    len(e.Warnings),
 				"computed_at": stamp(e.ComputedAt),
 			}
-			for k, val := range e.Payload {
-				if s, ok := scalar(val); ok {
-					entry[safeKey(k)] = s
+			for _, k := range sortedKeys(e.Payload) {
+				if sc, ok := scalar(e.Payload[k]); ok {
+					if key := safeKey(k); !hasKey(entry, key) {
+						entry[key] = sc
+					}
 				}
 			}
-			en[safeKey(name)] = entry
+			if key := safeKey(name); !hasKey(en, key) {
+				en[key] = entry
+			}
 		}
 		in["enrichment"] = en
 	}
@@ -185,7 +211,7 @@ func stamp(t time.Time) any {
 		return nil
 	}
 	u := t.UTC()
-	return string(markTimeOpen) + itoa(u.Unix()) + string(markTimeSep) +
+	return string(markTimeOpen) + strconv.FormatInt(u.Unix(), 10) + string(markTimeSep) +
 		u.Format("2006-01-02 15:04 MST") + string(markTimeClose)
 }
 
@@ -230,12 +256,40 @@ func scalar(v any) (any, bool) {
 	return nil, false
 }
 
+// stringMap normalises label names into Liquid identifiers, DETERMINISTICALLY.
+//
+// ⛔ TWO LABELS CAN NORMALISE ONTO ONE KEY, AND THE LOSER MUST NOT BE CHOSEN BY GO'S
+// MAP ORDER. `cases.7d` and `cases_7d` both become `cases_7d`; ranging a Go map
+// visits them in a random order, so the same NotificationView rendered twice would
+// produce two different cards. That is not merely untidy: SPEC §F.1 requires the
+// renderer to be a pure function, and oto hashes the rendered payload to suppress
+// no-op `chat.update` calls — a wobbling hash re-sends the same card forever. It is
+// the same failure ADR 0037 refuses `{% for %}` to avoid, arriving by another door.
+//
+// The rule is: sorted by the ORIGINAL name, first writer wins. Arbitrary, stated,
+// and above all the same on every render.
 func stringMap(m map[string]string) map[string]any {
 	out := make(map[string]any, len(m))
-	for k, v := range m {
-		out[safeKey(k)] = text(v)
+	for _, k := range sortedKeys(m) {
+		if key := safeKey(k); !hasKey(out, key) {
+			out[key] = text(m[k])
+		}
 	}
 	return out
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	ks := make([]string, 0, len(m))
+	for k := range m {
+		ks = append(ks, k)
+	}
+	sort.Strings(ks)
+	return ks
+}
+
+func hasKey(m map[string]any, k string) bool {
+	_, ok := m[k]
+	return ok
 }
 
 // text sanitises a value that came from outside oto.
@@ -254,26 +308,4 @@ func safeKey(k string) string {
 			return '_'
 		}
 	}, k)
-}
-
-func itoa(n int64) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	var b [20]byte
-	i := len(b)
-	for n > 0 {
-		i--
-		b[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		b[i] = '-'
-	}
-	return string(b[i:])
 }
