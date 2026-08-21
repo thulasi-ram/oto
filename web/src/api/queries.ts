@@ -317,6 +317,11 @@ export const FRESHNESS: Readonly<Record<string, Freshness>> = {
   "alerts.enrichments": { by: "live" },
   "alerts.rule": { by: "live" },
   "alerts.snoozes": { by: "live" },
+  // The dead deliveries behind one notification, for the retry affordance. `live`
+  // because `delivery.updated` is precisely the frame that ends a retry: the row
+  // the button was offered on must stop being offered once it is no longer dead,
+  // and that frame already invalidates the `["alerts"]` prefix this key sits under.
+  "alerts.deadDeliveries": { by: "live" },
   "alerts.activeSnoozes": { by: "live" },
   "alerts.notifications": { by: "live" },
 
