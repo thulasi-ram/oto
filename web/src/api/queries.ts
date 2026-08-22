@@ -49,15 +49,15 @@ import {
   listPolicies,
   listRuleSnapshots,
   listSources,
-  listWordings,
-  previewWording,
+  listNotificationTemplates,
+  previewNotificationTemplate,
 } from "./endpoints";
 import { keepPrevious } from "~/lib/keysetFeed";
 import type {
   AlertListQuery,
   NotificationListQuery,
   RuleSnapshotQuery,
-  WordingStanza,
+  NotificationTemplateFormat,
 } from "./types";
 
 /**
@@ -189,11 +189,11 @@ export function policiesQuery() {
   };
 }
 
-/** Every Wording in the org — both scopes, because precedence is the screen. */
-export function wordingsQuery() {
+/** Every NotificationTemplate in the org, newest first. */
+export function notificationTemplatesQuery() {
   return {
-    queryKey: qk.wordings.list(),
-    queryFn: ({ signal }: { signal: AbortSignal }) => listWordings({ signal }),
+    queryKey: qk.templates.list(),
+    queryFn: ({ signal }: { signal: AbortSignal }) => listNotificationTemplates({ signal }),
   };
 }
 
@@ -212,11 +212,11 @@ export function wordingsQuery() {
  * for an invalid template on purpose: the refusal and the output belong on screen
  * together, because the fix is usually only visible when both are.
  */
-export function wordingPreviewQuery(stanza: WordingStanza, template: string) {
+export function templatePreviewQuery(format: NotificationTemplateFormat, source: string) {
   return {
-    queryKey: qk.wordings.preview(stanza, template),
+    queryKey: qk.templates.preview(format, source),
     queryFn: ({ signal }: { signal: AbortSignal }) =>
-      previewWording({ stanza, template }, { signal }),
+      previewNotificationTemplate({ format, source }, { signal }),
   };
 }
 
@@ -395,10 +395,10 @@ export const FRESHNESS: Readonly<Record<string, Freshness>> = {
   "settings.channelConnections": { by: "mutation" },
   "settings.policies": { by: "mutation" },
   // Settings, like the policies beside them: creating, editing and deleting a
-  // Wording all happen on the screen that reads the list, and all three
-  // invalidate it. No stream frame can change one — a Wording is what an operator
-  // wrote, not something an alert did.
-  "wordings.list": { by: "mutation" },
+  // A template is written, edited and deleted on the screen that reads the list,
+  // and all three invalidate it. No stream frame can change one — a template is
+  // what an operator wrote, not something an alert did.
+  "templates.list": { by: "mutation" },
   // `TuningSection` writes the saved settings back with `setQueryData`, which is
   // the same guarantee by a shorter route: the entry holds the server's answer.
   "settings.org": { by: "mutation" },
@@ -426,9 +426,9 @@ export const FRESHNESS: Readonly<Record<string, Freshness>> = {
     by: "immutable",
     why: "a snapshot is content-addressed, so once an id has been resolved its answer can never change; asking again would be asking a settled question",
   },
-  "wordings.preview": {
+  "templates.preview": {
     by: "immutable",
-    why: "a preview writes nothing and reads nothing of the org: it is one template rendered against a fixture corpus that ships with the build, so the stanza and the template in the key are the whole question and the answer to them cannot change while the tab is open",
+    why: "a preview writes nothing and reads nothing of the org: it is one template rendered against a fixture corpus that ships with the build, so the format and the source in the key are the whole question and the answer to them cannot change while the tab is open",
   },
 
   "stats.overview": {

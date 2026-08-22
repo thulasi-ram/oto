@@ -23,7 +23,7 @@ import { cn } from "~/lib/cn";
 import { SidebarPanel, SubNavLink } from "~/components/SidebarSlot";
 import { ActivitySection } from "~/features/notifications/ActivitySection";
 import { PoliciesSection } from "~/features/notifications/PoliciesSection";
-import { WordingsSection } from "~/features/notifications/WordingsSection";
+import { TemplatesSection } from "~/features/notifications/TemplatesSection";
 
 /*
  * Policies first because it is the one that is *written*: an operator arriving
@@ -38,7 +38,7 @@ import { WordingsSection } from "~/features/notifications/WordingsSection";
  */
 const SECTIONS = [
   { id: "policies", label: "Policies" },
-  { id: "wordings", label: "Wordings" },
+  { id: "templates", label: "Templates" },
   { id: "activity", label: "Activity log" },
 ] as const;
 
@@ -110,8 +110,8 @@ const NotificationsRoute: Component = () => {
                 <Match when={params.section === "policies"}>
                   <PoliciesSection />
                 </Match>
-                <Match when={params.section === "wordings"}>
-                  <WordingsSection />
+                <Match when={params.section === "templates"}>
+                  <TemplatesSection />
                 </Match>
                 <Match when={params.section === "activity"}>
                   <ActivitySection />

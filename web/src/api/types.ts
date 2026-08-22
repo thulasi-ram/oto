@@ -189,13 +189,15 @@ export type PolicyPreview = S["PolicyPreviewDTO"];
  * One Liquid template that writes the TEXT of one Stanza (ADR 0037). Structure
  * stays oto's — there is no colour, no block and no destination on this shape.
  */
-export type Wording = S["WordingDTO"];
-/** One of SPEC §H.7's eight block names. Four take a Wording; four are refused. */
-export type WordingStanza = S["WordingStanza"];
-export type WordingPreview = S["WordingPreviewDTO"];
-export type WordingRendering = S["WordingRenderingDTO"];
+/** One whole notification message an operator wrote. */
+export type NotificationTemplate = S["NotificationTemplateDTO"];
+/** `card` (Markdown-plus, portable), `text` (one string, portable) or `raw` (Slack only). */
+export type NotificationTemplateFormat = S["NotificationTemplateFormat"];
+export type TemplatePreview = S["TemplatePreviewDTO"];
+export type TemplateRendering = S["TemplateRenderingDTO"];
+export type TemplateProblem = S["TemplateProblemDTO"];
 /** One fixture's text as ONE provider writes it — `slack` or `plain` (ADR 0048). */
-export type WordingSpelling = S["WordingSpellingDTO"];
+export type TemplateSpelling = S["TemplateSpellingDTO"];
 export type Notification = S["NotificationDTO"];
 export type NotificationDetail = S["NotificationDetailDTO"];
 export type Delivery = S["DeliveryDTO"];
@@ -248,10 +250,9 @@ export type ResolveConversationRequest = S["ResolveConversationRequest"];
 export type CreatePolicyRequest = S["CreatePolicyRequest"];
 export type UpdatePolicyRequest = S["UpdatePolicyRequest"];
 export type PolicyPreviewRequest = S["PolicyPreviewRequest"];
-export type CreateWordingRequest = S["CreateWordingRequest"];
-/** `stanza` and `channel_id` are absent on purpose — see `updateWording` (ADR 0049). */
-export type UpdateWordingRequest = S["UpdateWordingRequest"];
-export type PreviewWordingRequest = S["PreviewWordingRequest"];
+export type CreateNotificationTemplateRequest = S["CreateNotificationTemplateRequest"];
+export type UpdateNotificationTemplateRequest = S["UpdateNotificationTemplateRequest"];
+export type PreviewNotificationTemplateRequest = S["PreviewNotificationTemplateRequest"];
 /** A partial write: an omitted key is left alone, `reset` returns one to the default. */
 export type UpdateOrgSettingsRequest = S["UpdateOrgSettingsRequest"];
 export type LoginRequest = S["LoginRequest"];

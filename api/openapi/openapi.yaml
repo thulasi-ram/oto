@@ -3392,7 +3392,7 @@ paths:
 
   /api/v1/notification-templates/{id}:
     parameters:
-      - $ref: '#/components/parameters/IdPathParam'
+      - $ref: '#/components/parameters/IdParam'
     get:
       operationId: getNotificationTemplate
       summary: Get one notification template
@@ -11314,7 +11314,13 @@ components:
       properties:
         dialect:
           type: string
-          description: The provider whose syntax this is written in.
+          enum: [slack, plain]
+          description: |
+            The provider whose syntax this is written in.
+
+            It is an enum rather than a free string so that a Dialect oto gains is a column every
+            client is told about. A preview that showed one spelling would teach the opposite of what
+            the format is for.
           examples: [slack]
         text:
           type: string

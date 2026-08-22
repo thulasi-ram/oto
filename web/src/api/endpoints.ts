@@ -41,7 +41,7 @@ import type {
   CreatePolicyRequest,
   CreateSourceRequest,
   CreateTokenRequest,
-  CreateWordingRequest,
+  CreateNotificationTemplateRequest,
   DeliveryDrill,
   Delivery,
   Enricher,
@@ -63,7 +63,7 @@ import type {
   Policy,
   PolicyPreview,
   PolicyPreviewRequest,
-  PreviewWordingRequest,
+  PreviewNotificationTemplateRequest,
   Rejection,
   RejectionListQuery,
   ResolvedConversation,
@@ -85,11 +85,11 @@ import type {
   UpdateOrgSettingsRequest,
   UpdatePolicyRequest,
   UpdateSourceRequest,
-  UpdateWordingRequest,
+  UpdateNotificationTemplateRequest,
   Uuid,
   VersionInfo,
-  Wording,
-  WordingPreview,
+  NotificationTemplate,
+  TemplatePreview,
 } from "./types";
 
 const V1 = "/api/v1";
@@ -739,46 +739,40 @@ export function previewPolicy(body: PolicyPreviewRequest, c: Ctx = {}): Promise<
 }
 
 /* -------------------------------------------------------------------------- */
-/* Wordings — the text of one Stanza, in the customer's own words             */
+/* Notification templates — one whole message, in the operator's own words    */
 /* -------------------------------------------------------------------------- */
 
-/**
- * Every Wording in the org, org-wide rows and per-destination rows together.
- *
- * ⛔ NO `channel_id` IS PASSED, AND THAT IS THE SCREEN'S REQUIREMENT RATHER THAN
- * AN OMISSION. With one, the server answers with that destination's OWN rows and
- * drops the org-wide house voice (`listWordings`) — which is right for a screen
- * that edits one channel's exceptions and wrong for the one screen whose job is
- * showing precedence, because the row that loses is the half a reader came for.
- */
-export function listWordings(c: Ctx = {}): Promise<ListEnvelope<Wording>> {
-  return getList<Wording>(`${V1}/wordings`, ctx(c));
+/** Every NotificationTemplate in the org, newest first. */
+export function listNotificationTemplates(
+  c: Ctx = {},
+): Promise<ListEnvelope<NotificationTemplate>> {
+  return getList<NotificationTemplate>(`${V1}/notification-templates`, ctx(c));
 }
 
 /**
- * ⛔ NO `Idempotency-Key`, DELIBERATELY, and the handler says why: a Wording is
+ * ⛔ NO `Idempotency-Key`, DELIBERATELY, and the handler says why: a template is
  * settings, so a retried create leaves a duplicate row an operator can see and
  * delete rather than a second message a human has already read.
  */
-export function createWording(body: CreateWordingRequest): Promise<Wording> {
-  return postItem<Wording>(`${V1}/wordings`, body);
+export function createNotificationTemplate(
+  body: CreateNotificationTemplateRequest,
+): Promise<NotificationTemplate> {
+  return postItem<NotificationTemplate>(`${V1}/notification-templates`, body);
 }
 
-export function getWording(id: Uuid, c: Ctx = {}): Promise<Wording> {
-  return getItem<Wording>(`${V1}/wordings/${id}`, ctx(c));
+export function getNotificationTemplate(id: Uuid, c: Ctx = {}): Promise<NotificationTemplate> {
+  return getItem<NotificationTemplate>(`${V1}/notification-templates/${id}`, ctx(c));
 }
 
-/**
- * `stanza` and `channel_id` are absent from the body on purpose (ADR 0049):
- * moving a Wording between stanzas or between scopes is a different Wording, not
- * an edit of this one. The form must not offer either.
- */
-export function updateWording(id: Uuid, body: UpdateWordingRequest): Promise<Wording> {
-  return patchItem<Wording>(`${V1}/wordings/${id}`, body);
+export function updateNotificationTemplate(
+  id: Uuid,
+  body: UpdateNotificationTemplateRequest,
+): Promise<NotificationTemplate> {
+  return patchItem<NotificationTemplate>(`${V1}/notification-templates/${id}`, body);
 }
 
-export function deleteWording(id: Uuid): Promise<void> {
-  return del(`${V1}/wordings/${id}`);
+export function deleteNotificationTemplate(id: Uuid): Promise<void> {
+  return del(`${V1}/notification-templates/${id}`);
 }
 
 /**
@@ -787,10 +781,14 @@ export function deleteWording(id: Uuid): Promise<void> {
  *
  * ⛔ A TEMPLATE THAT FAILS VALIDATION IS STILL A `200` CARRYING `problems`. The
  * refusal and the output belong in the same round trip, so a caller must never
- * treat a non-empty `problems` as an error that replaces the renderings.
+ * treat a non-empty `problems` as an error that replaces the renderings — and
+ * must read each problem's `kind`, because `warning` does not refuse anything.
  */
-export function previewWording(body: PreviewWordingRequest, c: Ctx = {}): Promise<WordingPreview> {
-  return postItem<WordingPreview>(`${V1}/wordings/preview`, body, ctx(c));
+export function previewNotificationTemplate(
+  body: PreviewNotificationTemplateRequest,
+  c: Ctx = {},
+): Promise<TemplatePreview> {
+  return postItem<TemplatePreview>(`${V1}/notification-templates/preview`, body, ctx(c));
 }
 
 /* -------------------------------------------------------------------------- */

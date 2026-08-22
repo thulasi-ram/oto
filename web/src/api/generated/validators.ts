@@ -1365,6 +1365,7 @@ export const PolicyDTOSchema = v.looseObject({
     v.maxLength(16),
     v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
   ),
+  "template_id": v.exactOptional(UuidSchema),
   "throttle": v.exactOptional(v.nullable(ThrottleDTOSchema)),
   "subject_kinds": v.pipe(
     v.array(v.picklist(["alert", "case", "digest"])),
@@ -2520,137 +2521,110 @@ export const ResolveConversationDTOSchema = v.looseObject({
   "conversation_name": v.string(),
 });
 
-export const WordingStanzaSchema = v.picklist(["title", "body", "fields", "members", "trail", "rule", "actions", "footer"]);
+export const NotificationTemplateFormatSchema = v.picklist(["card", "text", "raw"]);
 
-export const WordingDTOSchema = v.looseObject({
+export const NotificationTemplateDTOSchema = v.looseObject({
   "id": UuidSchema,
-  "channel_id": v.exactOptional(v.nullable(UuidSchema)),
-  "stanza": WordingStanzaSchema,
-  "template": v.pipe(
+  "name": v.pipe(
     v.string(),
-    v.minLength(1),
-    v.maxLength(2048),
+    v.maxLength(120),
   ),
-  "matchers": v.pipe(
-    v.array(MatcherDTOSchema),
+  "provider": v.pipe(
+    v.string(),
     v.maxLength(32),
   ),
-  "reasons": v.pipe(
-    v.array(v.pipe(
-      v.string(),
-      v.maxLength(64),
-    )),
-    v.maxLength(32),
-    v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
+  "format": NotificationTemplateFormatSchema,
+  "source": v.pipe(
+    v.string(),
+    v.maxLength(16384),
   ),
-  "priority": v.pipe(
+  "version": v.pipe(
     v.number(),
     v.integer(),
-    v.minValue(0),
-    v.maxValue(100000),
+    v.minValue(1),
   ),
   "enabled": v.boolean(),
   "created_at": TimestampSchema,
   "updated_at": TimestampSchema,
-  "deleted_at": v.exactOptional(v.nullable(TimestampSchema)),
+  "deleted_at": v.exactOptional(TimestampSchema),
 });
 
-export const WordingSpellingDTOSchema = v.looseObject({
+export const TemplateProblemDTOSchema = v.looseObject({
+  "kind": v.picklist(["unknown_field", "parse", "render", "empty", "too_long", "unsupported", "warning"]),
+  "field": v.exactOptional(v.string()),
+  "message": v.string(),
+  "fixture": v.exactOptional(v.string()),
+});
+
+export const TemplateSpellingDTOSchema = v.looseObject({
   "dialect": v.picklist(["slack", "plain"]),
-  "text": v.pipe(
-    v.string(),
-    v.maxLength(8192),
-  ),
-  "error": v.exactOptional(v.nullable(v.pipe(
-    v.string(),
-    v.maxLength(500),
-  ))),
+  "text": v.string(),
+  "error": v.exactOptional(v.string()),
 });
 
-export const WordingRenderingDTOSchema = v.looseObject({
-  "fixture": v.picklist(["firing", "resolved", "digest", "empty-labels", "oversized-annotation", "hostile-text", "zero-value"]),
+export const TemplateRenderingDTOSchema = v.looseObject({
+  "fixture": v.string(),
   "representative": v.boolean(),
-  "spellings": v.pipe(
-    v.array(WordingSpellingDTOSchema),
-    v.minLength(1),
-  ),
+  "has_actions": v.boolean(),
+  "spellings": v.array(TemplateSpellingDTOSchema),
 });
 
-export const WordingPreviewDTOSchema = v.looseObject({
-  "stanza": WordingStanzaSchema,
-  "template": v.pipe(
-    v.string(),
-    v.maxLength(2048),
-  ),
-  "problems": v.array(ViolationSchema),
-  "renderings": v.array(WordingRenderingDTOSchema),
+export const TemplatePreviewDTOSchema = v.looseObject({
+  "format": NotificationTemplateFormatSchema,
+  "source": v.string(),
+  "problems": v.array(TemplateProblemDTOSchema),
+  "renderings": v.array(TemplateRenderingDTOSchema),
 });
 
-export const CreateWordingRequestSchema = v.strictObject({
-  "channel_id": v.exactOptional(v.nullable(UuidSchema)),
-  "stanza": WordingStanzaSchema,
-  "template": v.pipe(
+export const CreateNotificationTemplateRequestSchema = v.strictObject({
+  "name": v.pipe(
     v.string(),
     v.minLength(1),
-    v.maxLength(2048),
+    v.maxLength(120),
   ),
-  "matchers": v.exactOptional(v.pipe(
-    v.array(MatcherDTOSchema),
+  "provider": v.pipe(
+    v.string(),
+    v.minLength(1),
     v.maxLength(32),
-  )),
-  "reasons": v.exactOptional(v.pipe(
-    v.array(v.pipe(
-      v.string(),
-      v.maxLength(64),
-    )),
-    v.maxLength(32),
-    v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
-  )),
-  "priority": v.exactOptional(v.pipe(
-    v.number(),
-    v.integer(),
-    v.minValue(0),
-    v.maxValue(100000),
-  ), 100),
+  ),
+  "format": NotificationTemplateFormatSchema,
+  "source": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(16384),
+  ),
   "enabled": v.exactOptional(v.boolean(), true),
 });
 
-export const UpdateWordingRequestSchema = v.pipe(
+export const UpdateNotificationTemplateRequestSchema = v.pipe(
   v.strictObject({
-    "template": v.exactOptional(v.pipe(
+    "name": v.exactOptional(v.pipe(
       v.string(),
       v.minLength(1),
-      v.maxLength(2048),
+      v.maxLength(120),
     )),
-    "matchers": v.exactOptional(v.pipe(
-      v.array(MatcherDTOSchema),
+    "provider": v.exactOptional(v.pipe(
+      v.string(),
+      v.minLength(1),
       v.maxLength(32),
     )),
-    "reasons": v.exactOptional(v.pipe(
-      v.array(v.pipe(
-        v.string(),
-        v.maxLength(64),
-      )),
-      v.maxLength(32),
-      v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
-    )),
-    "priority": v.exactOptional(v.pipe(
-      v.number(),
-      v.integer(),
-      v.minValue(0),
-      v.maxValue(100000),
+    "format": v.exactOptional(NotificationTemplateFormatSchema),
+    "source": v.exactOptional(v.pipe(
+      v.string(),
+      v.minLength(1),
+      v.maxLength(16384),
     )),
     "enabled": v.exactOptional(v.boolean()),
   }),
   v.check((value) => Object.keys(value).length >= 1, "at least 1 property required"),
 );
 
-export const PreviewWordingRequestSchema = v.strictObject({
-  "stanza": WordingStanzaSchema,
-  "template": v.pipe(
+export const PreviewNotificationTemplateRequestSchema = v.strictObject({
+  "format": NotificationTemplateFormatSchema,
+  "source": v.pipe(
     v.string(),
     v.minLength(1),
-    v.maxLength(2048),
+    v.maxLength(16384),
   ),
 });
 
@@ -2683,6 +2657,7 @@ export const CreatePolicyRequestSchema = v.strictObject({
     v.maxLength(16),
     v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
   ),
+  "template_id": v.exactOptional(UuidSchema),
   "throttle": v.exactOptional(ThrottleDTOSchema),
   "subject_kinds": v.exactOptional(v.pipe(
     v.array(v.picklist(["alert", "case", "digest"])),
@@ -2745,6 +2720,7 @@ export const UpdatePolicyRequestSchema = v.pipe(
       v.maxLength(16),
       v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
     )),
+    "template_id": v.exactOptional(v.nullable(UuidSchema)),
     "throttle": v.exactOptional(v.nullable(ThrottleDTOSchema)),
     "digest_window_seconds": v.exactOptional(v.nullable(v.pipe(
       v.number(),
@@ -3017,19 +2993,19 @@ export const ResolveConversationResponseSchema = v.looseObject({
   "meta": MetaSchema,
 });
 
-export const WordingListResponseSchema = v.looseObject({
-  "data": v.array(WordingDTOSchema),
+export const NotificationTemplateListResponseSchema = v.looseObject({
+  "data": v.array(NotificationTemplateDTOSchema),
   "page": PageInfoSchema,
   "meta": MetaSchema,
 });
 
-export const WordingResponseSchema = v.looseObject({
-  "data": WordingDTOSchema,
+export const NotificationTemplateResponseSchema = v.looseObject({
+  "data": NotificationTemplateDTOSchema,
   "meta": MetaSchema,
 });
 
-export const WordingPreviewResponseSchema = v.looseObject({
-  "data": WordingPreviewDTOSchema,
+export const TemplatePreviewResponseSchema = v.looseObject({
+  "data": TemplatePreviewDTOSchema,
   "meta": MetaSchema,
 });
 
