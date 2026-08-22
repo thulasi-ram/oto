@@ -487,6 +487,28 @@ type Policy struct {
 	ChannelIDs []uuid.UUID
 	Throttle   Throttle
 
+	// TemplateID is the NotificationTemplate this policy's deliveries are rendered
+	// with. nil is oto's built-in card, and it is what every policy written before
+	// this field says.
+	//
+	// ⭐ PRESENTATION RIDES THE ROUTING DECISION, DELIBERATELY. The design this
+	// replaced gave presentation its own predicate language with its own precedence
+	// order, so an operator had to hold two resolution rules in their head and
+	// could not tell which had decided anything. A policy already carries matchers,
+	// already carries reasons and already chose the destinations; it now also says
+	// what they read like.
+	//
+	// ⚠️ ONE TEMPLATE FOR ALL SIXTEEN DESTINATIONS, WHICH NEED NOT SHARE A
+	// PROVIDER. `card` and `text` are portable and render anywhere; `raw` is Slack
+	// Block Kit and degrades to oto's built-in card elsewhere. oto warns and does
+	// not block — pairing them up is the owner's call, and a mismatch is a degraded
+	// message rather than a dropped alert.
+	//
+	// ⛔ IT IS NOT VALIDATED AGAINST `channels` HERE, and no CHECK constraint can
+	// see the pairing either. The template's own `provider` is DECLARED INTENT, not
+	// a key.
+	TemplateID *uuid.UUID
+
 	// Subjects is `subject_kinds`: which altitude of fact this policy is about
 	// (migration `00072`). The zero value — an empty binding — is every kind, which
 	// is what every policy written before 00072 says. See SubjectBinding.

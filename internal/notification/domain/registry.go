@@ -45,6 +45,8 @@ type PolicyDraft struct {
 	Reasons  []Reason
 	// ChannelIDs references `channels` and NOTHING ELSE.
 	ChannelIDs []uuid.UUID
+	// TemplateID is the NotificationTemplate to render with. nil is oto's own card.
+	TemplateID *uuid.UUID
 	Throttle   *Throttle
 
 	// Subjects is `subject_kinds` (migration `00072`). Nil AND empty both mean the
@@ -128,6 +130,11 @@ type PolicyPatch struct {
 	// state.
 	CountMin    **int
 	CountWindow **time.Duration
+
+	// TemplateID is a double pointer for the reason Throttle is: the contract types
+	// it as nullable and a pointer to nil CLEARS the column, which is how an
+	// operator puts a policy back on oto's built-in card.
+	TemplateID **uuid.UUID
 }
 
 // IsEmpty reports whether the patch would change nothing.
@@ -136,7 +143,8 @@ func (p PolicyPatch) IsEmpty() bool {
 		p.Matchers == nil && p.Reasons == nil && p.ChannelIDs == nil &&
 		p.Throttle == nil &&
 		p.DigestWindow == nil && p.DigestFloor == nil &&
-		p.Subjects == nil && p.CountMin == nil && p.CountWindow == nil
+		p.Subjects == nil && p.CountMin == nil && p.CountWindow == nil &&
+		p.TemplateID == nil
 }
 
 // DefaultPolicyPriority mirrors the `notification_policies.priority` DDL default.

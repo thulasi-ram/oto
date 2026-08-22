@@ -176,8 +176,9 @@ INSERT INTO notification_policies (
   id, org_id, name, priority, enabled, matchers, reasons, channel_ids,
   throttle, subject_kinds, digest_window_s, digest_floor,
   count_min, count_window_s,
+  template_id,
   created_at, updated_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$15)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$16)
 RETURNING id`
 
 // CreatePolicy writes one routing rule.
@@ -244,6 +245,7 @@ func (r *ConfigRepository) CreatePolicy(
 		// The same rule for the count condition (migration 00072): NULL on both is
 		// "no condition", and a caller that asked for none must not acquire one.
 		in.CountMin, secondsPtr(in.CountWindow),
+		in.TemplateID,
 		r.clock.Now().UTC(),
 	).Scan(&stored)
 	if err != nil {
@@ -275,7 +277,11 @@ UPDATE notification_policies SET
     subject_kinds   = COALESCE($15, subject_kinds),
     count_min       = CASE WHEN $16 THEN $17 ELSE count_min END,
     count_window_s  = CASE WHEN $18 THEN $19 ELSE count_window_s END,
-    updated_at  = GREATEST(updated_at, $20)
+    -- A CASE and not a COALESCE, for the reason the five above use one: clearing
+    -- the template is a real operation — it is how an operator puts a policy back
+    -- on oto's built-in card — and COALESCE cannot express "set this to NULL".
+    template_id     = CASE WHEN $20 THEN $21 ELSE template_id END,
+    updated_at  = GREATEST(updated_at, $22)
  WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL
 RETURNING id`
 
@@ -325,6 +331,8 @@ func (r *ConfigRepository) UpdatePolicy(
 		countMinVal *int
 		setCountWin bool
 		countWinVal *int
+		setTemplate bool
+		templateVal *uuid.UUID
 	)
 	if p.Matchers != nil {
 		b, err := encodeMatchers(*p.Matchers)
@@ -379,6 +387,10 @@ func (r *ConfigRepository) UpdatePolicy(
 		setCountWin = true
 		countWinVal = secondsPtr(*p.CountWindow)
 	}
+	if p.TemplateID != nil {
+		setTemplate = true
+		templateVal = *p.TemplateID
+	}
 
 	var stored uuid.UUID
 	err := r.db(ctx).QueryRow(ctx, updatePolicySQL,
@@ -387,6 +399,7 @@ func (r *ConfigRepository) UpdatePolicy(
 		setWindow, windowVal, setFloor, floorVal,
 		subjects,
 		setCountMin, countMinVal, setCountWin, countWinVal,
+		setTemplate, templateVal,
 		r.clock.Now().UTC(),
 	).Scan(&stored)
 	if err != nil {

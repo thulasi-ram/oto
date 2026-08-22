@@ -53,6 +53,7 @@ func policyDTO(p domain.Policy) PolicyDTO {
 		Matchers:     matchers,
 		Reasons:      reasons,
 		ChannelIDs:   channels,
+		TemplateID:   p.TemplateID,
 		SubjectKinds: subjects,
 		CreatedAt:    p.CreatedAt.UTC(),
 		UpdatedAt:    p.UpdatedAt.UTC(),
@@ -234,6 +235,7 @@ func (r CreatePolicyRequest) toDraft() (domain.PolicyDraft, error) {
 		Matchers:   matchers,
 		Reasons:    reasons,
 		ChannelIDs: r.ChannelIDs,
+		TemplateID: r.TemplateID,
 	}
 	if r.Priority != nil {
 		v := int(*r.Priority)
@@ -277,6 +279,12 @@ func (r UpdatePolicyRequest) toPatch() (domain.PolicyPatch, error) {
 		Name:       r.Name,
 		Enabled:    r.Enabled,
 		ChannelIDs: r.ChannelIDs,
+	}
+	if r.TemplateID != nil {
+		// The double pointer is how `null` reaches the repository as "clear this"
+		// rather than as "leave it alone".
+		v := r.TemplateID.Value
+		p.TemplateID = &v
 	}
 	if r.Priority != nil {
 		v := int(*r.Priority)

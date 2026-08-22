@@ -46,7 +46,10 @@ type PolicyDTO struct {
 	Matchers []MatcherDTO `json:"matchers"`
 	Reasons  []string     `json:"reasons"`
 	// ChannelIDs references `channels` and NOTHING ELSE.
-	ChannelIDs []uuid.UUID  `json:"channel_ids"`
+	ChannelIDs []uuid.UUID `json:"channel_ids"`
+	// TemplateID is the NotificationTemplate these deliveries are rendered with.
+	// Absent is oto's built-in card.
+	TemplateID *uuid.UUID   `json:"template_id,omitempty"`
 	Throttle   *ThrottleDTO `json:"throttle"`
 
 	// SubjectKinds is `subject_kinds` (migration 00072): which altitude of fact
@@ -344,7 +347,14 @@ type CreatePolicyRequest struct {
 	// It moved to 17 when 00067 deleted `unacked_reminder` (git-bug bd0fb1d).
 	Reasons []string `json:"reasons" validate:"required,min=1,max=17,unique"`
 	// ChannelIDs references `channels` and NOTHING ELSE.
-	ChannelIDs []uuid.UUID  `json:"channel_ids" validate:"required,min=1,max=16,unique"`
+	ChannelIDs []uuid.UUID `json:"channel_ids" validate:"required,min=1,max=16,unique"`
+	// TemplateID names a NotificationTemplate. Omit it for oto's built-in card.
+	//
+	// ⚠️ IT IS NOT CHECKED AGAINST THE PROVIDERS OF `channel_ids`. A policy fans
+	// out to as many as sixteen destinations and they need not share a provider;
+	// `card` and `text` render anywhere and `raw` degrades to oto's own card
+	// elsewhere. Pairing them up is the owner's call.
+	TemplateID *uuid.UUID   `json:"template_id,omitempty"`
 	Throttle   *ThrottleDTO `json:"throttle,omitempty"`
 
 	// SubjectKinds binds the policy to an altitude. OPTIONAL, and omitting it —
@@ -392,6 +402,9 @@ type UpdatePolicyRequest struct {
 	Matchers   *[]MatcherDTO `json:"matchers,omitempty"    validate:"omitempty,max=32,dive"`
 	Reasons    *[]string     `json:"reasons,omitempty"     validate:"omitempty,min=1,max=17,unique"`
 	ChannelIDs *[]uuid.UUID  `json:"channel_ids,omitempty" validate:"omitempty,min=1,max=16,unique"`
+	// TemplateID is nullable: `"template_id": null` CLEARS it and puts the policy
+	// back on oto's built-in card, while omitting the key leaves it alone.
+	TemplateID *NullableUUID `json:"template_id,omitempty"`
 
 	// Throttle is nullable in the contract: an explicit `null` CLEARS the damper,
 	// which is a different request from omitting the field. NullableThrottle keeps
@@ -433,6 +446,7 @@ type UpdatePolicyRequest struct {
 func (r UpdatePolicyRequest) IsEmpty() bool {
 	return r.Name == nil && r.Priority == nil && r.Enabled == nil &&
 		r.Matchers == nil && r.Reasons == nil && r.ChannelIDs == nil &&
+		r.TemplateID == nil &&
 		!r.Throttle.Set &&
 		!r.DigestWindowSeconds.Set && !r.DigestFloor.Set &&
 		r.SubjectKinds == nil &&
@@ -513,6 +527,41 @@ func (n *NullableInt32) UnmarshalJSON(b []byte) error {
 
 // MarshalJSON renders the field back, for symmetry.
 func (n NullableInt32) MarshalJSON() ([]byte, error) {
+	if !n.Set || n.Value == nil {
+		return []byte("null"), nil
+	}
+	return json.Marshal(*n.Value)
+}
+
+// NullableUUID is a contract field typed as `string(uuid) | null`, where an
+// explicit `null` means CLEAR and an omitted field means leave it alone.
+//
+// ⭐ THE DISTINCTION IS THE WHOLE REASON THE TYPE EXISTS. Putting a policy back
+// on oto's built-in card is an operation an operator performs deliberately, and
+// `"template_id": null` is how they say it. A plain `*uuid.UUID` cannot tell that
+// request from one that never mentioned the field.
+type NullableUUID struct {
+	Set   bool
+	Value *uuid.UUID
+}
+
+// UnmarshalJSON records presence as well as value.
+func (n *NullableUUID) UnmarshalJSON(b []byte) error {
+	n.Set = true
+	if string(b) == "null" {
+		n.Value = nil
+		return nil
+	}
+	var v uuid.UUID
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	n.Value = &v
+	return nil
+}
+
+// MarshalJSON renders the field back, for symmetry.
+func (n NullableUUID) MarshalJSON() ([]byte, error) {
 	if !n.Set || n.Value == nil {
 		return []byte("null"), nil
 	}

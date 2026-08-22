@@ -348,12 +348,6 @@ var unenforceableRequired = map[string]string{
 	// sends the key.
 	"notification.MatcherDTO.value": "the empty string is a legal matcher value, " +
 		"so `required` would outlaw it to catch an absent key it cannot see",
-	// The twin, for the same reason. `channels/service.matchOne` reads a missing
-	// label as the empty string exactly as the policy matcher does, so a Wording
-	// whose clause is `severity=""` — "this alert carries no severity label" — is a
-	// legal clause the tag would have to outlaw.
-	"channels.MatcherDTO.value": "the empty string is a legal matcher value, " +
-		"so `required` would outlaw it to catch an absent key it cannot see",
 }
 
 // ---------------------------------------------------------------------------

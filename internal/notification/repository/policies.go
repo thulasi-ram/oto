@@ -41,6 +41,7 @@ type policyRow struct {
 	digestFloor      *int
 	countMin         *int
 	countWindowSecs  *int
+	templateID       *uuid.UUID
 	createdAt        time.Time
 	updatedAt        time.Time
 	deletedAt        *time.Time
@@ -62,6 +63,7 @@ func (r *policyRow) scanInto() []any {
 		&r.subjectKinds,
 		&r.digestWindowSecs, &r.digestFloor,
 		&r.countMin, &r.countWindowSecs,
+		&r.templateID,
 		&r.createdAt, &r.updatedAt, &r.deletedAt,
 	}
 }
@@ -74,6 +76,7 @@ func (r policyRow) toDomain() (domain.Policy, error) {
 		Priority:   r.priority,
 		Enabled:    r.enabled,
 		ChannelIDs: r.channelIDs,
+		TemplateID: r.templateID,
 		CreatedAt:  r.createdAt,
 		UpdatedAt:  r.updatedAt,
 		DeletedAt:  r.deletedAt,
@@ -166,6 +169,7 @@ const policyColumns = `
   id, org_id, name, priority, enabled, matchers, reasons, channel_ids,
   throttle, subject_kinds, digest_window_s, digest_floor,
   count_min, count_window_s,
+  template_id,
   created_at, updated_at, deleted_at`
 
 const listLivePoliciesSQL = `

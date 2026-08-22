@@ -299,16 +299,16 @@ type CreateNotificationTemplateRequest struct {
 	Provider string `json:"provider" validate:"required,max=32"`
 	Format   string `json:"format"   validate:"required,oneof=card text raw"`
 	Source   string `json:"source"   validate:"required,max=16384"`
-	Enabled  *bool  `json:"enabled"`
+	Enabled  *bool  `json:"enabled,omitempty"`
 }
 
 // UpdateNotificationTemplateRequest patches one template. A nil field is untouched.
 type UpdateNotificationTemplateRequest struct {
-	Name     *string `json:"name"     validate:"omitempty,max=120"`
-	Provider *string `json:"provider" validate:"omitempty,max=32"`
-	Format   *string `json:"format"   validate:"omitempty,oneof=card text raw"`
-	Source   *string `json:"source"   validate:"omitempty,max=16384"`
-	Enabled  *bool   `json:"enabled"`
+	Name     *string `json:"name,omitempty"     validate:"omitempty,max=120"`
+	Provider *string `json:"provider,omitempty" validate:"omitempty,max=32"`
+	Format   *string `json:"format,omitempty"   validate:"omitempty,oneof=card text raw"`
+	Source   *string `json:"source,omitempty"   validate:"omitempty,max=16384"`
+	Enabled  *bool   `json:"enabled,omitempty"`
 }
 
 // IsEmpty reports the "you asked for nothing" case, which the schema enforces as
