@@ -50,6 +50,12 @@ ALTER TABLE notification_deliveries
   ADD CONSTRAINT notification_deliveries_template_ck
   CHECK ((template_id IS NULL) = (template_version IS NULL));
 
+-- 00077's column, retired. It recorded a map of stanza -> the prose that wrote it,
+-- which is a shape no template has: a template IS the message, so one id and one
+-- version say everything the map used to. Dropped rather than left behind, because a
+-- nullable column nothing writes is a column the next reader has to research.
+ALTER TABLE notification_deliveries DROP COLUMN wordings;
+
 -- +goose Down
 
 -- No guard on either drop, and that is the honest asymmetry with 00076. These
@@ -73,5 +79,10 @@ ALTER TABLE notification_deliveries
   DROP CONSTRAINT notification_deliveries_template_ck,
   DROP COLUMN template_version,
   DROP COLUMN template_id;
+
+-- Restored empty, for the reason 00078's Down restores `wordings`: the release below
+-- this one reads the column, and a rollback that leaves it missing is a second broken
+-- state rather than a return to the first.
+ALTER TABLE notification_deliveries ADD COLUMN wordings JSONB;
 
 ALTER TABLE notification_policies DROP COLUMN template_id;

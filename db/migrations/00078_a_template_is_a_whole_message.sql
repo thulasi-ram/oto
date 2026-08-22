@@ -17,10 +17,37 @@
 -- itself, on its own matchers, with its own precedence order -- necessary only while
 -- an operator needed four different predicates for four different slots. One whole
 -- template per message has no such pressure, so selection goes back where routing
--- already lives: `notification_policies.template_id`, added in 00077. One routing
+-- already lives: `notification_policies.template_id`, added in 00079. One routing
 -- decision, one place to read it, one precedence rule to hold in your head.
+--
+-- THIS IS 00078 AND NOT A REWRITE OF 00076, WHICH IS THE WHOLE POINT OF THE NUMBER.
+-- 00076 created `wordings` and 00077 recorded them on a delivery; both had already run
+-- on a developer's database before this design was withdrawn. Goose tracks a migration
+-- by its VERSION and not by its contents, so editing 00076 in place leaves every
+-- database that already recorded 77 permanently short of the new schema, with `goose
+-- up` reporting nothing to do and the application 500ing on a column that does not
+-- exist. That is exactly what happened. A retired concept is retired by a NEW
+-- migration that drops it, so a database in either state converges by moving forward.
 
 -- +goose Up
+
+-- +goose StatementBegin
+DO $$
+DECLARE n BIGINT;
+BEGIN
+  -- The guard is real even though it cannot fire on any deployment that exists: the
+  -- Wording feature was never released, so no `wordings` row can be a customer's. If
+  -- one somehow is, refusing is right -- and the message says how to proceed, because
+  -- a forward migration that refuses with no way past it is its own outage.
+  SELECT count(*) INTO n FROM wordings;
+  IF n > 0 THEN
+    RAISE EXCEPTION
+      'refusing to drop `wordings`: % row(s) hold customer-authored prose that exists nowhere else. Read them with: SELECT id, org_id, channel_id, stanza, template FROM wordings; then `DELETE FROM wordings;` and run this migration again.', n;
+  END IF;
+END $$;
+-- +goose StatementEnd
+
+DROP TABLE wordings;
 
 CREATE TABLE notification_templates (
   id       UUID NOT NULL PRIMARY KEY,
@@ -117,3 +144,33 @@ END $$;
 -- +goose StatementEnd
 
 DROP TABLE notification_templates;
+
+-- ⚠️ THE DOWN RESTORES `wordings`, EMPTY. A Down that removed this migration's table
+-- and left the one it replaced missing would leave the database at a version 00077's
+-- own Down cannot act on -- which is not a rollback, it is a second broken state. It
+-- comes back with its constraints and its index so the release below this one finds
+-- the schema it was written against.
+CREATE TABLE wordings (
+  id         UUID        PRIMARY KEY,
+  org_id     UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  channel_id UUID        REFERENCES channels(id) ON DELETE CASCADE,
+  stanza     TEXT        NOT NULL,
+  template   TEXT        NOT NULL,
+  matchers   JSONB       NOT NULL DEFAULT '[]',
+  reasons    TEXT[]      NOT NULL DEFAULT '{}',
+  priority   INTEGER     NOT NULL DEFAULT 100,
+  enabled    BOOLEAN     NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL,
+  deleted_at TIMESTAMPTZ,
+  CONSTRAINT wordings_stanza_ck   CHECK (stanza IN ('title','body','rule','footer')),
+  CONSTRAINT wordings_template_ck CHECK (length(template) BETWEEN 1 AND 2048),
+  CONSTRAINT wordings_matchers_ck CHECK (jsonb_typeof(matchers) = 'array' AND jsonb_array_length(matchers) <= 32),
+  CONSTRAINT wordings_reasons_ck  CHECK (cardinality(reasons) <= 32),
+  CONSTRAINT wordings_priority_ck CHECK (priority BETWEEN 0 AND 100000),
+  CONSTRAINT wordings_time_ck     CHECK (updated_at >= created_at)
+);
+
+CREATE INDEX wordings_resolve_idx
+  ON wordings (org_id, channel_id NULLS LAST, priority, created_at, id)
+  WHERE enabled AND deleted_at IS NULL;
