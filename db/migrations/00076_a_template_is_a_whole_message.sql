@@ -33,7 +33,7 @@ CREATE TABLE notification_templates (
   -- sixteen destinations and they need not share a provider. `card` and `text`
   -- render correctly anywhere; `raw` is Slack's Block Kit and degrades to oto's
   -- built-in card elsewhere. oto warns at save and does not block -- pairing them up
-  -- is the owner's call, and a mismatch is a degraded message, never a dropped alert.
+  -- is the operator's call, and a mismatch is a degraded message, never a dropped alert.
   provider TEXT NOT NULL,
   format   TEXT NOT NULL,
   -- The template body. Liquid, on github.com/osteele/liquid NewBasicEngine: no tags

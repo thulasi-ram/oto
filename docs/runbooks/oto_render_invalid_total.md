@@ -62,9 +62,13 @@ to the bytes that failed — which is more useful than a series, because you can
 
 - **Look at the stored payload first.** It is the whole bug, kept deliberately for this reason, and
   the check name tells you which rule it broke.
-- A **customer Wording cannot cause this** (ADR 0037): a Wording emits text into a block Go builds,
-  every value passes the escape-and-truncate sink, and a Wording that fails or renders empty falls
-  back to oto's built-in string. If an increment coincides with a new Wording, the bug is in the
+- A **customer NotificationTemplate is the FIRST thing to check** (ADR 0050), and this is a reversal
+  from the retired Wording design. A Wording emitted text into a block Go built, so structural
+  validation was unreachable by construction. A template owns the blocks: a `card` renders through
+  oto's own IR compiler and a `raw` template supplies Block Kit directly. Both are caught here rather
+  than by Slack, and both fall back to oto's built-in card — so an increment means an alert went out
+  in the DEFAULT voice, not that one was lost. Read `notification_deliveries.template_id` on the
+  affected rows first. If an increment coincides with a new template, the bug is in the
   sink or in a budget, not in the template — and that is worth knowing precisely because it looks
   like the template.
 - A sudden onset after a deploy is a rendering regression: the golden files

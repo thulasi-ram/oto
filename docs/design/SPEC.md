@@ -4756,7 +4756,7 @@ position in that sequence decides two unrelated questions at once: where a reade
 whether they see it at all. The field appended LAST is the field absent FIRST. An operator dragging
 `Team` above `Status` would not be choosing a layout — they would be choosing to drop `Status` on a
 card that has twelve facts and room for ten, and no surface would tell them so.
-[ADR 0037](../adr/0037-wordings-are-liquid-and-structure-stays-otos.md) left field ordering undecided
+[ADR 0050](../adr/0050-a-notification-template-is-one-whole-message.md) left field ordering undecided
 for exactly this reason and named this section as the defect to fix first. This is that fix: the two
 orders are named apart here so that a later ordering control can move the first without touching the
 second.
@@ -6019,9 +6019,13 @@ and it was undocumented here because it is the one check that is not a Slack lim
 bytes oto is about to send do not decode as a Slack message at all. It is named in the table now for
 the same reason every other check is: `Check` is the closed vocabulary that lands in
 `notification_deliveries.error`, so a check with no row is a delivery whose failure a reader cannot
-look up. The count matters beyond tidiness — ADR 0037 makes an **exhaustiveness test over these
-identifiers** the gate artifact for user-authored Wordings, and an exhaustiveness test that has
-counted wrong proves nothing.
+look up.
+
+⛔ ADR 0037 MADE AN EXHAUSTIVENESS TEST OVER THESE IDENTIFIERS ITS GATE ARTIFACT, AND ADR 0050
+RETIRED THAT. The old argument was that a Wording's output type was a `string`, so every structural
+check here was unreachable by construction; a NotificationTemplate owns the blocks, so it is not.
+The replacement is narrower and stronger: a template-rendered payload runs through **this same
+`Validate`**, and a failure falls back to oto's built-in card.
 
 ⚠️ The checks do not run in numeric order, and the table is written in the order they run rather than
 the order they are numbered. `V18` is first because an oversized payload is cheap to detect and

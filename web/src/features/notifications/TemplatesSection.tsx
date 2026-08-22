@@ -16,7 +16,7 @@
  * than asserted.
  *
  * ⛔ A WARNING IS NOT AN ERROR, AND THE SAVE BUTTON MUST STAY ENABLED THROUGH
- * ONE. A card with no `{{ actions }}` carries no Acknowledge button — the owner
+ * ONE. A card with no `{{ actions }}` carries no Acknowledge button — the operator
  * is allowed to ship that, and an alert stays acknowledgeable from the console
  * and from `POST /api/v1/cases/{id}/ack`. The screen says so loudly and then
  * gets out of the way.
@@ -451,7 +451,7 @@ const TemplateDialog: Component<{
             </Button>
             {/*
               ⛔ DISABLED ON A REFUSAL, NEVER ON A WARNING. A card with no
-              `{{ actions }}` is the owner's decision and the button must stay
+              `{{ actions }}` is the operator's decision and the button must stay
               live through it, or the screen has overruled them.
             */}
             <Button type="submit" disabled={busy() || blocking().length > 0}>

@@ -51,7 +51,7 @@ const (
 	FormatText Format = "text"
 	// FormatRaw is literal Block Kit JSON with interpolation.
 	//
-	// ⚠️ IT IS PINNED TO SLACK AND IT IS THE OWNER'S RISK. A malformed payload
+	// ⚠️ IT IS PINNED TO SLACK AND IT IS THE OPERATOR'S RISK. A malformed payload
 	// is REJECTED BY SLACK, which turns a rendering mistake into an undelivered
 	// alert — so saving requires a preview that actually rendered, and delivery
 	// falls back to oto's built-in card if Slack refuses the payload. Those two
@@ -73,7 +73,7 @@ func (f Format) Valid() bool {
 //
 // ⭐ A NON-PORTABLE TEMPLATE POINTED AT THE WRONG PROVIDER IS NOT AN ERROR oto
 // PREVENTS. A policy fans out to as many as sixteen channels and they need not
-// share a provider; matching them up is the owner's job and oto only warns. What
+// share a provider; matching them up is the operator's job and oto only warns. What
 // oto does guarantee is that the mismatch degrades to the built-in card rather
 // than dropping the alert.
 func (f Format) Portable() bool { return f == FormatCard || f == FormatText }
@@ -183,6 +183,15 @@ func (t *Template) expand(in Input) (string, error) {
 // RenderCard renders a `card` template to the IR. links resolves oto's link
 // handles; BuildInput and this call must be given the same table.
 func (t *Template) RenderCard(in Input, links map[string]string) (*Document, []Problem) {
+	// ⛔ THE FORMAT IS CHECKED, NOT ASSUMED, AND THE FIELD EXISTS FOR THIS. A
+	// caller holds a compiled template and a format from two different places —
+	// the row and the request — and rendering `raw` Block Kit as if it were
+	// Markdown would parse a JSON document into prose and send it. Cheap guard,
+	// and the alternative is a field nothing reads.
+	if t.Format != FormatCard {
+		return nil, []Problem{{Kind: ProblemRender, Message: fmt.Sprintf(
+			"this template is %q and cannot be rendered as a card", string(t.Format))}}
+	}
 	raw, err := t.expand(in)
 	if err != nil {
 		return nil, []Problem{{Kind: ProblemRender, Message: err.Error()}}
@@ -203,6 +212,9 @@ func (t *Template) RenderCard(in Input, links map[string]string) (*Document, []P
 
 // RenderText renders a `text` template to one string, spelled by d.
 func (t *Template) RenderText(in Input, d Dialect, links map[string]string) (string, error) {
+	if t.Format != FormatText {
+		return "", fmt.Errorf("this template is %q and cannot be rendered as one line", string(t.Format))
+	}
 	raw, err := t.expand(in)
 	if err != nil {
 		return "", err
@@ -224,6 +236,9 @@ func (t *Template) RenderText(in Input, d Dialect, links map[string]string) (str
 // itself — an unescaped quote in a label, which is the overwhelmingly common way
 // a raw template fails.
 func (t *Template) RenderRaw(in Input) (json.RawMessage, error) {
+	if t.Format != FormatRaw {
+		return nil, fmt.Errorf("this template is %q and carries no payload of its own", string(t.Format))
+	}
 	raw, err := t.expand(in)
 	if err != nil {
 		return nil, err
@@ -302,7 +317,7 @@ func forDepth(src string) int {
 // happened rather than what the source looked like.
 //
 // ⚠️ IT RETURNS WARNINGS ALONGSIDE REFUSALS. Call Blocking() to tell them apart:
-// a missing action row is reported and does not stop the save, because the owner
+// a missing action row is reported and does not stop the save, because the operator
 // is allowed to choose that.
 func Validate(f Format, src string) []Problem {
 	if !f.Valid() {
@@ -362,7 +377,7 @@ func Validate(f Format, src string) []Problem {
 		}
 	}
 
-	// ⭐ THE WARNING THE OWNER ASKED FOR. A card template may leave out the
+	// ⭐ THE WARNING THE OPERATOR ASKED FOR. A card template may leave out the
 	// action row — that is a deliberate choice and oto does not overrule it —
 	// but the alert then carries no acknowledge button, and the only remaining
 	// way to acknowledge is `POST /api/v1/cases/{id}/ack` or the console. That
@@ -396,7 +411,7 @@ const (
 	ProblemUnsupported ProblemKind = "unsupported"
 	// ProblemWarning is the one kind that does NOT refuse a save.
 	//
-	// ⭐ IT EXISTS BECAUSE THE OWNER MAY OMIT THE ACTION ROW. That is their
+	// ⭐ IT EXISTS BECAUSE THE OPERATOR MAY OMIT THE ACTION ROW. That is their
 	// decision to make and oto does not overrule it, but a card with no
 	// acknowledge button is a real loss and nobody should discover it in
 	// production. So it is said, loudly, at save and in preview, and the save

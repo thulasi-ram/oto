@@ -27,7 +27,7 @@ import (
 //     and discover it at 03:00 on a real card. Nothing here re-implements that
 //     gate — `service.ValidateTemplate` owns it — and these prove the handler
 //     asks.
-//  2. A MISSING ACTION ROW IS A WARNING AND NOT A REFUSAL. The owner may ship a
+//  2. A MISSING ACTION ROW IS A WARNING AND NOT A REFUSAL. The operator may ship a
 //     card with no Acknowledge button. oto's job is to make sure they know they
 //     did, and then to get out of the way.
 //  3. THE PREVIEW SHOWS TWO SPELLINGS. One Markdown document compiles to Slack's
@@ -252,7 +252,7 @@ func TestCreateNotificationTemplateRefusesAFilterThatOnlyFailsWhenRun(t *testing
 	}
 }
 
-// ⭐ THE OWNER MAY SHIP A CARD WITH NO ACKNOWLEDGE BUTTON. It is a degraded card
+// ⭐ THE OPERATOR MAY SHIP A CARD WITH NO ACKNOWLEDGE BUTTON. It is a degraded card
 // and not a lost alert — `POST /api/v1/cases/{id}/ack` reaches the same service
 // method the button does — so oto says so and saves it.
 func TestATemplateWithNoActionRowIsSavedAndWarnedAbout(t *testing.T) {
@@ -265,7 +265,7 @@ func TestATemplateWithNoActionRowIsSavedAndWarnedAbout(t *testing.T) {
 	}).MustStatus(t, http.StatusCreated)
 
 	if len(w.templates.created) != 1 {
-		t.Fatal("a card with no `{{ actions }}` was refused; that is the owner's choice to make")
+		t.Fatal("a card with no `{{ actions }}` was refused; that is the operator's choice to make")
 	}
 
 	// And the preview says so, which is where somebody can still change their mind.

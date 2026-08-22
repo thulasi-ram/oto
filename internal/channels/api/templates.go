@@ -347,7 +347,7 @@ func templateProblems(ps []template.Problem) []TemplateProblemDTO {
 // refuseTemplate turns the save-time gate's verdict into a `422`, or nil.
 //
 // ⛔ A WARNING IS NOT A REFUSAL. A card with no `{{ actions }}` carries no
-// Acknowledge button, and the owner is allowed to ship that — an alert stays
+// Acknowledge button, and the operator is allowed to ship that — an alert stays
 // acknowledgeable from the console and from `POST /api/v1/cases/{id}/ack`. It
 // comes back in the preview and it does not stop a save.
 func refuseTemplate(vs []errs.Violation) error {

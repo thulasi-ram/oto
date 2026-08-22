@@ -1,15 +1,26 @@
 # 0037 — A Wording is Liquid, and the structure around it stays oto's
 
-**Status:** Proposed · 2026-08-18 · **CORRECTED on three points by
-[0048](0048-a-wording-is-spelled-by-its-channel.md) (2026-08-22)** · amends SPEC §F.1, §H.1, §H.3, §I.1, §L.5.1
+**Status:** **SUPERSEDED** · 2026-08-18 · withdrawn 2026-08-22 by
+[0050](0050-a-notification-template-is-one-whole-message.md), which replaces per-Stanza Wordings with
+one whole-message NotificationTemplate
+
+> **Read 0050 first.** This ADR's safety argument was sound and much of it survives verbatim — the
+> hand-built binding projection, the refusal to reflect into a domain struct, the fall-back-to-Go
+> discipline that makes it impossible for customer prose to kill a delivery, and above all the rule
+> that iteration must never touch a Go map because oto hashes the rendered payload. What did not
+> survive is the AUTHORING UNIT. "Four holes in oto's card, each with its own matcher clause and its
+> own priority" is not what anybody means by a template, and the first question every reader asked was
+> "so where is my template?". 0050 answers it.
+>
+> ADRs 0048 and 0049, which extended this one, are withdrawn with it.
 **Relates to:** [0008](0008-slack-update-in-place-primary.md) (the card's structure; a broken layout is a
 dead delivery), [0017](0017-matchers-over-cel.md) (matchers, not an expression language — this ADR keeps
 that refusal for predicates and narrows it for prose),
 [0020](0020-broadcast-the-transitions-that-must-be-seen.md) (the typed-knob precedent, and the unread-knob
 trap)
-**Design note:** [notification-content-customisation.md](../design/notification-content-customisation.md)
+**Design note:** withdrawn with this ADR; see [0050](0050-a-notification-template-is-one-whole-message.md).
 
-> ⛔ **READ [0048](0048-a-wording-is-spelled-by-its-channel.md) BEFORE ACTING ON THIS ADR.** Its
+> ⛔ **READ 0048 (withdrawn) BEFORE ACTING ON THIS ADR.** Its
 > central ruling — a Wording is Liquid, its output type is a string, and Go builds every block — stands
 > unchanged and is not reopened. Three subsidiary claims below are wrong and 0048 replaces them:
 >
@@ -106,7 +117,7 @@ This is not a new safety system; it is an existing one pointed at an input of th
 **A Wording is text, so it crosses channels.** ~~Slack receives it as the mrkdwn emphasis subset after
 escaping; the webhook receives it as a string in a `rendered` map keyed by Stanza and strips the markers,
 because the webhook is not a degraded Slack.~~ **CORRECTED by
-[0048](0048-a-wording-is-spelled-by-its-channel.md):** that is a binary — Slack's punctuation or none —
+0048 (withdrawn):** that is a binary — Slack's punctuation or none —
 and it holds only while exactly two providers exist. A filter emits a **neutral mark** and a
 per-provider `Dialect` spells it: `~x~` on Slack, `~~x~~` on a Discord that does not exist yet, dropped
 for the webhook. The conclusion survives the correction and is sharpened by it: **text is portable,
@@ -122,7 +133,7 @@ template body cannot.
 - **No structure.** No block authoring, no BYO Block Kit, no raw mrkdwn passthrough, no new
   `channels.renderer` member (SPEC.md:1451), no per-channel custom renderer, no per-org branding.
 - **No mentions.** ⛔ **THIS BULLET WAS FALSE IN BOTH HALVES AND IS REPLACED BY
-  [0048](0048-a-wording-is-spelled-by-its-channel.md) §3.** There was no sink-level stripper
+  0048 (withdrawn) §3.** There was no sink-level stripper
   (`escape()` defeats those tokens as a side effect of generic escaping, and a refactor could remove it
   without knowing it was load-bearing), and there is no `MentionPolicy` — the surface was deleted whole
   (git-bug `bd0fb1d`; the tombstones are at `channels/domain/ports.go:350-358` and

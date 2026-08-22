@@ -1629,48 +1629,68 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// accepts a kind the release below it cannot interpret. No column reading can
 	// see that, and it is the half most likely to be forgotten because nothing
 	// references it.
-	// 00077 adds one nullable JSONB column recording WHICH wordings produced a card.
-	// Its Down warns rather than refusing, unlike 00076's: what a rollback loses here
-	// is the explanation of a card, not the card (`rendered` still holds the bytes)
-	// and not the customer's prose (the `wordings` table still holds every template).
-	if n := countColumns("notification_deliveries", "wordings"); n != 1 {
-		t.Fatalf("notification_deliveries.wordings is absent at migration 77 (found %d); "+
-			"00077's Up exists so that \"why did my card read like that\" needs one row "+
-			"rather than a replay against configuration that may since have changed", n)
+	// 00077 links presentation to routing and records what rendered a card. Two
+	// halves: `notification_policies.template_id` names the NotificationTemplate a
+	// policy sends with, and `notification_deliveries.template_id/_version` record
+	// which revision produced these bytes.
+	//
+	// ⚠️ ITS Down WARNS RATHER THAN REFUSING, UNLIKE 00076'S, and the asymmetry is
+	// the point. What a rollback loses here is a POINTER: the attribution of past
+	// cards, which is a real loss and a recoverable one — `rendered` still holds the
+	// bytes and `notification_templates` still holds every template. 00076 refuses
+	// because dropping it would destroy prose that exists nowhere else.
+	for _, col := range []string{"template_id", "template_version"} {
+		if n := countColumns("notification_deliveries", col); n != 1 {
+			t.Fatalf("notification_deliveries.%s is absent at migration 77 (found %d); "+
+				"00077's Up exists so that \"why did my card read like that\" needs one row "+
+				"rather than a replay against configuration that may since have changed", col, n)
+		}
+	}
+	if n := countColumns("notification_policies", "template_id"); n != 1 {
+		t.Fatalf("notification_policies.template_id is absent at migration 77 (found %d); "+
+			"without it a template has no way to be selected at all", n)
 	}
 
 	down(77)
 
-	if n := countColumns("notification_deliveries", "wordings"); n != 0 {
-		t.Fatalf("notification_deliveries.wordings survived 00077's Down (found %d)", n)
+	for _, col := range []string{"template_id", "template_version"} {
+		if n := countColumns("notification_deliveries", col); n != 0 {
+			t.Fatalf("notification_deliveries.%s survived 00077's Down (found %d)", col, n)
+		}
+	}
+	if n := countColumns("notification_policies", "template_id"); n != 0 {
+		t.Fatalf("notification_policies.template_id survived 00077's Down (found %d)", n)
 	}
 
 	// 00076 is a plain CREATE TABLE, so its Down is a DROP guarded by a row count —
 	// the shape 00073, 00074 and 00075 all use for a narrowing Down. The guard is
-	// what is interesting here: a Wording is customer-authored prose that exists
+	// what is interesting here: a template is customer-authored prose that exists
 	// nowhere else, so dropping the table with live rows in it destroys something
 	// no backup of the alert data would restore.
-	if n := countTables("wordings"); n != 1 {
-		t.Fatalf("wordings is absent at migration 76 (found %d); 00076's Up exists to create "+
-			"the table a customer's own prose lives in", n)
+	if n := countTables("notification_templates"); n != 1 {
+		t.Fatalf("notification_templates is absent at migration 76 (found %d); 00076's Up "+
+			"exists to create the table a customer's own prose lives in", n)
 	}
-	// The stanza CHECK is the floor under the Go refusal. `fields`, `members`,
-	// `trail` and `actions` are structure rather than wording, and a row naming one
-	// could only arrive by a path that skipped the service — which is exactly the
-	// path a constraint is for.
+	// The format CHECK is the floor under the Go refusal. A fourth format needs a
+	// compiler, an editor mode and a validator, so a row naming one could only
+	// arrive by a path that skipped the service — which is exactly what a
+	// constraint is for.
 	if _, err := env.pool.Exec(env.ctx,
-		`INSERT INTO wordings (id, org_id, stanza, template, created_at, updated_at)
-		 VALUES ($1, $2, 'fields', 'x', now(), now())`, id.New(), id.New()); err == nil {
-		t.Fatal("wordings accepted stanza 'fields' at migration 76; wordings_stanza_ck exists " +
-			"because a grid of separately-budgeted cells is structure, not one line of prose")
+		`INSERT INTO notification_templates
+		   (id, org_id, name, provider, format, source, version, enabled, created_at, updated_at)
+		 VALUES ($1, $2, 'x', 'slack', 'handlebars', 'x', 1, true, now(), now())`,
+		id.New(), id.New()); err == nil {
+		t.Fatal("notification_templates accepted format 'handlebars' at migration 76; " +
+			"notification_templates_format_ck exists because a format oto cannot compile is a " +
+			"row that would fail at 03:00 rather than at save")
 	}
 
 	down(76)
 
-	if n := countTables("wordings"); n != 0 {
-		t.Fatalf("wordings still exists after 00076's Down (found %d); the Down is a guarded "+
-			"DROP and a Down that runs cleanly and removes nothing is the failure this file "+
-			"exists to catch", n)
+	if n := countTables("notification_templates"); n != 0 {
+		t.Fatalf("notification_templates still exists after 00076's Down (found %d); the Down "+
+			"is a guarded DROP and a Down that runs cleanly and removes nothing is the failure "+
+			"this file exists to catch", n)
 	}
 
 	if n := countTables("channel_connections"); n != 1 {

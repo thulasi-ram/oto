@@ -9,7 +9,7 @@
  * pass every assertion anybody would think to write about "the preview renders".
  *
  * ⭐ TWO: A WARNING IS NOT AN ERROR. A card with no `{{ actions }}` carries no
- * Acknowledge button. That is the owner's choice to make, so the screen has to
+ * Acknowledge button. That is the operator's choice to make, so the screen has to
  * say so AND leave the save button live. A test that only checked the sentence
  * appeared would pass against a screen that also blocked the save, which is the
  * failure that matters.
@@ -185,7 +185,7 @@ describe("TemplatesSection", () => {
 
     await until(() => screen.getByText(new RegExp("no Acknowledge or Snooze button")));
 
-    // The half that matters: the owner's decision is not overruled.
+    // The half that matters: the operator's decision is not overruled.
     const save = screen.getByRole("button", { name: /save/i });
     expect(save).not.toBeDisabled();
   });

@@ -220,18 +220,18 @@ func (p *parser) timeHandle(s string, i int, out *[]Span) int {
 // `https://oto.internal/case/1` and `https://evil.example/phish` are the same
 // kind of thing, and only a handle proves oto minted it.
 func (p *parser) bracketLink(s string, i, depth int, out *[]Span, lit *strings.Builder, flush func()) (int, bool) {
-	close := strings.IndexByte(s[i:], ']')
-	if close < 0 || i+close+1 >= len(s) || s[i+close+1] != '(' {
+	bracket := strings.IndexByte(s[i:], ']')
+	if bracket < 0 || i+bracket+1 >= len(s) || s[i+bracket+1] != '(' {
 		return 0, false
 	}
-	open := i + close + 1
-	shut := strings.IndexByte(s[open:], ')')
-	if shut < 0 {
+	open := i + bracket + 1
+	paren := strings.IndexByte(s[open:], ')')
+	if paren < 0 {
 		return 0, false
 	}
-	text := s[i+1 : i+close]
-	target := s[open+1 : open+shut]
-	next := open + shut + 1
+	text := s[i+1 : i+bracket]
+	target := s[open+1 : open+paren]
+	next := open + paren + 1
 
 	// ⚠️ AN EMPTY TARGET IS NOT AN ERROR. `{{ links.runbook }}` renders to
 	// nothing on a view that has no runbook, and refusing the template for that

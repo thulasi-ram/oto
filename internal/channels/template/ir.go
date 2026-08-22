@@ -39,7 +39,7 @@ const (
 	BlockFields BlockKind = "fields"
 	// BlockActions is the `{{ actions }}` token: oto's interactive row.
 	//
-	// ⚠️ A TEMPLATE MAY OMIT IT, BY THE OWNER'S EXPLICIT DECISION. The card
+	// ⚠️ A TEMPLATE MAY OMIT IT, BY THE OPERATOR'S EXPLICIT DECISION. The card
 	// then carries no acknowledge button. That is a degraded card and not a
 	// lost alert — `POST /api/v1/cases/{id}/ack` reaches the same service
 	// method the button does — but it IS a real loss, so Validate warns and
@@ -109,7 +109,7 @@ type Document struct {
 	Blocks []Block
 	// HasActions records whether the author placed `{{ actions }}`. A compiler
 	// that finds it false emits no action row at all — it does not append one,
-	// because the owner chose omission and a compiler second-guessing that
+	// because the operator chose omission and a compiler second-guessing that
 	// would make the choice unavailable.
 	HasActions bool
 }

@@ -269,55 +269,58 @@ func plan() []probe {
 			want: http.StatusOK,
 		},
 
-		/* ------------------------------------------------------------ wordings */
-		// ⭐ THE WORDING IS ORG-WIDE — no `channel_id` — and that is what keeps this
-		// block independent of the channel's lifecycle. `wordings.channel_id` is ON
-		// DELETE CASCADE, so a destination-scoped row would vanish underneath
-		// `deleteWording` when the channel probe at the end of this table runs.
-		{method: http.MethodGet, tmpl: "/api/v1/wordings", want: http.StatusOK},
+		/* --------------------------------------------------- notification templates */
+		{method: http.MethodGet, tmpl: "/api/v1/notification-templates", want: http.StatusOK},
 		{
-			method: http.MethodPost, tmpl: "/api/v1/wordings",
+			method: http.MethodPost, tmpl: "/api/v1/notification-templates",
 			body: map[string]any{
-				"stanza":   "body",
-				"template": "an alert is firing",
-				"reasons":  []any{"fired"},
+				"name":     "gate-g2-template",
+				"provider": "slack",
+				"format":   "text",
+				"source":   "an alert is firing",
 			},
 			want:    http.StatusCreated,
-			capture: map[string][]string{"wording": {"data", "id"}},
+			capture: map[string][]string{"template": {"data", "id"}},
 			why: "saving RENDERS the template against the shipped fixture corpus, so a 201 here " +
 				"proves the engine ran rather than that a row was inserted. " +
-				"⚠️ THE TEMPLATE IS A BARE LITERAL AND HAS TO BE: this table expands `{{name}}` " +
+				"⚠️ THE SOURCE IS A BARE LITERAL AND HAS TO BE: this table expands `{{name}}` " +
 				"from its own fixture map, which is Liquid's interpolation syntax character for " +
 				"character, so a realistic template is eaten by the harness before the server " +
-				"sees it. What this gate owns is the response shape; the interpolation itself is " +
-				"asserted in internal/channels/api and in render/wording's own suite",
+				"sees it. And `text` rather than `card` for the same reason — a card needs " +
+				"`{{ actions }}` to avoid the warning, and the harness would eat that too. What " +
+				"this gate owns is the response shape; interpolation is asserted in " +
+				"internal/channels/api and in channels/template's own suite",
 		},
 		{
-			method: http.MethodPost, tmpl: "/api/v1/wordings/preview",
+			method: http.MethodPost, tmpl: "/api/v1/notification-templates/preview",
 			body: map[string]any{
-				"stanza":   "body",
-				"template": "an alert is firing",
+				"format": "text",
+				"source": "an alert is firing",
 			},
 			want: http.StatusOK,
 			why: "the preview writes nothing and answers 200 even for a template it would refuse; " +
 				"422 is reserved for a malformed request",
 		},
 		{
-			method: http.MethodGet, tmpl: "/api/v1/wordings/{id}", url: "/api/v1/wordings/{{wording}}",
-			want: http.StatusOK,
+			method: http.MethodGet, tmpl: "/api/v1/notification-templates/{id}",
+			url:    "/api/v1/notification-templates/{{template}}",
+			want:   http.StatusOK,
 		},
 		{
-			method: http.MethodGet, tmpl: "/api/v1/wordings/{id}", url: "/api/v1/wordings/{{stranger}}",
-			want: http.StatusNotFound,
+			method: http.MethodGet, tmpl: "/api/v1/notification-templates/{id}",
+			url:    "/api/v1/notification-templates/{{stranger}}",
+			want:   http.StatusNotFound,
 		},
 		{
-			method: http.MethodPatch, tmpl: "/api/v1/wordings/{id}", url: "/api/v1/wordings/{{wording}}",
-			body: map[string]any{"priority": 50},
-			want: http.StatusOK,
+			method: http.MethodPatch, tmpl: "/api/v1/notification-templates/{id}",
+			url:    "/api/v1/notification-templates/{{template}}",
+			body:   map[string]any{"enabled": false},
+			want:   http.StatusOK,
 		},
 		{
-			method: http.MethodDelete, tmpl: "/api/v1/wordings/{id}", url: "/api/v1/wordings/{{wording}}",
-			want: http.StatusNoContent,
+			method: http.MethodDelete, tmpl: "/api/v1/notification-templates/{id}",
+			url:    "/api/v1/notification-templates/{{template}}",
+			want:   http.StatusNoContent,
 		},
 
 		/* ------------------------------------------------------------ policies */

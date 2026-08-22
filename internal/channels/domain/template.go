@@ -34,7 +34,7 @@ type NotificationTemplate struct {
 	// template can always reach a destination it was not written for. `card` and
 	// `text` are portable and render there correctly anyway; `raw` cannot, and
 	// degrades to oto's built-in card. oto warns at save and does not block —
-	// pairing them up is the owner's call.
+	// pairing them up is the operator's call.
 	Provider string
 	// Format is `card`, `text` or `raw`.
 	Format string

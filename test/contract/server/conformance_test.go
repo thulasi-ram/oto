@@ -141,11 +141,17 @@ func TestTheRunningServerMatchesTheContract(t *testing.T) {
 // number the table actually reaches. Raise it when the gate drives more; lower it
 // ONLY with this shape of arithmetic showing the API itself got smaller, never
 // because probes started failing.
-// ⬆️ 77 → 83, WHICH IS THE DIRECTION THE RULE ALLOWS. The six `/api/v1/wordings*`
-// operations landed with six probes and every one of them answers 2xx, so the
-// floor rises by exactly six. The table in fact reaches 88 of 97 today; the other
-// five are earlier work that never raised this constant, and claiming them here
-// would be crediting this change with probes it did not write.
+// ⬆️ 77 → 83, WHICH IS THE DIRECTION THE RULE ALLOWS. Six operations landed with
+// six probes and every one of them answers 2xx, so the floor rises by exactly six.
+// The table in fact reaches 88 of 97 today; the other five are earlier work that
+// never raised this constant, and claiming them here would be crediting this
+// change with probes it did not write.
+//
+// ⚠️ THE SIX ARE NOW `/api/v1/notification-templates*` AND THE FLOOR DID NOT MOVE.
+// ADR 0050 renamed and reshaped the endpoints one-for-one — six wordings routes
+// out, six template routes in — so the count is unchanged and this constant is
+// deliberately NOT re-derived. A rename that quietly lowered the floor would be
+// the ratchet's exact failure mode.
 const minimumSuccessfulOperations = 83
 
 /* -------------------------------------------------------------------------- */

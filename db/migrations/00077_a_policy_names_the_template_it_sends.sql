@@ -27,7 +27,7 @@ ALTER TABLE notification_policies
 
 -- +goose StatementBegin
 COMMENT ON COLUMN notification_policies.template_id IS
-  'The NotificationTemplate this policy''s deliveries are rendered with. NULL is oto''s built-in card. There is no per-channel override: a policy fans out to as many as sixteen destinations and they all get this one template, which may not suit every provider -- `card` and `text` are portable, `raw` is Slack-only and degrades elsewhere. Pairing them up is the owner''s call and oto only warns.';
+  'The NotificationTemplate this policy''s deliveries are rendered with. NULL is oto''s built-in card. There is no per-channel override: a policy fans out to as many as sixteen destinations and they all get this one template, which may not suit every provider -- `card` and `text` are portable, `raw` is Slack-only and degrades elsewhere. Pairing them up is the operator''s call and oto only warns.';
 -- +goose StatementEnd
 
 -- Written in the same statement as `rendered`, so a row can never carry a payload

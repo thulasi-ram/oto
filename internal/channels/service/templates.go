@@ -65,7 +65,7 @@ func (t *Templates) For(ctx context.Context, s db.TenantScope, policyID uuid.UUI
 //
 // ⚠️ WARNINGS COME BACK AS VIOLATIONS TOO, AND THE CALLER MUST TELL THEM APART.
 // `template.Blocking` is that test. The one warning today is a card with no
-// `{{ actions }}`: the owner is allowed to ship a card with no Acknowledge
+// `{{ actions }}`: the operator is allowed to ship a card with no Acknowledge
 // button, and oto's job is to make sure they know they did.
 func ValidateTemplate(name, provider, format, source string) []errs.Violation {
 	var out []errs.Violation
