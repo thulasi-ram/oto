@@ -303,24 +303,24 @@ func plan() []probe {
 		},
 		{
 			method: http.MethodGet, tmpl: "/api/v1/notification-templates/{id}",
-			url:    "/api/v1/notification-templates/{{template}}",
-			want:   http.StatusOK,
+			url:  "/api/v1/notification-templates/{{template}}",
+			want: http.StatusOK,
 		},
 		{
 			method: http.MethodGet, tmpl: "/api/v1/notification-templates/{id}",
-			url:    "/api/v1/notification-templates/{{stranger}}",
-			want:   http.StatusNotFound,
+			url:  "/api/v1/notification-templates/{{stranger}}",
+			want: http.StatusNotFound,
 		},
 		{
 			method: http.MethodPatch, tmpl: "/api/v1/notification-templates/{id}",
-			url:    "/api/v1/notification-templates/{{template}}",
-			body:   map[string]any{"enabled": false},
-			want:   http.StatusOK,
+			url:  "/api/v1/notification-templates/{{template}}",
+			body: map[string]any{"enabled": false},
+			want: http.StatusOK,
 		},
 		{
 			method: http.MethodDelete, tmpl: "/api/v1/notification-templates/{id}",
-			url:    "/api/v1/notification-templates/{{template}}",
-			want:   http.StatusNoContent,
+			url:  "/api/v1/notification-templates/{{template}}",
+			want: http.StatusNoContent,
 		},
 
 		/* ------------------------------------------------------------ policies */

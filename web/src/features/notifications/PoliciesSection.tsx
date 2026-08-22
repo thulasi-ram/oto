@@ -55,6 +55,7 @@ import {
   channelConnectionsQuery,
   channelsQuery,
   channelTypesQuery,
+  notificationTemplatesQuery,
   policiesQuery,
   recentAlertsQuery,
 } from "~/api/queries";
@@ -187,6 +188,8 @@ interface PolicyForm {
   readonly matchers: readonly Matcher[];
   readonly reasons: readonly NotificationReason[];
   readonly channel_ids: readonly string[];
+  /** "" is oto's own card, which is what a policy that names no template gets. */
+  readonly template_id: string;
 }
 
 function toCreatePolicyRequest(form: PolicyForm): CreatePolicyRequest {
@@ -197,6 +200,10 @@ function toCreatePolicyRequest(form: PolicyForm): CreatePolicyRequest {
     matchers: form.matchers.map((m) => ({ name: m.name, op: m.op, value: m.value })),
     reasons: [...form.reasons],
     channel_ids: [...form.channel_ids],
+    // ⛔ OMITTED RATHER THAN SENT AS null. On create the contract's `template_id`
+    // is a plain optional uuid: absent means oto's own card. `null` is meaningful
+    // only on the PATCH, where it CLEARS a template the policy already had.
+    ...(form.template_id === "" ? {} : { template_id: form.template_id }),
   };
 }
 
@@ -243,6 +250,9 @@ const PolicyFormSchema = v.pipe(
       ),
       v.maxLength(CHANNELS_MAX, `At most ${CHANNELS_MAX} channels on one policy.`),
     ),
+    // "" is oto's own card and is the shipped default; anything else must be a
+    // uuid, because the only other thing it can be is a template id.
+    template_id: v.union([v.literal(""), UuidSchema]),
   }),
   // The annotation matters: `CreatePolicyRequest` marks the two defaulted keys
   // required (openapi-typescript fills a default in), while the generated
@@ -463,6 +473,7 @@ const PolicyDialog: Component<{
   const [matcherText, setMatcherText] = createSignal("");
   const [reasons, setReasons] = createSignal<readonly NotificationReason[]>(["fired", "all_resolved"]);
   const [channelIds, setChannelIds] = createSignal<readonly string[]>([]);
+  const [templateId, setTemplateId] = createSignal("");
   // "new" opens the create flow; a Channel opens it pre-filled for editing.
   const [channelDialog, setChannelDialog] = createSignal<Channel | "new" | null>(null);
   const [seeded, setSeeded] = createSignal(false);
@@ -491,6 +502,7 @@ const PolicyDialog: Component<{
         );
         setReasons(p.reasons);
         setChannelIds(p.channel_ids);
+        setTemplateId(p.template_id ?? "");
       } else {
         setName("");
         setPriority(100);
@@ -498,6 +510,7 @@ const PolicyDialog: Component<{
         setMatcherText("");
         setReasons(["fired", "all_resolved"]);
         setChannelIds([]);
+        setTemplateId("");
       }
     }
   });
@@ -519,6 +532,7 @@ const PolicyDialog: Component<{
     matchers: matchers(),
     reasons: reasons(),
     channel_ids: channelIds(),
+    template_id: templateId(),
   });
 
   /**
@@ -545,7 +559,16 @@ const PolicyDialog: Component<{
   const mutation = useMutation(() => ({
     mutationFn: (body: CreatePolicyRequest) => {
       const p = props.policy;
-      return p !== null ? updatePolicy(p.id, body) : createPolicy(body, idempotencyKey());
+      if (p === null) return createPolicy(body, idempotencyKey());
+      /*
+       * ⛔ `template_id` IS SENT EXPLICITLY ON THE PATCH, AS null WHEN CLEARED.
+       * The create body OMITS it when empty, because on a create absent already
+       * means "oto's own card". On a patch, absent means "leave it alone" — so
+       * reusing the create shape here would make putting a policy BACK on the
+       * default card impossible: the picker would show the change and the save
+       * would silently keep the old template.
+       */
+      return updatePolicy(p.id, { ...body, template_id: body.template_id ?? null });
     },
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: qk.settings.policies() });
@@ -656,6 +679,14 @@ const PolicyDialog: Component<{
             )}
           </Show>
         </div>
+
+        <TemplatePicker
+          value={templateId()}
+          onChange={(next) => {
+            setTouched(true);
+            setTemplateId(next);
+          }}
+        />
 
         <ChannelPicker
           channels={props.channels}
@@ -1666,5 +1697,77 @@ const PolicyPreviewPanel: Component<{ readonly draft: CreatePolicyRequest }> = (
         )}
       </Show>
     </fieldset>
+  );
+};
+
+/**
+ * Which message template this policy's alerts are rendered with.
+ *
+ * ⭐ IT LIVES ON THE POLICY BECAUSE THE POLICY IS THE ROUTING DECISION (ADR
+ * 0050). A template carries no matchers of its own — the predecessor did, and an
+ * operator then had to hold two resolution rules in their head to predict a card:
+ * the one that chose the channel and the one that chose the words. Here there is
+ * one, and it is on the screen that already decided everything else.
+ *
+ * ⚠️ ONE TEMPLATE FOR EVERY DESTINATION THIS POLICY FANS OUT TO, AND THEY NEED
+ * NOT SHARE A PROVIDER. `card` and `text` render anywhere; `raw` is Slack Block
+ * Kit and degrades to oto's own card elsewhere. That is said here rather than
+ * discovered, because the alternative is a Slack-shaped message arriving at a
+ * webhook and nobody knowing why it looks like the default.
+ */
+const TemplatePicker: Component<{
+  value: string;
+  onChange: (next: string) => void;
+}> = (props) => {
+  const templates = useQuery(() => notificationTemplatesQuery());
+  const rows = createMemo(() => (templates.data?.data ?? []).filter((t) => t.enabled));
+
+  const chosen = createMemo(() => rows().find((t) => t.id === props.value) ?? null);
+
+  return (
+    <div class={FIELD}>
+      <Select<string>
+        value={props.value}
+        onChange={(next) => props.onChange(next ?? "")}
+        options={["", ...rows().map((t) => t.id)]}
+        placeholder="oto's own card"
+        itemComponent={(itemProps) => (
+          <SelectItem item={itemProps.item}>
+            {itemProps.item.rawValue === ""
+              ? "oto's own card"
+              : (rows().find((t) => t.id === itemProps.item.rawValue)?.name ??
+                "a removed template")}
+          </SelectItem>
+        )}
+      >
+        <SelectLabel class={LABEL}>Message template</SelectLabel>
+        <SelectTrigger>
+          <SelectValue<string>>
+            {(state) =>
+              state.selectedOption() === ""
+                ? "oto's own card"
+                : (rows().find((t) => t.id === state.selectedOption())?.name ?? "oto's own card")
+            }
+          </SelectValue>
+        </SelectTrigger>
+        <SelectContent />
+        <SelectHiddenSelect />
+      </Select>
+      <p class={HELP}>
+        <Show
+          when={chosen()}
+          fallback="Leave this alone and every alert reads in oto's own voice. Write a template under Templates to change it."
+        >
+          {(t) => (
+            <>
+              {t().format === "raw"
+                ? "Slack Block Kit — every non-Slack destination in this policy falls back to oto's own card."
+                : "Portable — oto compiles it for whichever channel each alert goes to."}{" "}
+              Written for {t().provider}.
+            </>
+          )}
+        </Show>
+      </p>
+    </div>
   );
 };

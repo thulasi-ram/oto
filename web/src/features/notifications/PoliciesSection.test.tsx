@@ -19,7 +19,7 @@ import { describe, expect, it } from "vitest";
 import * as v from "valibot";
 
 import { PoliciesSection } from "./PoliciesSection";
-import { CreatePolicyRequestSchema } from "~/api/generated/validators";
+import { CreatePolicyRequestSchema, UpdatePolicyRequestSchema } from "~/api/generated/validators";
 import type { NotificationSuppressedReason, PolicyPreview } from "~/api/types";
 import { enumValues, requestMaxLength, requestRange } from "~/test/contract";
 import { alert, channel, policy } from "~/test/fixtures";
@@ -273,7 +273,14 @@ describe("the policy editor's bounds", () => {
     // contract's own schema would have accepted. A raw draft could not promise
     // this, and the 422 this screen is named after is exactly what it looks like
     // when it does not.
-    const parsed = v.safeParse(CreatePolicyRequestSchema, sent);
+    //
+    // ⛔ THE **UPDATE** SCHEMA, BECAUSE THIS IS A PATCH. The two shapes were
+    // interchangeable until `template_id` arrived, and they are not any more:
+    // absent on a create means "oto's own card", while absent on a patch means
+    // "leave it alone" — so clearing a template requires an explicit `null` that
+    // the create schema rightly refuses. Asserting the create schema here would
+    // pass by accident today and forbid the clear-a-template request tomorrow.
+    const parsed = v.safeParse(UpdatePolicyRequestSchema, sent);
     expect(parsed.success, JSON.stringify(parsed.issues?.map((i) => i.message))).toBe(true);
     expect((sent as { priority: number }).priority).toBe(PRIORITY.max);
     // And the name is trimmed on the way out, not stored with its whitespace.

@@ -186,6 +186,11 @@ func Bootstrap(ctx context.Context, pool *pgxpool.Pool, req BootstrapRequest, no
 		if ierr := tokens.Insert(ctx, scope, token); ierr != nil {
 			return fmt.Errorf("bootstrap: insert token: %w", ierr)
 		}
+		if _, ierr := q.Exec(ctx, insertDefaultTemplateSQL,
+			id.New(), org.ID, defaultTemplateName, defaultTemplateSource, now.UTC(),
+		); ierr != nil {
+			return fmt.Errorf("bootstrap: insert default template: %w", ierr)
+		}
 		return nil
 	})
 	if err != nil {
@@ -228,6 +233,53 @@ VALUES ($1, $2, $3, $4, $5, $5)`
 const insertUserSQL = `
 INSERT INTO users (id, org_id, email, display_name, password_hash, created_at, updated_at)
 VALUES ($1, $2, $3, $4, $5, $6, $6)`
+
+// One NotificationTemplate, seeded so the picker on the policy screen is not
+// empty on the first day.
+//
+// ⛔ NO POLICY POINTS AT IT, AND THAT IS THE WHOLE DESIGN OF THE SEED.
+// `notification_policies.template_id` stays NULL, so every alert still renders
+// through oto's built-in Go card. Pointing new policies here instead would make
+// the Go renderer unreachable on a fresh deployment — and the Go renderer is the
+// FALLBACK every template failure lands on. A safety net nothing exercises is a
+// safety net nobody finds out is torn.
+//
+// ⭐ SO IT IS A STARTING POINT, NOT A DEFAULT. An operator opens it, sees every
+// construct the format has used once, edits it, and points a policy at it
+// deliberately. The alternative — an empty picker and a link to the docs — is how
+// a feature ships and is never used.
+//
+// ⚠️ IT IS SEEDED ONCE, AT BOOTSTRAP, AND NEVER RECONCILED. Editing it is the
+// point, so a later release that "fixed" the seed would overwrite somebody's
+// work. If the starter needs to change, it changes for the NEXT deployment.
+const insertDefaultTemplateSQL = `
+INSERT INTO notification_templates
+  (id, org_id, name, provider, format, source, version, enabled, created_at, updated_at)
+VALUES ($1, $2, $3, 'slack', 'card', $4, 1, TRUE, $5, $5)`
+
+const defaultTemplateName = "oto's own card"
+
+// The seed's body. It approximates the built-in card closely enough that an
+// operator can see the correspondence, and it uses every construct once — a
+// heading, prose with a filter and a fallback, a divider, the fields grid, a
+// loop, a link written the only way links can be written, and the actions token.
+const defaultTemplateSource = `# {{ alert.name }}
+
+{{ annotations.summary | default: "No summary on this alert." }}
+
+---
+
+:::fields
+Severity | {{ alert.severity | upper }}
+Firing | {{ group.firing_for }}
+Seen | {{ alert.total_cases }} times
+:::
+
+{% for l in label_list %}- {{ l.name }}: {{ l.value }}
+{% endfor %}
+> [Open in oto]({{ links.group }})
+
+{{ actions }}`
 
 // normalise trims, applies defaults and enforces the bounds this command owns.
 func (r BootstrapRequest) normalise() (BootstrapRequest, error) {
