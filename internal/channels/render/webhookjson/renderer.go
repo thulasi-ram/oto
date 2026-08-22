@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/thulasiram/oto/internal/channels/domain"
-	"github.com/thulasiram/oto/internal/channels/render/wording"
+	"github.com/thulasiram/oto/internal/channels/template"
 	"github.com/thulasiram/oto/internal/platform/clock"
 	"github.com/thulasiram/oto/internal/platform/errs"
 )
@@ -97,7 +97,7 @@ func (r *Renderer) Render(
 	// on the other's. Two renderers disagreeing about what a setting MEANS is worse
 	// than either answer.
 	if v.Digest == nil && o.Mode != domain.ModeThreadReply {
-		env.Rendered = renderWordings(v, o, at)
+		env.Rendered = renderTemplate(v, o, at)
 	}
 
 	if v.Digest != nil {
@@ -431,27 +431,47 @@ func marshal(v any) (json.RawMessage, error) {
 	return json.RawMessage(bytes.TrimRight(buf.Bytes(), "\n")), nil
 }
 
-// renderWordings produces the customer's per-Stanza prose for a webhook consumer.
+// renderTemplate produces the operator's own wording of this message, as prose,
+// for a webhook consumer.
 //
-// ⭐ IT IS THE SAME TEMPLATE THE SLACK CARD USES, SPELLED DIFFERENTLY. A Wording is
-// text and text is portable; what is not portable is punctuation. PlainDialect
-// drops every emphasis mark and renders a timestamp as oto's UTC string rather
-// than as Slack's <!date^…> token, so a consumer receives values it can process
-// instead of one product's markup it would have to strip.
+// ⭐ PROSE IS THE ONLY THING WORTH SENDING HERE. A webhook consumer is a PROGRAM:
+// every fact the message mentions is already in the envelope as a structured
+// field, typed and unescaped, and handing it Slack's punctuation on top would be
+// corruption dressed as formatting. So the card is compiled with PlainDialect,
+// which drops every mark and keeps every word.
 //
-// ⛔ A FAILING WORDING OMITS ITS KEY RATHER THAN EMITTING AN ERROR OR AN EMPTY
-// STRING. The Slack renderer falls back to oto's own text because a card must say
-// something; there is no equivalent here, because every fact a Stanza could
-// mention is ALREADY in the envelope as a structured field. An absent key is the
-// truthful rendering of "the customer's prose for this stanza did not render",
-// and it is a smaller claim than an empty string a consumer would print.
-func renderWordings(v *domain.NotificationView, o domain.RenderOptions, at time.Time) map[string]string {
-	if len(o.Wordings) == 0 {
-		return nil
+// ⛔ A FAILING TEMPLATE OMITS THE FIELD RATHER THAN EMITTING AN ERROR OR AN EMPTY
+// STRING. The Slack renderer falls back to oto's own card because a card must say
+// something; there is no equivalent here, because the envelope already said
+// everything. An absent field is the truthful rendering of "the operator's prose
+// did not render", and it is a smaller claim than an empty string a consumer
+// would go on to print.
+func renderTemplate(v *domain.NotificationView, o domain.RenderOptions, at time.Time) string {
+	if o.Template == nil || o.Template.Source == "" {
+		return ""
 	}
-	// ⭐ THE SHARED HELPER, WHICH ALSO MEANS THE SHARED PARSE CACHE. This used to be
-	// its own loop calling wording.Compile directly, so every delivery re-parsed
-	// every template while the Slack renderer served its from a cache — the same
-	// work, done twice, one of the copies wasted.
-	return wording.RenderAll(o.Wordings, wording.BuildInput(v, at), wording.PlainDialect{})
+	format := template.Format(o.Template.Format)
+	t, err := template.Compiled(format, o.Template.Source)
+	if err != nil {
+		return ""
+	}
+	in, links := template.BuildInput(v, at, format)
+	switch format {
+	case template.FormatCard:
+		doc, probs := t.RenderCard(in, links)
+		if template.Blocking(probs) || doc == nil {
+			return ""
+		}
+		return doc.PlainText(template.PlainDialect{})
+	case template.FormatText:
+		out, err := t.RenderText(in, template.PlainDialect{}, links)
+		if err != nil {
+			return ""
+		}
+		return out
+	}
+	// ⚠️ `raw` IS SLACK'S BLOCK KIT AND MEANS NOTHING HERE. Sending a webhook
+	// consumer another product's payload shape would be worse than sending it
+	// nothing, so it gets nothing and the structured envelope stands alone.
+	return ""
 }

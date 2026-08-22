@@ -32,10 +32,11 @@ type Options struct {
 	Channels    ChannelStore
 	Connections ConnectionStore
 	Creds       CredentialWriter
-	// Wordings is the customer's per-Stanza templates (ADR 0037). Nil is a
-	// declared `503` on the six /wordings routes and nothing at all to the rest —
-	// a deployment that has configured none still delivers, in oto's own voice.
-	Wordings WordingStore
+	// Templates is the operator's own NotificationTemplates. Nil is a declared
+	// `503` on the six /notification-templates routes and nothing at all to the
+	// rest — a deployment that has configured none still delivers, in oto's own
+	// voice.
+	Templates TemplateStore
 	// Writes owns `createChannel` and `testChannel`. It is a DIFFERENT
 	// collaborator from Channels — the service rather than the repository —
 	// because an `Idempotency-Key` claim has to join the transaction of the act it
@@ -60,7 +61,7 @@ type Router struct {
 	channels     ChannelStore
 	connections  ConnectionStore
 	creds        CredentialWriter
-	wordings     WordingStore
+	templates    TemplateStore
 	writes       ChannelWriter
 	resolver     ConnectionResolver
 	interactions SlackInteractions
@@ -79,7 +80,7 @@ func NewRouter(o Options) *Router {
 		channels:     o.Channels,
 		connections:  o.Connections,
 		creds:        o.Creds,
-		wordings:     o.Wordings,
+		templates:    o.Templates,
 		writes:       o.Writes,
 		resolver:     o.Resolver,
 		interactions: o.Interactions,
@@ -107,16 +108,16 @@ func (rt *Router) Register(r chi.Router) {
 	// ⚠️ `/preview` IS DECLARED BEFORE `/{id}` AND THE ORDER IS LOAD-BEARING TO A
 	// READER, not to chi — chi's trie prefers a static segment over a parameter
 	// either way. Written the other way round it reads as though `preview` were a
-	// wording id, which is the misreading the endpoint exists to avoid: it
+	// template id, which is the misreading the endpoint exists to avoid: it
 	// addresses no row and writes nothing.
-	r.Route("/wordings", func(r chi.Router) {
-		r.Get("/", rt.listWordings)
-		r.Post("/", rt.createWording)
-		r.Post("/preview", rt.previewWording)
+	r.Route("/notification-templates", func(r chi.Router) {
+		r.Get("/", rt.listTemplates)
+		r.Post("/", rt.createTemplate)
+		r.Post("/preview", rt.previewTemplate)
 		r.Route("/{id}", func(r chi.Router) {
-			r.Get("/", rt.getWording)
-			r.Patch("/", rt.updateWording)
-			r.Delete("/", rt.deleteWording)
+			r.Get("/", rt.getTemplate)
+			r.Patch("/", rt.updateTemplate)
+			r.Delete("/", rt.deleteTemplate)
 		})
 	})
 

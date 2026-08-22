@@ -423,3 +423,22 @@ func (k ConversationKind) SubjectKind() SubjectKind {
 	}
 	return ""
 }
+
+// RenderAttribution says which NotificationTemplate produced a delivery's bytes.
+//
+// ⭐ IT EXISTS SO THAT `notification/repository` NEVER NAMES `channels`. The
+// template itself is a channels concept and the seam that may import it is one
+// documented file in `notification/service`; a repository reaching for
+// `chdomain.TemplateRef` would open a second door for the sake of two scalars.
+//
+// ⚠️ THE VERSION IS RECORDED AND THE SOURCE IS NOT. A delivery row is written on
+// every send and a template body runs to sixteen kilobytes. What makes the pointer
+// sufficient is that the RENDERED PAYLOAD is already on the same row: the bytes
+// that went out are never in doubt, only the attribution is, and (id, version)
+// settles that.
+type RenderAttribution struct {
+	// TemplateID is nil when oto's own card rendered the message, which is the
+	// overwhelmingly common case.
+	TemplateID      *uuid.UUID
+	TemplateVersion int
+}

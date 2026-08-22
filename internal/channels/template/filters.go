@@ -1,4 +1,4 @@
-package wording
+package template
 
 import (
 	"strconv"

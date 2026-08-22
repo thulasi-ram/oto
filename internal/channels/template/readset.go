@@ -1,4 +1,4 @@
-package wording
+package template
 
 import (
 	"regexp"
@@ -10,7 +10,7 @@ import (
 	"github.com/thulasiram/oto/internal/channels/domain"
 )
 
-// freeFormRoots are the branches of StanzaInput whose keys come from the
+// freeFormRoots are the branches of Input whose keys come from the
 // customer's own data rather than from oto's vocabulary.
 //
 // A missing key under one of these is NOT a typo — `labels.team` is absent from a
@@ -182,7 +182,7 @@ func stripQuoted(s string) string {
 }
 
 // lookup reports whether a dotted path already resolves in the probe.
-func lookup(in StanzaInput, path string) bool {
+func lookup(in Input, path string) bool {
 	var cur any = map[string]any(in)
 	for _, p := range strings.Split(path, ".") {
 		m, ok := cur.(map[string]any)
@@ -198,7 +198,7 @@ func lookup(in StanzaInput, path string) bool {
 }
 
 // plant inserts a placeholder at a dotted path so the probe can continue past it.
-func plant(in StanzaInput, path string) {
+func plant(in Input, path string) {
 	parts := strings.Split(path, ".")
 	cur := map[string]any(in)
 	for i, p := range parts {
@@ -217,7 +217,7 @@ func plant(in StanzaInput, path string) {
 
 // maximalInput is a view in which every optional field is present, used only to
 // decide whether a name EXISTS. It is never rendered onto a card.
-func maximalInput() StanzaInput {
+func maximalInput() Input {
 	at := fixtureClock.Add(90 * time.Minute)
 	ended := at
 	v := firingView()
@@ -244,5 +244,8 @@ func maximalInput() StanzaInput {
 		x := 1.5
 		v.Alerts[0].Value = &x
 	}
-	return BuildInput(v, at)
+	// The probe asks which NAMES exist, which is the same set in every format;
+	// card is chosen because it is the default and the one with the most surface.
+	in, _ := BuildInput(v, at, FormatCard)
+	return in
 }

@@ -298,7 +298,7 @@ func (d *digestDeliveries) Claim(
 
 func (d *digestDeliveries) PersistRendered(
 	context.Context, db.TenantScope, uuid.UUID, json.RawMessage, string, string, time.Time,
-	map[string]string,
+	domain.RenderAttribution,
 ) error {
 	return nil
 }

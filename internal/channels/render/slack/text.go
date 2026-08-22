@@ -6,7 +6,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/thulasiram/oto/internal/channels/render/wording"
+	"github.com/thulasiram/oto/internal/channels/template"
 )
 
 // Slack's limits (§H.7). They are constants here so that the renderer truncates
@@ -405,7 +405,7 @@ func plainMoment(t, ref time.Time) string {
 // with a comment promising a test would catch drift — the test asserted literals
 // and never called this one, so nothing would have. One implementation, one
 // phrasing, and two channels can no longer disagree about how old a signal is.
-func humanDuration(d time.Duration) string { return wording.HumanDuration(d) }
+func humanDuration(d time.Duration) string { return template.HumanDuration(d) }
 
 // plural renders "1 instance" / "3 instances" without the "(s)" that makes a
 // product feel unfinished.

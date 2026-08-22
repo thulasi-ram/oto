@@ -185,10 +185,10 @@ type Container struct {
 	NotifyWorkers   *notifworker.Workers
 	NotifyScopes    *notifrepo.ScopeResolver
 	notifConfigRepo *notifrepo.ConfigRepository
-	// wordings is held on the container because it is read at BOTH ends of the
+	// templates is held on the container because it is read at BOTH ends of the
 	// feature — the authoring API and the delivery-time resolver — and those are
 	// wired by two different methods.
-	wordings *channelsrepo.WordingRepository
+	templates *channelsrepo.TemplateRepository
 
 	// --- routers --------------------------------------------------------
 
@@ -419,8 +419,8 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	// constructions would be two connection-pool users where one will do, and — the
 	// part that actually bites — two places to change when the constructor gains an
 	// argument.
-	wordingRepo := channelsrepo.NewWordingRepository(general, clk)
-	c.wordings = wordingRepo
+	templateRepo := channelsrepo.NewTemplateRepository(general, clk)
+	c.templates = templateRepo
 	credentialRepo := channelsrepo.NewCredentialRepository(general, keyringSealer(c.Keyring), channelsUnsealer(c.Keyring), clk)
 	tester, err := channelsservice.NewTester(channelsservice.TesterOptions{
 		Store:       channelRepo,
@@ -900,9 +900,9 @@ func (c *Container) buildNotification(
 		// The customer's per-Stanza templates (ADR 0037, ADR 0049). Resolution
 		// happens at claim time, on the notification side, so the renderer stays a
 		// pure function of (NotificationView, RenderOptions) and its golden files
-		// keep meaning something. A deployment that has configured no Wording
+		// keep meaning something. A deployment whose policies name no template
 		// resolves none and every card reads in oto's own voice.
-		Wordings: channelsservice.NewWordings(c.wordings),
+		Templates: channelsservice.NewTemplates(c.templates),
 	}); err != nil {
 		return err
 	}
@@ -1080,8 +1080,8 @@ func (c *Container) buildRouters(
 			// The authoring half of ADR 0037: the six /wordings routes, including
 			// the preview that renders a candidate template against the shipped
 			// fixture corpus in every Dialect and saves nothing.
-			Wordings: c.wordings,
-			Clock:    clk,
+			Templates: c.templates,
+			Clock:     clk,
 		}),
 		notifs: notifapi.NewRouter(notifapi.Options{
 			Policies: c.notifConfigRepo,

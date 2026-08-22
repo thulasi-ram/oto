@@ -1,4 +1,4 @@
-package wording
+package template
 
 import (
 	"time"
@@ -16,21 +16,30 @@ import (
 // labels — which are exactly the cards an operator is reading when something is
 // wrong.
 type Fixture struct {
-	Name  string
-	Input StanzaInput
-	// Representative marks the ORDINARY cards. A Wording that renders empty on one
-	// of these is refused at save time; rendering empty on a hostile fixture is
-	// expected and is handled at delivery by falling back to oto's own text.
+	Name string
+	view *domain.NotificationView
+	at   time.Time
+	// Representative marks the ORDINARY cards. A template that renders empty on
+	// one of these is refused at save time; rendering empty on a hostile fixture
+	// is expected and is handled at delivery by falling back to oto's own card.
 	//
 	// ⚠️ THE DIGEST IS NOT REPRESENTATIVE, THOUGH IT IS AN ORDINARY MESSAGE. A
-	// Wording only ever reaches the ROOT card: a digest emits `digest`,
-	// `digestfacts`, `digestlook` and `digestfooter`, and a thread reply emits
-	// `reply` and `replyctx` — none of them SPEC §H.7's eight stanza names. So
-	// refusing a template because it says nothing on a digest would be refusing it
-	// for a card it will never write. It stays in the corpus as a ROBUSTNESS
-	// fixture: a view with almost every field absent is exactly what shakes out a
-	// template that assumed one.
+	// template reaches the ROOT card: a digest and a thread reply are built by
+	// their own renderers and take no template in this version. The digest view
+	// stays in the corpus as a ROBUSTNESS fixture, because a view with almost
+	// every field absent is exactly what shakes out a template that assumed one.
 	Representative bool
+}
+
+// Bind projects this fixture for one format.
+//
+// ⛔ IT CANNOT BE PRECOMPUTED, because the escaping is part of the binding and
+// the escaping depends on the format: a card escapes every value for Markdown
+// and a raw template must not. A fixture that memoised one format's bindings
+// would validate `raw` templates against `card` values and pass things that
+// break in production.
+func (f Fixture) Bind(format Format) (Input, map[string]string) {
+	return BuildInput(f.view, f.at, format)
 }
 
 var fixtureClock = time.Date(2026, 3, 14, 9, 26, 53, 0, time.UTC)
@@ -38,19 +47,29 @@ var fixtureClock = time.Date(2026, 3, 14, 9, 26, 53, 0, time.UTC)
 // Fixtures is the corpus. It is deliberately small and deliberately nasty.
 func Fixtures() []Fixture {
 	return []Fixture{
-		{Name: "firing", Representative: true, Input: BuildInput(firingView(), fixtureClock.Add(23*time.Minute))},
-		{Name: "resolved", Representative: true, Input: BuildInput(resolvedView(), fixtureClock.Add(2*time.Hour))},
-		{Name: "digest", Input: BuildInput(digestView(), fixtureClock)},
-		{Name: "empty-labels", Input: BuildInput(emptyView(), fixtureClock)},
-		{Name: "oversized-annotation", Input: BuildInput(oversizedView(), fixtureClock)},
-		{Name: "hostile-text", Input: BuildInput(hostileView(), fixtureClock)},
-		{Name: "zero-value", Input: BuildInput(&domain.NotificationView{}, time.Time{})},
+		{Name: "firing", Representative: true, view: firingView(), at: fixtureClock.Add(23 * time.Minute)},
+		{Name: "resolved", Representative: true, view: resolvedView(), at: fixtureClock.Add(2 * time.Hour)},
+		{Name: "digest", view: digestView(), at: fixtureClock},
+		{Name: "empty-labels", view: emptyView(), at: fixtureClock},
+		{Name: "oversized-annotation", view: oversizedView(), at: fixtureClock},
+		{Name: "hostile-text", view: hostileView(), at: fixtureClock},
+		{Name: "zero-value", view: &domain.NotificationView{}, at: time.Time{}},
 	}
 }
 
 func firingView() *domain.NotificationView {
 	v := &domain.NotificationView{
-		Org:    domain.OrgRef{ID: "org", Slug: "acme", Name: "Acme"},
+		Org: domain.OrgRef{ID: "org", Slug: "acme", Name: "Acme"},
+		// A real card carries deep links, so the corpus must too: a template that
+		// says `[text]({{ links.group }})` has to be exercised with the link
+		// PRESENT, or the save-time gate only ever proves the absent case.
+		Links: domain.Links{
+			Group:      "https://oto.example/g/g1",
+			Alert:      "https://oto.example/a/a1",
+			Timeline:   "https://oto.example/g/g1/timeline",
+			Prometheus: "https://prom.example/graph?g0.expr=up",
+			Runbook:    "https://wiki.example/runbooks/high-error-rate",
+		},
 		Reason: "fired",
 		Group: domain.GroupView{
 			ID: "g1", GroupKey: "k", Generation: 1, Title: "HighErrorRate",
@@ -95,7 +114,6 @@ func firingView() *domain.NotificationView {
 			},
 		},
 		Trail:         []domain.TrailEntry{{Kind: "fired", At: fixtureClock}, {Kind: "refired", At: fixtureClock.Add(time.Hour)}},
-		Links:         domain.Links{},
 		Notifications: 2,
 		RenderedAt:    fixtureClock.Add(23 * time.Minute),
 	}

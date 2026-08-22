@@ -153,20 +153,28 @@ type ChannelRegistry interface {
 	Open(ctx context.Context, t ProviderType, cfg TargetConfig, cred TargetCredential) (Target, error)
 }
 
-// WordingResolver decides which customer template, if any, writes each Stanza of
-// one delivery (ADR 0037, ADR 0049). It is satisfied by
-// `internal/channels/service.Wordings`.
+// TemplateRef is the NotificationTemplate a delivery was routed with.
+type TemplateRef = chdomain.TemplateRef
+
+// TemplateResolver reads the NotificationTemplate a policy names. It is satisfied
+// by `internal/channels/service.Templates`.
+//
+// ⭐ IT TAKES A POLICY ID AND NOT A MATCHER, BECAUSE A TEMPLATE NO LONGER SELECTS
+// ITSELF. Presentation rides the routing decision that has already been made: the
+// policy carries the `when` clause, the policy chose the channels, and the policy
+// names the template. There is exactly one lookup and no second search with a
+// second precedence order to reason about.
 //
 // ⭐ IT IS A PORT RATHER THAN A DIRECT CALL FOR THE REASON EVERYTHING ELSE IN THIS
 // FILE IS: the coupling stays one import in one file. It also keeps the renderer a
 // pure function — resolution needs a database read, so it happens HERE, at claim
-// time, and only the winning template per Stanza crosses into RenderOptions.
+// time, and only the chosen template crosses into RenderOptions.
 //
-// ⛔ IT RETURNS A MAP AND NO ERROR, DELIBERATELY. A presentation lookup must never
-// be able to fail a delivery: an unreadable store yields no wordings, every Stanza
-// falls back to oto's own Go text, and the card goes out reading in the default
-// voice. A card that reads plainly is a small loss; a card that does not arrive
-// because a formatting table was unavailable is not.
-type WordingResolver interface {
-	For(ctx context.Context, s db.TenantScope, channelID uuid.UUID, v *NotificationView) map[string]string
+// ⛔ IT RETURNS nil AND NO ERROR, DELIBERATELY. A presentation lookup must never
+// be able to fail a delivery: an unreadable store yields no template, the renderer
+// builds oto's own card, and the alert goes out reading in the default voice. A
+// card that reads plainly is a small loss; a card that does not arrive because a
+// formatting table was unavailable is not.
+type TemplateResolver interface {
+	For(ctx context.Context, s db.TenantScope, policyID uuid.UUID) *TemplateRef
 }

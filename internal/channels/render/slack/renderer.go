@@ -412,3 +412,7 @@ func safeURL(u string) string {
 	}
 	return truncateURL(u)
 }
+
+// continuedMarker is §H.9's "this card replaces an earlier one" sentence. Saying
+// so is what stops a recovery reading as a second incident.
+const continuedMarker = "_continued from an earlier card_"

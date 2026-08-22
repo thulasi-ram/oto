@@ -1,4 +1,4 @@
-package wording
+package template
 
 import (
 	"strconv"
@@ -24,22 +24,22 @@ import (
 // on others, which is the worst kind of bug: invisible to the author, visible to
 // exactly one reader.
 const (
-	markCodeOpen    = ''
-	markCodeClose   = ''
-	markStrikeOpen  = ''
-	markStrikeClose = ''
-	markBoldOpen    = ''
-	markBoldClose   = ''
-	markItalicOpen  = ''
-	markItalicClose = ''
+	markCodeOpen    = '\uE000'
+	markCodeClose   = '\uE001'
+	markStrikeOpen  = '\uE002'
+	markStrikeClose = '\uE003'
+	markBoldOpen    = '\uE004'
+	markBoldClose   = '\uE005'
+	markItalicOpen  = '\uE006'
+	markItalicClose = '\uE007'
 
 	// A timestamp mark wraps `<unix>|<fallback>` because a provider that can render
 	// a viewer-local time needs the epoch and a provider that cannot needs a string
 	// oto already formatted. Slack's <!date> token takes both; a plain-text sink
 	// takes only the second.
-	markTimeOpen  = ''
-	markTimeClose = ''
-	markTimeSep   = ''
+	markTimeOpen  = '\uE010'
+	markTimeClose = '\uE011'
+	markTimeSep   = '\uE012'
 )
 
 // Dialect spells oto's neutral marks in one provider's syntax, and refuses that
@@ -77,6 +77,12 @@ type Dialect interface {
 	// said "&" is not safety, it is corruption of the value it will go on to
 	// process.
 	EscapeText(s string) string
+	// LinkTo spells an OTO-ISSUED link: an address plus the words that stand for
+	// it. It is not the author's escape hatch — the parser refuses any link whose
+	// target did not come from the binding's Links namespace, so every Addr that
+	// reaches here was minted by oto. An author-typed URL is prose, and prose goes
+	// through DefuseLink instead.
+	LinkTo(addr, text string) string
 	// DefuseLink makes an address unclickable without hiding it, in whatever way
 	// THIS provider allows. An empty return means the provider does not linkify at
 	// all and the address is data rather than markup.
@@ -147,6 +153,15 @@ func (SlackDialect) Timestamp(at time.Time, fallback string) string {
 // alert carried and simply cannot click it. Deleting it would tell them a smaller
 // truth than the one that exists, which is truncateAt's doctrine applied to a URL.
 func (SlackDialect) DefuseLink(addr string) string { return "`" + addr + "`" }
+
+// LinkTo spells Slack's `<url|text>`. The text half is escaped by the caller;
+// the pipe and angle brackets are oto's own punctuation and must survive.
+func (SlackDialect) LinkTo(addr, text string) string {
+	if text == "" {
+		return "<" + addr + ">"
+	}
+	return "<" + addr + "|" + text + ">"
+}
 
 // StripAudience removes Slack's broadcast and subteam spellings.
 //
@@ -358,6 +373,15 @@ func (PlainDialect) Timestamp(_ time.Time, fallback string) string { return fall
 // ping is never legitimate content; an address usually is.
 func (PlainDialect) DefuseLink(addr string) string { return addr }
 
+// LinkTo gives a plain consumer both halves. It cannot render a link, and
+// dropping the address would lose the only actionable thing in the line.
+func (PlainDialect) LinkTo(addr, text string) string {
+	if text == "" || text == addr {
+		return addr
+	}
+	return text + " (" + addr + ")"
+}
+
 // StripAudience removes the bare spellings that read as a broadcast in almost every
 // chat product, so a webhook consumer that forwards oto's text into one cannot be
 // used as a laundering step for a ping a Wording was not allowed to send.
@@ -370,7 +394,7 @@ func (PlainDialect) StripAudience(s string) string { return stripCommonAudience(
 // Spell converts oto's neutral marks into d's syntax and then refuses d's audience
 // spellings. It is the last thing that touches a Wording's output before the
 // renderer's own escape-and-truncate sink.
-func Spell(d Dialect, s string) string {
+func Spell(d Dialect, s string, links map[string]string) string {
 	if s == "" {
 		return ""
 	}
@@ -412,6 +436,24 @@ func Spell(d Dialect, s string) string {
 			i = end
 		case markTimeClose, markTimeSep:
 			// Orphaned separator. Drop it rather than print a private-use glyph.
+		case linkOpenRune:
+			// ⭐ A `text` TEMPLATE RESOLVES LINK HANDLES HERE, for the same reason
+			// a card resolves them in the parser: after Liquid has flattened
+			// everything into one string, oto's own link and an address an alert
+			// label smuggled in are the same kind of thing, and only a handle
+			// minted after sanitise() proves which is which.
+			end := indexRune(runes, i+1, linkShutRune)
+			if end < 0 {
+				continue // unterminated: drop the mark, keep the words
+			}
+			flush()
+			if addr := links[string(runes[i+1:end])]; addr != "" {
+				b.WriteString(d.LinkTo(addr, addr))
+			}
+			i = end
+		case linkShutRune, actionsRune:
+			// An orphaned handle, or an actions token in a format that has no
+			// buttons to place. Neither has a spelling; drop it.
 		default:
 			run.WriteRune(r)
 		}
@@ -483,7 +525,7 @@ func sanitise(s string) string {
 		switch {
 		case r == '\n' || r == '\t':
 			return r
-		case r >= '' && r <= '':
+		case r >= '\uE000' && r <= '\uF8FF': // BMP private-use area
 			return -1
 		case r >= 0xF0000: // supplementary private-use planes A and B
 			return -1

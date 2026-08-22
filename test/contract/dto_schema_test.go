@@ -157,24 +157,19 @@ var bindings = []binding{
 	// reopened two Slack scopes for. Settings-time only, never on the send path.
 	{"channels", "ResolveConversationRequest", channelsapi.ResolveConversationRequest{}},
 	{"channels", "ResolveConversationDTO", channelsapi.ResolveConversationDTO{}},
-	// Wordings (ADR 0037): customer-authored Liquid that writes the TEXT of one
-	// Stanza. `channels.MatcherDTO` is a deliberate TWIN of the notification one —
-	// this module does not depend on that one, so the Go type is redeclared — and
-	// binding both to the single `MatcherDTO` schema is what stops the copies
-	// drifting from each other.
-	{"channels", "MatcherDTO", channelsapi.MatcherDTO{}},
-	{"channels", "WordingDTO", channelsapi.WordingDTO{}},
-	{"channels", "CreateWordingRequest", channelsapi.CreateWordingRequest{}},
-	{"channels", "UpdateWordingRequest", channelsapi.UpdateWordingRequest{}},
-	{"channels", "PreviewWordingRequest", channelsapi.PreviewWordingRequest{}},
-	{"channels", "WordingPreviewDTO", channelsapi.WordingPreviewDTO{}},
-	{"channels", "WordingRenderingDTO", channelsapi.WordingRenderingDTO{}},
-	{"channels", "WordingSpellingDTO", channelsapi.WordingSpellingDTO{}},
-	// The preview's `problems` are the SAME field/code/message triple a 422 carries
-	// in `violations`, so the contract $refs the shared `Violation` schema rather
-	// than minting a wording-specific twin of it, and the Go struct is bound to
-	// that name.
-	{"channels", "Violation", channelsapi.WordingProblemDTO{}},
+	// NotificationTemplates: one whole message an operator wrote, in Markdown-plus
+	// (`card`), one flat string (`text`) or literal Block Kit JSON (`raw`). There is
+	// no MatcherDTO here any more — a template carries no `when` clause, because
+	// the NotificationPolicy that routes the delivery already has one and names the
+	// template.
+	{"channels", "NotificationTemplateDTO", channelsapi.NotificationTemplateDTO{}},
+	{"channels", "CreateNotificationTemplateRequest", channelsapi.CreateNotificationTemplateRequest{}},
+	{"channels", "UpdateNotificationTemplateRequest", channelsapi.UpdateNotificationTemplateRequest{}},
+	{"channels", "PreviewNotificationTemplateRequest", channelsapi.PreviewNotificationTemplateRequest{}},
+	{"channels", "TemplatePreviewDTO", channelsapi.TemplatePreviewDTO{}},
+	{"channels", "TemplateRenderingDTO", channelsapi.TemplateRenderingDTO{}},
+	{"channels", "TemplateSpellingDTO", channelsapi.TemplateSpellingDTO{}},
+	{"channels", "TemplateProblemDTO", channelsapi.TemplateProblemDTO{}},
 
 	// ------------------------------------------------------- notification
 	{"notification", "PolicyDTO", notificationapi.PolicyDTO{}},

@@ -145,30 +145,19 @@ type SlackInteractions interface {
 	Handle(ctx context.Context, payload json.RawMessage) error
 }
 
-// WordingStore is the persistence side for customer-authored templates,
-// satisfied by `*channels/repository.WordingRepository`.
+// TemplateStore is the persistence side for NotificationTemplates, satisfied by
+// `*channels/repository.TemplateRepository`.
 //
-// ⚠️ IT IS A STORE PORT RATHER THAN A SERVICE, for the reason ChannelStore's note
-// gives: a Wording write is genuinely CRUD — validate against the one save-time
-// gate, then write — and interposing a pass-through service would add a layer
-// whose only effect is to make the gate harder to find. The gate itself is NOT
-// here: `channels/service.ValidateWording` owns it, because proving a template
-// renders needs the engine and the fixture corpus.
-//
-// ⛔ THERE IS NO `Resolve` ON THIS PORT, THOUGH THE REPOSITORY HAS ONE. Resolution
-// happens at claim time on the notification side so the renderer stays a pure
-// function of (NotificationView, RenderOptions) (ADR 0049); an HTTP endpoint that
-// resolved would be a second answer to "which Wording won".
-type WordingStore interface {
-	Get(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Wording, error)
-	// List takes a nil channelID for "every Wording in the org" and a non-nil one
-	// for that destination's OWN rows only, without the org-wide fallback: the
-	// settings screen for a channel is editing that channel's exceptions, and
-	// showing the tenant's rows there would invite editing the wrong one.
+// ⛔ THERE IS NO `ForPolicy` ON THIS PORT, THOUGH THE REPOSITORY HAS ONE.
+// Resolution happens at claim time on the notification side so the renderer stays
+// a pure function of (NotificationView, RenderOptions); an HTTP endpoint that
+// resolved would be a second answer to "which template rendered this".
+type TemplateStore interface {
+	Get(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.NotificationTemplate, error)
 	List(
-		ctx context.Context, s db.TenantScope, channelID *uuid.UUID, includeDeleted bool, p db.Keyset,
-	) ([]domain.Wording, db.Cursor, error)
-	Create(ctx context.Context, s db.TenantScope, n domain.NewWording) (domain.Wording, error)
-	Update(ctx context.Context, s db.TenantScope, id uuid.UUID, p domain.WordingPatch) (domain.Wording, error)
+		ctx context.Context, s db.TenantScope, includeDeleted bool, p db.Keyset,
+	) ([]domain.NotificationTemplate, db.Cursor, error)
+	Create(ctx context.Context, s db.TenantScope, n domain.NewNotificationTemplate) (domain.NotificationTemplate, error)
+	Update(ctx context.Context, s db.TenantScope, id uuid.UUID, p domain.NotificationTemplatePatch) (domain.NotificationTemplate, error)
 	Delete(ctx context.Context, s db.TenantScope, id uuid.UUID) error
 }

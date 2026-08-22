@@ -31,4 +31,4 @@
 // Two engines, deliberately. Authoring is STRICT so a typo is refused while a human
 // is present to be told; delivery is LAX so a missing field degrades one Stanza
 // rather than killing a delivery. Refuse at write time, degrade at render time.
-package wording
+package template

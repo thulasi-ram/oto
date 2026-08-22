@@ -81,7 +81,7 @@ type DispatchService struct {
 	clk           clock.Clock
 	log           *slog.Logger
 	metrics       *Metrics
-	wordings      WordingResolver
+	templates     TemplateResolver
 }
 
 // DispatchConfig is everything NewDispatchService needs.
@@ -115,7 +115,7 @@ type DispatchConfig struct {
 	// Wordings resolves the customer's per-Stanza templates. Nil means every card
 	// reads in oto's own voice, which is the correct behaviour for a deployment
 	// that has never configured one.
-	Wordings WordingResolver
+	Templates TemplateResolver
 }
 
 // NewDispatchService builds the service.
@@ -134,8 +134,8 @@ func NewDispatchService(cfg DispatchConfig) (*DispatchService, error) {
 		gates: cfg.Gates, enqueuer: cfg.Enqueuer,
 		baseURL: cfg.BaseURL, maxInstances: cfg.MaxInstances,
 		lease: cfg.StaleClaimLease, clk: cfg.Clock, log: cfg.Logger,
-		metrics:  cfg.Metrics,
-		wordings: cfg.Wordings,
+		metrics:   cfg.Metrics,
+		templates: cfg.Templates,
 	}
 	if s.maxInstances <= 0 {
 		s.maxInstances = DefaultMaxInstances
@@ -585,10 +585,10 @@ func (s *DispatchService) claim(
 	// ⭐ RESOLVED HERE, AT CLAIM TIME, WHICH IS WHERE EVERY OTHER PER-DELIVERY FACT
 	// IS RESOLVED. The renderer must stay a pure function of
 	// (NotificationView, RenderOptions) — SPEC §F.1, and golden-file testability
-	// depends on it — so the database read that decides which Wording won happens
-	// on this side of the call and only the winning template crosses.
-	if s.wordings != nil {
-		opts.Wordings = s.wordings.For(ctx, scope, channel.ID, view)
+	// depends on it — so the database read happens on this side of the call and
+	// only the chosen template crosses.
+	if s.templates != nil && n.PolicyID != nil {
+		opts.Template = s.templates.For(ctx, scope, *n.PolicyID)
 	}
 	msg, err := renderer.Render(ctx, view, opts)
 	if err != nil {
@@ -596,7 +596,7 @@ func (s *DispatchService) claim(
 		// truncated, so a dead delivery can be debugged from the row.
 		if len(msg.Payload) > 0 && msg.Fallback != "" {
 			_ = s.deliveries.PersistRendered(ctx, scope, d.ID,
-				msg.Payload, msg.Hash, msg.Fallback, now, opts.Wordings)
+				msg.Payload, msg.Hash, msg.Fallback, now, attributionOf(opts.Template))
 		}
 		// ⛔ THIS FAILURE IS OTO'S, NOT THE DESTINATION'S, AND THE COUNTER AND THIS
 		// LOG LINE ARE THE ONLY ALARM IT HAS. `fail` marks the row dead in this
@@ -638,7 +638,7 @@ func (s *DispatchService) claim(
 
 	// BEFORE the network call, always.
 	if err := s.deliveries.PersistRendered(ctx, scope, d.ID,
-		msg.Payload, msg.Hash, msg.Fallback, now, opts.Wordings); err != nil {
+		msg.Payload, msg.Hash, msg.Fallback, now, attributionOf(opts.Template)); err != nil {
 		return outcome{}, nil, err
 	}
 
@@ -1113,4 +1113,20 @@ func jitter() float64 {
 	}
 	// Map to [-0.5, +0.5).
 	return float64(binary.BigEndian.Uint64(b[:])>>11)/float64(1<<53) - 0.5
+}
+
+// attributionOf turns the channels-side template reference into the two scalars a
+// delivery row records. It is the one place the two vocabularies meet, and it
+// lives here because this package is already the declared seam.
+func attributionOf(t *TemplateRef) domain.RenderAttribution {
+	if t == nil {
+		return domain.RenderAttribution{}
+	}
+	parsed, err := uuid.Parse(t.ID)
+	if err != nil {
+		// An unparseable id means no attribution rather than a failed delivery. The
+		// rendered payload still lands on the row, which is the half that matters.
+		return domain.RenderAttribution{}
+	}
+	return domain.RenderAttribution{TemplateID: &parsed, TemplateVersion: t.Version}
 }

@@ -74,9 +74,9 @@ type Envelope struct {
 	Links       map[string]string     `json:"links,omitempty"`
 	Previous    map[string]string     `json:"previous,omitempty"`
 	Summary     string                `json:"summary"`
-	// Rendered carries the customer's Wordings for this delivery, keyed by Stanza
-	// (ADR 0037, ADR 0048). It is absent unless the destination has Wordings, so
-	// every existing consumer and all three checked-in fixtures are unchanged.
+	// Rendered carries the operator's own wording of this message, as prose. It is
+	// absent unless the policy that routed this delivery names a NotificationTemplate,
+	// so every existing consumer and all three checked-in fixtures are unchanged.
 	//
 	// ⛔ ADDITIVE ONLY, WHICH IS WHY IT MAY LAND ON A FROZEN ENVELOPE. §H.10 /
 	// SCOPE-BOUNDARY H-2 freeze `oto.notification.v1`, and what that freeze forbids
@@ -95,7 +95,7 @@ type Envelope struct {
 	// oto composes and consumers depend on; a Wording is the customer's own prose
 	// for one named unit. Folding one into the other would make a frozen field mean
 	// two different things depending on configuration a consumer cannot see.
-	Rendered map[string]string `json:"rendered,omitempty"`
+	Rendered string `json:"rendered,omitempty"`
 }
 
 // Org identifies the tenant.

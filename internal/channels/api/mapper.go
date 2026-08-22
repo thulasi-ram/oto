@@ -270,101 +270,76 @@ func stringOr(p *string, def string) string {
 	return *p
 }
 
-// ---------------------------------------------------------------- wordings
+// -------------------------------------------------------------- templates
 
-// wordingDTO maps a stored Wording onto the wire.
-func wordingDTO(w domain.Wording) WordingDTO {
-	return WordingDTO{
-		ID:        w.ID,
-		ChannelID: w.ChannelID,
-		Stanza:    w.Stanza,
-		Template:  w.Template,
-		Matchers:  matcherDTOs(w.Matchers),
-		Reasons:   stringList(w.Reasons),
-		Priority:  w.Priority,
-		Enabled:   w.Enabled,
-		CreatedAt: w.CreatedAt.UTC(),
-		UpdatedAt: w.UpdatedAt.UTC(),
-		DeletedAt: utcPtr(w.DeletedAt),
+// notificationTemplateDTO maps a stored template onto the wire.
+func notificationTemplateDTO(t domain.NotificationTemplate) NotificationTemplateDTO {
+	return NotificationTemplateDTO{
+		ID:        t.ID,
+		Name:      t.Name,
+		Provider:  t.Provider,
+		Format:    t.Format,
+		Source:    t.Source,
+		Version:   t.Version,
+		Enabled:   t.Enabled,
+		CreatedAt: t.CreatedAt.UTC(),
+		UpdatedAt: t.UpdatedAt.UTC(),
+		DeletedAt: utcPtr(t.DeletedAt),
 	}
 }
 
-// matcherDTOs maps a `when` clause onto the wire.
-func matcherDTOs(ms []domain.Matcher) []MatcherDTO {
-	out := make([]MatcherDTO, 0, len(ms))
-	for _, m := range ms {
-		out = append(out, MatcherDTO{Name: m.Name, Op: string(m.Op), Value: m.Value})
-	}
-	return out
-}
-
-// domainMatchers maps a `when` clause off the wire. The operator string is NOT
-// checked here — `domain.ValidateWording` owns the closed set, and a second copy
-// of that rule in the mapper is a second thing to keep in step.
-func domainMatchers(ms []MatcherDTO) []domain.Matcher {
-	out := make([]domain.Matcher, 0, len(ms))
-	for _, m := range ms {
-		out = append(out, domain.Matcher{Name: m.Name, Op: domain.MatchOp(m.Op), Value: m.Value})
-	}
-	return out
-}
-
-// stringList is `make`+`append` rather than the `append(nil, …)` idiom, for the
-// reason descriptorDTO states: the latter stays nil when the source is empty and
-// a nil slice marshals to JSON `null`, which the contract's `type: array`
-// rejects. `reasons` is legitimately empty on the org-wide house voice.
-func stringList(in []string) []string {
-	out := make([]string, 0, len(in))
-	out = append(out, in...)
-	return out
-}
-
-// ------------------------------------------------------------- request → domain
-
-// toNewWording maps a create request onto the domain command.
+// toNewNotificationTemplate maps a create request onto the domain command.
 //
-// The defaults are the DDL's own, restated because the contract publishes them: a
-// caller that omits `enabled` expects the documented `true`, and one that omits
-// `priority` expects to land beside every other unprioritised row rather than
-// ahead of all of them at zero.
-func (r CreateWordingRequest) toNewWording() domain.NewWording {
-	return domain.NewWording{
-		// ⭐ THE ID IS MINTED HERE, not left to the repository's fallback. It is the
-		// rule `platform/id` states for the whole codebase — a row's id is known
-		// before the INSERT, and oto never asks Postgres for one.
-		ID:        id.New(),
-		ChannelID: r.ChannelID,
-		Stanza:    r.Stanza,
-		Template:  r.Template,
-		Matchers:  domainMatchers(r.Matchers),
-		Reasons:   stringList(r.Reasons),
-		Priority:  intOr(r.Priority, DefaultWordingPriority),
-		Enabled:   boolOr(r.Enabled, true),
+// `enabled` defaults to TRUE when omitted: a template somebody just wrote and
+// saved is one they meant to use, and a picker full of disabled entries teaches
+// nothing.
+func (r CreateNotificationTemplateRequest) toNewNotificationTemplate() domain.NewNotificationTemplate {
+	return domain.NewNotificationTemplate{
+		// ⭐ THE ID IS MINTED HERE, not left to the repository. It is the rule
+		// `platform/id` states for the whole codebase — a row's id is known before
+		// the INSERT, and oto never asks Postgres for one.
+		ID:       id.New(),
+		Name:     r.Name,
+		Provider: r.Provider,
+		Format:   r.Format,
+		Source:   r.Source,
+		Enabled:  boolOr(r.Enabled, true),
 	}
 }
 
-// toPatch maps an update request onto the domain command.
-//
-// Every field stays a pointer all the way down, because "set this to empty" and
-// "leave this alone" are different requests: `"reasons": []` widens a Wording to
-// every fact, and omitting the key leaves the clause it already had.
-func (r UpdateWordingRequest) toPatch() domain.WordingPatch {
-	p := domain.WordingPatch{
-		Template: r.Template,
-		Reasons:  r.Reasons,
-		Priority: r.Priority,
+// toPatch maps an update request onto the domain command. Every field stays a
+// pointer all the way down, because "set this to empty" and "leave this alone"
+// are different requests.
+func (r UpdateNotificationTemplateRequest) toPatch() domain.NotificationTemplatePatch {
+	return domain.NotificationTemplatePatch{
+		Name:     r.Name,
+		Provider: r.Provider,
+		Format:   r.Format,
+		Source:   r.Source,
 		Enabled:  r.Enabled,
 	}
-	if r.Matchers != nil {
-		ms := domainMatchers(*r.Matchers)
-		p.Matchers = &ms
-	}
-	return p
 }
 
-func intOr(p *int, def int) int {
-	if p == nil {
-		return def
+// patchedTemplate is the row an update WOULD produce, for the gate to judge.
+//
+// ⛔ THE GATE JUDGES THE WHOLE ROW, NOT THE DELTA. A source is refused or accepted
+// against the FORMAT it will be parsed as, so validating only the fields a patch
+// happens to carry would let two individually-legal patches build an illegal row —
+// change the format today, change the source tomorrow, and neither request ever
+// saw the combination it produced.
+func patchedTemplate(existing domain.NotificationTemplate, p UpdateNotificationTemplateRequest) domain.NotificationTemplate {
+	out := existing
+	if p.Name != nil {
+		out.Name = *p.Name
 	}
-	return *p
+	if p.Provider != nil {
+		out.Provider = *p.Provider
+	}
+	if p.Format != nil {
+		out.Format = *p.Format
+	}
+	if p.Source != nil {
+		out.Source = *p.Source
+	}
+	return out
 }

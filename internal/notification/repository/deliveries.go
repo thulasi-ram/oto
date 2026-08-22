@@ -318,11 +318,11 @@ func (r *DeliveryRepository) Claim(
 const persistRenderedSQL = `
 UPDATE notification_deliveries
    SET rendered = $3, rendered_hash = $4, rendered_fallback = $5,
-       wordings = $7,
+       template_id = $7, template_version = $8,
        updated_at = GREATEST(updated_at, $6)
  WHERE org_id = $1 AND id = $2`
 
-// PersistRendered writes the exact payload, and the Wordings that produced it,
+// PersistRendered writes the exact payload, and the template that produced it,
 // BEFORE the network call (C11, §L.6).
 //
 // This ordering is not an optimisation and must not be relaxed: a delivery that
@@ -331,7 +331,7 @@ UPDATE notification_deliveries
 // dead-letter with its evidence rather than being silently truncated.
 func (r *DeliveryRepository) PersistRendered(
 	ctx context.Context, s db.TenantScope, id uuid.UUID,
-	payload json.RawMessage, hash, fallback string, now time.Time, wordings map[string]string,
+	payload json.RawMessage, hash, fallback string, now time.Time, attr domain.RenderAttribution,
 ) error {
 	if len(payload) == 0 || hash == "" || fallback == "" {
 		// deliveries_render_ck and deliveries_fb_ck would both reject this. Failing
@@ -339,24 +339,25 @@ func (r *DeliveryRepository) PersistRendered(
 		return mapErr(errors.New("a rendered payload needs bytes, a hash and a fallback sentence"),
 			"delivery_not_found", "persist rendered payload")
 	}
-	// ⭐ THE WORDINGS GO DOWN WITH THE BYTES, IN THE SAME STATEMENT. Recording them
-	// later would leave a window in which a card exists with no explanation, and
-	// recording them earlier would claim a card that may never render. NULL when
-	// oto's own text wrote every stanza, which is the overwhelmingly common case
-	// and costs a row nothing.
-	var raw []byte
-	if len(wordings) > 0 {
-		encoded, err := json.Marshal(wordings)
-		if err != nil {
-			// A map[string]string cannot fail to marshal, but recording the card
-			// matters more than recording why it read that way.
-			raw = nil
-		} else {
-			raw = encoded
-		}
+	// ⭐ THE ATTRIBUTION GOES DOWN WITH THE BYTES, IN THE SAME STATEMENT. Recording
+	// it later would leave a window in which a card exists with no explanation, and
+	// recording it earlier would claim a card that may never render. Both columns
+	// are NULL when oto's own card rendered the message, which is the overwhelmingly
+	// common case and costs a row nothing.
+	//
+	// ⚠️ THE VERSION IS RECORDED AND THE SOURCE IS NOT. A delivery is written on
+	// every send and a template body is up to sixteen kilobytes; copying it onto
+	// every row would multiply the table for a fact that is one join away. What
+	// makes the pointer sufficient is that the RENDERED PAYLOAD is already on this
+	// row — the bytes that went out are never in doubt, only the attribution is,
+	// and (id, version) settles that.
+	var tv *int
+	if attr.TemplateID != nil {
+		v := attr.TemplateVersion
+		tv = &v
 	}
 	_, err := r.db(ctx).Exec(ctx, persistRenderedSQL, s.OrgID(), id,
-		[]byte(payload), hash, fallback, now, raw)
+		[]byte(payload), hash, fallback, now, attr.TemplateID, tv)
 	return mapErr(err, "delivery_not_found", "persist rendered payload")
 }
 

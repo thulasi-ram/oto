@@ -329,24 +329,24 @@ type RenderOptions struct {
 	// stale one — a human can see the first and cannot see the second — but only
 	// if it says so.
 	Continued bool
-	// Wordings are the customer's per-Stanza templates for this delivery, ALREADY
-	// SELECTED: the map is keyed by stanza name and holds at most one template
-	// each, because the `when` clause and the priority order were resolved
-	// upstream where the matcher vocabulary lives. The renderer picks, it does not
-	// match.
+	// Template is the NotificationTemplate this delivery was routed with, ALREADY
+	// SELECTED: the policy that matched named it, so the renderer reads a foreign
+	// key's worth of decision rather than running a search of its own.
 	//
-	// ⭐ IT IS TEMPLATE SOURCE RATHER THAN A COMPILED OBJECT ON PURPOSE. This
-	// package cannot import the wording package — that package imports this one for
+	// ⭐ IT IS SOURCE RATHER THAN A COMPILED OBJECT ON PURPOSE. This package cannot
+	// import the template package — that package imports this one for
 	// NotificationView — and a string is also exactly what gets written onto the
-	// delivery row beside the rendered payload, so "why did my card read like that"
-	// is answerable from one row rather than from a config that may since have
-	// changed. The renderer keeps its own compiled cache.
+	// delivery row beside the rendered payload, so "why did my card read like
+	// that" is answerable from one row rather than from a config that may since
+	// have changed. The renderer keeps its own compiled cache.
 	//
-	// ⛔ A WORDING CAN ONLY EVER SUBSTITUTE TEXT (ADR 0037). Go still builds every
-	// block, assigns every block_id and owns the attachment, colour and emoji, and
-	// a Wording that fails or renders empty falls back to oto's own string — which
-	// is what makes it impossible for one to mark a delivery dead.
-	Wordings map[string]string
+	// ⚠️ ITS FORMAT NEED NOT SUIT THIS CHANNEL'S PROVIDER, AND THAT IS THE OWNER'S
+	// CALL. A policy fans out to as many as sixteen channels and they need not
+	// share a provider. `card` and `text` are portable and render anywhere; `raw`
+	// is Slack's Block Kit and means nothing elsewhere. A renderer that cannot use
+	// what it was given builds its own card instead — a mismatch is a degraded
+	// message, never a dropped alert.
+	Template *TemplateRef
 	// ⛔ `Mentions` WAS HERE AND IS DELETED (git-bug bd0fb1d). It carried the org's
 	// resolved mention audience for the ONE unacked reminder, gated on severity.
 	// The owner withdrew the reminder and ruled the mention goes with it: a mention
@@ -357,4 +357,17 @@ type RenderOptions struct {
 	// refusal — a fixed audience from configuration, never a rota, nothing on the
 	// path allowed to read a clock. With no mention surface at all there is nowhere
 	// left for oto to name a responder.
+}
+
+// A TemplateRef is the NotificationTemplate a delivery was routed with, in the
+// only two fields a renderer needs: what shape it is, and what it says.
+type TemplateRef struct {
+	// ID and Version identify it on the delivery row, so a card can be traced to
+	// the exact revision that produced it even after the template is edited.
+	ID      string
+	Version int
+	// Format is `card`, `text` or `raw`.
+	Format string
+	// Source is the template body, already sanitised at save time.
+	Source string
 }
