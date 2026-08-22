@@ -54,6 +54,10 @@ type AuditStore interface {
 	ListNotifications(ctx context.Context, s db.TenantScope, f domain.NotificationFilter, p db.Keyset) ([]domain.Notification, db.Cursor, error)
 	ListDeliveries(ctx context.Context, s db.TenantScope, f domain.DeliveryFilter, p db.Keyset) ([]domain.Delivery, map[uuid.UUID]domain.DeliveryContext, db.Cursor, error)
 	DeliveriesFor(ctx context.Context, s db.TenantScope, notificationID uuid.UUID) ([]domain.Delivery, error)
+	// DeliveriesForMany reads the fan-out of a whole PAGE in one round trip, so
+	// the org-wide log can carry a per-row roll-up. The intent list used to send
+	// none, because the only way to compute one was a query per row.
+	DeliveriesForMany(ctx context.Context, s db.TenantScope, notificationIDs []uuid.UUID) (map[uuid.UUID][]domain.Delivery, error)
 	ChannelContextFor(ctx context.Context, s db.TenantScope, channelIDs []uuid.UUID) (map[uuid.UUID]domain.DeliveryContext, error)
 	// RequeueDead re-queues a delivery that has been given up on. The second
 	// result is false when the row was not `dead`, which the handler turns into a

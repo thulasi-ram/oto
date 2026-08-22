@@ -691,6 +691,50 @@ func (r *ConfigRepository) DeliveriesFor(
 	return out, nil
 }
 
+const deliveriesForNotificationsSQL = `
+SELECT` + deliveryColumns + `
+  FROM notification_deliveries
+ WHERE org_id = $1 AND notification_id = ANY($2)
+ ORDER BY notification_id, thread_seq NULLS FIRST, created_at, id`
+
+// DeliveriesForMany reads the fan-out of a PAGE of intents in ONE round trip.
+//
+// ⭐ IT RETURNS ROWS AND NOT COUNTS, DELIBERATELY. Aggregating in SQL would be
+// cheaper and would put a second definition of "sent" in the system: the API's
+// `summarise` counts a `skipped` delivery as SENT, because a coalesced no-op
+// means the destination already shows exactly this content and calling that a
+// failure would make a healthy quiet thread look broken. A `GROUP BY status`
+// cannot know that, so the list and the detail would eventually disagree about
+// the same fan-out — and the list is the one an operator reads first.
+//
+// The volume is bounded by the page: at most `limit` intents times the sixteen
+// destinations a policy may name.
+func (r *ConfigRepository) DeliveriesForMany(
+	ctx context.Context, s db.TenantScope, notificationIDs []uuid.UUID,
+) (map[uuid.UUID][]domain.Delivery, error) {
+	if len(notificationIDs) == 0 {
+		return map[uuid.UUID][]domain.Delivery{}, nil
+	}
+	rows, err := r.db(ctx).Query(ctx, deliveriesForNotificationsSQL, s.OrgID(), notificationIDs)
+	if err != nil {
+		return nil, mapErr(err, "delivery_not_found", "list deliveries for a page of notifications")
+	}
+	defer rows.Close()
+
+	out := make(map[uuid.UUID][]domain.Delivery, len(notificationIDs))
+	for rows.Next() {
+		d, err := scanDelivery(rows)
+		if err != nil {
+			return nil, mapErr(err, "delivery_not_found", "scan a delivery")
+		}
+		out[d.NotificationID] = append(out[d.NotificationID], d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapErr(err, "delivery_not_found", "read deliveries for a page of notifications")
+	}
+	return out, nil
+}
+
 const channelContextSQL = `
 SELECT id, name::text, type FROM channels WHERE org_id = $1 AND id = ANY($2)`
 

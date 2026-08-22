@@ -181,13 +181,20 @@ export const DeliveryPanel: Component<DeliveryPanelProps> = (props) => (
                   )}
                 </Show>
 
-                {/* ⭐ THE ONE ACTIONABLE THING ON THIS PANEL, AND IT IS GATED ON
-                    THE COUNT RATHER THAN ALWAYS MOUNTED. The retry endpoint takes
-                    a DELIVERY id and this row only carries a roll-up, so the ids
-                    cost a request — one per intent that actually gave up, which
-                    on almost every alert is none. The org-wide log stays a log
-                    (`features/notifications/ActivitySection`); this is the screen
-                    that has the context to judge a retry. */}
+                {/* ⭐ GATED ON THE COUNT RATHER THAN ALWAYS MOUNTED. The retry
+                    endpoint takes a DELIVERY id and this row only carries a
+                    roll-up, so the ids cost a request — one per intent that
+                    actually gave up, which on almost every alert is none.
+
+                    ⚠️ THIS USED TO SAY "the org-wide log stays a log". IT DOES
+                    NOT ANY MORE: `ActivitySection` offers the same button, on the
+                    same gate. The old reasoning was that this screen has the
+                    context to judge a retry, which is true and turned out not to
+                    be the point — the log is where an operator LOOKS when a
+                    delivery dies, and making them navigate here to act was
+                    friction with nothing behind it. Both screens now mount the
+                    same component, so the affordance cannot drift between
+                    them. */}
                 <Show when={(n.delivery_summary?.dead ?? 0) > 0}>
                   <DeadDeliveries notificationId={n.id} />
                 </Show>

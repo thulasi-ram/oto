@@ -279,6 +279,19 @@ func (f *notifAudit) DeliveriesFor(
 	return f.fanOut, nil
 }
 
+// DeliveriesForMany answers the same fan-out for every id it is asked about,
+// which is all the list handler needs: what is under test there is that a
+// summary REACHES the row, not that the fake can partition one.
+func (f *notifAudit) DeliveriesForMany(
+	_ context.Context, _ db.TenantScope, ids []uuid.UUID,
+) (map[uuid.UUID][]domain.Delivery, error) {
+	out := make(map[uuid.UUID][]domain.Delivery, len(ids))
+	for _, id := range ids {
+		out[id] = f.fanOut
+	}
+	return out, nil
+}
+
 func (f *notifAudit) ChannelContextFor(
 	_ context.Context, _ db.TenantScope, ids []uuid.UUID,
 ) (map[uuid.UUID]domain.DeliveryContext, error) {

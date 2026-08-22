@@ -33,6 +33,7 @@ import { notificationActivityQuery } from "~/api/queries";
 import type { Notification, NotificationListQuery, NotificationReason, NotificationStatus } from "~/api/types";
 import { RelativeTime } from "~/components/Time";
 import { Button } from "~/components/ui/Button";
+import { DeadDeliveries } from "./DeadDeliveries";
 import {
   Combobox,
   ComboboxContent,
@@ -326,6 +327,21 @@ const ActivityRow: Component<{ readonly notification: Notification }> = (props) 
           <RelativeTime value={n().created_at} label="Recorded" /> ago
         </span>
       </div>
+
+      {/* ⭐ THE ONE ACTIONABLE THING IN THE LOG, AND IT IS GATED ON A COUNT THAT
+          COSTS NOTHING. `delivery_summary` arrives on the row: the list handler
+          reads the whole page's fan-out in ONE query, so a log with no dead
+          deliveries makes no extra request at all and a log with some makes one
+          per affected row.
+
+          ⛔ THE GATE IS THE COUNT AND NOT THE STATUS, and that is not a style
+          choice. `AggregateStatus` returns `dispatched` whenever anything is
+          still in flight, so a fan-out with one dead delivery and one pending
+          reads `dispatched` — gating on `failed | partial` would hide the button
+          on exactly the mixed case an operator most needs it for. */}
+      <Show when={(n().delivery_summary?.dead ?? 0) > 0}>
+        <DeadDeliveries notificationId={n().id} />
+      </Show>
 
       {/* Where to go and read the rest. The list carries ids and not names — the
           contract's list response is deliberately thin — so the link is the id,

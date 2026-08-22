@@ -181,11 +181,19 @@ type NotificationDTO struct {
 	// be indistinguishable from "no alert".
 	SuppressedReason *string `json:"suppressed_reason"`
 
-	// DeliverySummary is the fan-out roll-up, and it is OPTIONAL ON THIS SCHEMA:
-	// the intent list does not compute one per row — that would be a fan-out
-	// query per row — and an absent key says "not computed here" rather than
-	// inventing an all-zero fan-out. It is REQUIRED on `NotificationDetailDTO`,
-	// which declares its own non-pointer field for exactly that reason.
+	// DeliverySummary is the fan-out roll-up, and it is OPTIONAL ON THIS SCHEMA.
+	//
+	// ⚠️ THE ORG-WIDE LIST NOW SENDS ONE, WHICH IT DID NOT. It reads the whole
+	// page's deliveries in a single round trip rather than a query per row, which
+	// is what made the roll-up unaffordable before. The key stays optional for two
+	// honest reasons: the batched read is allowed to fail without taking the log
+	// down with it, and the per-alert notification list in `alerts/api` is served
+	// by a projection that has no deliveries to roll up at all. An absent key says
+	// "not computed here" rather than inventing an all-zero fan-out, and the
+	// difference matters — all-zero would read as "nobody was told".
+	//
+	// It is REQUIRED on `NotificationDetailDTO`, which declares its own non-pointer
+	// field for exactly that reason.
 	DeliverySummary *DeliverySummaryDTO `json:"delivery_summary,omitempty"`
 
 	CreatedAt time.Time `json:"created_at"`

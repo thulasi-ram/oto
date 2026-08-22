@@ -18,7 +18,7 @@ import { fireEvent, screen } from "@solidjs/testing-library";
 import { describe, expect, it } from "vitest";
 
 import { ActivitySection } from "./ActivitySection";
-import type { NotificationSuppressedReason } from "~/api/types";
+import type { Delivery, DeliverySummary, NotificationSuppressedReason } from "~/api/types";
 import { enumValues } from "~/test/contract";
 import { notification } from "~/test/fixtures";
 import { expectNoUndefined, list, renderScreen, stubFetch, until, type FetchStub } from "~/test/harness";
@@ -26,11 +26,46 @@ import { expectNoUndefined, list, renderScreen, stubFetch, until, type FetchStub
 const SUPPRESSED = enumValues("NotificationSuppressedReason");
 const PATH = "/api/v1/notifications";
 
-function mount(rows: readonly ReturnType<typeof notification>[], page = {}): FetchStub {
-  const net = stubFetch({ [`GET ${PATH}`]: list(rows, page) });
+function mount(
+  rows: readonly ReturnType<typeof notification>[],
+  page = {},
+  deliveries: readonly Delivery[] = [],
+): FetchStub {
+  const net = stubFetch({
+    [`GET ${PATH}`]: list(rows, page),
+    "GET /api/v1/deliveries": list([...deliveries]),
+    "POST /api/v1/deliveries": { status: 200, json: { data: deliveries[0] ?? null, meta: {} } },
+  });
   renderScreen(() => <ActivitySection />);
   return net;
 }
+
+const summary = (patch: Partial<DeliverySummary> = {}): DeliverySummary => ({
+  total: 1,
+  sent: 0,
+  failed: 0,
+  dead: 0,
+  skipped: 0,
+  pending: 0,
+  ...patch,
+});
+
+const DEAD_DELIVERY: Delivery = {
+  id: "3f2a5c19-7d4b-4e88-9a10-2c6b5e4d3a21",
+  notification_id: "7c3d9f0a-8b1e-4c3d-4f50-617283940516",
+  channel_id: "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+  channel_name: "#payments-alerts",
+  mode: "post_root",
+  status: "dead",
+  attempts: 1,
+  ambiguous: false,
+  error: "slack render invalid (V14): top-level text is empty",
+  error_class: "config_invalid",
+  created_at: "2026-02-01T09:00:00Z",
+  updated_at: "2026-02-01T09:00:05Z",
+};
+
+const retryButtons = () => screen.queryAllByRole("button", { name: "Send it again" });
 
 /* -------------------------------------------------------------------------- */
 
@@ -136,5 +171,63 @@ describe("the filters", () => {
         "a request paired the new filter with the previous keyset's cursor",
       ).toBeNull();
     }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("acting on a delivery that gave up", () => {
+  it("⭐ offers the retry in the log, not only on the alert page", async () => {
+    // The log is where an operator LOOKS when a delivery dies. Making them
+    // navigate to the alert page to act on it was friction with nothing behind
+    // it, and this is the assertion that keeps the affordance here.
+    mount([notification({ status: "partial", delivery_summary: summary({ total: 2, sent: 1, dead: 1 }) })], {}, [
+      DEAD_DELIVERY,
+    ]);
+    await until(() => expect(retryButtons()).toHaveLength(1));
+    await until(() => expect(screen.getByText("#payments-alerts")).toBeTruthy());
+  });
+
+  it("⛔ offers it on a `dispatched` row whose fan-out has a dead delivery", async () => {
+    /*
+     * THE CASE A STATUS GATE WOULD HAVE HIDDEN, and the reason the gate is the
+     * count. `AggregateStatus` returns `dispatched` whenever anything is still in
+     * flight, so one dead delivery beside one pending one reads `dispatched` —
+     * not `failed`, not `partial`. Gating the button on those two would have
+     * looked right, passed every test anybody would think to write, and silently
+     * dropped the affordance on a mixed fan-out.
+     */
+    mount(
+      [
+        notification({
+          status: "dispatched",
+          delivery_summary: summary({ total: 2, pending: 1, dead: 1 }),
+        }),
+      ],
+      {},
+      [DEAD_DELIVERY],
+    );
+    await until(() => expect(retryButtons()).toHaveLength(1));
+  });
+
+  it("⛔ makes no delivery request at all for a log with nothing dead", async () => {
+    // The gate has to be free. A log page that asked for every row's fan-out
+    // would be one request per row, which is the cost that kept the roll-up off
+    // this list in the first place.
+    const net = mount([
+      notification({ status: "delivered", delivery_summary: summary({ total: 1, sent: 1 }) }),
+    ]);
+    await until(() => expect(screen.getByText("delivered")).toBeTruthy());
+    expect(net.calls.filter((c) => c.url.includes("/deliveries"))).toHaveLength(0);
+    expect(retryButtons()).toHaveLength(0);
+  });
+
+  it("⛔ shows nothing to press when the row carries no roll-up", async () => {
+    // An absent `delivery_summary` says "not computed here", never "nothing was
+    // sent". Reading it as an all-zero fan-out would offer a button on rows the
+    // server never made a claim about.
+    mount([notification({ status: "partial" })], {}, [DEAD_DELIVERY]);
+    await until(() => expect(screen.getByText("some channels only")).toBeTruthy());
+    expect(retryButtons()).toHaveLength(0);
   });
 });

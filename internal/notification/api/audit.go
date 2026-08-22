@@ -161,12 +161,37 @@ func (rt *Router) listNotifications(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ⭐ ONE QUERY FOR THE WHOLE PAGE, WHICH IS WHAT MAKES THE ROLL-UP AFFORDABLE.
+	// This list sent no summary at all until now, and the reason was sound: the
+	// only way to compute one was a fan-out query per row. Reading the page's
+	// deliveries together costs one more round trip regardless of page size.
+	//
+	// ⛔ A FAILURE HERE COSTS THE SUMMARY AND NOT THE PAGE. The roll-up is a
+	// convenience on a log; the log itself is what an operator came for, and
+	// 500ing the whole list because a secondary read failed would be a worse
+	// answer than an absent optional key — which is exactly what the key already
+	// means on this schema.
+	ids := make([]uuid.UUID, 0, len(notifications))
+	for _, n := range notifications {
+		ids = append(ids, n.ID)
+	}
+	fanout, ferr := rt.audit.DeliveriesForMany(r.Context(), scope, ids)
+	if ferr != nil {
+		fanout = nil
+	}
+
 	out := make([]NotificationDTO, 0, len(notifications))
 	for _, n := range notifications {
-		// The list carries no per-row delivery summary: computing one would be a
-		// query per row. The detail endpoint carries the full fan-out, and the
-		// contract marks `delivery_summary` optional for exactly this reason.
-		out = append(out, notificationDTO(n, nil))
+		var summary *DeliverySummaryDTO
+		if ds, ok := fanout[n.ID]; ok {
+			// ⛔ THROUGH `summarise`, NEVER A SECOND COUNT. It is the same function
+			// the detail endpoint uses, so the two responses cannot disagree about
+			// the same fan-out — and they would, because `skipped` counting as SENT
+			// is a product rule no independent tally would reproduce.
+			v := summarise(ds)
+			summary = &v
+		}
+		out = append(out, notificationDTO(n, summary))
 	}
 	httpx.List(w, r, out, httpx.PageOf(next, limit), started)
 }
