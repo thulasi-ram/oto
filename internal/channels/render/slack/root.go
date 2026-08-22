@@ -20,10 +20,16 @@ func (r *Renderer) renderRoot(v *domain.NotificationView, o domain.RenderOptions
 	state := cardState(v)
 	nonce := renderNonce(v, o)
 	now := r.renderedAt(v)
-	blocks := make([]Block, 0, 8)
-	// The customer's Wordings for this delivery, already selected upstream. nil
-	// when there are none, which is the common case and costs nothing.
+	// ⭐ THE OPERATOR'S TEMPLATE FIRST, AND OTO'S OWN CARD WHEN THERE IS NONE OR
+	// WHEN IT DID NOT RENDER. Every failure inside templatePayload returns false
+	// rather than an error, so the fall-through below is the only recovery path
+	// there is — and it is unconditional. A template can be broken, empty, or
+	// written for another provider entirely; the alert still goes out.
+	if p, fb, ok := r.templatePayload(v, o, state, nonce); ok {
+		return p, fb
+	}
 
+	blocks := make([]Block, 0, 8)
 	blocks = append(blocks, r.titleBlock(v, o, state, nonce))
 	if b, ok := r.bodyBlock(v, nonce); ok {
 		blocks = append(blocks, b)
