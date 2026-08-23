@@ -363,7 +363,7 @@ export default function AlertDetailRoute() {
                 />
 
                 <EnrichmentPanel
-                  enrichments={enrichments.data?.data ?? []}
+                  enrichments={enrichments.data ?? []}
                   loading={enrichments.isPending}
                   error={enrichments.error}
                 />

@@ -181,8 +181,18 @@ export function listAlertEvents(
   });
 }
 
-export function listAlertEnrichments(id: Uuid, c: Ctx = {}): Promise<ListEnvelope<Enrichment>> {
-  return getList<Enrichment>(`${V1}/alerts/${id}/enrichments`, ctx(c));
+/**
+ * Every enricher result for one alert.
+ *
+ * `listAlertEnrichments` is one of the **cursorless** collections: the contract
+ * declares `EnrichmentListResponse` as `{ data, meta }` with no `page`, because
+ * an alert's enrichment set is bounded by the number of enrichers that ran, not
+ * by how much history it accumulated. Reading it with `getList` asked for a
+ * keyset envelope the contract never promised and turned every enrichment panel
+ * into "Something went wrong" — the contract is right, the read was wrong.
+ */
+export function listAlertEnrichments(id: Uuid, c: Ctx = {}): Promise<readonly Enrichment[]> {
+  return getUnpagedList<Enrichment>(`${V1}/alerts/${id}/enrichments`, ctx(c));
 }
 
 /** The rule as it was at fire time, the drift diff, and every captured version. */

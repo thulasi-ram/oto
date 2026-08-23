@@ -59,7 +59,7 @@ import {
 import { EmptyState } from "~/components/ui/states";
 import { cn } from "~/lib/cn";
 import { absoluteTime, duration } from "~/lib/format";
-import { PANEL_BODY, PANEL_HEADER } from "./rhythm";
+import { PANEL_BODY, PANEL_CODE_BLOCK, PANEL_HEADER } from "./rhythm";
 
 /**
  * The cap on `RuleHistoryDTO.versions`. Reaching it does not mean the history
@@ -513,7 +513,7 @@ export const RulePanel: Component<{ readonly history: RuleHistory }> = (props) =
               <p class="mb-sm text-meta font-semibold uppercase tracking-[0.06em] text-ink-muted">
                 Expression
               </p>
-              <pre class="overflow-x-auto rounded-control border border-line bg-sunken px-md py-sm font-mono text-meta leading-relaxed text-ink">
+              <pre class={PANEL_CODE_BLOCK}>
                 <code>{rule().expr === "" ? "(oto could not read this rule)" : rule().expr}</code>
               </pre>
             </div>

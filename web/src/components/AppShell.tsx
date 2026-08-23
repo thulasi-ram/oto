@@ -400,8 +400,22 @@ export const AppShell: ParentComponent = (props) => {
      * The axis is now horizontal — rail beside content — and the `h-screen` /
      * `min-h-0` / `overflow-hidden` chain is carried down the content column
      * unchanged, so `<main>` still hands its child a definite height.
+     *
+     * ⛔ `relative` IS LOAD-BEARING, NOT DECORATION. `overflow-hidden` only
+     * clips descendants whose containing block is inside the clipping box, and
+     * an absolutely positioned element resolves its containing block against
+     * the nearest POSITIONED ancestor. With none, that ancestor was the initial
+     * containing block — so every `sr-only-focusable` span the screens render
+     * (one per case row, per state chip, per table caption) was laid out
+     * against the document rather than against the shell, sailed straight
+     * through this `overflow-hidden`, and grew the document past one viewport.
+     * The window then scrolled, and what it scrolled to was a dead band of page
+     * background below the footer. Raising the banner stack pushed those spans
+     * further down and made the band taller, which is why it read as a banner
+     * bug. One positioned ancestor here closes the escape hatch for every
+     * absolutely positioned descendant at once.
      */
-    <div class="flex h-screen overflow-hidden bg-bg">
+    <div class="relative flex h-screen overflow-hidden bg-bg">
       {/* Keyboard users get out of the rail in one tab, always. */}
       <a
         href="#main"

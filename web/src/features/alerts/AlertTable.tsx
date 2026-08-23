@@ -200,8 +200,27 @@ export const TRACK = {
    * sideways.
    */
   state: "10.5rem",
-  /** The cluster chip measures 76 px and the header word 51; 72 px of content. */
-  cluster: "6rem",
+  /**
+   * ⭐ BUDGETED FROM THE VALUE, NOT FROM THE HEADER WORD.
+   *
+   * `CLUSTER` is 51 px, so a header-bound track came out at 6 rem — and then
+   * every real cluster key was wider than the track that was supposed to hold
+   * it. At 11 px monospace a character is ~6.6 px; the chip spends 10 px on its
+   * border and inset and the cell spends 24 px on `px-md`, so a `W` rem track
+   * shows `(W·16 − 34) / 6.6` characters. 9.5 rem is **~18 characters**, which
+   * clears the region-suffixed names operators actually use — `prod-eu-west-1`
+   * and `prod-us-east-1` are 14 — with a few to spare.
+   *
+   * ⛔ AND 18 IS A BUDGET, NOT A LIMIT. Nothing here caps the string: a longer
+   * key ellipsises against the real pixel edge and keeps its full value in the
+   * chip's `title`, so the track degrades by showing less rather than by
+   * cutting at a number nobody can see. See the cluster cell in `AlertRow`.
+   *
+   * The 3.5 rem it grew by came out of the alert name, as everything here does:
+   * 571 → 515 px at 1440, 411 → 355 at the 1280 floor. Both clear the 20 rem
+   * the name is guaranteed.
+   */
+  cluster: "9.5rem",
   /** Header-bound: "FIRING FOR" (64 px) is wider than any duration it labels. */
   firing: "6rem",
   /** Header-bound: "EPISODES" is wider than any count it labels. Wide only. */
@@ -240,11 +259,13 @@ const ELASTIC = "auto";
  * full — unwrapped and copyable — on the alert's own screen. So they are not
  * deleted, they are *deferred*: below this breakpoint they are absent (not
  * blank, which would read as "oto captured nothing"), and above it there is room
- * for them and for a 400 px alert name at the same time.
+ * for them and for a 340 px alert name at the same time.
  *
  * 1536 px is chosen so the narrowest viewport that shows them still clears the
  * 320 px floor on the name with the filter rail deducted: 1232 px of table,
- * 829 px of fixed track, 403 px of name.
+ * 885 px of fixed track, 347 px of name. That headroom shrank when `cluster`
+ * grew to hold a real cluster key (see `TRACK.cluster`) — the next track that
+ * wants width has to buy it from another track, not from the name.
  */
 const WIDE_QUERY = "(min-width: 1536px)";
 
@@ -974,9 +995,15 @@ const AlertRow: Component<AlertRowProps> = (props) => {
         </div>
       </td>
 
+      {/* ⛔ NO CHARACTER COUNT HERE. A hard `truncate(…, 11)` cut every key to
+          `prod-eu-we…` whether or not the column had room for the rest, and
+          then the CSS ellipsis cut the cut string again — two truncations
+          fighting over one value. The track (see `TRACK.cluster`) is sized for
+          the keys operators write; anything longer ellipsises at the pixel edge
+          the reader can actually see, with the whole value in the tooltip. */}
       <td class={td(COLUMN.cluster)}>
         <Chip mono title={`Cluster ${props.alert.cluster_key}`}>
-          <span class="min-w-0 truncate">{truncate(props.alert.cluster_key, 11)}</span>
+          <span class="min-w-0 truncate">{props.alert.cluster_key}</span>
         </Chip>
       </td>
 

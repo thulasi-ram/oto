@@ -29,3 +29,28 @@ export { PANEL_HEADER, PANEL_BODY } from "~/components/ui/panel-rhythm";
 
 /** One row inside a panel that renders a list. Matches `PANEL_BODY`'s inset. */
 export const PANEL_ROW = "px-lg py-md";
+
+/**
+ * ⛔ A CODE BLOCK IN A PANEL WRAPS. IT DOES NOT SCROLL SIDEWAYS.
+ *
+ * Both panels that print PromQL — `RulePanel`'s "Expression" and
+ * `EnrichmentPanel`'s `prom.rule` result — sit in the detail screen's narrow
+ * right column, roughly 440 px of usable width against expressions that are
+ * routinely three times that. Both used `overflow-x-auto`, and on every
+ * platform that draws OVERLAY scrollbars that means the line is simply cut at
+ * the card edge with nothing on screen to say so: the reader sees
+ * `sum(rate(http_requests_total{job="che` and no reason to suspect a threshold
+ * they cannot see. Wrapping is the honest failure — it spends vertical space,
+ * which a panel has, instead of hiding the one thing on this screen nobody may
+ * misread.
+ *
+ * `break-all`, not `break-words`: a metric selector is one unbroken token with
+ * no spaces to break at, so `break-words` would leave it overflowing anyway.
+ *
+ * It lives here rather than in either panel because the two must not drift:
+ * the rule at fire time and the enricher's projection of it are the same
+ * expression seen twice, and the README's hero screenshot is the first of them.
+ */
+export const PANEL_CODE_BLOCK =
+  "whitespace-pre-wrap break-all rounded-control border border-line bg-sunken " +
+  "px-md py-sm font-mono text-meta leading-relaxed text-ink";
