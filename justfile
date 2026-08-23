@@ -31,6 +31,59 @@ up: infra migrate
     (cd {{web_dir}} && npm run dev) &
     wait
 
+# Take a fresh checkout to a POPULATED, sign-in-able app: infra, migrations, the
+# first org, and a believable fictional history on every screen.
+#
+# ⭐ IT EXISTS BECAUSE `just up` ON AN EMPTY DATABASE IS ELEVEN EMPTY STATES.
+# Nothing in the product can be demonstrated, reviewed or screenshotted until an
+# Alert has three Cases, a rule that changed between two of them and a delivery
+# that died — and until this recipe there was no way to get there but to run a
+# Prometheus for a fortnight or to paste hand-written SQL, which is how a fixture
+# ends up violating an invariant nobody re-reads.
+#
+# It stops SHORT of starting the servers, deliberately: `just up` blocks, and a
+# recipe that ends in a foreground process cannot print the credentials it just
+# minted. The last thing it does is tell you to run `just setup` (once) and
+# `just up`.
+#
+# The password comes from OTO_BOOTSTRAP_PASSWORD, or from the argument, and is
+# echoed at the end because a demo login nobody can type is not a demo login.
+# ⛔ `oto demo-seed` REFUSES with env=prod and refuses to run twice; re-running
+# this recipe on a seeded database is a no-op with a sentence, not a duplicate.
+[group('run')]
+demo password=env_var_or_default("OTO_BOOTSTRAP_PASSWORD", "oto-demo-password"):
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just infra
+    just migrate
+    echo "→ bootstrap"
+    if out=$(OTO_BOOTSTRAP_PASSWORD="{{password}}" go run ./cmd/oto bootstrap \
+               --org-slug acme --org-name "Acme Corp" \
+               --email ops@acme.example --name "Robin Vale" \
+               --token-name demo 2>&1); then
+      printf '%s\n' "$out"
+    elif printf '%s' "$out" | grep -q 'already has an org'; then
+      echo "→ already bootstrapped; keeping the org that is there"
+    else
+      printf '%s\n' "$out" >&2
+      exit 1
+    fi
+    echo "→ demo-seed"
+    go run ./cmd/oto demo-seed --org-slug acme
+    cat <<EOF
+
+    ✓ the demo is loaded.
+
+      sign in as   ops@acme.example
+      password     {{password}}
+
+      Change it by re-running from an empty database:
+          just reset && OTO_BOOTSTRAP_PASSWORD='something-longer' just demo
+
+      Then, once per checkout:   just setup
+      And to bring it up:        just up      → ui http://localhost:5173
+    EOF
+
 # Start Postgres, Alertmanager and Prometheus, blocking until all are healthy.
 #
 # Prometheus is named explicitly like the other two rather than left to a bare

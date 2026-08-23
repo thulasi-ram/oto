@@ -16,6 +16,13 @@
 //	               parser bug cost every alert in every affected batch forever.
 //	               Like `bootstrap` it is not a route — it crosses the org
 //	               boundary the API is scoped by, and a batch id carries no scope.
+//	oto demo-seed  fill a bootstrapped org with a believable fictional history —
+//	               clusters, sources, alerts, cases, timelines, rule drift,
+//	               channels, policies, notifications and deliveries — so the
+//	               product can be demonstrated, reviewed and screenshotted. It
+//	               REFUSES to run with env=prod and refuses to run twice. Like
+//	               `bootstrap` it is not a route: an endpoint that fabricates
+//	               alert history is a forgery endpoint with a friendly name.
 //	oto bootstrap  create the first org, user and API token, then exit. THIS IS
 //	               THE INSTALL PATH: v1 has no org-creation API and no signup, so
 //	               a migrated database has no credential that can reach it until
@@ -123,6 +130,13 @@ func run() error {
 		// oto's and everything after the subcommand is the command's own.
 		return bootstrapCommand(ctx, cfg.DB.URL, flag.Args()[1:])
 	}
+	if flag.Arg(0) == "demo-seed" {
+		// It takes the WHOLE Config rather than just the DSN, unlike `bootstrap`,
+		// because two of its refusals are configuration facts: `env` decides
+		// whether it may run at all, and `security.secret_key` is what seals the
+		// channel credential it writes.
+		return demoSeedCommand(ctx, cfg, flag.Args()[1:])
+	}
 
 	// 3. Telemetry: the Prometheus registry and, optionally, OTLP traces.
 	tel, err := telemetry.Setup(ctx, cfg)
@@ -222,6 +236,8 @@ func modeOf(arg string) (mode, error) {
 		return mode{name: "migrate"}, nil
 	case "bootstrap":
 		return mode{name: "bootstrap"}, nil
+	case "demo-seed":
+		return mode{name: "demo-seed"}, nil
 	case "replay":
 		// It builds the container — it needs the ingestion service, the alerts
 		// reads behind the supersession gate and the SAME outbox the accept path
@@ -233,6 +249,8 @@ func modeOf(arg string) (mode, error) {
 		os.Exit(0)
 		return mode{}, nil
 	default:
-		return mode{}, fmt.Errorf("unknown subcommand %q; try: serve | api | worker | migrate | replay | bootstrap | version", arg)
+		return mode{}, fmt.Errorf(
+			"unknown subcommand %q; try: serve | api | worker | migrate | replay | bootstrap | demo-seed | version",
+			arg)
 	}
 }
