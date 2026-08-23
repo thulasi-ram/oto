@@ -1,4 +1,4 @@
-# ADR 0040 — A Case is `open` or `closed`, and it is never reopened
+# 0040 — A Case is `open` or `closed`, and it is never reopened
 
 > ⛔ **SUPERSEDED IN PART — §6'S LAST BULLET RULED THAT `refire_grace` STAYS, AND THE SETTING IS NOW
 > DELETED.** `refire_grace_s` and `group_close_delay_s` no longer exist: git-bug `7287b28`, migration
@@ -24,12 +24,12 @@
 > origin while changing no outcome is a vocabulary entry the next person has to rule out. See
 > SPEC §B.3 (the paragraph that used to quote this bullet and now reverses it) and migration `00071`.
 
-- **Status**: Accepted · **superseded in part** by git-bug `7287b28` / migration `00071` — see the
-  banner above and §6's last bullet.
-- **Date**: 2026-08-18
-- **Supersedes in part**: ADR 0036 (`AlertOccurrence` becomes `AlertCase`) — the entity is unchanged, its `state` column is not.
-- **Reverses**: the "an acknowledgement survives a re-fire inside `refire_grace`" intention behind SPEC §B.3 transition **T8**. See §6, which exists so a future reader does not restore it.
-- **Migration**: `00054_the_case_is_open_or_closed.sql`
+**Status:** Accepted · **superseded in part** by git-bug `7287b28` / migration `00071` — see the
+banner above and §6's last bullet.
+**Date:** 2026-08-18
+**Supersedes in part:** ADR 0036 (`AlertOccurrence` becomes `AlertCase`) — the entity is unchanged, its `state` column is not.
+**Reverses:** the "an acknowledgement survives a re-fire inside `refire_grace`" intention behind SPEC §B.3 transition **T8**. See §6, which exists so a future reader does not restore it.
+**Migration:** `00054_the_case_is_open_or_closed.sql`
 
 ## 1. The decision
 

@@ -1,29 +1,29 @@
 ---
-title: ADR 0042 — Storm damping is removed, because the defence was built before its object
+title: 0042 — Storm damping is removed, because the defence was built before its object
 ---
-- **Status**: Accepted
-- **Date**: 2026-08-18
-- **Resolves**: git-bug `a51a763` — *"Storm damping is a defence built before its object exists"*
-- **Migrations**: `00059_no_column_remembers_a_storm.sql` — the schema and the settings; and
-  `00060_no_enum_remembers_a_damper.sql` — the vocabulary, added by
-  [Amendment 2](#amendment-2--the-vocabulary-goes-too-because-a-retirement-with-no-possible-reader-buys-nothing).
-- **Supersedes in part**: ADR 0020 **Amendment 1** — its "the set narrows to two" half stands and
-  becomes final; its "the storm moves to the channel" half is deleted along with the storm. ADR 0020
-  Constraint 3 ("broadcast must be damped during a storm") loses its subject.
-- **Deletes**: `alert_events.type` values `group.storm_started` and `group.storm_ended`;
-  `notifications.reason` value `storm`; `notifications.suppressed_reason` value `storm`.
-  ⚠️ **This bullet read *"Retires, does not delete"* for the first two, and Amendment 2 reverses
-  it.** The superseded wording is preserved there with the reason it changed.
-- **Amended by**:
-  [Amendment 1](#amendment-1--the-storm-card-state-is-deleted-and-retirement-was-the-wrong-word-for-it)
-  (2026-08-19, no migration) — the **Slack `Storm` card state, its `#7b1fa2` palette entry and the
-  two view fields are DELETED, not retained.** §1 through §6 are untouched, and the retired STORED
-  values in §7's first three paragraphs stand exactly as written. ⚠️ **That last clause is itself
-  superseded by Amendment 2**; everything else in Amendment 1 stands.
-  [Amendment 2](#amendment-2--the-vocabulary-goes-too-because-a-retirement-with-no-possible-reader-buys-nothing)
-  (2026-08-19, migration `00060`) — the **four `alert_events.type` damper values and the
-  `notifications.reason` value `storm` are DELETED, not retired.** §1 through §6 are untouched;
-  §7 is superseded in full, and Amendment 1's first section with it.
+**Status:** Accepted
+**Date:** 2026-08-18
+**Resolves:** git-bug `a51a763` — *"Storm damping is a defence built before its object exists"*
+**Migrations:** `00059_no_column_remembers_a_storm.sql` — the schema and the settings; and
+`00060_no_enum_remembers_a_damper.sql` — the vocabulary, added by
+[Amendment 2](#amendment-2--the-vocabulary-goes-too-because-a-retirement-with-no-possible-reader-buys-nothing).
+**Supersedes in part:** ADR 0020 **Amendment 1** — its "the set narrows to two" half stands and
+becomes final; its "the storm moves to the channel" half is deleted along with the storm. ADR 0020
+Constraint 3 ("broadcast must be damped during a storm") loses its subject.
+**Deletes:** `alert_events.type` values `group.storm_started` and `group.storm_ended`;
+`notifications.reason` value `storm`; `notifications.suppressed_reason` value `storm`.
+⚠️ **This bullet read *"Retires, does not delete"* for the first two, and Amendment 2 reverses
+it.** The superseded wording is preserved there with the reason it changed.
+**Amended by:**
+[Amendment 1](#amendment-1--the-storm-card-state-is-deleted-and-retirement-was-the-wrong-word-for-it)
+(2026-08-19, no migration) — the **Slack `Storm` card state, its `#7b1fa2` palette entry and the
+two view fields are DELETED, not retained.** §1 through §6 are untouched, and the retired STORED
+values in §7's first three paragraphs stand exactly as written. ⚠️ **That last clause is itself
+superseded by Amendment 2**; everything else in Amendment 1 stands.
+[Amendment 2](#amendment-2--the-vocabulary-goes-too-because-a-retirement-with-no-possible-reader-buys-nothing)
+(2026-08-19, migration `00060`) — the **four `alert_events.type` damper values and the
+`notifications.reason` value `storm` are DELETED, not retired.** §1 through §6 are untouched;
+§7 is superseded in full, and Amendment 1's first section with it.
 
 > ⚠️ **§7's LAST paragraph is superseded.** It retained a card state, a hex and two struct fields on
 > "the same terms as `refired`", and those terms do not reach them: `refired` is a value a stored row

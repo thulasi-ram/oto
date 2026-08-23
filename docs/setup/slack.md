@@ -99,7 +99,7 @@ and this is not one.
 
 ## 3. Turn on interactivity — required for the Acknowledge button
 
-> **⛔ Read this section even if you skip every other one.**
+> **Important: read this section even if you skip every other one.**
 >
 > **Socket Mode is not implemented.** There is no WebSocket client anywhere in
 > oto. `OTO_SLACK_MODE` still *defaults* to `socket`, and `OTO_SLACK_APP_TOKEN`
@@ -161,7 +161,7 @@ OTO_SLACK_MODE=http          # `socket` is accepted and does nothing
 OTO_SLACK_SIGNING_SECRET=... # MUST be non-empty when OTO_SLACK_MODE=http
 ```
 
-### What the button actually does
+### 3.4 What the button actually does
 
 Pressing **Acknowledge** records a receipt on every still-open alert in that
 group: *a human has seen this*. It is not an assignment, it does not change the
@@ -181,7 +181,7 @@ not responding"*.
 
 ---
 
-## 5. Where each credential goes in oto
+## 4. Where each credential goes in oto
 
 | Slack value | Starts with | oto config field | Env var | Notes |
 |---|---|---|---|---|
@@ -261,7 +261,7 @@ Content-Type: application/json
 This is the one place oto reads Slack back at all — a metadata lookup at
 configuration time, never on the delivery path (ADR 0047).
 
-### How oto stores these
+### 4.1 How oto stores these
 
 All three are secret material and all three are treated as such.
 
@@ -286,7 +286,7 @@ internal app has no third party in the trust path by construction.
 
 ---
 
-## 6. Invite the bot to the channel
+## 5. Invite the bot to the channel
 
 ```
 /invite @oto
@@ -303,7 +303,7 @@ it a member.
 
 ---
 
-## 7. Verify
+## 6. Verify
 
 1. **In oto:** `POST /api/v1/channels/{id}/test`, or the **Test** button on the
    channel in the settings UI. This runs the same probe oto uses for health: an
@@ -384,7 +384,7 @@ avoid it: `chat.update` (Tier 3, 50+/min) instead of `chat.postMessage` (~1
 message/second/channel). If it is persistent, something is posting far more root
 messages than expected.
 
-⛔ **Do not go looking for flap damping — there is none.** It was retired
+**Removed.** Do not go looking for flap damping — there is none. It was retired
 (git-bug `235f347`) and `flapping` left the suppression chain with storm collapse
 ([ADR 0042](../adr/0042-storm-damping-is-removed.md)); the `flap_*` tuning keys
 outlived the mechanism they configured. oto damps nothing on its own judgement, and
@@ -441,16 +441,16 @@ Two of those are worth knowing about individually.
   prevent, and it is the one Slack will do quietly. oto's own cap is far below
   either number, so this should be unreachable.
 - **`metadata_must_be_sent_from_app`** would mean **no oto card has ever been
-  delivered** — see the note in [section 8](#8-verifying-oto-against-a-real-workspace-the-part-no-test-can-do).
+  delivered** — see the note in [section 7](#7-verifying-oto-against-a-real-workspace--the-part-no-test-can-do).
 
 ---
 
-## 8. Verifying oto against a real workspace — the part no test can do
+## 7. Verifying oto against a real workspace — the part no test can do
 
 > **Read this if you have a Slack workspace and thirty minutes. You are the only
 > person who can close it.**
 
-> ⭐ **There is now a step-by-step run sheet:
+> **There is a step-by-step run sheet:
 > [slack-live-verification.md](slack-live-verification.md).** Eleven numbered steps,
 > each naming the exact observation it needs and which ADR unknown it discharges,
 > ending in what to write down and where. Use it instead of the tables below if you
@@ -487,7 +487,7 @@ Two things have been done to make your thirty minutes count.
    and the error handling are not what you are checking. **You are checking
    Slack's renderer**, which is the one thing a fake cannot be.
 
-### 8.1 Five minutes, no workspace admin needed: Block Kit Builder
+### 7.1 Five minutes, no workspace admin needed: Block Kit Builder
 
 Open <https://app.slack.com/block-kit-builder>, and for each `*.blockkit.json`
 file paste its contents over the sample payload.
@@ -504,14 +504,14 @@ file paste its contents over the sample payload.
 > A seventh file, `storm_notice.blockkit.json`, was deleted with storm damping
 > ([ADR 0042](../adr/0042-storm-damping-is-removed.md)).
 
-⛔ **What this cannot check, and it is a lot.** Block Kit Builder renders
+**What this cannot check, and it is a lot.** Block Kit Builder renders
 `blocks` only. It cannot render `attachments`, and *every* oto block lives inside
 one attachment because that is the only way to get a colour bar (§H.1 S3). So the
 builder proves nothing about the **colour bar**, the **top-level `text`** (the
 push notification and the screen-reader content), the attachment **fallback**, or
-the **metadata**. Those need 8.2.
+the **metadata**. Those need 7.2.
 
-### 8.2 Twenty-five minutes, with a workspace: the six behaviours
+### 7.2 Twenty-five minutes, with a workspace: the six behaviours
 
 Install the app ([section 1](#1-create-the-app-from-the-manifest), with your host
 filled into the manifest's `request_url`), invite it to a scratch channel, point
@@ -522,14 +522,14 @@ an oto channel at that conversation id, and fire a synthetic alert.
 | # | Behaviour | Do this | It passes if | It fails if |
 |---|---|---|---|---|
 | 0 | **Metadata is accepted from a bot token** | Send one alert. Look at the delivery record. | The delivery succeeded. | The delivery is dead with `metadata_must_be_sent_from_app`. Slack lists that error on both write methods with the text *"message metadata can only be posted or updated using an app-level token"*, and **oto attaches metadata to every card under an `xoxb-` bot token**. If it fires, no oto card has ever been deliverable and `rootMetadata` in `internal/channels/render/slack/root.go` must go. Nothing offline can decide this. |
-| 1 | **The card renders** | Look at the firing card in the channel. | It matches `root_firing.blockkit.json` from 8.1, **plus** a red `#a30200` bar down the left edge. | No colour bar → attachments are no longer rendering, and §H.2's peripheral-vision cue is gone. Report it: ADR 0008 is built on the colour bar being the only thing that answers "do I need to act?" at a glance. |
+| 1 | **The card renders** | Look at the firing card in the channel. | It matches `root_firing.blockkit.json` from 7.1, **plus** a red `#a30200` bar down the left edge. | No colour bar → attachments are no longer rendering, and §H.2's peripheral-vision cue is gone. Report it: ADR 0008 is built on the colour bar being the only thing that answers "do I need to act?" at a glance. |
 | 2 | **The push notification is a sentence** | Lock your phone. Fire the alert. Read the banner **without unlocking**. | A complete sentence: severity, what, where, since when. Compare with `"text"` in `root_firing.message.json`. | The banner shows only the app name, or a fragment, or ends `…​.` — the top-level `text` is not doing its job, and it is the only thing a screen reader reads. |
 | 3 | **`chat.update` edits in place** (ADR 0008) | Acknowledge, then resolve. Watch the channel — do not open the thread. | **One** message, changing colour and content: red → amber → green. No new message. The `ts` in oto's `channel_threads` row never changes. | A second card appears → the update path fell back to posting. A card that stops changing → check for `cant_update_message`, which is what a **rotated bot token** produces: only the token that posted a message may edit it. |
 | 4 | **Threads carry the detail** | Open the thread on the card. | Replies are threaded under the root, in order, and no reply ever appears as a top-level channel message. | A reply in the channel body → `thread_ts` was omitted. Replies nested under each other → oto threaded off a reply's `ts` instead of the root's. |
-| 5 | **`reply_broadcast` surfaces a reply** (ADR 0020) | Let a resolved alert re-fire so `refired` is delivered. | The reply appears **in the channel** as well as in the thread. | Only in the thread → `reply_broadcast` is not being set. ⛔ This step used to use the unacked reminder and its mention audience; both were removed (git-bug `bd0fb1d`) and the mention half was **never once observed working** (`2078a07`), which is part of why it went. |
-| 6 | **The in-channel broadcast copy** | Look at the broadcast **in the channel body**, not in the thread. | Record exactly three things: does the **colour bar** show? do the **buttons** show? does the **top-level text** show in full? | Slack documents the `thread_broadcast` reference as carrying neither attachments nor buttons. ADR 0020 Amendment 4 claims the attachment survives and the buttons do not. **That claim is currently unverifiable from this repository** — see 8.3. Whatever you observe, write it down; it is the evidence Amendment 4 is missing. |
+| 5 | **`reply_broadcast` surfaces a reply** (ADR 0020) | Let a resolved alert re-fire so `refired` is delivered. | The reply appears **in the channel** as well as in the thread. | Only in the thread → `reply_broadcast` is not being set. **Removed:** this step used to use the unacked reminder and its mention audience; both were removed (git-bug `bd0fb1d`) and the mention half was **never once observed working** (`2078a07`), which is part of why it went. |
+| 6 | **The in-channel broadcast copy** | Look at the broadcast **in the channel body**, not in the thread. | Record exactly three things: does the **colour bar** show? do the **buttons** show? does the **top-level text** show in full? | Slack documents the `thread_broadcast` reference as carrying neither attachments nor buttons. ADR 0020 Amendment 4 claims the attachment survives and the buttons do not. **That claim is currently unverifiable from this repository** — see 7.3. Whatever you observe, write it down; it is the evidence Amendment 4 is missing. |
 
-### 8.3 One thing to settle while you are there
+### 7.3 One thing to settle while you are there
 
 ADR 0020 **Amendment 4** and several code comments in
 `internal/channels/render/slack/` describe observations from the *"first live
@@ -545,7 +545,7 @@ a release. Amendment 4 records that as an open unknown in its own words. If your
 contradicts it, say so in the ADR; if it confirms it, say on which clients. Two of
 ADR 0020's binding rules point here.
 
-### 8.4 What is still unverifiable after all of the above
+### 7.4 What is still unverifiable after all of the above
 
 These have no documented answer and no offline test. They are listed so nobody
 mistakes their absence for a passing result.

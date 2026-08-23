@@ -3,8 +3,18 @@ title: oto — Red-Team Memo
 ---
 **Author:** adversarial review (skeptical advisor role)
 **Date:** 2026-08-07
-**Status:** pre-implementation. No code exists in this repo yet. This memo is meant to be read *before* the first line.
+**Status:** HISTORICAL — pre-implementation. Written before the first line of oto existed, to be read
+before it was written. Kept as the record of the objections the design had to answer.
 **Posture:** hostile-but-constructive. Nothing here is a recommendation to stop. Several things here are recommendations to stop doing a *specific thing*.
+
+> **Read this as a document from 2026-08-07, not as a description of oto today.** It is dated by
+> construction: every claim about what oto has, lacks or has not yet decided was true of an empty
+> repository. oto has since been implemented, and the memo's open questions were closed by ADRs —
+> the licence by [0019](/adr/0019-mit-licence/), Kubernetes enrichment by
+> [0016](/adr/0016-mcp-enrichment-no-firehose/), Slack distribution by
+> [0018](/adr/0018-slack-distribution-model/). Where this memo and
+> [SPEC.md](/design/SPEC/) disagree, the SPEC wins; it sits below the SPEC and above
+> `architect-proposal.md` in the precedence order the SPEC declares.
 
 ---
 
@@ -280,7 +290,7 @@ The honest answers. Where the answer is weak, that is flagged.
 *Medium answer.* Keep is generic (130+ providers) and incident-first: alerts are raw material, incidents are the unit of work. If you want a single pane over Datadog + Sentry + Prometheus + New Relic, use Keep — oto will be worse. Choose oto if you are Kubernetes/Prometheus-only and want alert-level fidelity: rule provenance, per-alert lifecycle, k8s-shaped grouping, a lighter footprint. **Weakness: "we're more focused" is the weakest form of differentiation and ages badly.** Also correct your model of Keep: **MIT core, proprietary `ee/`** for AIOps correlation/RBAC/SSO/HA — not AGPL. Their permissive core makes them *harder* to displace, not easier.
 
 **(d) Why not just use Robusta?**
-*Weakest answer — this is the one to worry about.* Robusta does k8s-native enrichment better than you will for a long time, has Slack smart grouping into threads, dedup, silencers, auto-remediation, an AI investigator, and an MIT licence. Your honest answers are narrow: (i) **Robusta OSS has no web UI at all, and self-hosting their platform UI requires an enterprise plan** — so "I want a self-hosted UI without a commercial contract" is a real, checkable gap; (ii) their gravity has moved to AI-driven investigation and remediation, which some buyers (regulated, air-gapped, privacy-conscious, or simply LLM-sceptical) actively do not want; (iii) alert-level lifecycle and rule provenance are not their focus. **If you cannot articulate (d) crisply to a stranger in 20 seconds, do not start building.** Being unable to answer (d) is a stop signal.
+*Weakest answer — this is the one to worry about.* Robusta does k8s-native enrichment better than you will for a long time, has Slack smart grouping into threads, dedup, silencers, auto-remediation, an AI investigator, and an MIT licence. Your honest answers are narrow: (i) **Robusta OSS has no web UI at all, and self-hosting their platform UI requires an enterprise plan** — so "a self-hosted UI without a commercial contract" is a real, checkable gap; (ii) their gravity has moved to AI-driven investigation and remediation, which some buyers (regulated, air-gapped, privacy-conscious, or simply LLM-sceptical) actively do not want; (iii) alert-level lifecycle and rule provenance are not their focus. **If you cannot articulate (d) crisply to a stranger in 20 seconds, do not start building.** Being unable to answer (d) is a stop signal.
 
 **(e) Why not just use PagerDuty / Opsgenie?**
 *Strong answer.* Different layer and different price. They begin where a human is paged and are priced per-seat with the assumption that a human's time is the scarce resource. They do not care what your Prometheus rule expr was, they do not live in your cluster, and their k8s context is shallow. Also: Opsgenie's sunset pushed a cohort of teams into re-evaluation, and PagerDuty's per-seat pricing makes "give the whole platform team visibility" expensive. Many teams will run oto *and* PagerDuty — oto as the alert layer, PD as the human-escalation layer. **Design for coexistence, not replacement.** Say this out loud in the pitch; it removes the biggest objection.

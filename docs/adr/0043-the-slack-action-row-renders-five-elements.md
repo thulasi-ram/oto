@@ -1,16 +1,16 @@
-# ADR 0043 — The Slack action row renders five elements, and the fifth is the snooze pair
+# 0043 — The Slack action row renders five elements, and the fifth is the snooze pair
 
-- **Status**: Accepted
-- **Date**: 2026-08-20
-- **Resolves**: git-bug `78388fb` — the widened row and the SPEC line that was edited to match it.
-- **Supersedes**: SPEC §H.7's `actions.elements` row as it read before this change — *"v1 renders at
-  most **4**"*. The **25** in that row is Slack's and is untouched; only oto's own number moves.
-- **Code**: `maxRowButtons` (`internal/channels/render/slack/root.go`), **3 → 4**. `maxActionItems`
-  is unchanged at 25 and V8 still enforces it (§H.7, `validate.go`).
-- **Goldens**: `root_snoozed.golden.json` (4 buttons + overflow) and `root_unsnoozed.golden.json`
-  (3 buttons + select + overflow) — the two widest rows oto can draw, pinned in bytes.
-- **Relates to**: [0018](0018-slack-distribution-model.md) (the card is the product surface),
-  [0013](0013-alert-first-scope-boundary.md) (why a person is never the subject of an action).
+**Status:** Accepted
+**Date:** 2026-08-20
+**Resolves:** git-bug `78388fb` — the widened row and the SPEC line that was edited to match it.
+**Supersedes:** SPEC §H.7's `actions.elements` row as it read before this change — *"v1 renders at
+most **4**"*. The **25** in that row is Slack's and is untouched; only oto's own number moves.
+**Code:** `maxRowButtons` (`internal/channels/render/slack/root.go`), **3 → 4**. `maxActionItems`
+is unchanged at 25 and V8 still enforces it (§H.7, `validate.go`).
+**Goldens:** `root_snoozed.golden.json` (4 buttons + overflow) and `root_unsnoozed.golden.json`
+(3 buttons + select + overflow) — the two widest rows oto can draw, pinned in bytes.
+**Relates to:** [0018](0018-slack-distribution-model.md) (the card is the product surface),
+[0013](0013-alert-first-scope-boundary.md) (why a person is never the subject of an action).
 
 > ⛔ **THIS ADR IS LATE, AND ITS LATENESS IS THE FIRST THING IT RECORDS.** The snooze work raised the
 > rendered limit in `root.go` and then **edited SPEC §H.7 to match** — four became five in the

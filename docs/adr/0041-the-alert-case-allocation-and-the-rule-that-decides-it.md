@@ -1,18 +1,18 @@
-# ADR 0041 — The Alert/Case allocation, and the one rule that decides it
+# 0041 — The Alert/Case allocation, and the one rule that decides it
 
-- **Status**: Accepted
-- **Date**: 2026-08-18
-- **Answers**: ADR 0040 §8, which named "does suppression belong to the Alert?" a real question and
-  deliberately did not answer it. It does. §4 below.
-- **Supersedes in part**: ADR 0040 §3 — the derivation table's open half. `Case.AlertState()` no
-  longer reads `suppression_reason`, because after this ADR there is no `suppressed` state to
-  derive. The closed half is unchanged and still total.
-- **Migration**: `00055_suppression_is_an_axis.sql`
-- **Gate**: `test/scope/allocation_test.go`
-- **Amended by**:
-  [Amendment 1](#amendment-1--a-case-is-open-until-its-alert-has-stayed-resolved-for-w) (2026-08-18,
-  migration `00057`) — the **case retention window W**. §1's rule, §4's axis and §5's ruling are
-  unchanged; what changes is WHEN a Case closes, and §3's `alert_cases` table gains two columns.
+**Status:** Accepted
+**Date:** 2026-08-18
+**Answers:** ADR 0040 §8, which named "does suppression belong to the Alert?" a real question and
+deliberately did not answer it. It does. §4 below.
+**Supersedes in part:** ADR 0040 §3 — the derivation table's open half. `Case.AlertState()` no
+longer reads `suppression_reason`, because after this ADR there is no `suppressed` state to
+derive. The closed half is unchanged and still total.
+**Migration:** `00055_suppression_is_an_axis.sql`
+**Gate:** `test/scope/allocation_test.go`
+**Amended by:**
+[Amendment 1](#amendment-1--a-case-is-open-until-its-alert-has-stayed-resolved-for-w) (2026-08-18,
+migration `00057`) — the **case retention window W**. §1's rule, §4's axis and §5's ruling are
+unchanged; what changes is WHEN a Case closes, and §3's `alert_cases` table gains two columns.
 
 > ⚠️ **§3's allocation is stated as of `00055` and is two columns short.** `alert_cases` gained
 > `resolve_pending_at` and `resolve_pending_end_at` in `00057`; their rows, and the reason a third

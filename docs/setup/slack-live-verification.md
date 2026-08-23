@@ -13,7 +13,7 @@ whether Slack's four clients agree with each other —
 records that last one as unknown in writing. Each step below names the unknown it
 discharges.
 
-> ⛔ **An unknown is discharged by an OBSERVATION, not by a run finishing.** Every
+> **An unknown is discharged by an OBSERVATION, not by a run finishing.** Every
 > step has an *expect exactly* line. If you did not see that, the step failed, and a
 > failed step is a finding — the most valuable output this document has. Amendment 4
 > exists because a live run contradicted Slack's own documentation; that is the
@@ -21,10 +21,10 @@ discharges.
 
 ## Before you start
 
-1. Install the app and invite it: [slack.md sections 1–3 and 6](slack.md). Use a
+1. Install the app and invite it: [slack.md sections 1–3 and 5](slack.md). Use a
    **scratch channel** — you are going to leave test cards in it. Interactivity
    (section 3) is required for step 4.
-2. ⛔ **This step set the reminder audience and is gone with step 8** (git-bug
+2. **Removed.** This step set the reminder audience and is gone with step 8 (git-bug
    `bd0fb1d`): oto no longer sends an unacked reminder and has no mention surface.
 3. Open the checked-in payloads in a second window. They are what oto sends, byte
    for byte, and they are what you compare against:
@@ -70,7 +70,7 @@ three buttons and a `…` overflow — **plus a red `#a30200` bar down the left 
 
 **Discharges:** nothing that is open. It is the baseline the next nine steps are
 read against, and the colour bar is the one thing
-[Block Kit Builder cannot show](slack.md#81-five-minutes-no-workspace-admin-needed-block-kit-builder).
+[Block Kit Builder cannot show](slack.md#71-five-minutes-no-workspace-admin-needed-block-kit-builder).
 
 **If it fails:** no colour bar means attachments have stopped rendering, and §H.2's
 peripheral-vision answer to *"do I need to act?"* is gone. That is an ADR 0008
@@ -170,13 +170,13 @@ a rendering change and not a delivery one.
 **If it looks fine to you:** say so, and say why. That is a product judgement and it
 belongs in the issue, not in this document.
 
-## 8. ⛔ REMOVED — the mention reaches a locked phone
+## 8. Removed — the mention reaches a locked phone
 
 **This step is deleted with the feature it tested** (git-bug `bd0fb1d`). oto no
 longer sends an unacked reminder and has no mention audience, so there is nothing
 to observe.
 
-⭐ **It is worth recording what was never discharged.** This step existed because
+**It is worth recording what was never discharged.** This step existed because
 ADR 0020 **Amendment 3** shipped `unacked_reminder_mention` on the strength of
 Slack's documentation alone, and Amendment 4 is the standing proof that Slack's
 documentation can be half wrong. It was **never once run** (`2078a07`) — so the
@@ -250,13 +250,13 @@ may ever depend on colour.
   already uses for *"three verified facts"*. Update in place has been the primary
   verb since 2026-08-07 on the strength of rate-limit documentation alone; step 4 is
   the first time anybody has watched it work.
-- **[slack.md](slack.md)**: anything in section 8 or in Troubleshooting that turned
+- **[slack.md](slack.md)**: anything in section 7 or in Troubleshooting that turned
   out to be untrue. A setup document that describes behaviour nobody has seen is the
   thing this run exists to fix.
 - **git-bug `2078a07`**: the step numbers that passed, the step numbers that failed,
   and the error codes verbatim.
 
-> ⛔ **Do not mark an unknown discharged that you did not observe.** A step you
+> **Do not mark an unknown discharged that you did not observe.** A step you
 > skipped is a step nobody has done, and an ADR that claims otherwise is worse than
 > one that admits the gap — the whole point of Amendment 4 is that a confident
 > sentence with no observation behind it survived four revisions.
@@ -266,7 +266,7 @@ may ever depend on colour.
 ## What this run still cannot settle
 
 Listed so their absence is not mistaken for a pass. None has a documented answer and
-none has an offline test; [slack.md §8.4](slack.md#84-what-is-still-unverifiable-after-all-of-the-above)
+none has an offline test; [slack.md §7.4](slack.md#74-what-is-still-unverifiable-after-all-of-the-above)
 carries the same list with the reasoning.
 
 - **The attachment block limit.** Slack documents 50 blocks per *message* and states

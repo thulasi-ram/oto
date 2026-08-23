@@ -1,6 +1,9 @@
 # 0031 — Sharp corners and higher-contrast grid lines within Washi & Ink; colours unchanged
 
-**Status:** Accepted · 2026-08-16 · amends the radius values of ADR 0029 (not the tier structure)
+**Status:** Accepted · 2026-08-16 · **SUPERSEDED IN PART by
+[0046](0046-corners-round-again.md)** (2026-08-21), which reverses this ADR's radius decision and
+returns all three steps to ADR 0029's values. The border-contrast decision below is **not** reversed
+and still stands · amends the radius values of ADR 0029 (not the tier structure)
 and the `--oto-border`/`--oto-border-strong` values of ADR 0030 (not the rest of the palette)
 
 ## Context

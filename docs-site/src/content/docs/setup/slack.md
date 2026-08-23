@@ -52,29 +52,38 @@ The manifest is commented with a justification for every scope it asks for, and 
 list of the scopes it deliberately does **not** ask for. If your security team
 reviews app installs, that file is the document to send them.
 
-**What it requests: `chat:write`. That is the entire list.**
+**What it requests: `chat:write`, `channels:read`, `groups:read`. That is the
+entire list.**
 
-It asks for one scope because oto makes exactly three Slack calls —
-`chat.postMessage`, `chat.update` and `auth.test` — and the third needs no scope
-at all. The first live verification run is what fixed the number: it proved those
-three were the only calls, and the manifest was trimmed to match.
+oto makes exactly five Slack calls — `chat.postMessage`, `chat.update`,
+`auth.test`, `conversations.list` and `conversations.info` — and the third
+needs no scope at all. The other two are `channels:read`/`groups:read`, added
+back in [ADR 0047](/adr/0047-a-channel-answers-to-a-connection/) so the
+settings screen can turn a typed channel **name** into its **id**, or the
+reverse, instead of you copying an id out of Slack's own UI by hand: **Settings
+→ Connections → (your Slack connection) →** creating or editing a channel now
+resolves one from the other live. They were requested once, cut for having no
+caller, and are back with one: `POST
+/api/v1/channel-connections/{id}/slack/resolve`.
 
 Notably absent:
 
 - `chat:write.public` — oto must be invited to a channel; it cannot post itself
   into any public channel in the workspace.
-- `channels:read` / `groups:read` — **requested until the live run, and never
-  used.** They served one `conversations.info` probe that had zero callers. oto no
-  longer calls `conversations.info` at all.
 - `users:read` — oto never reads your member directory. An acknowledgement is
   attributed from the signed interaction payload.
-- every `*:history` scope — oto never reads messages back (see
-  [ADR 0008](/adr/0008-slack-update-in-place-primary/)).
+- every `*:history` scope, and `conversations.replies` — oto never reads
+  messages back (see [ADR 0008](/adr/0008-slack-update-in-place-primary/)).
+  `conversations.list`/`.info` return channel **metadata** (name, id, archive
+  state), never message content.
 - `files:write`, `incoming-webhook` — oto uploads nothing and posts under a bot
   token to destinations configured in oto, not to an install-time channel picker.
+- `im:read` / `mpim:read` — the two calls above only ever ask about public and
+  private channels, never a DM.
 
-If you installed oto before this change, the extra scopes are harmless but
-pointless: reinstall from the current manifest to drop them.
+If you installed oto before this change, **reinstall from the current
+manifest** to add the two scopes — the name/id resolver in Settings needs them
+and will answer a plain "not configured" error without them.
 
 ---
 
@@ -91,7 +100,7 @@ and this is not one.
 
 ## 3. Turn on interactivity — required for the Acknowledge button
 
-> **⛔ Read this section even if you skip every other one.**
+> **Important: read this section even if you skip every other one.**
 >
 > **Socket Mode is not implemented.** There is no WebSocket client anywhere in
 > oto. `OTO_SLACK_MODE` still *defaults* to `socket`, and `OTO_SLACK_APP_TOKEN`
@@ -153,7 +162,7 @@ OTO_SLACK_MODE=http          # `socket` is accepted and does nothing
 OTO_SLACK_SIGNING_SECRET=... # MUST be non-empty when OTO_SLACK_MODE=http
 ```
 
-### What the button actually does
+### 3.4 What the button actually does
 
 Pressing **Acknowledge** records a receipt on every still-open alert in that
 group: *a human has seen this*. It is not an assignment, it does not change the
@@ -173,7 +182,7 @@ not responding"*.
 
 ---
 
-## 5. Where each credential goes in oto
+## 4. Where each credential goes in oto
 
 | Slack value | Starts with | oto config field | Env var | Notes |
 |---|---|---|---|---|
@@ -197,8 +206,29 @@ oto refuses to boot with `mode=http` and an empty signing secret. That is
 deliberate: an empty secret would accept forged requests, which means anyone on
 the internet could acknowledge anyone's alert.
 
-The **bot token is not an environment variable.** It is attached to a channel,
-because one oto install can post into several workspaces:
+The **bot token is not an environment variable.** It is attached to a
+**connection**, not to a channel — one oto install can post into several
+workspaces, and one workspace usually has several channels sharing the one
+bot token that talks to it. Set the connection up once, in **Settings →
+Connections**:
+
+```http
+POST /api/v1/channel-connections
+Content-Type: application/json
+
+{
+  "type": "slack",
+  "name": "Acme Slack workspace",
+  "config": { "team_id": "T9TK3CUKW" },
+  "credential": {
+    "kind": "slack_bot_token",
+    "values": { "bot_token": "xoxb-..." }
+  }
+}
+```
+
+Then create each channel against that connection — from the notification
+policy screen where you are already naming a destination, or directly:
 
 ```http
 POST /api/v1/channels
@@ -207,23 +237,32 @@ Content-Type: application/json
 {
   "type": "slack",
   "name": "platform-alerts",
-  "config": {
-    "team_id": "T9TK3CUKW",
-    "conversation_id": "C0123456789",
-    "conversation_name": "platform-alerts"
-  },
-  "credential": {
-    "kind": "slack_bot_token",
-    "values": { "bot_token": "xoxb-..." }
-  }
+  "connection_id": "<the connection's id, from the response above>",
+  "config": { "conversation_id": "C0123456789", "conversation_name": "platform-alerts" }
 }
 ```
 
-`conversation_id` is a **channel ID, never a `#name`**. Names are ambiguous,
-mutable, and resolve differently for different tokens. Get the ID from the channel
-detail dialog in Slack (bottom of **About**), or from the channel URL.
+You do not have to know both halves of `config` by hand. Type just the name or
+just the id and `POST /api/v1/channel-connections/{id}/slack/resolve` fills in
+the other — that is what the Settings UI does behind its channel dialog. If
+you are scripting against the API directly:
 
-### How oto stores these
+```http
+POST /api/v1/channel-connections/<connection id>/slack/resolve
+Content-Type: application/json
+
+{ "name": "platform-alerts" }
+```
+
+```json
+{ "conversation_id": "C0123456789", "conversation_name": "platform-alerts" }
+```
+
+(Or supply `"conversation_id"` instead of `"name"` to resolve the other way.)
+This is the one place oto reads Slack back at all — a metadata lookup at
+configuration time, never on the delivery path (ADR 0047).
+
+### 4.1 How oto stores these
 
 All three are secret material and all three are treated as such.
 
@@ -232,10 +271,12 @@ All three are secret material and all three are treated as such.
   key comes from `OTO_SECURITY_SECRET_KEY` (base64 of 32 random bytes —
   `openssl rand -base64 32`). The keyring is versioned so keys can be rotated
   without re-entering credentials.
-- The oto API is **write-only** for secrets. `GET /api/v1/channels` will tell you
-  *which kind* of credential is attached and *when it was last rotated*. There is
-  no endpoint, anywhere, that returns a credential value. Nothing in the web UI
-  can display one.
+- The oto API is **write-only** for secrets. `GET /api/v1/channel-connections`
+  will tell you *which kind* of credential is attached and *when it was last
+  rotated* — the channel itself (`GET /api/v1/channels`) carries none of that
+  any more, only the `connection_id` to look it up by. There is no endpoint,
+  anywhere, that returns a credential value. Nothing in the web UI can display
+  one.
 - The signing secret is process configuration and lives wherever you put your
   other environment secrets.
 
@@ -246,7 +287,7 @@ internal app has no third party in the trust path by construction.
 
 ---
 
-## 6. Invite the bot to the channel
+## 5. Invite the bot to the channel
 
 ```
 /invite @oto
@@ -263,17 +304,19 @@ it a member.
 
 ---
 
-## 7. Verify
+## 6. Verify
 
 1. **In oto:** `POST /api/v1/channels/{id}/test`, or the **Test** button on the
    channel in the settings UI. This runs the same probe oto uses for health: an
    `auth.test`, which proves the token is alive and needs no scope.
 
-   It deliberately does **not** check that the destination exists — that would
-   cost `channels:read` and `groups:read`, and oto learns the same thing at the
-   first delivery: `channel_not_found`, `is_archived` and `not_in_channel` are all
-   terminal, and oto marks the channel degraded and tells you which one it was
-   rather than retrying into a wall. So a green probe means "the token works";
+   It deliberately does **not** check that the destination exists, even though
+   oto now holds `channels:read`/`groups:read` for the settings resolver above —
+   the probe stays scope-minimal in spirit and learns the same fact at the
+   first delivery instead: `channel_not_found`, `is_archived` and
+   `not_in_channel` are all terminal, and oto marks the channel degraded and
+   tells you which one it was rather than retrying into a wall. So a green
+   probe means "the token works";
    send a test alert to prove the destination.
 2. The channel row should show the workspace and bot identity (`connected to Acme
    Corp as @oto`) rather than a bare green tick.
@@ -342,7 +385,7 @@ avoid it: `chat.update` (Tier 3, 50+/min) instead of `chat.postMessage` (~1
 message/second/channel). If it is persistent, something is posting far more root
 messages than expected.
 
-⛔ **Do not go looking for flap damping — there is none.** It was retired
+**Removed.** Do not go looking for flap damping — there is none. It was retired
 (git-bug `235f347`) and `flapping` left the suppression chain with storm collapse
 ([ADR 0042](/adr/0042-storm-damping-is-removed/)); the `flap_*` tuning keys
 outlived the mechanism they configured. oto damps nothing on its own judgement, and
@@ -399,16 +442,16 @@ Two of those are worth knowing about individually.
   prevent, and it is the one Slack will do quietly. oto's own cap is far below
   either number, so this should be unreachable.
 - **`metadata_must_be_sent_from_app`** would mean **no oto card has ever been
-  delivered** — see the note in [section 8](#8-verifying-oto-against-a-real-workspace-the-part-no-test-can-do).
+  delivered** — see the note in [section 7](#7-verifying-oto-against-a-real-workspace--the-part-no-test-can-do).
 
 ---
 
-## 8. Verifying oto against a real workspace — the part no test can do
+## 7. Verifying oto against a real workspace — the part no test can do
 
 > **Read this if you have a Slack workspace and thirty minutes. You are the only
 > person who can close it.**
 
-> ⭐ **There is now a step-by-step run sheet:
+> **There is a step-by-step run sheet:
 > [slack-live-verification.md](/setup/slack-live-verification/).** Eleven numbered steps,
 > each naming the exact observation it needs and which ADR unknown it discharges,
 > ending in what to write down and where. Use it instead of the tables below if you
@@ -445,7 +488,7 @@ Two things have been done to make your thirty minutes count.
    and the error handling are not what you are checking. **You are checking
    Slack's renderer**, which is the one thing a fake cannot be.
 
-### 8.1 Five minutes, no workspace admin needed: Block Kit Builder
+### 7.1 Five minutes, no workspace admin needed: Block Kit Builder
 
 Open <https://app.slack.com/block-kit-builder>, and for each `*.blockkit.json`
 file paste its contents over the sample payload.
@@ -462,14 +505,14 @@ file paste its contents over the sample payload.
 > A seventh file, `storm_notice.blockkit.json`, was deleted with storm damping
 > ([ADR 0042](/adr/0042-storm-damping-is-removed/)).
 
-⛔ **What this cannot check, and it is a lot.** Block Kit Builder renders
+**What this cannot check, and it is a lot.** Block Kit Builder renders
 `blocks` only. It cannot render `attachments`, and *every* oto block lives inside
 one attachment because that is the only way to get a colour bar (§H.1 S3). So the
 builder proves nothing about the **colour bar**, the **top-level `text`** (the
 push notification and the screen-reader content), the attachment **fallback**, or
-the **metadata**. Those need 8.2.
+the **metadata**. Those need 7.2.
 
-### 8.2 Twenty-five minutes, with a workspace: the six behaviours
+### 7.2 Twenty-five minutes, with a workspace: the six behaviours
 
 Install the app ([section 1](#1-create-the-app-from-the-manifest), with your host
 filled into the manifest's `request_url`), invite it to a scratch channel, point
@@ -480,14 +523,14 @@ an oto channel at that conversation id, and fire a synthetic alert.
 | # | Behaviour | Do this | It passes if | It fails if |
 |---|---|---|---|---|
 | 0 | **Metadata is accepted from a bot token** | Send one alert. Look at the delivery record. | The delivery succeeded. | The delivery is dead with `metadata_must_be_sent_from_app`. Slack lists that error on both write methods with the text *"message metadata can only be posted or updated using an app-level token"*, and **oto attaches metadata to every card under an `xoxb-` bot token**. If it fires, no oto card has ever been deliverable and `rootMetadata` in `internal/channels/render/slack/root.go` must go. Nothing offline can decide this. |
-| 1 | **The card renders** | Look at the firing card in the channel. | It matches `root_firing.blockkit.json` from 8.1, **plus** a red `#a30200` bar down the left edge. | No colour bar → attachments are no longer rendering, and §H.2's peripheral-vision cue is gone. Report it: ADR 0008 is built on the colour bar being the only thing that answers "do I need to act?" at a glance. |
+| 1 | **The card renders** | Look at the firing card in the channel. | It matches `root_firing.blockkit.json` from 7.1, **plus** a red `#a30200` bar down the left edge. | No colour bar → attachments are no longer rendering, and §H.2's peripheral-vision cue is gone. Report it: ADR 0008 is built on the colour bar being the only thing that answers "do I need to act?" at a glance. |
 | 2 | **The push notification is a sentence** | Lock your phone. Fire the alert. Read the banner **without unlocking**. | A complete sentence: severity, what, where, since when. Compare with `"text"` in `root_firing.message.json`. | The banner shows only the app name, or a fragment, or ends `…​.` — the top-level `text` is not doing its job, and it is the only thing a screen reader reads. |
 | 3 | **`chat.update` edits in place** (ADR 0008) | Acknowledge, then resolve. Watch the channel — do not open the thread. | **One** message, changing colour and content: red → amber → green. No new message. The `ts` in oto's `channel_threads` row never changes. | A second card appears → the update path fell back to posting. A card that stops changing → check for `cant_update_message`, which is what a **rotated bot token** produces: only the token that posted a message may edit it. |
 | 4 | **Threads carry the detail** | Open the thread on the card. | Replies are threaded under the root, in order, and no reply ever appears as a top-level channel message. | A reply in the channel body → `thread_ts` was omitted. Replies nested under each other → oto threaded off a reply's `ts` instead of the root's. |
-| 5 | **`reply_broadcast` surfaces a reply** (ADR 0020) | Let a resolved alert re-fire so `refired` is delivered. | The reply appears **in the channel** as well as in the thread. | Only in the thread → `reply_broadcast` is not being set. ⛔ This step used to use the unacked reminder and its mention audience; both were removed (git-bug `bd0fb1d`) and the mention half was **never once observed working** (`2078a07`), which is part of why it went. |
-| 6 | **The in-channel broadcast copy** | Look at the broadcast **in the channel body**, not in the thread. | Record exactly three things: does the **colour bar** show? do the **buttons** show? does the **top-level text** show in full? | Slack documents the `thread_broadcast` reference as carrying neither attachments nor buttons. ADR 0020 Amendment 4 claims the attachment survives and the buttons do not. **That claim is currently unverifiable from this repository** — see 8.3. Whatever you observe, write it down; it is the evidence Amendment 4 is missing. |
+| 5 | **`reply_broadcast` surfaces a reply** (ADR 0020) | Let a resolved alert re-fire so `refired` is delivered. | The reply appears **in the channel** as well as in the thread. | Only in the thread → `reply_broadcast` is not being set. **Removed:** this step used to use the unacked reminder and its mention audience; both were removed (git-bug `bd0fb1d`) and the mention half was **never once observed working** (`2078a07`), which is part of why it went. |
+| 6 | **The in-channel broadcast copy** | Look at the broadcast **in the channel body**, not in the thread. | Record exactly three things: does the **colour bar** show? do the **buttons** show? does the **top-level text** show in full? | Slack documents the `thread_broadcast` reference as carrying neither attachments nor buttons. ADR 0020 Amendment 4 claims the attachment survives and the buttons do not. **That claim is currently unverifiable from this repository** — see 7.3. Whatever you observe, write it down; it is the evidence Amendment 4 is missing. |
 
-### 8.3 One thing to settle while you are there
+### 7.3 One thing to settle while you are there
 
 ADR 0020 **Amendment 4** and several code comments in
 `internal/channels/render/slack/` describe observations from the *"first live
@@ -503,7 +546,7 @@ a release. Amendment 4 records that as an open unknown in its own words. If your
 contradicts it, say so in the ADR; if it confirms it, say on which clients. Two of
 ADR 0020's binding rules point here.
 
-### 8.4 What is still unverifiable after all of the above
+### 7.4 What is still unverifiable after all of the above
 
 These have no documented answer and no offline test. They are listed so nobody
 mistakes their absence for a passing result.

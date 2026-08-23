@@ -121,7 +121,7 @@ instead. This table is the maintained copy; SPEC AC-34 mirrors it.
 | `oto_delivery_dead_total` | `notification_deliveries.status = 'dead'` with `error_class`; per-job deaths are on [`oto_jobs_dead_total`](oto_jobs_dead_total.md), which is alertable and paged |
 | `oto_check_violation_total{constraint}` | A `23514` maps to `errs.KindInternal` with the **constraint name as the error `Code`** (SPEC §L.9, `internal/*/repository/errors.go`), so the 500 and its log line name the constraint; on a job path it is counted by `oto_jobs_failed_total{class="internal"}` |
 
-⭐ `oto_render_invalid_total` was on this table and has been **built** — see
+**Built.** `oto_render_invalid_total` was on this table and now exists — see
 [`oto_render_invalid_total`](oto_render_invalid_total.md). Its entry here was not just thin, it was
 wrong: it sent an operator to `oto_jobs_dead_total`, which never fires for a render failure because
 the delivery is marked dead inside the job and the job then succeeds. A struck name whose

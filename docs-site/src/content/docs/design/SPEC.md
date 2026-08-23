@@ -4733,7 +4733,7 @@ still render. See the † under §H.5.
 |---|---|---|
 | blocks per message | **50** | cap member rows; move detail to a reply |
 | `section.text` | **3 000 chars** | truncate at 2 900 + `"… <link\|see full detail in oto>"` |
-| `section.fields` | **10 items, 2 000 chars each** | drop lowest-priority fields; order is Status, Severity, Service, Namespace, Started, Firing-for, Flapping, Team |
+| `section.fields` | **10 items, 2 000 chars each** | drop the lowest-priority fields. **Render order and shed order are two orders and both are declared below** — this cell used to carry the single list `Status, Severity, Service, Namespace, Started, Firing-for, Flapping, Team`, and one list is what made ordering unshippable |
 | `header.text` | 150 chars, `plain_text` only | **not used at all** (S1) |
 | `context.elements` | **10 items** | merge into one mrkdwn element |
 | `actions.elements` | **25 elements** | v1 renders at most **5**: up to 4 buttons, at most one snooze select, and the links overflow. §B.8.6 requires the snooze pair to be VISIBLE ("the `Snooze` action becomes `:bell: Unsnooze`"), so the budget moved rather than the requirement; the row is 4 buttons + overflow, or 3 buttons + the select + overflow. **This line read "at most 4" and was widened by [ADR 0043](/adr/0043-the-slack-action-row-renders-five-elements/)** (git-bug `78388fb`), which records the foreclosed alternatives — the overflow is at its five-option ceiling, and a modal needs a `trigger_id` on §H.8's 3-second path. Five is the SMALLEST number that satisfies §B.8.6; the next widening owes its own ADR |
@@ -4745,6 +4745,64 @@ still render. See the † under §H.5.
 | attachments | 1 (oto) / 100 (Slack hard cap) | exactly one, always (S3) |
 | top-level `text` | no documented cap; keep ≤ 300 chars | one sentence |
 | thread replies before a fresh root | **30** (oto policy) | post `continued` reply + new root (S14) |
+
+#### H.7.1 The field grid has TWO orders, and they are declared separately
+
+**⭐ RENDER ORDER IS WHAT A READER SEES. SHED ORDER IS WHAT A BUSY CARD GIVES UP. They were one dial,
+and that is the whole reason field ordering is not user-settable.**
+
+`fieldsBlock`'s `add` closure (`internal/channels/render/slack/root.go:105-113`) refuses silently once
+`len(fields) >= maxFields`, and every field is appended by a straight-line sequence of `add` calls. So
+position in that sequence decides two unrelated questions at once: where a reader sees a field, and
+whether they see it at all. The field appended LAST is the field absent FIRST. An operator dragging
+`Team` above `Status` would not be choosing a layout — they would be choosing to drop `Status` on a
+card that has twelve facts and room for ten, and no surface would tell them so.
+[ADR 0050](/adr/0050-a-notification-template-is-one-whole-message/) left field ordering undecided
+for exactly this reason and named this section as the defect to fix first. This is that fix: the two
+orders are named apart here so that a later ordering control can move the first without touching the
+second.
+
+Until a renderer reads them as two lists, **shed order is DERIVED from render order by reversal.** It
+is written out anyway, because an order that exists only as the reverse of an append loop cannot be
+reviewed, and a change to it would not appear in any diff.
+
+**The twelve terminal fields**, in render order. Twelve is the count on a `resolved` or `expired`
+card, which is the widest the grid ever gets; the budget is ten, so **two always shed**, and they are
+the last two in render order whose value is non-empty.
+
+| # | Field | Rendered when | Shed rank |
+|---|---|---|---|
+| 1 | `Status` | always | 12th (last to go) |
+| 2 | `Severity` | always | 11th |
+| 3 | `Service` | group label or focus alert carries one | 10th |
+| 4 | `Namespace` | group label or focus alert carries one | 9th |
+| 5 | `Started` | upstream `startsAt` is known (S16) | 8th |
+| 6 | `Duration` — `Firing for` while open, `Silenced for` while suppressed, `Last seen` when expired | always | 7th |
+| 7 | `Resolved` / `Last seen` | terminal only (§H.4) | 6th |
+| 8 | `Instances affected` | terminal only, `TotalCount > 0` (S11) | 5th |
+| 9 | `Notifications` | terminal only, count `> 0` | 4th |
+| 10 | `Acknowledged` | terminal only | 3rd |
+| 11 | `Flapping` | a stored flap verdict exists (§B.6.2) | 2nd |
+| 12 | `Team` | the focus alert carries a `team` label | 1st (first to go) |
+
+`Flapping` and `Team` shedding first is deliberate and is stated in the renderer: they are the two
+facts that matter least once an episode is over. **Row 6 is one field with four spellings, not four
+fields** — `durationLabel(state)` picks the word and the row keeps its position, which is why the
+count is twelve and not fifteen.
+
+A **non-terminal** card renders a subset of the same sequence: rows 7–10 are terminal-only, and one
+further field takes their place in the sequence — `*Notifications*\n:zzz: Snoozed … until …`, §B.8.6's
+single added field, appended between rows 6 and 11 and guarded by `!state.IsTerminal()`. It shares the
+`*Notifications*` label with row 9 and the two can never both apply: row 9 renders only on a terminal
+card, and a card oto has gone quiet about is one it is still tracking. So the widest non-terminal grid
+is nine fields, comfortably inside the budget, and shedding is a terminal-card concern.
+
+> ⚠️ **DEFECT, RECORDED HERE BECAUSE ENUMERATION IS WHAT FOUND IT.** On an `expired` card rows 6 and 7
+> collide: `durationLabel(CardExpired)` and `terminalTimeLabel(CardExpired)` both return `Last seen`,
+> and `durationValue(v, CardExpired, now)` returns `slackDate(v.Group.LastActivityAt)` — the same value
+> row 7 renders. An expired card therefore shows the field `*Last seen*` **twice, identically**, and
+> spends two of its ten slots saying one thing. §H.4 promises one. The fix is a renderer change and is
+> not made here; the count above stays twelve because twelve is what the code names.
 
 ### H.8 Interactivity
 
@@ -5085,7 +5143,8 @@ Numbered, user-observable. v1 is not done until every one of these is demonstrab
 34. `GET /metrics` exposes at minimum: `oto_ingest_accepted_total`,
     `oto_ingest_rejected_total{reason}`, `oto_ingest_duration_seconds`, `oto_clock_skew_seconds`,
     `oto_thread_order_decisions_total{action,reason}`, `oto_thread_gap_recovered_total{reason}`,
-    `oto_thread_head_wait_seconds` and `oto_delivery_claim_lost_total{mode}`. Every name in this
+    `oto_thread_head_wait_seconds`, `oto_delivery_claim_lost_total{mode}` and
+    `oto_render_invalid_total{provider,renderer,mode}`. Every name in this
     list is constructed by a collector in the tree and has a page in `docs/runbooks/`.
 
     **Facts that are deliberately not metrics.** Earlier drafts of this criterion promised seven
@@ -5102,8 +5161,17 @@ Numbered, user-observable. v1 is not done until every one of these is demonstrab
     | `oto_notification_suppressed_total{reason}` | `notifications.suppressed_reason`, the closed set in `internal/notification/domain/suppression.go`. §B.6 requires every suppression to be a row with a place in the UI, so the durable record is the primary artefact and a counter would only be its shadow |
     | `oto_delivery_attempts_total{class}` | `notification_deliveries.attempts` and `.error_class`; the per-job rate is already on `oto_jobs_failed_total{class}` |
     | `oto_delivery_dead_total` | `notification_deliveries.status = 'dead'` with `error_class`; the per-job rate is already on `oto_jobs_dead_total`, which is alertable and paged |
-    | `oto_render_invalid_total{check}` | The delivery itself: `status='dead'`, `error_class='config_invalid'`, the offending payload kept in `notification_deliveries.rendered` and retrievable via `GET /api/v1/deliveries/{id}`. `internal/channels/render/slack/validate.go` names the failing check; `oto_jobs_dead_total` carries the rate |
     | `oto_check_violation_total{constraint}` | A `23514` is mapped to `errs.KindInternal` with the **constraint name as the error `Code`** (§L.9, `internal/*/repository/errors.go`), so it surfaces as a 500 naming the constraint, in the log line and — on a job path — in `oto_jobs_failed_total{class="internal"}` |
+
+    ⭐ `oto_render_invalid_total` WAS ON THIS TABLE AND HAS BEEN BUILT. It is now in the minimum
+    list above, with labels `{provider,renderer,mode}` and a page at
+    `docs/runbooks/oto_render_invalid_total.md`. This entry's replacement fact was **wrong**, not
+    merely thin: it directed an operator to `oto_jobs_dead_total`, and that counter never fires for
+    a render failure. `dispatch.go` marks the delivery dead in the same transaction and the job then
+    reports success — correctly, it was asked to resolve a delivery and it did — so the queue never
+    sees a death. The struck name was not a missing metric standing in for a fact you could read
+    elsewhere; it was the only alarm a whole failure mode had, and the table said otherwise. It
+    carries no `check` label and §L.6 says why.
 
     `oto_thread_recovered_total` was the eighth name here. It is not missing: it **shipped** as
     `oto_thread_gap_recovered_total`, and this criterion now uses the registered name.
@@ -5945,10 +6013,31 @@ loopback address unless `OTO_ALLOW_PRIVATE_WEBHOOK_TARGETS=true` (SSRF guard).
 > correctness failure, not a cosmetic one.
 
 `render/slack.Validate(payload)` runs on every rendered message, **before** the API call and
-before `notification_deliveries.rendered` is persisted. Checks, in order:
+before `notification_deliveries.rendered` is persisted. There are **nineteen** checks, `V0`–`V18`.
+
+⛔ **THIS TABLE SAID EIGHTEEN AND THE CODE HAS ALWAYS RUN NINETEEN.** `V0` is the JSON-decode guard,
+and it was undocumented here because it is the one check that is not a Slack limit — it fires when the
+bytes oto is about to send do not decode as a Slack message at all. It is named in the table now for
+the same reason every other check is: `Check` is the closed vocabulary that lands in
+`notification_deliveries.error`, so a check with no row is a delivery whose failure a reader cannot
+look up.
+
+⛔ ADR 0037 MADE AN EXHAUSTIVENESS TEST OVER THESE IDENTIFIERS ITS GATE ARTIFACT, AND ADR 0050
+RETIRED THAT. The old argument was that a Wording's output type was a `string`, so every structural
+check here was unreachable by construction; a NotificationTemplate owns the blocks, so it is not.
+The replacement is narrower and stronger: a template-rendered payload runs through **this same
+`Validate`**, and a failure falls back to oto's built-in card.
+
+⚠️ The checks do not run in numeric order, and the table is written in the order they run rather than
+the order they are numbered. `V18` is first because an oversized payload is cheap to detect and
+expensive to walk; `V0` is second because nothing else can be read until the bytes decode.
+
+Checks, in the order they run:
 
 | # | Check | Limit | Failure |
 |---|---|---|---|
+| V18 | total payload size, checked before anything is parsed | `<= 100 000` bytes | `render_invalid` |
+| V0 | the payload decodes as a Slack message | `json.Unmarshal` into `render/slack.Payload` succeeds | `render_invalid` |
 | V1 | exactly one attachment | `len(attachments) == 1` | `render_invalid` |
 | V2 | attachment `color` is `good`/`warning`/`danger` or `^#[0-9a-fA-F]{6}$` | — | `render_invalid` |
 | V3 | block count | `<= 50` | `render_invalid` |
@@ -5956,7 +6045,7 @@ before `notification_deliveries.rendered` is persisted. Checks, in order:
 | V5 | `section.text` length | `<= 3000` | `render_invalid` |
 | V6 | `section.fields` | `<= 10` items, each `<= 2000` chars | `render_invalid` |
 | V7 | `context.elements` | `<= 10` | `render_invalid` |
-| V8 | `actions.elements` | `<= 25` (oto renders `<= 4`) | `render_invalid` |
+| V8 | `actions.elements` | `<= 25` (oto renders `<= 5` — [ADR 0043](/adr/0043-the-slack-action-row-renders-five-elements/); this cell said `<= 4` and contradicted §H.7 in the same document) | `render_invalid` |
 | V9 | `button.text` | `<= 75` chars, `plain_text` | `render_invalid` |
 | V10 | `button.url` / `image.image_url` | `<= 3000` chars, absolute http(s) | `render_invalid` |
 | V11 | `button.value` | `<= 2000`; oto asserts it is a bare UUID (S8) | `render_invalid` |
@@ -5966,18 +6055,30 @@ before `notification_deliveries.rendered` is persisted. Checks, in order:
 | V15 | `unfurl_links == false` and `unfurl_media == false` (S6) | — | `render_invalid` |
 | V16 | every `block_id` unique within the payload | — | `render_invalid` |
 | V17 | `metadata.event_payload` serialises to `<= 8000` bytes | — | `render_invalid` |
-| V18 | total payload size | `<= 100 000` bytes | `render_invalid` |
 
 **On failure the delivery goes straight to `status='dead'`, `error_class='config_invalid'`, with
 the offending payload persisted in `notification_deliveries.rendered` and the failing check named
 in `notification_deliveries.error`** (`slack.Error.Check`, rendered as
 `slack render invalid (<check>): …`). It is never silently truncated and never sent.
 
-This is an oto bug, and the alert on it is `oto_jobs_dead_total`
-(`deploy/prometheus/oto-rules.yaml`) — the deliver job dies, so the death is already counted.
-There is **no** `oto_render_invalid_total{check}` counter; earlier drafts promised one and no
-collector was ever built (AC-34). `Check` is the label such a counter *would* carry, and it is
-kept as a stable, closed vocabulary so the delivery records stay greppable by check name.
+This is an oto bug, and the alert on it is **`oto_render_invalid_total{provider,renderer,mode}`**
+(`internal/notification/service/metrics.go`, `docs/runbooks/oto_render_invalid_total.md`).
+
+⛔ THIS PARAGRAPH USED TO NAME `oto_jobs_dead_total` AND SAY "the deliver job dies, so the death is
+already counted". Both halves were false, and together they meant a whole failure mode had no alarm
+at all while the SPEC asserted it had one. The job does **not** die: `dispatch.go` marks the
+delivery dead in the same transaction and then reports SUCCESS — correctly, since the job was asked
+to resolve a delivery and it did — so River's dead-letter is never reached and the queue counter
+stays flat. Nor would handing the error out fix it: a render error has no case in `jobs.Classify`
+and classifies *retryable*, so River would wake a job whose delivery is already resolved and the
+second pass would exit quietly at `Status.Resolved()`. And even when `oto_jobs_dead_total` does
+fire, it cannot separate "oto built an illegal card" from "the destination's token was revoked" —
+one is fixed by shipping a new oto and one by a customer editing their config.
+
+⚠️ THE COUNTER CARRIES NO `check` LABEL, though V0–V18 is bounded enough to be one. The check is a
+provider concept and `dispatch.go` holds no provider-specific code. `Check` is still kept as a
+stable, closed vocabulary, because it is what makes the delivery records greppable by check name and
+it is what the log line and `notification_deliveries.error` carry.
 
 Renderers additionally have golden files (`testdata/*.golden.json`), and the CI golden test runs
 `Validate` over every golden file — so a limit violation is caught at build time, not in production.
@@ -6134,7 +6235,7 @@ service's job, and duplicating it in SQL produces two subtly different rulebooks
 | `TestNoDirectDecode` | no `internal/*/api` package calls `json.NewDecoder` or `validate.Struct` directly (only `httpx.Bind`) |
 | `TestDomainHasNoIOImports` | no `internal/*/domain` package imports `pgx`, `net/http`, `encoding/json` or `slack-go` |
 | `TestSchemasCompile` | every provider's `ConfigSchema` compiles under draft 2020-12 at boot |
-| `TestGoldenBlocksValidate` | every `testdata/*.golden.json` passes all of L.6 V1–V18 |
+| `TestGoldenBlocksValidate` | every `testdata/*.golden.json` passes all nineteen of L.6 `V0`–`V18` |
 | `TestIngestBoundsFuzz` | a Go fuzz target over `decode` never panics and never returns 4xx for a bound violation |
 | `TestIngestNever4xx` | property test: for any non-empty body under 8 MiB with a valid token, the status is 202 or 503 |
 | `TestDTOSchemaDrift` (G1) | Go DTOs match `api/openapi/components/*.yaml` |
@@ -6535,22 +6636,23 @@ of the 54 call sites was on the correct side of that line already; what was miss
   --oto-type-page: 18px;
 
   /* Radius. The tier is chosen by what the corner belongs to, not by how big
-     it looks. All three are 0px as of ADR 0031 — see the note below the
-     table. */
-  --oto-radius-chip: 0px;
-  --oto-radius-control: 0px;
-  --oto-radius-surface: 0px;
+     it looks. ADR 0031 took all three to 0px; ADR 0046 restores the census
+     values below — see the note below the table. */
+  --oto-radius-chip: 3px;
+  --oto-radius-control: 4px;
+  --oto-radius-surface: 6px;
 }
 ```
 
-> ⚠️ **AMENDED — [ADR 0031](/adr/0031-sharp-corners-and-crisper-grid/).** The three radius
-> steps above were *derived* from the 3px/4px/6px census this section describes — not designed —
-> and that census is still the accurate history of why three tiers exist and where the line between
-> `chip` and `control` falls. What ADR 0031 changes is the **value** each of the three steps holds,
-> not the tiers themselves: all three render 0px, an explicit Bloomberg-terminal/Swiss-Modernist
-> sharp-corners override, so a component still reaches for the correct named step (`rounded-chip` on
-> a badge, `rounded-control` on a button) even though every one of them is visually flush today.
-> `rounded-full`/`rounded-none` are unaffected — they were always shapes, not steps.
+> ⚠️ **AMENDED TWICE — [ADR 0031](/adr/0031-sharp-corners-and-crisper-grid/), then
+> [ADR 0046](/adr/0046-corners-round-again/).** The three radius steps above were *derived*
+> from the 3px/4px/6px census this section describes — not designed — and that census is still the
+> accurate history of why three tiers exist and where the line between `chip` and `control` falls.
+> ADR 0031 took the **value** each step holds to 0px, an explicit Bloomberg-terminal/Swiss-Modernist
+> sharp-corners override, without touching the tiers themselves. ADR 0046 reverses that override and
+> restores the census values — not a third derivation, the same 3px/4px/6px this section already
+> documents. `rounded-full`/`rounded-none` are unaffected throughout — they were always shapes, not
+> steps.
 
 | Utility | Step | What it is for |
 |---|---|---|
@@ -6560,9 +6662,9 @@ of the 54 call sites was on the correct side of that line already; what was miss
 | `text-item` | 13 px | a named thing or a control — row titles, nav, tabs, buttons |
 | `text-title` | 14 px | dialog and section titles |
 | `text-page` | 18 px | the page heading, and nothing else |
-| `rounded-chip` | 0 px (ADR 0031; was 3 px) | inline — badges, chips, code spans, skeletons |
-| `rounded-control` | 0 px (ADR 0031; was 4 px) | buttons, inputs, wells, nav items, bordered boxes; **and the `:focus-visible` ring**, since what takes focus is a control |
-| `rounded-surface` | 0 px (ADR 0031; was 6 px) | panels and dialogs — anything that holds controls |
+| `rounded-chip` | 3 px (ADR 0046; was 0 px under ADR 0031) | inline — badges, chips, code spans, skeletons |
+| `rounded-control` | 4 px (ADR 0046; was 0 px under ADR 0031) | buttons, inputs, wells, nav items, bordered boxes; **and the `:focus-visible` ring**, since what takes focus is a control |
+| `rounded-surface` | 6 px (ADR 0046; was 0 px under ADR 0031) | panels and dialogs — anything that holds controls |
 
 `rounded-full` and `rounded-none` remain available and are not steps: they are shapes, and a status
 dot is a circle at any radius the scale could name.

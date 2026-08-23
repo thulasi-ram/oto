@@ -1,7 +1,15 @@
 # Orchestration state
 
-Live build log for the agent orchestrating oto's implementation. Any session
-picking this up should read this file first, then `CONTEXT.md`, then
+> **Internal historical build log — not current documentation, and not binding on
+> anything.** It records how oto was built, phase by phase, and is kept for that
+> reason alone. For what oto is and how it works, read `docs/concepts.md`,
+> `CONTEXT.md`, and the binding pair `docs/design/SPEC.md` and
+> `docs/design/SCOPE-BOUNDARY.md`. Where this file and any of those disagree,
+> this file is the one that is out of date. It is deliberately absent from the
+> documentation site's navigation.
+
+Build log for the agent orchestrating oto's implementation. A session picking up
+the build itself should read this file first, then `CONTEXT.md`, then
 `docs/design/SPEC.md` (binding) and `docs/design/SCOPE-BOUNDARY.md` (binding).
 
 ## How this build is run
@@ -253,7 +261,7 @@ Recorded here so they can be reversed cheaply. Full reasoning in the ADRs.
    produces `refired` at all and there is no reply for verbosity to drop.** The
    product question it named — how loud a re-fire should be on a quiet channel —
    is still open, and it is no longer a question about `group_close_delay` —
-   ⛔ that setting is deleted (see decision 9's follow-up). A conversation now
+   **Deleted:** that setting is gone (see decision 9's follow-up). A conversation now
    holds exactly one Case, so a re-fire is always a new root: loud, always, with
    no knob. Whether that is right is the open ruling recorded in SPEC §B.5.
 9. **A Case is `open` or `closed`, and it is never reopened (ADR 0040)** — and
@@ -269,7 +277,7 @@ Recorded here so they can be reversed cheaply. Full reasoning in the ADRs.
    one that was signed for. `reopen_count`/`reopen_of` are dropped,
    `case.reopened` is retired on 00051's terms, and `refire_grace` survives as an
    inert setting whose future is deliberately undecided.
-   ⛔ **OVERTAKEN — `refire_grace_s` IS DELETED** (git-bug `7287b28`, migration
+   **OVERTAKEN — `refire_grace_s` IS DELETED** (git-bug `7287b28`, migration
    `00071`). "Deliberately undecided" was decided: the setting had no reader
    outside its own CRUD, and the owner's standing ruling is *delete, do not
    retire*, because a knob that clamps, validates and reports an origin while
@@ -279,31 +287,46 @@ Recorded here so they can be reversed cheaply. Full reasoning in the ADRs.
    therefore describe settings that no longer exist; the *derivation* stands as
    the record of how they were reached.
 
-## Questions genuinely needing the owner
+## Questions that needed the owner — all now settled
 
-Collected for a single decision session rather than interrupting piecemeal.
-The build is not blocked on any of them.
+Collected for a single decision session rather than interrupting piecemeal. The
+build was never blocked on any of them, and **every one has since been answered
+by an ADR**. Each is kept below with the decision that closed it, because the
+question is part of the record of how the answer was reached. Nothing in this
+section is open.
 
-1. **Is oto k8s-*enriched* or only k8s-*shaped*?** All Kubernetes API enrichment
-   is currently deferred — it needs cluster RBAC and it is Robusta's turf. Today
-   oto groups by namespace/cluster and installs by Helm but does not read the
-   cluster. This may contradict "k8s cloud native" as intended.
-2. **Slack app distribution** — Marketplace, per-customer internal app, or
-   BYO-token. Sets the rate-limit tier, which is an architecture input.
-   Assumed: BYO-token self-hosted, Socket Mode default.
-3. **Licence.** Keep and Robusta are both MIT-cored; AGPL would make oto the
-   most restrictive option in a permissive field.
+1. **RESOLVED by [ADR 0016](adr/0016-mcp-enrichment-no-firehose.md)** — cluster
+   context arrives via MCP, on demand, and oto never reads the Kubernetes event
+   firehose. The question was whether oto is k8s-*enriched* or only
+   k8s-*shaped*: all Kubernetes API enrichment was deferred — it needs cluster
+   RBAC and it is Robusta's turf — leaving oto grouping by namespace and cluster
+   and installing by Helm without ever reading the cluster, which looked like it
+   might contradict "k8s cloud native" as intended.
+2. **RESOLVED by [ADR 0018](adr/0018-slack-distribution-model.md)** — a
+   customer-built internal app with credentials in config; no Marketplace
+   listing and no oto-operated service. The question was which of Marketplace,
+   per-customer internal app or BYO-token to build for, since it sets the
+   rate-limit tier. The assumption recorded here at the time was "BYO-token
+   self-hosted, Socket Mode default"; the first half held and the second did
+   not — Socket Mode was never built, and
+   [slack.md](setup/slack.md) says why.
+3. **RESOLVED by [ADR 0019](adr/0019-mit-licence.md)** — MIT, and `LICENSE` is
+   committed. The question was whether AGPL was worth being the most restrictive
+   option in a permissive field; Keep and Robusta are both MIT-cored.
 
 Retention defaults were question 5 here. They are now decision 7 above (ADR
 0024). `refire_grace` and the flap thresholds were question 4. They are now
 decision 8 above (ADR 0026). Both were decided without the owner and both are
 written to be cheap to overturn — and `refire_grace` was in fact overturned:
-see the ⛔ follow-up on decision 9.
+see the *OVERTAKEN* follow-up on decision 9.
 
-4. **How loud should a re-fire be?** New, and it is the successor to the
-   question decision 8 left open. With `alert_groups` deleted a conversation
-   holds exactly one Case, so 500 firing alerts open 500 Slack threads by
-   construction and the only collapse mechanism left is the **opt-in digest**.
-   `test/load`'s `O(groups)` bound and its *"chatter ≤ alerts/10"* ratio are
-   deleted with tombstones. This needs a product ruling; it cannot be tuned,
-   because there is no longer a number to tune.
+4. **RESOLVED by
+   [ADR 0045](adr/0045-a-case-is-a-conversation-and-a-thread-per-alert-is-accepted.md)**
+   — one Slack thread per alert is the accepted cost, and the opt-in digest is
+   the only collapse mechanism. The question was how loud a re-fire should be,
+   and it was the successor to the one decision 8 left open: with `alert_groups`
+   deleted a conversation holds exactly one Case, so 500 firing alerts open 500
+   Slack threads by construction. `test/load`'s `O(groups)` bound and its
+   *"chatter ≤ alerts/10"* ratio were deleted with tombstones. It needed a
+   product ruling rather than tuning, because there was no longer a number to
+   tune, and ADR 0045 is that ruling.

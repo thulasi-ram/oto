@@ -151,7 +151,7 @@ Three things to know about what you will see there:
   | `no_webhook` | no receiver has a webhook integration | nothing here can push to oto — a real finding about the source |
   | `unknown` | the configuration has never been read | every verdict that depends on these numbers is withheld |
 
-- **⛔ Nothing in oto evaluates a matcher against a label set, and nothing will.** Deciding which route a
+- **Never. Nothing in oto evaluates a matcher against a label set, and nothing will.** Deciding which route a
   *particular* alert takes needs that alert's labels and would be a second, invisible implementation of
   somebody else's routing engine. Everything above is **structural** — derived from the shape of the tree
   and therefore true for every alert. Where structure cannot decide, the answer stays a set and is shown
@@ -199,7 +199,7 @@ And one number from your **rules**, not your Alertmanager config:
 `for:` is the dwell time before Prometheus considers the rule firing. **It is the hard floor on how
 fast an alert can possibly oscillate**, and it is what makes the case retention window W either
 meaningful or dead code. (It used to bound two more settings, `group_close_delay` and the
-`refire_grace` it was pinned to; ⛔ both are deleted — see below.) If your rules use `for:` durations that vary from `0s` to
+`refire_grace` it was pinned to; **both are deleted** — see below.) If your rules use `for:` durations that vary from `0s` to
 `1h`, no single global value is correct for all of them; tune for the rules that actually misbehave.
 
 ---
@@ -266,7 +266,27 @@ place to read a number — several alerts take `for:` from a config variable —
 
 ---
 
-## ⛔ `refire_grace` and `group_close_delay` are DELETED — there is nothing here to tune
+## Removed knobs
+
+**Five settings that older pages, runbooks and values files still name decide nothing today.** They
+are listed here so a search for one lands somewhere useful; the two sections below keep the full
+account of how each was derived and why it went, because the derivations are still the best record of
+how a plausible default can turn out to be unreachable.
+
+| Knob | State | What to reach for instead |
+|---|---|---|
+| `refire_grace_s` | **Deleted** from `orgs.settings`, the settings screen, the values file and the API (git-bug `7287b28`, migration `00071`). | Nothing. Every re-fire opens the next episode and posts a new root card; no number changes that. |
+| `group_close_delay_s` | **Deleted**, same change. | Nothing. `alert_groups` no longer exists, so there is no generation whose close could be delayed. |
+| `flap_threshold` | **Inert.** The key is still accepted and still stored; nothing reads it. | The case retention window **W** (migration `00057`) damps flap noise at case formation. |
+| `flap_window` | **Inert**, same. | As above. |
+| `flap_digest_interval` | **Inert**, same. | As above. |
+
+A values file that still sets any of them is **not rejected** — an unknown key is dropped on read, and
+an inert key is stored and ignored — so nothing breaks. Nothing happens either.
+
+---
+
+### Removed: `refire_grace` and `group_close_delay`
 
 > **Both keys are gone from `orgs.settings`, from the settings screen, from the values file and from
 > the API** (git-bug `7287b28`, migration `00071`). A values file that still sets either is not
@@ -289,7 +309,7 @@ place to read a number — several alerts take `for:` from a config variable —
    (migration `00069`) deleted `alert_groups` outright: the conversation is now the **Case**. With no
    generation to close, the delay had no job, and with the delay gone the pin had nothing to pin.
 
-⭐ **AND THE DELETION CHANGES NOTHING YOU CAN SEE IN SLACK, WHICH IS THE STRONGEST ARGUMENT THAT NO
+**And the deletion changes nothing you can see in Slack, WHICH IS THE STRONGEST ARGUMENT THAT NO
 REPLACEMENT IS OWED.** oto's own tuning defaults had already written it down: *"every re-fire opened a
 new episode, a new generation and a new Slack root card, **with a setting on the screen that looked
 like it should have stopped it**."* A card per re-fire was already the shipped behaviour. The thing a
@@ -319,7 +339,7 @@ still bound `resolve_grace`, the case retention window W, and any digest window 
 ---
 
 
-## ⛔ Flap damping is RETIRED — `flap_threshold`, `flap_window`, `flap_digest_interval` now decide NOTHING
+### Removed: flap damping — `flap_threshold`, `flap_window`, `flap_digest_interval`
 
 > **Do not tune these three. They are inert.** The keys still exist in `orgs.settings` and the
 > settings API still accepts them, so a values file that sets them keeps working — but nothing in oto
@@ -362,7 +382,7 @@ and fired again during a rolling deploy got marked as flapping, and the second f
 UI, so a healthy alert was mislabelled as noisy and someone eventually deleted a useful rule because of
 it.
 
-### The `for:` trap — why the 30-minute window made this dead code
+#### The `for:` trap — why the 30-minute window made this dead code
 
 > **A threshold of 5 transitions in 30 minutes was unreachable for every rule shape in the corpus,
 > including rules with no `for:` at all.**
@@ -496,7 +516,7 @@ because a resolve arrived quietly.
 destination channel's `verbosity` and `thread_updates` settings. A channel that has opted out of thread
 replies does not receive louder ones.
 
-⛔ **There used to be one exception — the unacked reminder, always broadcast, because a reminder
+**Removed.** There used to be one exception — the unacked reminder, always broadcast, because a reminder
 nobody sees is not a reminder. oto no longer sends it at all** (git-bug `bd0fb1d`): nothing is
 delivered that nobody asked for. `refired` is now the only reason that always broadcasts.
 
@@ -507,7 +527,7 @@ delivered that nobody asked for. `refired` is now the only reason that always br
 | Key | Default | What it does | Relationship to your config |
 |---|---|---|---|
 | `resolve_grace_s` | `300` (5m) | How long past an alert's `EndsAt` lease oto waits before the reaper marks the case **`expired`**. | Prometheus refreshes `EndsAt` on every send; the lease is typically `4 × scrape_interval` or `evaluation_interval` (commonly 3–4 minutes). Set `resolve_grace` **above** that lease, or a single missed scrape looks like an expiry. `5m` covers the usual case. |
-| ⛔ `refire_grace_s`, `group_close_delay_s` | **DELETED** | Nothing. Both keys are gone from `orgs.settings` and from this API (git-bug `7287b28`, migration `00071`). | A re-fire is always a new Slack root card and there is no number that changes that. See the ⛔ section above for why, and what to reach for instead. |
+| `refire_grace_s`, `group_close_delay_s` | **Removed** | Nothing. Both keys are gone from `orgs.settings` and from this API (git-bug `7287b28`, migration `00071`). | A re-fire is always a new Slack root card and there is no number that changes that. See *Removed knobs*, above, for why and what to reach for instead. |
 | `default_verbosity` | `status_changes` | The fallback for a Channel that names no verbosity of its own. A channel's own setting always wins — an org default can never make a quiet channel loud. | Set it to `firing_only` if most of your channels want the quietest setting and you would rather not repeat yourself. |
 | `broadcast_on_resolved` | `false` | Whether `all_resolved` is broadcast into the channel rather than posted quietly in the thread. | See **Broadcast**, above. It is the only broadcast that is configurable, because a broadcast cannot be un-sent. |
 | `raw_retention_days` | `30` | How long raw webhook payloads are kept before their partition is dropped, permanently. | Nothing in `alertmanager.yml` bears on it. The thirty is **chosen**, not derived: a replay is refused when the alerts a batch would touch have moved on, never because the batch is old, so this is the depth of the rejection and failed-batch feeds and the window a replay can be attempted in. See **Retention**, below. |
@@ -616,10 +636,10 @@ change nothing — oto's defaults *are* the derivation for that case**, and this
 {
   "resolve_grace_s":       300     // above a typical EndsAt lease of 3-4 minutes
 
-  // ⛔ The three flap keys are NOT here on purpose: flap detection is RETIRED and
+  // Removed: the three flap keys are NOT here on purpose. Flap detection is retired and
   // they decide nothing. Setting them is harmless and has no effect.
   //
-  // ⛔ Nor are `refire_grace_s` and `group_close_delay_s`, which used to be the two
+  // Removed: nor are `refire_grace_s` and `group_close_delay_s`, which used to be the two
   // headline numbers on this page. They are DELETED, not inert — the keys no longer
   // exist (git-bug 7287b28, migration 00071). `resolve_grace_s` is the only
   // lifecycle clock a tenant still sets.
@@ -629,7 +649,7 @@ change nothing — oto's defaults *are* the derivation for that case**, and this
 **Two places where you should deviate, and the deviation is not small:**
 
 - **Rules with a long `for:`.** If your alerting is dominated by node-exporter-style predictive rules
-  (`for: 1h`), the observable cycle is 65 minutes. ⛔ **There is no longer a setting that wants
+  (`for: 1h`), the observable cycle is 65 minutes. **Removed.** There is no longer a setting that wants
   widening to match it.** `refire_grace` and `group_close_delay_s` were the two that did, and both are
   deleted; flap damping used to need a matching window and is retired. What the long cycle still bears
   on is the case retention window W and any **digest window** you configure on a notification policy —

@@ -120,8 +120,13 @@ instead. This table is the maintained copy; SPEC AC-34 mirrors it.
 | `oto_notification_suppressed_total{reason}` | `notifications.suppressed_reason` — the closed set in `internal/notification/domain/suppression.go`. §B.6 requires every suppression to be a durable row with a place in the UI, so the row is the primary artefact. (There is **no** `notification_suppressions` table; an earlier version of this page named one.) |
 | `oto_delivery_attempts_total{class}` | `notification_deliveries.attempts` / `.error_class`; per-job failures are on `oto_jobs_failed_total{class}` |
 | `oto_delivery_dead_total` | `notification_deliveries.status = 'dead'` with `error_class`; per-job deaths are on [`oto_jobs_dead_total`](/runbooks/oto_jobs_dead_total/), which is alertable and paged |
-| `oto_render_invalid_total{check}` | The delivery record: `status='dead'`, `error_class='config_invalid'`, the failing check named in `notification_deliveries.error` and the payload kept in `.rendered` (retrievable via `GET /api/v1/deliveries/{id}`). `internal/channels/render/slack/validate.go` owns the check vocabulary; the rate is on `oto_jobs_dead_total` |
 | `oto_check_violation_total{constraint}` | A `23514` maps to `errs.KindInternal` with the **constraint name as the error `Code`** (SPEC §L.9, `internal/*/repository/errors.go`), so the 500 and its log line name the constraint; on a job path it is counted by `oto_jobs_failed_total{class="internal"}` |
+
+**Built.** `oto_render_invalid_total` was on this table and now exists — see
+[`oto_render_invalid_total`](/runbooks/oto_render_invalid_total/). Its entry here was not just thin, it was
+wrong: it sent an operator to `oto_jobs_dead_total`, which never fires for a render failure because
+the delivery is marked dead inside the job and the job then succeeds. A struck name whose
+replacement fact is false is worse than the promise it replaced.
 
 `oto_thread_recovered_total` was an eighth such name, but it is a **rename, not a gap**: the metric
 shipped as [`oto_thread_gap_recovered_total`](/runbooks/oto_thread_gap_recovered_total/). The SPEC and the

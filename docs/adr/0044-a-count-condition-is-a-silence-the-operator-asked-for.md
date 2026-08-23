@@ -1,22 +1,22 @@
-# ADR 0044 — A count condition is a silence the operator asked for, and `below_threshold` is how oto says so
+# 0044 — A count condition is a silence the operator asked for, and `below_threshold` is how oto says so
 
-- **Status**: Accepted — **in full, §5's precedence rank included.** The rank was recorded as an
-  implementation decision pending ratification when this ADR was written; the owner ratified it on
-  2026-08-20 and it is now a ruling like the rest of this document.
-- **Date**: 2026-08-20
-- **Resolves**: git-bug `7570090`, stage 6's remaining half — the replacement that ticket names for
-  hardcoded flap detection.
-- **Migrations**: `00072_a_policy_binds_a_subject_and_counts_it.sql` — `notification_policies`
-  gains `subject_kinds`, `count_min`, `count_window_s` and four CHECKs; and
-  `00073_a_floor_can_record_its_own_silence.sql` — `notifications_suppmap_ck` widens from six values
-  to seven, plus `notif_policy_idx`.
-- **Amends**: SPEC §B.8.2 (the precedence chain, six values → seven), §D.8 (the two tables' DDL),
-  §H.6 and the `NotificationSuppressedReason` schema in `api/openapi/openapi.yaml`.
-- **Relates to**: [0042](0042-storm-damping-is-removed.md) — this is the ADR a reader of 0042 needs in
-  order to be told why a new damper is admissible at all. 0042 is **not** superseded: §3's ruling that
-  oto may not withhold on its own judgement is the test this axis had to pass, and §4's "nothing
-  replaces it *at the notification layer*" is unchanged, because what arrives here is a **policy
-  column**, not a detector.
+**Status:** Accepted — **in full, §5's precedence rank included.** The rank was recorded as an
+implementation decision pending ratification when this ADR was written; the owner ratified it on
+2026-08-20 and it is now a ruling like the rest of this document.
+**Date:** 2026-08-20
+**Resolves:** git-bug `7570090`, stage 6's remaining half — the replacement that ticket names for
+hardcoded flap detection.
+**Migrations:** `00072_a_policy_binds_a_subject_and_counts_it.sql` — `notification_policies`
+gains `subject_kinds`, `count_min`, `count_window_s` and four CHECKs; and
+`00073_a_floor_can_record_its_own_silence.sql` — `notifications_suppmap_ck` widens from six values
+to seven, plus `notif_policy_idx`.
+**Amends:** SPEC §B.8.2 (the precedence chain, six values → seven), §D.8 (the two tables' DDL),
+§H.6 and the `NotificationSuppressedReason` schema in `api/openapi/openapi.yaml`.
+**Relates to:** [0042](0042-storm-damping-is-removed.md) — this is the ADR a reader of 0042 needs in
+order to be told why a new damper is admissible at all. 0042 is **not** superseded: §3's ruling that
+oto may not withhold on its own judgement is the test this axis had to pass, and §4's "nothing
+replaces it *at the notification layer*" is unchanged, because what arrives here is a **policy
+column**, not a detector.
 
 > ⚠️ **§5'S RANK IS AN IMPLEMENTER'S CHOICE AND IS LABELLED AS ONE THROUGHOUT.** `below_threshold`
 > ranks between `throttled` and `verbosity` in the shipped chain. The argument for that position —
