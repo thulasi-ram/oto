@@ -694,8 +694,6 @@ type demoHealth struct {
 	lastPushAgo         time.Duration
 	lastReconcileAgo    time.Duration
 	lastReconcileStatus string
-	lastError           string
-	consecutiveFailures int
 	amVersion           string
 	sendResolved        bool
 	clockSkewMS         int64

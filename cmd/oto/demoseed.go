@@ -327,7 +327,9 @@ INSERT INTO source_health (source_id, org_id, status, last_push_at, last_reconci
                            warnings, updated_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
 			sid, s.orgID, h.status, s.ago(h.lastPushAgo), s.ago(h.lastReconcileAgo),
-			nilIfEmpty(h.lastReconcileStatus), nilIfEmpty(h.lastError), h.consecutiveFailures,
+			// last_error and consecutive_failures are always empty: a demo source is
+			// either healthy or degraded by a warning, never by a failed probe.
+			nilIfEmpty(h.lastReconcileStatus), nil, 0,
 			nilIfEmpty(h.amVersion), h.sendResolved, h.clockSkewMS, h.divergenceCount,
 			jsonBytes(s.warningsJSON(h.warnings)), s.now,
 		); err != nil {
