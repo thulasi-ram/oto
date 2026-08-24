@@ -1061,7 +1061,7 @@ const SourceTimings: Component<{
           fallback={<span>never read</span>}
         >
           <span>
-            read <RelativeTime value={props.am.observedAt} label="Configuration last read" />
+            read <RelativeTime value={props.am.observedAt} label="Configuration last read" /> ago
           </span>
         </Show>
         <Show when={!props.isBasis}>

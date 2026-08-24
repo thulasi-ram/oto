@@ -47,6 +47,7 @@ import { ErrorState, LoadingLine, Skeleton } from "~/components/ui/states";
 import { absoluteTime } from "~/lib/format";
 import { createKeysetFeed, keepPrevious, type KeysetFeed } from "~/lib/keysetFeed";
 import { EnrichmentPanel } from "~/features/alerts/detail/EnrichmentPanel";
+import { PANEL_CODE_BLOCK } from "~/features/alerts/detail/rhythm";
 import { Timeline } from "~/features/alerts/detail/Timeline";
 import { typesForCategories, type EventCategory } from "~/features/alerts/detail/eventKinds";
 
@@ -333,9 +334,19 @@ export default function CaseDetailRoute() {
                           <span class="text-meta text-ink-subtle">captured at fire time</span>
                         </PanelHeader>
                         <div class="p-3">
-                          <pre class="overflow-x-auto whitespace-pre-wrap break-all rounded-control bg-sunken p-2 font-mono text-meta text-ink">
-                            {rule().expr}
-                          </pre>
+                          {/* ⛔ THE THIRD PLACE OTO PRINTS PromQL, AND IT SPREADS
+                              THE SHARED CLASS RATHER THAN ITS OWN COPY. This
+                              carried a hand-rolled string that paired
+                              `overflow-x-auto` with the `whitespace-pre-wrap
+                              break-all` that makes sideways scrolling impossible
+                              — a dead class contradicting the two beside it, and
+                              exactly the class the other two panels had to be
+                              talked out of. `PANEL_CODE_BLOCK` says why in one
+                              place: an expression cut at the card edge by an
+                              overlay scrollbar hides the threshold with nothing
+                              on screen to say so, and the rule at fire time must
+                              read identically wherever it is shown. */}
+                          <pre class={PANEL_CODE_BLOCK}>{rule().expr}</pre>
                           <dl class="mt-2 space-y-0.5">
                             <DataRow term="rule">
                               <span class="break-all font-mono text-body">{rule().rule_name}</span>

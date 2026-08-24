@@ -13,11 +13,20 @@ package domain
 // address the thing it reports on.
 type Reason string
 
-// The closed Reason set, as narrowed by migration 00018 and again by migration
-// 00060. The scope-banned word migration 00018 removed is gone from this
-// vocabulary and from this file; `unacked_reminder` took its place, because oto
-// has ONE reminder stage, forever, and it reminds a CHANNEL rather than a person
-// (§G.9.1).
+// The closed Reason set, as narrowed by migration 00018 and again by migrations
+// 00060 and 00069. The scope-banned word migration 00018 removed is gone from this
+// vocabulary and from this file, and it has NO REPLACEMENT TERM — nothing in this
+// set names a second stage of anything, because there are no stages.
+//
+// ⛔ `unacked_reminder` BRIEFLY TOOK ITS PLACE AND IS ITSELF DELETED (git-bug
+// bd0fb1d). It was one reminder stage aimed at a CHANNEL rather than a person,
+// which is what kept it inside scope; the owner then withdrew the feature outright.
+// OTO SENDS NOTHING UNPROMPTED. Every Reason below is oto relaying something it
+// OBSERVED — a transition, a comment, an enrichment landing — or, in `digest`'s
+// case, answering a window the operator configured. None of them is oto deciding on
+// its own that a human has been quiet too long. See the ⛔ note at
+// `ReasonUnackedReminder`'s grave further down for why the value went rather than
+// being retired.
 //
 // ⛔ `storm` IS GONE FROM IT, DELETED RATHER THAN RETIRED. It announced storm
 // damping engaging — one group going quiet, plus a once-per-channel notice that

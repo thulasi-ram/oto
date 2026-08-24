@@ -47,9 +47,16 @@ export const PANEL_ROW = "px-lg py-md";
  * `break-all`, not `break-words`: a metric selector is one unbroken token with
  * no spaces to break at, so `break-words` would leave it overflowing anyway.
  *
- * It lives here rather than in either panel because the two must not drift:
- * the rule at fire time and the enricher's projection of it are the same
- * expression seen twice, and the README's hero screenshot is the first of them.
+ * It lives here rather than in any one panel because they must not drift: the
+ * rule at fire time and the enricher's projection of it are the same expression
+ * seen twice, and the README's hero screenshot is the first of them.
+ *
+ * ⚠️ THERE ARE THREE CALLERS, NOT TWO. `case-detail`'s "The rule, as it was
+ * here" prints the SAME `RuleSnapshot.expr` from a third screen, and it was
+ * carrying its own copy of this string — with `overflow-x-auto` still pinned to
+ * it, uselessly, beside the `break-all` that made scrolling impossible. A
+ * duplicated class string is how the drift this constant exists to prevent gets
+ * back in, so a fourth PromQL block spreads this and adds nothing of its own.
  */
 export const PANEL_CODE_BLOCK =
   "whitespace-pre-wrap break-all rounded-control border border-line bg-sunken " +

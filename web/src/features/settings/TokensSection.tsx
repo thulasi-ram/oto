@@ -185,11 +185,21 @@ const TokenRow: Component<{ readonly token: ApiToken }> = (props) => {
         </Show>
       </span>
 
+      {/*
+        ⛔ THE PREPOSITION BELONGS TO THE FORMATTER — the same fault
+        `EnrichmentPanel`'s expiry chip carried. `relativeTime` already renders a
+        FUTURE instant as `in 3d` and a past one bare, so the trailing " from
+        now" here spelled the row "expires in 3d from now": one interval named
+        twice. The VERB is still this row's to choose, because `expired()` above
+        is the only thing that knows which side of the expiry we are reading
+        from, and `expired 1d ago` and `expires in 3d` are two different facts
+        about whether this credential still authenticates anything.
+      */}
       <Show when={t().expires_at}>
         {(at) => (
           <span class="text-meta text-ink-subtle">
             {expired() ? "expired" : "expires"} <RelativeTime value={at()} label="Expires" />
-            {expired() ? " ago" : " from now"}
+            {expired() ? " ago" : ""}
           </span>
         )}
       </Show>

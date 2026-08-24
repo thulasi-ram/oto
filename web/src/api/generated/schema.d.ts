@@ -2544,9 +2544,10 @@ export interface components {
          *     `00060_no_enum_remembers_a_damper.sql` narrows `ev_type_ck` to refuse all four spellings and
          *     performs no rewrite, so no migrated database can serve one.
          *
-         *     `group.member_joined`, `group.member_left` and `case.reopened` are **not** in that group. They
-         *     are RETIRED — read but never written — and remain published here, because `ev_type_ck` still
-         *     admits them and rows on disk still spell them.
+         *     `group.opened`, `group.closed`, `group.member_joined`, `group.member_left` and
+         *     `case.reopened` are **not** in that group. They are RETIRED — read but never written — and
+         *     remain published here, because `ev_type_ck` still admits them and rows on disk still spell
+         *     them.
          * @example case.opened
          * @enum {string}
          */

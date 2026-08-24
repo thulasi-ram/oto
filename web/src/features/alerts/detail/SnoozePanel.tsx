@@ -85,10 +85,15 @@ const SnoozeRow: Component<{ readonly row: SnoozeHistoryEntry }> = (props) => {
         </Show>
         <span class="text-body font-medium text-ink">{r().snoozed_by_label}</span>
         <span class="text-body text-ink-muted">
-          asked for quiet until{" "}
+          asked for quiet;{" "}
+          {r().active ? "notifications resume " : "notifications resumed "}
           <span title={absoluteTime(r().snoozed_until)}>
-            <RelativeTime value={r().snoozed_until} label="Notifications resume" />
+            <RelativeTime
+              value={r().snoozed_until}
+              label={r().active ? "Notifications resume" : "Notifications resumed"}
+            />
           </span>
+          {r().active ? "" : " ago"}
         </span>
         <span class="ml-auto text-meta text-ink-subtle" title={absoluteTime(r().snoozed_at)}>
           started <RelativeTime value={r().snoozed_at} label="Snooze started" /> ago

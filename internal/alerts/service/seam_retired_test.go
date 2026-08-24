@@ -122,6 +122,8 @@ func TestAppendTimelineEventRefusesARetiredType(t *testing.T) {
 	scope := retiredTestScope(t)
 
 	for _, typ := range []domain.EventType{
+		domain.EventGroupOpened,
+		domain.EventGroupClosed,
 		domain.EventGroupMemberJoined,
 		domain.EventGroupMemberLeft,
 		// ⭐ THE SEAM REFUSES `case.reopened` TOO, and it costs nothing to say so:

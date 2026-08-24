@@ -95,9 +95,13 @@ var (
 	// manual and superseded, `system` for expired.
 	EventAlertUnsnoozed = EventType{"alert.unsnoozed"}
 
-	// EventGroupOpened records a new AlertGroup generation.
+	// EventGroupOpened recorded a new AlertGroup generation.
+	// ⛔ RETIRED — see `retiredEventTypes`. Nothing appends it: `grouping/service`
+	// minted both of these and that module is deleted.
 	EventGroupOpened = EventType{"group.opened"}
-	// EventGroupClosed records a generation closing after group_close_delay.
+	// EventGroupClosed recorded a generation closing after group_close_delay.
+	// ⛔ RETIRED — see `retiredEventTypes`. Nothing appends it, and there is no
+	// close delay left to elapse.
 	EventGroupClosed = EventType{"group.closed"}
 	// EventGroupMemberJoined recorded a case joining a generation.
 	// ⛔ RETIRED — see `retiredEventTypes`. Nothing appends it.
@@ -222,14 +226,41 @@ func init() {
 // vocabulary entry the next person has to rule out, and `NewEventType` now refuses
 // the four exactly as the column does.
 //
-// ⚠️ THE THREE ABOVE ARE NOT LIKE THE FOUR. `group.member_*` and `case.reopened` are
-// still admitted by `ev_type_ck` and by every partition on disk, and 00060 does not
-// touch them: they belong to migrations 00051 and 00054 and to other decisions.
-// Retired means READ BUT NEVER WRITTEN and that is still exactly what they are.
+// ⚠️ THE FIVE ABOVE ARE NOT LIKE THE FOUR. `group.opened`, `group.closed`,
+// `group.member_*` and `case.reopened` are still admitted by `ev_type_ck` and by
+// every partition on disk, and neither 00060 nor 00069 touches them: they belong to
+// migrations 00051, 00054 and 00069 and to other decisions. Retired means READ BUT
+// NEVER WRITTEN and that is still exactly what they are.
+//
+// ⭐⭐ AND `group.opened`/`group.closed` JOINED THEM WHEN THE CONTAINER STOPPED
+// EXISTING (migration 00069). They were the generation's own bookkeeping — one
+// generation opening, and closing again after `group_close_delay` — and the
+// AlertGroup is gone: `alert_groups` is dropped, the `grouping` module that minted
+// both is deleted, and the Conversation IS the Case. `TimelineEventRequest.GroupID`
+// went with it, so a group-scoped request now has no subject at all.
+//
+// ⚠️ THEY WERE MISSING FROM THIS MAP FOR ONE RELEASE AND THAT WAS THE DEFECT, NOT A
+// DECISION. Nothing appended them any more, so the map's absence cost nothing in
+// practice — but "nothing appends it" was a fact about the tree rather than a
+// refusal, and the whole argument on this map is that a comment saying *do not emit
+// this* is advice while a refusal at the write path is a guarantee. Their
+// `group.member_*` siblings were listed here from the start. Two values spelling a
+// FULLY RETIRED NOUN stayed writable while two values spelling a fact ABOUT that
+// noun did not, which is the wrong way round: the container's own lifecycle is the
+// more retired of the two, not the less.
+//
+// ⛔ AND 00069 KEEPS THE READ SIDE INTACT, deliberately — `alert_events.group_id`
+// and `ev_subject_ck` are left exactly as they were, because historical
+// `group.opened`, `group.closed` and `group.member_*` rows carry a group id and
+// NOTHING ELSE as their subject. So the treatment is 00051's bargain unchanged, not
+// 00060's: parseable, canonicalising, in `AllEventTypes`, in
+// `components.schemas.AlertEventType`, and unwritable.
 //
 // They leave this file when the last partition holding them is dropped, and not
 // before.
 var retiredEventTypes = map[string]struct{}{
+	EventGroupOpened.s:       {},
+	EventGroupClosed.s:       {},
 	EventGroupMemberJoined.s: {},
 	EventGroupMemberLeft.s:   {},
 	EventCaseReopened.s:      {},
@@ -347,7 +378,8 @@ func AllPersistedEventTypes() []string {
 // somebody else's generated client refusing a value oto already writes.
 //
 // ⚠️ IT IS THE SET THAT MAY BE READ, WHICH IS LARGER THAN THE SET THAT MAY BE
-// WRITTEN. Three entries — `group.member_joined`, `group.member_left` and
+// WRITTEN. Five entries — `group.opened`, `group.closed`, `group.member_joined`,
+// `group.member_left` and
 // `case.reopened` — are RETIRED: nothing appends them, and `AppendTimelineEvent`
 // refuses them, but they stay here because thirteen months of `alert_events` still
 // contain them. The four damper types are NOT among them: migration 00060 narrows

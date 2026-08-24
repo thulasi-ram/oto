@@ -60,6 +60,8 @@ func TestHistoricalRowsWithRetiredTypesStillDeserialise(t *testing.T) {
 	t.Parallel()
 
 	for _, want := range []domain.EventType{
+		domain.EventGroupOpened,
+		domain.EventGroupClosed,
 		domain.EventGroupMemberJoined,
 		domain.EventGroupMemberLeft,
 	} {
