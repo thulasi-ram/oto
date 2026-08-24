@@ -73,6 +73,25 @@ type captor struct {
 	payload json.RawMessage
 	err     error
 	block   chan struct{}
+	handled chan struct{}
+}
+
+// newCaptor returns a captor whose completed calls can be WAITED ON.
+//
+// ⛔ THE 200 IS FLUSHED BEFORE THE CONSUMER RUNS, and that ordering is the whole
+// point of the endpoint (see `receiveSlackInteraction`). It also means the
+// client's `Do` can return while the dispatch that follows the flush has not
+// been scheduled yet — the request is finished on the wire and the handler
+// goroutine is still between the flush and the call.
+//
+// A test that reads `seen()` the instant `postRaw` returns is therefore racing
+// the very ordering it is meant to rely on. It wins that race on an idle laptop
+// and loses it on a loaded CI runner, where it reports "the consumer saw 0
+// payloads" for a request that was accepted correctly and dispatched a moment
+// later. Every assertion that the consumer WAS reached waits on the signal
+// below instead.
+func newCaptor() *captor {
+	return &captor{handled: make(chan struct{}, 8)}
 }
 
 func (c *captor) Handle(ctx context.Context, payload json.RawMessage) error {
@@ -84,16 +103,43 @@ func (c *captor) Handle(ctx context.Context, payload json.RawMessage) error {
 		}
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.calls++
 	c.payload = payload
-	return c.err
+	err := c.err
+	c.mu.Unlock()
+
+	// Signalled AFTER the call is recorded, so anything woken by it observes the
+	// state it was waiting for. Non-blocking: a captor nobody waits on must not
+	// wedge the handler.
+	select {
+	case c.handled <- struct{}{}:
+	default:
+	}
+	return err
 }
 
 func (c *captor) seen() (int, json.RawMessage) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.calls, c.payload
+}
+
+// awaitCalls blocks until the consumer has completed n calls.
+//
+// The wait is on the captor's own signal, never on a duration: a slow machine
+// makes this test SLOWER and never makes it red. The deadline exists only so a
+// consumer that is genuinely never reached fails here, with the count it did
+// see, rather than hanging until the package timeout prints a goroutine dump.
+func (c *captor) awaitCalls(t *testing.T, n int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		select {
+		case <-c.handled:
+		case <-time.After(30 * time.Second):
+			calls, _ := c.seen()
+			t.Fatalf("the consumer saw %d payloads, want %d", calls, n)
+		}
+	}
 }
 
 // newInteractionServer mounts the real route table over a router with a fixed
@@ -257,7 +303,7 @@ func TestSlackSignatureVerification(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			cons := &captor{}
+			cons := newCaptor()
 			srv := newInteractionServer(t, testSigningSecret, now, cons)
 
 			body, headers := signedForm(testSigningSecret, payload, tc.signedAt)
@@ -268,6 +314,16 @@ func TestSlackSignatureVerification(t *testing.T) {
 			if got := postRaw(t, srv, body, headers); got != tc.wantStatus {
 				t.Fatalf("status = %d, want %d", got, tc.wantStatus)
 			}
+
+			// An ACCEPTED request dispatches after the response is flushed, so the
+			// count is only meaningful once the dispatch has happened.
+			//
+			// A REFUSED one needs no wait, and that asymmetry is the property under
+			// test rather than an inconvenience: verification fails before anything
+			// is dispatched, so there is no later moment at which a rejected
+			// envelope could still reach the consumer. Reading the count
+			// immediately is exactly the assertion "nothing is on its way either".
+			cons.awaitCalls(t, tc.wantCalls)
 			if calls, _ := cons.seen(); calls != tc.wantCalls {
 				t.Fatalf("the consumer saw %d payloads, want %d", calls, tc.wantCalls)
 			}
@@ -282,7 +338,7 @@ func TestSlackSignatureVerification(t *testing.T) {
 // requests; oto's floor exists because of it, and this is that decision asserted.
 func TestSlackEndpointRefusesWhenNoSigningSecretIsConfigured(t *testing.T) {
 	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
-	cons := &captor{}
+	cons := newCaptor()
 	srv := newInteractionServer(t, "", now, cons)
 
 	// Signed with the EMPTY secret, which is what a naive implementation would
@@ -307,7 +363,8 @@ func TestSlackInteractionIsAcknowledgedBeforeTheConsumerRuns(t *testing.T) {
 	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
 
 	release := make(chan struct{})
-	cons := &captor{block: release}
+	cons := newCaptor()
+	cons.block = release
 	srv := newInteractionServer(t, testSigningSecret, now, cons)
 
 	body, headers := signedForm(testSigningSecret,
@@ -335,7 +392,8 @@ func TestSlackInteractionIsAcknowledgedBeforeTheConsumerRuns(t *testing.T) {
 // already been received; oto's own queue owns the retry.
 func TestSlackInteractionStillAnswers200WhenTheConsumerFails(t *testing.T) {
 	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
-	cons := &captor{err: errors.New("postgres is on fire")}
+	cons := newCaptor()
+	cons.err = errors.New("postgres is on fire")
 	srv := newInteractionServer(t, testSigningSecret, now, cons)
 
 	body, headers := signedForm(testSigningSecret,
@@ -352,7 +410,7 @@ func TestSlackInteractionStillAnswers200WhenTheConsumerFails(t *testing.T) {
 // leave the verified bytes and the parsed values with no proven relationship.
 func TestSlackPayloadReachesTheConsumerVerbatim(t *testing.T) {
 	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
-	cons := &captor{}
+	cons := newCaptor()
 	srv := newInteractionServer(t, testSigningSecret, now, cons)
 
 	payload := blockActionPayload("oto.ack", "019fe297-d84f-7599-b5b2-1f231749104a")
@@ -361,16 +419,9 @@ func TestSlackPayloadReachesTheConsumerVerbatim(t *testing.T) {
 		t.Fatalf("status = %d, want 200", got)
 	}
 
-	// The consumer runs after the response is flushed, so give it a moment.
-	deadline := time.Now().Add(2 * time.Second)
-	var got json.RawMessage
-	for time.Now().Before(deadline) {
-		if calls, p := cons.seen(); calls > 0 {
-			got = p
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	// The consumer runs after the response is flushed, so wait for it to say so.
+	cons.awaitCalls(t, 1)
+	_, got := cons.seen()
 	if len(got) == 0 {
 		t.Fatal("the consumer never received the payload")
 	}
@@ -394,7 +445,7 @@ func TestSlackPayloadReachesTheConsumerVerbatim(t *testing.T) {
 // An authentic envelope oto cannot read is oto's problem, not the Slack user's.
 func TestSlackInteractionWithNoPayloadFieldIsStillAcknowledged(t *testing.T) {
 	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
-	cons := &captor{}
+	cons := newCaptor()
 	srv := newInteractionServer(t, testSigningSecret, now, cons)
 
 	for _, body := range []string{"", "payload=", "payload=not-json"} {
