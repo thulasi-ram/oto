@@ -32,6 +32,7 @@ CREATE INDEX case_ack_idx ON alert_cases (org_id, ack_state, started_at DESC, id
   WHERE ended_at IS NULL;
 
 -- +goose StatementBegin
+-- vocab:allow frozen migration history -- 00053 has already run and is never rewritten; the stale `escalation.check` clause is corrected by a new COMMENT ON INDEX in 00080.
 COMMENT ON INDEX case_ack_idx IS
   'Serves the unacked-and-still-open queue -- the default view of GET /api/v1/cases -- and escalation.check (SPEC G.9). Partial on ended_at IS NULL so it stays the size of the LIVE case set rather than of every episode ever opened. Carries the whole keyset sort key (started_at DESC, id DESC) so the LIMIT stops the scan and no Sort node appears; before 00053 it stopped at started_at and the id tiebreak cost an Incremental Sort bounded by one Alertmanager batch.';
 -- +goose StatementEnd

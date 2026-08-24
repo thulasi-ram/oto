@@ -2,11 +2,10 @@
  * `/proto/alerts-preview` — the redesigned alert surfaces, drawn against
  * fixtures, with no session and no backend.
  *
- * ⛔ IT IS OUTSIDE THE AUTHENTICATED LAYOUT ROUTE, exactly as
- * `/proto/linear-issues` is, and for the same reason: it must open on a laptop
- * with nothing running on :8080. `RequireSession` would hold the whole tree
- * behind a `/me` probe that can only 401, and `LiveProvider` would open an SSE
- * connection nobody can serve.
+ * ⛔ IT IS OUTSIDE THE AUTHENTICATED LAYOUT ROUTE, like every other `/proto/*`
+ * screen, and for the same reason: it must open on a laptop with nothing running
+ * on :8080. `RequireSession` would hold the whole tree behind a `/me` probe that
+ * can only 401, and `LiveProvider` would open an SSE connection nobody can serve.
  *
  * ⭐ IT RENDERS THE SHIPPING COMPONENTS, NEVER COPIES OF THEM. `FilterBar`,
  * `AlertTable`, `GroupedAlerts`, `AlertActions`, `Timeline`, `RulePanel`,
@@ -24,8 +23,8 @@
  * queries resolve from memory and no request is ever made. Nothing in the
  * components was changed to accommodate it.
  *
- * Never imports from the Linear prototype feature and never touches its private
- * CSS variables. This screen is oto's own tokens or nothing.
+ * Never imports from a sandbox feature and never reads private CSS variables
+ * belonging to one. This screen is oto's own tokens or nothing.
  */
 import {
   For,

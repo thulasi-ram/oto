@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 79 {
-		t.Fatalf("latest migration is %d, want 79 — this test pins the number so that a "+
+	if latest != 80 {
+		t.Fatalf("latest migration is %d, want 80 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1629,6 +1629,39 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// accepts a kind the release below it cannot interpret. No column reading can
 	// see that, and it is the half most likely to be forgotten because nothing
 	// references it.
+	// ⛔ 00080 IS ONE COMMENT AND NOTHING ELSE, which makes it the shape 00043 and
+	// 00050 already are: the prose IS the migration, so a Down that is a copy of its
+	// Up passes every structural reading. 00053's `COMMENT ON INDEX case_ack_idx`
+	// named two readers, and the second of them — the withdrawn reminder sweep
+	// (git-bug bd0fb1d) — no longer exists in any release. `case_ack_idx` itself is
+	// untouched, so the ONLY property that flips here is `obj_description`, and it is
+	// read as text on both sides rather than spot-checked for a substring: a Down
+	// that restored the stale clause and dropped the rest of the sentence would be
+	// green on a `strings.Contains` and would have thrown away the index's own
+	// justification.
+	//
+	// ⛔ AND 00053 IS NOT EDITED, WHICH IS THE SAME ARGUMENT THE 00078/00079 BLOCK
+	// BELOW MAKES. Goose tracks a version, not contents: correcting 00053 in place
+	// would leave every database that already recorded 53 with the old sentence and
+	// nothing to notice it by.
+	if c := tableComment("case_ack_idx"); strings.Contains(c, "escalation.check") {
+		t.Fatalf("case_ack_idx still names the withdrawn sweep at migration 80: %q — "+
+			"00080's Up exists to take that clause out of pg_description, which is what an "+
+			"operator reads at \\d+ and the only place the sentence ships to", c)
+	} else if !strings.Contains(c, "keyset sort key") {
+		t.Fatalf("case_ack_idx's comment lost the index's own justification at migration 80: "+
+			"%q — 00080 corrects one clause and keeps the rest verbatim; dropping the whole "+
+			"sentence is a different change nobody reviewed", c)
+	}
+
+	down(80)
+
+	if c := tableComment("case_ack_idx"); !strings.Contains(c, "escalation.check") {
+		t.Fatalf("00080's Down did not restore 00053's wording: %q — a rollback lands on the "+
+			"release below, and that release's schema says what 00053 said, stale clause and "+
+			"all. A Down that \"improves\" what it rolls back to is not a rollback", c)
+	}
+
 	// ⛔ 00078 AND 00079 ARE NEW NUMBERS AND NOT REWRITES OF 00076 AND 00077, and the
 	// two blocks below this one are why. Goose tracks a migration by its VERSION and
 	// not by its contents, so editing 00076 in place left every database that had

@@ -302,7 +302,7 @@ describe("the policy editor's bounds", () => {
 describe("the channel picker", () => {
   const OTHER = channel({
     id: "6b2c8e9f-7a0d-4b2c-3e4f-506172839405",
-    name: "#platform-oncall",
+    name: "#platform-alerts",
     type: "webhook",
   });
 
@@ -354,7 +354,7 @@ describe("the channel picker", () => {
     mountWithBoth();
     const editor = await openEditor();
 
-    // A row reads `#platform-oncall webhook status_changes`. Filtering on the
+    // A row reads `#platform-alerts webhook status_changes`. Filtering on the
     // name alone would render three words and find the option by only one.
     fireEvent.input(search(editor), { target: { value: "webhook" } });
     await until(() => expect(screen.getAllByRole("option")).toHaveLength(1));

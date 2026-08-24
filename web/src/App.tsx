@@ -43,7 +43,6 @@ const CaseDetailRoute = lazy(() => import("~/routes/case-detail"));
 const NotificationsRoute = lazy(() => import("~/routes/notifications"));
 const SettingsRoute = lazy(() => import("~/routes/settings"));
 const LoginRoute = lazy(() => import("~/routes/login"));
-const LinearIssuesRoute = lazy(() => import("~/routes/linear-issues"));
 const ProtoAlertsPreviewRoute = lazy(() => import("~/routes/proto-alerts-preview"));
 const ProtoUiPreviewRoute = lazy(() => import("~/routes/proto-ui-preview"));
 const ProtoSettingsPreviewRoute = lazy(() => import("~/routes/proto-settings-preview"));
@@ -155,19 +154,19 @@ export const routes = (): JSX.Element => (
       <Route path="/notifications/:section?" component={NotificationsRoute} />
       <Route path="/settings/:section?" component={SettingsRoute} />
     </Route>
-    {/* Deliberately outside the authenticated layout: a static, mock-data-only
-        visual reference with no real API calls, so it needs neither a session
-        nor oto's own AppShell chrome around it.
+    {/* Deliberately outside the authenticated layout: static, fixture-only
+        visual references with no real API calls, so they need neither a session
+        nor oto's own AppShell chrome around them.
 
         And deliberately dev-only: design scaffolding reachable with no session
-        has no business resolving in a production build, so both prototype
-        routes below are gated on `import.meta.env.DEV` and vanish from the
-        route tree entirely once that is `false` — `import.meta.env.DEV` is
-        statically known at build time, so a production bundle never even
-        contains the branch that would render them. */}
-    {import.meta.env.DEV && <Route path="/proto/linear-issues" component={LinearIssuesRoute} />}
-    {/* Same rationale: overlay chrome (modals, dialogs) and the settings forms
-        drawn against fixtures, so both can be reviewed without a session. */}
+        has no business resolving in a production build, so the prototype routes
+        below are gated on `import.meta.env.DEV` and vanish from the route tree
+        entirely once that is `false` — `import.meta.env.DEV` is statically
+        known at build time, so a production bundle never even contains the
+        branch that would render them.
+
+        Overlay chrome (modals, dialogs) and the settings forms drawn against
+        fixtures, so both can be reviewed without a session. */}
     {import.meta.env.DEV && <Route path="/proto/ui-preview" component={ProtoUiPreviewRoute} />}
     {import.meta.env.DEV && (
       <Route path="/proto/settings-preview" component={ProtoSettingsPreviewRoute} />

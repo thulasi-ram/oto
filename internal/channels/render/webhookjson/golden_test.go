@@ -292,6 +292,7 @@ func TestTheWireSpellingIsTheFrozenOne(t *testing.T) {
 		t.Fatalf("schema is %q — every assertion below is about v1's shape, and a bump has to "+
 			"be a deliberate, separately-reviewed change", got)
 	}
+	// vocab:allow frozen oto.notification.v1 wire key, not oto's own vocabulary — the Go field is `Case` (ADR 0036) and moving the KEY needs a v2 (SPEC §H.10).
 	if _, ok := envelope["occurrence"]; !ok {
 		t.Error("the envelope has no `occurrence` key — under oto.notification.v1 that key is " +
 			"frozen. The Go field is `Case` (ADR 0036) and renaming it was right; moving the " +
@@ -301,6 +302,7 @@ func TestTheWireSpellingIsTheFrozenOne(t *testing.T) {
 		t.Error("the envelope emits `case` under oto.notification.v1 — this is the ADR 0036 " +
 			"rename leaking onto the wire, which SPEC §H.10 forbids without a schema bump")
 	}
+	// vocab:allow frozen oto.notification.v1 wire key, not oto's own vocabulary — the Go field is `Case` (ADR 0036) and moving the KEY needs a v2 (SPEC §H.10).
 	if !bytes.Contains(payload, []byte(`"total_occurrences"`)) {
 		t.Error("the envelope has no `total_occurrences` key — frozen at v1 for the same reason")
 	}

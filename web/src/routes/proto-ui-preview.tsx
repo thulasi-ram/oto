@@ -19,8 +19,8 @@
  * and no `queryFn` here talks to anything. No `qk` key is written by hand —
  * nothing on this page reads a query at all.
  *
- * Never imports from the Linear prototype feature and never touches its private
- * CSS variables. This screen is oto's own tokens or nothing.
+ * Never imports from a sandbox feature and never reads private CSS variables
+ * belonging to one. This screen is oto's own tokens or nothing.
  */
 import { For, createSignal, type Component, type ParentComponent } from "solid-js";
 import { QueryClient, QueryClientProvider } from "@tanstack/solid-query";

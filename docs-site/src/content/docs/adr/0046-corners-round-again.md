@@ -50,9 +50,9 @@ is independent of whether the cells' corners are sharp, and nothing here revisit
 - `scales.test.ts` reads `--oto-radius-*` off `tokens.css` and cross-checks it against §M.8 of
   `docs/design/SPEC.md` — both were updated together, so the gate stays green without needing its
   own change.
-- The `features/linear-proto/*` sandbox keeps its own hardcoded `rounded-none` throughout, per its
-  own `--lp-*` token set; it is a separate design surface (see `Keycap.tsx`'s own note) and is not
-  in scope here.
+- The Linear-derived sandbox under `features/` kept its own hardcoded `rounded-none` throughout,
+  per its own `--lp-*` token set; it was a separate design surface and was never in scope here. It
+  has since been deleted, so nothing in the tree carries that override any more.
 - §M.8's amendment note now points at two ADRs in sequence rather than one — the census values, then
   ADR 0031's override, then this reversal — which is the accurate history rather than a rewrite of
   it. A future radius change amends this one the same way, rather than deleting the trail.

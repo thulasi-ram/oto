@@ -137,6 +137,11 @@ changed between episodes, so the drift view has something real to show.
 The seeder refuses to run against a production environment, and refuses to run twice. If
 your database already has data, `just reset` first — note that this destroys the dev volume.
 
+The demo's alert sources point at fictional hosts, so after roughly three hours oto probes
+them, correctly concludes it cannot reach them, and says so in a source-health banner. That
+is the health check working, not the demo breaking. `just reset && just demo` gives you a
+clean window again.
+
 ### Seeing a real alert arrive
 
 `just infra` also starts a Prometheus whose first rule, `OtoStackSmokeTest`, is deliberately

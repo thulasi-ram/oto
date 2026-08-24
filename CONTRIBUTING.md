@@ -170,9 +170,10 @@ generic-webhook renderer has a third corpus on its own `-update` flag.
 
 ## Interpreting a red gate
 
-- **`just lint-vocabulary` is red on a clean tree.** It reports 60 violations across 4 banned terms
-  on `main`, 54 of them under `web/src/features/linear-proto/`, and that is the baseline to compare
-  against rather than a clean exit.
+- **`just lint-vocabulary` is green on a clean tree, and that is the bar.** Anything it prints is
+  new. If the word is genuinely unavoidable — frozen migration history, a foreign system's wire key
+  — put `vocab:allow <reason>` on the line or within the two lines above it, so the exemption
+  arrives with a reason attached and `-v` can list it.
 - **`just test` exits 1 for one failure and for ten.** Compare failure **names** against the
   baseline on `main`, never exit codes. A change that fixes two tests and breaks one is
   indistinguishable from a change that broke nothing, if all you read is the exit code.
@@ -184,7 +185,7 @@ generic-webhook renderer has a third corpus on its own `-update` flag.
 
 ## Database changes
 
-Migrations are goose `.sql` files in `db/migrations/`, and there are **79** of them.
+Migrations are goose `.sql` files in `db/migrations/`, and there are **80** of them.
 
 - **Expand/contract only.** Never a destructive migration in one release; assume N and N+1 run
   simultaneously.
