@@ -28,11 +28,20 @@ import {
   createMemo,
   createSignal,
   type Component,
+  type JSX,
 } from "solid-js";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/solid-query";
 import * as v from "valibot";
 
-import { maxLengthOf, maxValueOf, minLengthOf, minValueOf } from "~/api/bounds";
+import {
+  enumValuesOf,
+  maxLengthOf,
+  maxValueOf,
+  minLengthOf,
+  minValueOf,
+  rangeOf,
+  type Range,
+} from "~/api/bounds";
 import { violationsByField } from "~/api/client";
 import {
   createChannel,
@@ -47,6 +56,7 @@ import {
   CreatePolicyRequestSchema,
   MatcherDTOSchema,
   NotificationReasonSchema,
+  ThrottleDTOSchema,
   UuidSchema,
   VerbositySchema,
 } from "~/api/generated/validators";
@@ -112,7 +122,7 @@ import {
 } from "~/components/ui/TextField";
 import { ToggleGroup, ToggleGroupItem } from "~/components/ui/ToggleGroup";
 import { cn } from "~/lib/cn";
-import { idempotencyKey } from "~/lib/format";
+import { duration, idempotencyKey } from "~/lib/format";
 import { formatMatchers, parseMatchers } from "~/lib/matchers";
 import { MatcherInput } from "~/features/alerts/MatcherInput";
 import { SchemaForm } from "~/features/settings/SchemaForm";
@@ -180,7 +190,125 @@ const CHANNELS_MAX = maxLengthOf(CreatePolicyRequestSchema, "channel_ids");
 
 const PRIORITY_RANGE = `oto accepts ${PRIORITY_MIN}–${PRIORITY_MAX}. Lower is evaluated first.`;
 
-/** What the dialog holds, before it is anything the API has a name for. */
+/**
+ * Which ALTITUDE of fact a policy is about — `alert`, `case` or `digest` — read
+ * off the contract rather than re-typed.
+ *
+ * ⛔ THE CONTRACT STATES THIS PICKLIST **INLINE** ON THE PROPERTY, WHICH IS THE
+ * ONLY REASON THIS IS AN ACCESSOR CALL AND NOT AN IMPORT. `NotificationReason` is
+ * emitted as its own `NotificationReasonSchema`, so `REASONS` below can simply be
+ * that object's `.options`; `subject_kinds` has no named component and therefore
+ * no name to import, which leaves a screen exactly two choices — read it off the
+ * request schema, or type the three words out again. `bounds.ts` documents this as
+ * the case `enumValuesOf` exists for, and typing them out again is how this file
+ * came to offer a reason the server answered 422 for.
+ */
+const SUBJECT_KINDS = enumValuesOf(CreatePolicyRequestSchema, "subject_kinds");
+type SubjectKind = (typeof SUBJECT_KINDS)[number];
+
+const SUBJECT_KINDS_MAX = maxLengthOf(CreatePolicyRequestSchema, "subject_kinds");
+
+/**
+ * One member of a contract-derived list, by value, or a throw naming what was
+ * missing.
+ *
+ * ⭐ THIS IS WHAT LETS THE THREE CROSS-FIELD RULES BELOW NAME A VALUE WITHOUT
+ * HAND-COPYING ONE. `"case"` and `"digest"` are load-bearing in the server's own
+ * rules — a count condition must bind exactly `case`, a digest window must bind
+ * `digest` and list the `digest` reason — so the screen has to be able to say the
+ * words. Saying them as bare literals would compile forever after a rename and
+ * silently stop enforcing anything; looking them up in the list the contract
+ * published fails at import instead, which is where somebody sees it.
+ */
+function member<T extends string>(list: readonly T[], want: string): T {
+  const found = list.find((value) => value === want);
+  if (found === undefined) {
+    throw new Error(
+      `oto: the contract's list no longer contains \`${want}\`. The policy editor has a rule ` +
+        `written in terms of it, and a screen must not guess what replaced it.`,
+    );
+  }
+  return found;
+}
+
+/** The altitude a count condition must bind, and the one a digest is minted at. */
+const CASE_KIND = member(SUBJECT_KINDS, "case");
+const DIGEST_KIND = member(SUBJECT_KINDS, "digest");
+/** The one fact a policy with a digest window must also carry. */
+const DIGEST_REASON = member(REASONS, "digest");
+
+const COUNT_MIN_RANGE = rangeOf(CreatePolicyRequestSchema, "count_min");
+const COUNT_WINDOW_RANGE = rangeOf(CreatePolicyRequestSchema, "count_window_seconds");
+const DIGEST_WINDOW_RANGE = rangeOf(CreatePolicyRequestSchema, "digest_window_seconds");
+const DIGEST_FLOOR_RANGE = rangeOf(CreatePolicyRequestSchema, "digest_floor");
+const THROTTLE_MAX_RANGE = rangeOf(ThrottleDTOSchema, "max");
+const THROTTLE_WINDOW_RANGE = rangeOf(ThrottleDTOSchema, "window_seconds");
+
+/**
+ * Every digest window the server will actually accept, COMPUTED from the two
+ * numbers the contract does publish.
+ *
+ * ⛔ THE DIVISOR RULE IS NOT EXPRESSIBLE IN JSON SCHEMA, AND THE CONTRACT SAYS SO
+ * IN WRITING: *"this schema states the range only and a window that is in range
+ * but not a divisor comes back as a 422"*. That sentence describes the exact bug
+ * this screen is named after — a rule an operator learns by having their work
+ * refused after Save — so the rule is reproduced here instead of imported. What is
+ * NOT reproduced is a number: the alignment period is `DIGEST_WINDOW_RANGE.max`,
+ * because the domain declares them the same fact (`MaxDigestWindow` is one day
+ * *"which is also the alignment period: every admissible window divides it"*,
+ * `internal/notification/domain/digest.go`). Move the ceiling and this list moves
+ * with it.
+ *
+ * ⚠️ IT IS NOT A PICKLIST, DELIBERATELY. 86400 has 96 divisors and roughly half of
+ * them clear the floor, so a `<Select>` of them would be a fifty-row menu of
+ * numbers like 432 and 5400 that nobody wants — worse than the number box it
+ * replaced. It is used to say which two admissible windows sit either side of a
+ * rejected one, which is the part an operator cannot work out in their head.
+ */
+const ALIGNED_DIGEST_WINDOWS: readonly number[] = (() => {
+  const day = DIGEST_WINDOW_RANGE.max;
+  const found = new Set<number>();
+  for (let d = 1; d * d <= day; d += 1) {
+    if (day % d !== 0) continue;
+    for (const w of [d, day / d]) {
+      if (w >= DIGEST_WINDOW_RANGE.min && w <= day) found.add(w);
+    }
+  }
+  return [...found].sort((a, b) => a - b);
+})();
+
+function digestWindowAligned(seconds: number): boolean {
+  return Number.isInteger(seconds) && seconds > 0 && DIGEST_WINDOW_RANGE.max % seconds === 0;
+}
+
+/** The admissible windows either side of one that is not, for the refusal message. */
+function nearestAlignedWindows(seconds: number): readonly number[] {
+  const below = [...ALIGNED_DIGEST_WINDOWS].reverse().find((w) => w < seconds);
+  const above = ALIGNED_DIGEST_WINDOWS.find((w) => w > seconds);
+  return [below, above].filter((w): w is number => w !== undefined);
+}
+
+/**
+ * What the dialog holds, before it is anything the API has a name for.
+ *
+ * ⭐ THE SIX OPTIONAL NUMBERS ARE FLAT AND CARRY THE WIRE'S OWN NAMES, WHICH IS
+ * NOT A COSMETIC CHOICE. `localError` finds a complaint by `path[0].key` and
+ * `violationsByField` keys the server's violations by their `field` — and the
+ * server names exactly these: `count_min`, `count_window_seconds`,
+ * `digest_window_seconds`, `digest_floor`, `subject_kinds`
+ * (`internal/notification/domain/policy.go`). Nesting them into a `count: {…}`
+ * object would give the local complaint a path the server's violation could never
+ * land on, so the same rule would point at the control from one side and at
+ * nothing from the other.
+ *
+ * `null` is OFF for every one of them, and it is off by construction rather than
+ * by validation: the controls are revealed by a checkbox that sets both halves of
+ * a pair at once, so the "one half without the other" shapes the server refuses
+ * (`policies_count_pair_ck`, `policies_digest_pair_ck`, the throttle's
+ * `incomplete`) cannot be built here in the first place. The checks below still
+ * state them, because a policy is also loaded FROM the server and a form that only
+ * enforces what its own widgets can produce is one refactor from enforcing nothing.
+ */
 interface PolicyForm {
   readonly name: string;
   readonly priority: number;
@@ -190,6 +318,14 @@ interface PolicyForm {
   readonly channel_ids: readonly string[];
   /** "" is oto's own card, which is what a policy that names no template gets. */
   readonly template_id: string;
+  /** Empty is EVERY altitude — the contract's default, and never `null`. */
+  readonly subject_kinds: readonly SubjectKind[];
+  readonly throttle_max: number | null;
+  readonly throttle_window_seconds: number | null;
+  readonly count_min: number | null;
+  readonly count_window_seconds: number | null;
+  readonly digest_window_seconds: number | null;
+  readonly digest_floor: number | null;
 }
 
 function toCreatePolicyRequest(form: PolicyForm): CreatePolicyRequest {
@@ -202,9 +338,49 @@ function toCreatePolicyRequest(form: PolicyForm): CreatePolicyRequest {
     channel_ids: [...form.channel_ids],
     // ⛔ OMITTED RATHER THAN SENT AS null. On create the contract's `template_id`
     // is a plain optional uuid: absent means oto's own card. `null` is meaningful
-    // only on the PATCH, where it CLEARS a template the policy already had.
+    // only on the PATCH, where it CLEARS a template the policy already had. The
+    // five nullable numbers below follow the same rule for the same reason; the
+    // patch adds the explicit `null`s back in one place, in the mutation.
     ...(form.template_id === "" ? {} : { template_id: form.template_id }),
+    // ⛔ ALWAYS SENT, EVEN EMPTY. `subject_kinds` is the one new field that is not
+    // nullable anywhere: "claims every altitude" is an ANSWER rather than an
+    // absence, which is why the column is `NOT NULL DEFAULT '{}'` and why the
+    // response DTO marks it required. Omitting it when empty would be the same
+    // statement, but it would make the create body and the patch body disagree
+    // about a field that has no `null` to disagree with.
+    subject_kinds: [...form.subject_kinds],
+    ...(form.throttle_max !== null && form.throttle_window_seconds !== null
+      ? { throttle: { max: form.throttle_max, window_seconds: form.throttle_window_seconds } }
+      : {}),
+    ...(form.count_min === null ? {} : { count_min: form.count_min }),
+    ...(form.count_window_seconds === null
+      ? {}
+      : { count_window_seconds: form.count_window_seconds }),
+    ...(form.digest_window_seconds === null
+      ? {}
+      : { digest_window_seconds: form.digest_window_seconds }),
+    ...(form.digest_floor === null ? {} : { digest_floor: form.digest_floor }),
   };
+}
+
+/**
+ * One optional whole number, bounded by the contract and off when `null`.
+ *
+ * The sentences name the control and state the range, because "invalid" in a
+ * dialog with six numbers in it is a scavenger hunt. `NaN` — what an unreadable
+ * box parses to — fails `minValue` rather than `number`, which is the same route
+ * the priority box has always taken.
+ */
+function optionalWhole(range: Range, what: string) {
+  const stated = `${what} is ${range.min}–${range.max}.`;
+  return v.nullable(
+    v.pipe(
+      v.number(`${what} is a whole number.`),
+      v.integer(`${what} is a whole number.`),
+      v.minValue(range.min, stated),
+      v.maxValue(range.max, stated),
+    ),
+  );
 }
 
 /*
@@ -253,7 +429,134 @@ const PolicyFormSchema = v.pipe(
     // "" is oto's own card and is the shipped default; anything else must be a
     // uuid, because the only other thing it can be is a template id.
     template_id: v.union([v.literal(""), UuidSchema]),
+    subject_kinds: v.pipe(
+      v.array(v.picklist(SUBJECT_KINDS)),
+      v.maxLength(
+        SUBJECT_KINDS_MAX,
+        `There are only ${SUBJECT_KINDS_MAX} altitudes, and naming all of them is what leaving this empty already says.`,
+      ),
+    ),
+    throttle_max: optionalWhole(THROTTLE_MAX_RANGE, "The ceiling"),
+    throttle_window_seconds: optionalWhole(THROTTLE_WINDOW_RANGE, "The throttle window"),
+    count_min: optionalWhole(COUNT_MIN_RANGE, "The count threshold"),
+    count_window_seconds: optionalWhole(COUNT_WINDOW_RANGE, "The count window"),
+    digest_window_seconds: optionalWhole(DIGEST_WINDOW_RANGE, "The digest window"),
+    digest_floor: optionalWhole(DIGEST_FLOOR_RANGE, "The digest floor"),
   }),
+
+  /*
+   * The cross-field rules, each forwarded to THE CONTROL THE SERVER WOULD NAME.
+   *
+   * ⛔ EVERY ONE OF THESE IS A 422 THE OPERATOR WOULD OTHERWISE MEET AFTER SAVE,
+   * which is the defect this whole screen is named after. They are transcriptions
+   * of `Policy.Validate` — `policies_count_pair_ck`, `policies_count_case_ck`,
+   * `policies_digest_pair_ck`, `policies_digest_reason_ck`, the alignment rule and
+   * the throttle's `incomplete` — and the forwarded path is the server's own
+   * `Violation.Field` in each case, so a rule that fires locally and a rule that
+   * fires on the wire light the same control.
+   *
+   * ⛔ ONE SERVER RULE IS DELIBERATELY ABSENT: the general coherence check, which
+   * refuses a binding admitting NONE of the policy's declared reasons. Evaluating
+   * it needs the total Reason → SubjectKind allocation, and that map is NOT
+   * published — the contract states `subject_kinds` and `NotificationReason` as two
+   * independent picklists and nowhere relates them. Reproducing it here would mean
+   * hand-copying fifteen pairs out of `internal/notification/domain/reason.go`,
+   * which is precisely the kind of copy this file's header exists to forbid: it
+   * would be wrong the day a Reason is added and would go on looking right. So the
+   * server owns that one, and its violation lands on `subject_kinds` where the
+   * control is.
+   *
+   * ⭐ THE THREE RULES THAT DO NAME A VALUE ARE SAFE FOR A REASON WORTH KEEPING
+   * STRAIGHT: each is a rule ABOUT A FIELD that the contract states in its own
+   * prose — a count binds `case`, a digest window binds `digest` and lists the
+   * `digest` fact — rather than a fact derived from the allocation map. And each
+   * gets its value from `member()`, which looks it up in a list the contract DID
+   * publish and throws at import if it is not there.
+   */
+  v.forward(
+    v.check(
+      (f) => (f.throttle_max === null) === (f.throttle_window_seconds === null),
+      "A throttle needs both a ceiling and a window, or neither.",
+    ),
+    ["throttle_max"],
+  ),
+  v.forward(
+    v.check(
+      (f) => (f.count_min === null) === (f.count_window_seconds === null),
+      "A count condition needs both a threshold and a window: a threshold over an unbounded span is not something anything can evaluate.",
+    ),
+    ["count_min"],
+  ),
+  v.forward(
+    v.check(
+      (f) =>
+        f.count_min === null ||
+        (f.subject_kinds.length === 1 && f.subject_kinds[0] === CASE_KIND),
+      // Lazy for the reason the digest-fact message below is: the label maps are
+      // declared under this schema, and the sentence has to name the chip the
+      // operator can actually see rather than the wire token behind it.
+      () =>
+        `A count condition counts firings, so it must be about exactly one altitude — “${SUBJECT_LABEL[CASE_KIND]}”. An alert's subject is its identity and does not change when it fires again, so counting those would never pass a threshold above one and would mute this policy permanently; a digest is minted against its own floor and never reads this number at all.`,
+    ),
+    ["subject_kinds"],
+  ),
+  v.forward(
+    v.check(
+      (f) => f.digest_floor === null || f.digest_window_seconds !== null,
+      "A digest floor needs a digest window: a threshold over an unbounded span is not something anything can evaluate.",
+    ),
+    ["digest_floor"],
+  ),
+  v.forward(
+    v.check(
+      (f) => {
+        const w = f.digest_window_seconds;
+        // Only the alignment arm: the range is already stated on the field
+        // itself, and complaining twice about one number is how a dialog gets
+        // ignored.
+        if (w === null || !Number.isFinite(w)) return true;
+        if (w < DIGEST_WINDOW_RANGE.min || w > DIGEST_WINDOW_RANGE.max) return true;
+        return digestWindowAligned(w);
+      },
+      // ⭐ THE MESSAGE NAMES THE TWO WINDOWS EITHER SIDE, because "must divide the
+      // day evenly" is a rule an operator cannot apply in their head at 3am. It is
+      // a function so it can read the value that was rejected.
+      (issue) => {
+        // `issue.input` is the whole form: `v.check` runs against the object and
+        // `v.forward` only rewrites the PATH it is reported under, never the input.
+        const asked = (issue.input as PolicyForm | undefined)?.digest_window_seconds ?? 0;
+        const near = nearestAlignedWindows(asked);
+        const suggestion =
+          near.length === 0 ? "" : ` The nearest that do are ${near.join(" and ")}.`;
+        return (
+          `The digest window must divide the day evenly, so that every boundary is a wall-clock ` +
+          `boundary in UTC.${suggestion}`
+        );
+      },
+    ),
+    ["digest_window_seconds"],
+  ),
+  v.forward(
+    v.check(
+      (f) =>
+        f.digest_window_seconds === null ||
+        f.subject_kinds.length === 0 ||
+        f.subject_kinds.includes(DIGEST_KIND),
+      () =>
+        `A policy with a digest window must be about the “${SUBJECT_LABEL[DIGEST_KIND]}” altitude, or about every altitude: its digests are minted there, so a binding that omits it routes none of them.`,
+    ),
+    ["subject_kinds"],
+  ),
+  v.forward(
+    v.check(
+      (f) => f.digest_window_seconds === null || f.reasons.includes(DIGEST_REASON),
+      // Lazy, because `REASON_LABEL` is declared below this schema and reading it
+      // eagerly here would be a temporal-dead-zone throw at import.
+      () =>
+        `A policy with a digest window must also carry the “${REASON_LABEL[DIGEST_REASON]}” fact, or its digests would be recorded as suppressed once per window, forever.`,
+    ),
+    ["reasons"],
+  ),
   // The annotation matters: `CreatePolicyRequest` marks the two defaulted keys
   // required (openapi-typescript fills a default in), while the generated
   // schema's *input* leaves them optional. Same contract, two honest readings
@@ -319,6 +622,34 @@ const REASON_LABEL: Record<NotificationReason, string> = {
   // damps nothing: a policy with a window sends the digest IN ADDITION to
   // whatever else it routes.
   digest: "window summary",
+};
+
+/**
+ * The three altitudes, in words an operator can pick between without knowing the
+ * Reason-to-subject map by heart — which is the second of the two jobs
+ * `subject_kinds` exists to do (the first is being the count condition's unit).
+ *
+ * ⛔ TYPED `Record<SubjectKind, string>` AGAINST THE CONTRACT-DERIVED UNION, for
+ * the reason `SUPPRESSED_REASON` is: a fourth altitude added server-side becomes a
+ * build failure here rather than a chip with no words on it. There *was* a fourth
+ * — `alert_group` — until migration `00069` deleted it.
+ */
+const SUBJECT_LABEL: Record<SubjectKind, string> = {
+  // The identity of the label set. True whether or not anything is firing, which
+  // is why a snooze and a comment live here and an acknowledgement does not.
+  alert: "the alert itself",
+  // One firing episode. `acked` is the reason this altitude had to exist: a claim
+  // projected onto the identity outlives the firing it was about.
+  case: "one firing",
+  // The only altitude that is not a row in the signal graph — a window over a
+  // namespace, minted by the tick rather than by anything that happened.
+  digest: "a window",
+};
+
+const SUBJECT_HELP: Record<SubjectKind, string> = {
+  alert: "suppressed, snoozed, commented on",
+  case: "started, acknowledged, resolved, enriched, rule changed",
+  digest: "the periodic summary",
 };
 
 export const PoliciesSection: Component = () => {
@@ -439,11 +770,46 @@ const PolicyRow: Component<{
           <span class="text-ink-subtle">about</span>{" "}
           {p().reasons.map((r) => REASON_LABEL[r] ?? r).join(", ")}
         </p>
+        {/* The binding, on its own line and only when it narrows something. An
+            empty binding is every altitude, and a row that said "at every
+            altitude" on every policy would be a word the eye learns to skip.
+            Inline after the facts it read as one run-on clause — "about started
+            firing, all resolved at one firing". */}
+        <Show when={p().subject_kinds.length > 0}>
+          <p>
+            <span class="text-ink-subtle">at</span>{" "}
+            {p()
+              .subject_kinds.map((k) => SUBJECT_LABEL[k] ?? k)
+              .join(", ")}
+          </p>
+        </Show>
         <Show when={p().throttle}>
           {(t) => (
             <p title="A throttled notification is recorded as suppressed with a reason, never silently dropped.">
               <span class="text-ink-subtle">at most</span> {t().max} per{" "}
-              {Math.round(t().window_seconds / 60)} minutes
+              {duration(t().window_seconds)}
+            </p>
+          )}
+        </Show>
+        {/* ⚠️ THE PAIR IS READ OFF `count_min`, WHICH THE SERVER GUARANTEES COMES
+            WITH ITS WINDOW (`policies_count_pair_ck`). A row that rendered each
+            half independently would print "once it has happened 5 times in —" for
+            a shape the database cannot hold. */}
+        <Show when={p().count_min}>
+          {(min) => (
+            <p title="Below the threshold a notification is recorded as suppressed with reason `below_threshold`, never silently dropped.">
+              <span class="text-ink-subtle">once it has happened</span> {min()} times in{" "}
+              {duration(p().count_window_seconds)}
+            </p>
+          )}
+        </Show>
+        <Show when={p().digest_window_seconds}>
+          {(window) => (
+            <p title="One message per window, in addition to whatever else this policy routes.">
+              <span class="text-ink-subtle">and one summary every</span> {duration(window())}
+              <Show when={p().digest_floor}>
+                {(floor) => <> if at least {floor()} firings opened</>}
+              </Show>
             </p>
           )}
         </Show>
@@ -474,6 +840,13 @@ const PolicyDialog: Component<{
   const [reasons, setReasons] = createSignal<readonly NotificationReason[]>(["fired", "all_resolved"]);
   const [channelIds, setChannelIds] = createSignal<readonly string[]>([]);
   const [templateId, setTemplateId] = createSignal("");
+  const [subjectKinds, setSubjectKinds] = createSignal<readonly SubjectKind[]>([]);
+  const [throttleMax, setThrottleMax] = createSignal<number | null>(null);
+  const [throttleWindow, setThrottleWindow] = createSignal<number | null>(null);
+  const [countMin, setCountMin] = createSignal<number | null>(null);
+  const [countWindow, setCountWindow] = createSignal<number | null>(null);
+  const [digestWindow, setDigestWindow] = createSignal<number | null>(null);
+  const [digestFloor, setDigestFloor] = createSignal<number | null>(null);
   // "new" opens the create flow; a Channel opens it pre-filled for editing.
   const [channelDialog, setChannelDialog] = createSignal<Channel | "new" | null>(null);
   const [seeded, setSeeded] = createSignal(false);
@@ -503,6 +876,13 @@ const PolicyDialog: Component<{
         setReasons(p.reasons);
         setChannelIds(p.channel_ids);
         setTemplateId(p.template_id ?? "");
+        setSubjectKinds(p.subject_kinds);
+        setThrottleMax(p.throttle?.max ?? null);
+        setThrottleWindow(p.throttle?.window_seconds ?? null);
+        setCountMin(p.count_min ?? null);
+        setCountWindow(p.count_window_seconds ?? null);
+        setDigestWindow(p.digest_window_seconds ?? null);
+        setDigestFloor(p.digest_floor ?? null);
       } else {
         setName("");
         setPriority(100);
@@ -511,6 +891,19 @@ const PolicyDialog: Component<{
         setReasons(["fired", "all_resolved"]);
         setChannelIds([]);
         setTemplateId("");
+        // ⛔ EVERY ONE OF THE NEW AXES IS OFF ON A NEW POLICY, AND THAT IS THE
+        // CONTRACT'S OWN DEFAULT RATHER THAN THIS SCREEN'S TASTE. An empty binding
+        // is every altitude; a null threshold, window or ceiling is no condition
+        // at all. A dialog that opened with a count condition pre-filled would be
+        // shipping a mute nobody asked for, since a policy below its threshold
+        // records `below_threshold` and says nothing.
+        setSubjectKinds([]);
+        setThrottleMax(null);
+        setThrottleWindow(null);
+        setCountMin(null);
+        setCountWindow(null);
+        setDigestWindow(null);
+        setDigestFloor(null);
       }
     }
   });
@@ -533,6 +926,13 @@ const PolicyDialog: Component<{
     reasons: reasons(),
     channel_ids: channelIds(),
     template_id: templateId(),
+    subject_kinds: subjectKinds(),
+    throttle_max: throttleMax(),
+    throttle_window_seconds: throttleWindow(),
+    count_min: countMin(),
+    count_window_seconds: countWindow(),
+    digest_window_seconds: digestWindow(),
+    digest_floor: digestFloor(),
   });
 
   /**
@@ -561,14 +961,27 @@ const PolicyDialog: Component<{
       const p = props.policy;
       if (p === null) return createPolicy(body, idempotencyKey());
       /*
-       * ⛔ `template_id` IS SENT EXPLICITLY ON THE PATCH, AS null WHEN CLEARED.
-       * The create body OMITS it when empty, because on a create absent already
-       * means "oto's own card". On a patch, absent means "leave it alone" — so
-       * reusing the create shape here would make putting a policy BACK on the
-       * default card impossible: the picker would show the change and the save
-       * would silently keep the old template.
+       * ⛔ EVERY NULLABLE FIELD IS SENT EXPLICITLY ON THE PATCH, AS null WHEN
+       * CLEARED. The create body OMITS them when unset, because on a create absent
+       * already means the default — oto's own card, no throttle, no condition, no
+       * digest. On a patch, absent means "leave it alone", so reusing the create
+       * shape here would make TURNING ANY OF THEM OFF impossible: the dialog would
+       * show the throttle removed and the save would silently keep it.
+       *
+       * ⚠️ `subject_kinds` IS NOT IN THIS LIST AND MUST NOT JOIN IT. It has no
+       * `null` on the wire in either direction — the column is `NOT NULL DEFAULT
+       * '{}'` — so `body.subject_kinds` is already the whole statement, and `[]`
+       * clears a binding exactly the way `null` clears the others.
        */
-      return updatePolicy(p.id, { ...body, template_id: body.template_id ?? null });
+      return updatePolicy(p.id, {
+        ...body,
+        template_id: body.template_id ?? null,
+        throttle: body.throttle ?? null,
+        count_min: body.count_min ?? null,
+        count_window_seconds: body.count_window_seconds ?? null,
+        digest_window_seconds: body.digest_window_seconds ?? null,
+        digest_floor: body.digest_floor ?? null,
+      });
     },
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: qk.settings.policies() });
@@ -723,6 +1136,179 @@ const PolicyDialog: Component<{
             )}
           </Show>
         </div>
+
+        <div class={FIELD}>
+          <ToggleGroup
+            showLegend
+            legend="About which altitude"
+            multiple
+            value={[...subjectKinds()]}
+            onChange={(next) => {
+              setTouched(true);
+              setSubjectKinds(next as SubjectKind[]);
+            }}
+          >
+            <For each={SUBJECT_KINDS}>
+              {(k) => (
+                <ToggleGroupItem value={k} title={SUBJECT_HELP[k]}>
+                  {SUBJECT_LABEL[k]}
+                </ToggleGroupItem>
+              )}
+            </For>
+          </ToggleGroup>
+          <p class={HELP}>
+            Pick none and this policy is about all of them, which is the default and what every
+            policy written before this control existed says. It narrows nothing a shorter list of
+            facts could not — it is here because the count condition below needs a unit, and
+            because “this policy is about firings” is worth being able to read off the screen.
+          </p>
+          <Show when={localError("subject_kinds") ?? violations().get("subject_kinds")}>
+            {(msg) => (
+              <p class="text-meta font-medium text-ink" role="alert">
+                {msg()}
+              </p>
+            )}
+          </Show>
+        </div>
+
+        <fieldset>
+          <legend class={LEGEND}>Thresholds and windows</legend>
+          <div class={FORM}>
+            <p class={HELP}>
+              All three are off by default, and oto is loud by default on purpose: a fact that is
+              not sent is still recorded, with the reason it was held, so a silence configured here
+              is always answerable. Nothing below can be set to half of itself: the server refuses a
+              ceiling, a threshold or a floor with no window beside it, so the boxes arrive and
+              leave in pairs.
+            </p>
+
+            <ConditionBlock
+              id="pol-throttle"
+              label="Send at most a fixed number per window"
+              on={throttleMax() !== null}
+              onToggle={(on) => {
+                setTouched(true);
+                setThrottleMax(on ? THROTTLE_MAX_RANGE.min : null);
+                setThrottleWindow(on ? THROTTLE_WINDOW_RANGE.min : null);
+              }}
+              help="The ceiling. Past it a notification is recorded as suppressed with reason `throttled` — never silently dropped, and visible in the activity log."
+              error={violations().get("throttle")}
+            >
+              <NumberField
+                label="At most"
+                range={THROTTLE_MAX_RANGE}
+                value={throttleMax()}
+                error={localError("throttle_max")}
+                onChange={(next) => {
+                  setTouched(true);
+                  setThrottleMax(next);
+                }}
+              />
+              <NumberField
+                label="Per (seconds)"
+                range={THROTTLE_WINDOW_RANGE}
+                value={throttleWindow()}
+                help={secondsHelp(throttleWindow())}
+                error={localError("throttle_window_seconds")}
+                onChange={(next) => {
+                  setTouched(true);
+                  setThrottleWindow(next);
+                }}
+              />
+            </ConditionBlock>
+
+            <ConditionBlock
+              id="pol-count"
+              label="Stay quiet until it has happened enough"
+              on={countMin() !== null}
+              onToggle={(on) => {
+                setTouched(true);
+                setCountMin(on ? COUNT_MIN_RANGE.min : null);
+                setCountWindow(on ? COUNT_WINDOW_RANGE.min : null);
+                // ⭐ SWITCHING IT ON BINDS THE ALTITUDE, because the server requires
+                // exactly `case` beside a count and would otherwise refuse the save
+                // for a field two groups up that the operator never touched. Turning
+                // it back off leaves the binding alone: it is a legitimate thing to
+                // have chosen on its own, and silently unpicking it would undo an
+                // operator's own edit.
+                if (on && !(subjectKinds().length === 1 && subjectKinds()[0] === CASE_KIND)) {
+                  setSubjectKinds([CASE_KIND]);
+                }
+              }}
+              help="The floor to the throttle's ceiling, and the same two fields read the other way round. Below it a notification is recorded as suppressed with reason `below_threshold`. It counts firings, so it is only about the `one firing` altitude."
+            >
+              <NumberField
+                label="Once it has happened"
+                range={COUNT_MIN_RANGE}
+                value={countMin()}
+                error={localError("count_min")}
+                onChange={(next) => {
+                  setTouched(true);
+                  setCountMin(next);
+                }}
+              />
+              <NumberField
+                label="Within (seconds)"
+                range={COUNT_WINDOW_RANGE}
+                value={countWindow()}
+                help={secondsHelp(countWindow())}
+                error={localError("count_window_seconds")}
+                onChange={(next) => {
+                  setTouched(true);
+                  setCountWindow(next);
+                }}
+              />
+            </ConditionBlock>
+
+            <ConditionBlock
+              id="pol-digest"
+              label="Send one summary per window"
+              on={digestWindow() !== null}
+              onToggle={(on) => {
+                setTouched(true);
+                setDigestWindow(on ? DIGEST_WINDOW_RANGE.min : null);
+                if (!on) setDigestFloor(null);
+                // The digest is minted at its own altitude and routed by its own
+                // fact, and a policy missing either sends nothing while looking
+                // configured. Both are added here rather than left as two refusals.
+                if (on && !reasons().includes(DIGEST_REASON)) {
+                  setReasons([...reasons(), DIGEST_REASON]);
+                }
+                if (on && subjectKinds().length > 0 && !subjectKinds().includes(DIGEST_KIND)) {
+                  setSubjectKinds([...subjectKinds(), DIGEST_KIND]);
+                }
+              }}
+              help="One message about the window rather than one per fact — it is added to what this policy already routes, and damps none of it. Windows are aligned to the UTC day and carry no timezone: this is a window over what happened, never a schedule of when oto may speak."
+            >
+              <NumberField
+                label="Every (seconds)"
+                range={DIGEST_WINDOW_RANGE}
+                value={digestWindow()}
+                help={secondsHelp(digestWindow())}
+                error={localError("digest_window_seconds") ?? violations().get("digest_window_seconds")}
+                onChange={(next) => {
+                  setTouched(true);
+                  setDigestWindow(next);
+                }}
+              />
+              <NumberField
+                label="Only if at least"
+                range={DIGEST_FLOOR_RANGE}
+                value={digestFloor()}
+                help="firings opened inside it. Blank sends whenever the window was not empty."
+                error={localError("digest_floor") ?? violations().get("digest_floor")}
+                onChange={(next) => {
+                  setTouched(true);
+                  setDigestFloor(Number.isNaN(next) ? null : next);
+                }}
+                onClear={() => {
+                  setTouched(true);
+                  setDigestFloor(null);
+                }}
+              />
+            </ConditionBlock>
+          </div>
+        </fieldset>
 
         <div class={CHECK_ROW}>
           <Checkbox id="pol-enabled" checked={enabled()} onChange={setEnabled} />
@@ -1715,6 +2301,108 @@ const PolicyPreviewPanel: Component<{ readonly draft: CreatePolicyRequest }> = (
  * discovered, because the alternative is a Slack-shaped message arriving at a
  * webhook and nobody knowing why it looks like the default.
  */
+/* -------------------------------------------------------------------------- */
+/* Thresholds and windows                                                     */
+/* -------------------------------------------------------------------------- */
+
+/** A window's length in words, so nobody has to divide by 3600 in their head. */
+function secondsHelp(seconds: number | null): string | undefined {
+  if (seconds === null || !Number.isFinite(seconds) || seconds <= 0) return undefined;
+  return duration(seconds);
+}
+
+/**
+ * One optional condition: a checkbox that reveals its own fields.
+ *
+ * ⛔ THE CHECKBOX IS WHAT MAKES THE PAIR RULES UNREACHABLE. `count_min` without
+ * `count_window_seconds`, a digest floor without a digest window and a throttle
+ * ceiling without a throttle window are three separate 422s, and all three are
+ * *shapes a form can simply refuse to build*: one control switches both halves on
+ * and both halves off, so there is no sequence of clicks that produces half of a
+ * condition. The schema still states the rules — a policy is also loaded FROM the
+ * server, and a form that only enforces what its own widgets can emit is one
+ * refactor away from enforcing nothing.
+ *
+ * ⚠️ THE HELP TEXT IS INSIDE THE `Show`, DELIBERATELY. Three paragraphs explaining
+ * three conditions nobody has switched on is most of a modal spent on the state
+ * every policy is already in; the label alone carries the unticked case.
+ */
+const ConditionBlock: Component<{
+  readonly id: string;
+  readonly label: string;
+  readonly help: string;
+  readonly on: boolean;
+  readonly onToggle: (on: boolean) => void;
+  readonly error?: string | undefined;
+  readonly children: JSX.Element;
+}> = (props) => (
+  <div class={FIELD}>
+    <div class={CHECK_ROW}>
+      <Checkbox id={props.id} checked={props.on} onChange={props.onToggle} />
+      <label for={`${props.id}-input`} class={CHECK_LABEL}>
+        {props.label}
+      </label>
+    </div>
+    <Show when={props.on}>
+      <div class={cn(FIELD_ROW, "pl-lg")}>{props.children}</div>
+      <p class={cn(HELP, "pl-lg")}>{props.help}</p>
+      <Show when={props.error}>
+        {(msg) => (
+          <p class="pl-lg text-meta font-medium text-ink" role="alert">
+            {msg()}
+          </p>
+        )}
+      </Show>
+    </Show>
+  </div>
+);
+
+/**
+ * One bounded whole number, with the contract's own range on the control.
+ *
+ * ⛔ `min` AND `max` ARE ATTRIBUTES AND NOT JUST VALIDATION, for the reason the
+ * priority box carries them: the browser's own stepper and its native validation
+ * then agree with the server instead of offering a range nobody enforces. Both
+ * come off the schema — see the constants block at the top of this file, where not
+ * one of these numbers is written down.
+ *
+ * `onClear` is what makes a field genuinely optional *inside* a condition that is
+ * switched on: the digest floor may be blank while its window is set, and blanking
+ * a box has to mean `null` rather than `NaN`. A field without `onClear` treats an
+ * empty box as unreadable, which is the honest answer for a required half.
+ */
+const NumberField: Component<{
+  readonly label: string;
+  readonly range: Range;
+  readonly value: number | null;
+  readonly help?: string | undefined;
+  readonly error?: string | undefined;
+  readonly onChange: (next: number) => void;
+  readonly onClear?: () => void;
+}> = (props) => (
+  <TextField
+    class={cn(FIELD, "w-44")}
+    value={props.value === null || !Number.isFinite(props.value) ? "" : String(props.value)}
+    validationState={props.error === undefined ? "valid" : "invalid"}
+    onChange={(raw) => {
+      if (raw.trim() === "" && props.onClear !== undefined) {
+        props.onClear();
+        return;
+      }
+      props.onChange(Number.parseInt(raw, 10));
+    }}
+  >
+    <TextFieldLabel>{props.label}</TextFieldLabel>
+    <TextFieldInput type="number" min={props.range.min} max={props.range.max} step={1} />
+    <Show when={props.help}>
+      {(text) => <TextFieldDescription class={HELP}>{text()}</TextFieldDescription>}
+    </Show>
+    <TextFieldErrorMessage role="alert">{props.error}</TextFieldErrorMessage>
+  </TextField>
+);
+
+/* -------------------------------------------------------------------------- */
+
 const TemplatePicker: Component<{
   value: string;
   onChange: (next: string) => void;

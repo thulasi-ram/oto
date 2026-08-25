@@ -21,7 +21,7 @@ import * as v from "valibot";
 import { PoliciesSection } from "./PoliciesSection";
 import { CreatePolicyRequestSchema, UpdatePolicyRequestSchema } from "~/api/generated/validators";
 import type { NotificationSuppressedReason, PolicyPreview } from "~/api/types";
-import { enumValues, requestMaxLength, requestRange } from "~/test/contract";
+import { enumValues, requestMaxLength, requestOptions, requestRange } from "~/test/contract";
 import { alert, channel, policy } from "~/test/fixtures";
 import {
   expectNoUndefined,
@@ -384,6 +384,259 @@ describe("the channel picker", () => {
     // policy — the most expensive silent edit this form could make.
     const sent = net.to(EDIT_PATH)[0]?.body as { channel_ids: readonly string[] };
     expect([...sent.channel_ids].sort()).toEqual([channel().id, OTHER.id].sort());
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The three axes that used to be reachable only through the API              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * ⛔ THIS BLOCK IS A SECOND SHAPE OF THE SAME BUG, WRITTEN DOWN.
+ *
+ * `subject_kinds` (migration `00072`), the count condition and the digest window
+ * are policy fields with a wire name, a generated validator and a settings screen
+ * that rendered none of them: an API-configured policy read as a plainer policy
+ * than it was, and no sequence of clicks could set, change or remove any of the
+ * three. Nothing was silently CLEARED — the create body omitted them and a PATCH
+ * treats absent as "leave alone" — which is exactly why the omission was easy to
+ * keep: the screen was lossy on the way in and inert on the way out.
+ *
+ * ⛔ AND THE TWO RULES A JSON SCHEMA CANNOT STATE WERE REACHABLE ONLY AS A 422
+ * AFTER SAVE — a count must bind exactly `case`, a digest window must divide the
+ * day — which is the failure this whole file is named after.
+ *
+ * ⚠️ THE DIALOG IS AUTHORITATIVE OVER ALL THREE NOW, and that is a real change of
+ * behaviour rather than a widening. `subject_kinds` is always sent and a cleared
+ * condition patches an explicit `null`, so a save from this screen OVERWRITES what
+ * the API set. That is the only honest shape once the fields are on screen: a
+ * dialog showing a digest removed and leaving it on the server is the worse bug.
+ *
+ * Everything below is derived. The altitudes come from the contract's own inline
+ * picklist, the ranges from the generated request schema, and the misaligned
+ * window is *computed* rather than picked, so a change to either end of the range
+ * moves the test with it.
+ */
+describe("the altitude a policy is about", () => {
+  const SUBJECT_KINDS = requestOptions(CreatePolicyRequestSchema, "subject_kinds");
+
+  it("offers every altitude the contract publishes, each one in words", async () => {
+    mount();
+    const editor = await openEditor();
+    const group = editor.getByRole("group", { name: "About which altitude" });
+
+    const chips = within(group).getAllByRole("button");
+    expect(chips).toHaveLength(SUBJECT_KINDS.length);
+    for (const chip of chips) {
+      expect(chip.textContent?.trim(), "an altitude with no words on it").toBeTruthy();
+      // The wire token is never the label: `case` on a chip means nothing to
+      // somebody who has not read `reason.go`.
+      expect(SUBJECT_KINDS).not.toContain(chip.textContent?.trim());
+    }
+    expectNoUndefined(document.body);
+  });
+
+  it("⛔ sends the empty binding rather than dropping the field", async () => {
+    const net = mount();
+    const editor = await openEditor();
+
+    fireEvent.click(editor.getByRole("button", { name: "Save" }));
+    await until(() => expect(net.to(EDIT_PATH)).toHaveLength(1));
+
+    // `subject_kinds` is the one new field with no `null` on the wire: the column
+    // is NOT NULL DEFAULT '{}' and "claims every altitude" is an answer, not an
+    // absence. A screen that omitted it when empty would make the create body and
+    // the patch body disagree about a field that has nothing to disagree with.
+    const sent = net.to(EDIT_PATH)[0]?.body as { subject_kinds?: readonly string[] };
+    expect(sent.subject_kinds, "the binding was dropped from the request").toEqual([]);
+  });
+
+  it("carries a narrowed binding to the wire", async () => {
+    const net = mount();
+    const editor = await openEditor();
+    const group = editor.getByRole("group", { name: "About which altitude" });
+
+    const first = within(group).getAllByRole("button")[0]!;
+    fireEvent.click(first);
+    fireEvent.click(editor.getByRole("button", { name: "Save" }));
+
+    await until(() => expect(net.to(EDIT_PATH)).toHaveLength(1));
+    const sent = net.to(EDIT_PATH)[0]?.body as { subject_kinds: readonly string[] };
+    expect(sent.subject_kinds).toHaveLength(1);
+    expect(SUBJECT_KINDS).toContain(sent.subject_kinds[0]);
+
+    const parsed = v.safeParse(UpdatePolicyRequestSchema, sent);
+    expect(parsed.success, JSON.stringify(parsed.issues?.map((i) => i.message))).toBe(true);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("the thresholds and windows", () => {
+  const COUNT_MIN = requestRange(CreatePolicyRequestSchema, "count_min");
+  const COUNT_WINDOW = requestRange(CreatePolicyRequestSchema, "count_window_seconds");
+  const DIGEST_WINDOW = requestRange(CreatePolicyRequestSchema, "digest_window_seconds");
+
+  const THROTTLE = "Send at most a fixed number per window";
+  const COUNT = "Stay quiet until it has happened enough";
+  const DIGEST = "Send one summary per window";
+
+  /**
+   * A window inside the contract's range that does NOT divide the day.
+   *
+   * Computed rather than picked: `301` is the answer today and would stop being
+   * one the moment the floor moved, and a test that hardcodes it would then be
+   * asserting the alignment rule against a number that satisfies it.
+   */
+  function misalignedWindow(): number {
+    for (let w = DIGEST_WINDOW.min; w <= DIGEST_WINDOW.max; w += 1) {
+      if (DIGEST_WINDOW.max % w !== 0) return w;
+    }
+    throw new Error(
+      "oto test: every window in range divides the day, so the alignment rule constrains nothing",
+    );
+  }
+
+  it("publishes the contract's ranges on the controls themselves", async () => {
+    mount();
+    const editor = await openEditor();
+
+    fireEvent.click(editor.getByLabelText(COUNT));
+    await until(() => expect(editor.getByLabelText("Once it has happened")).toBeTruthy());
+
+    const threshold = editor.getByLabelText("Once it has happened") as HTMLInputElement;
+    expect(threshold.type).toBe("number");
+    expect(Number(threshold.min)).toBe(COUNT_MIN.min);
+    expect(Number(threshold.max)).toBe(COUNT_MIN.max);
+
+    const window = editor.getByLabelText("Within (seconds)") as HTMLInputElement;
+    expect(Number(window.min)).toBe(COUNT_WINDOW.min);
+    expect(Number(window.max)).toBe(COUNT_WINDOW.max);
+  });
+
+  it("⛔ arrives and leaves in pairs, so half a condition is unbuildable", async () => {
+    const net = mount();
+    const editor = await openEditor();
+
+    fireEvent.click(editor.getByLabelText(COUNT));
+    await until(() => expect(editor.getByLabelText("Within (seconds)")).toBeTruthy());
+    fireEvent.click(editor.getByRole("button", { name: "Save" }));
+
+    await until(() => expect(net.to(EDIT_PATH)).toHaveLength(1));
+    const sent = net.to(EDIT_PATH)[0]?.body as {
+      count_min: number | null;
+      count_window_seconds: number | null;
+    };
+    // One click sets both halves. `policies_count_pair_ck` refuses a row carrying
+    // one, and the point of the checkbox is that no sequence of clicks makes one.
+    expect(sent.count_min).toBe(COUNT_MIN.min);
+    expect(sent.count_window_seconds).toBe(COUNT_WINDOW.min);
+  });
+
+  it("⛔ binds the count's unit when the count is switched on", async () => {
+    const net = mount();
+    const editor = await openEditor();
+
+    fireEvent.click(editor.getByLabelText(COUNT));
+    await until(() => expect(editor.getByLabelText("Once it has happened")).toBeTruthy());
+    fireEvent.click(editor.getByRole("button", { name: "Save" }));
+
+    await until(() => expect(net.to(EDIT_PATH)).toHaveLength(1));
+    const sent = net.to(EDIT_PATH)[0]?.body as { subject_kinds: readonly string[] };
+
+    // `policies_count_case_ck`: a count counts Cases, so the binding must be
+    // exactly one kind and that kind must be `case`. An operator who ticks a count
+    // has not been anywhere near the altitude control, so leaving it to the server
+    // means a 422 naming a field they never touched.
+    expect(sent.subject_kinds).toEqual(["case"]);
+  });
+
+  it("⛔ refuses a digest window that does not divide the day, and names two that do", async () => {
+    const net = mount();
+    const editor = await openEditor();
+
+    fireEvent.click(editor.getByLabelText(DIGEST));
+    await until(() => expect(editor.getByLabelText("Every (seconds)")).toBeTruthy());
+
+    const bad = misalignedWindow();
+    fireEvent.input(editor.getByLabelText("Every (seconds)"), { target: { value: String(bad) } });
+
+    // The rule JSON Schema cannot state, stated in the dialog. Without it this is
+    // a 422 after Save — the contract says so itself: "a window that is in range
+    // but not a divisor comes back as a 422".
+    await until(() =>
+      expect(
+        editor
+          .getAllByRole("alert")
+          .some((el: HTMLElement) => /divide the day evenly/.test(el.textContent ?? "")),
+        "nothing told the operator the window must divide the day",
+      ).toBe(true),
+    );
+
+    // And it says which windows would work, because "must divide 86400" is not a
+    // sum anybody does in their head.
+    const complaint = editor
+      .getAllByRole("alert")
+      .map((el: HTMLElement) => el.textContent ?? "")
+      .find((t: string) => t.includes("divide the day evenly"));
+    const suggested = [...(complaint ?? "").matchAll(/\b(\d+)\b/g)].map((m) => Number(m[1]));
+    expect(suggested.length, "no admissible window was suggested").toBeGreaterThan(0);
+    for (const w of suggested) expect(DIGEST_WINDOW.max % w).toBe(0);
+
+    expect(editor.getByRole("button", { name: "Save" })).toBeDisabled();
+    fireEvent.click(editor.getByRole("button", { name: "Save" }));
+    expect(net.to(EDIT_PATH), "a misaligned digest window reached the wire").toHaveLength(0);
+  });
+
+  it("⛔ adds the fact a digest is routed by, so the policy is not silently silent", async () => {
+    const net = mount();
+    const editor = await openEditor();
+
+    fireEvent.click(editor.getByLabelText(DIGEST));
+    await until(() => expect(editor.getByLabelText("Every (seconds)")).toBeTruthy());
+    fireEvent.click(editor.getByRole("button", { name: "Save" }));
+
+    await until(() => expect(net.to(EDIT_PATH)).toHaveLength(1));
+    const sent = net.to(EDIT_PATH)[0]?.body as {
+      reasons: readonly string[];
+      digest_window_seconds: number | null;
+    };
+    // `policies_digest_reason_ck`. A policy with a window and without the reason
+    // records a suppressed `no_policy` once per window, forever — configured on
+    // the screen and silent in the channel.
+    expect(sent.digest_window_seconds).toBe(DIGEST_WINDOW.min);
+    expect(sent.reasons).toContain("digest");
+  });
+
+  it("⛔ patches an explicit null to turn a condition off", async () => {
+    const withThrottle = policy({ throttle: { max: 5, window_seconds: 3600 } });
+    const net = stubFetch({
+      "GET /api/v1/notification-policies": list([withThrottle]),
+      "GET /api/v1/channels": list([channel()]),
+      "GET /api/v1/alerts": list([alert()]),
+      "GET /api/v1/labels": { json: { data: [], meta: { request_id: "r" } } },
+      [`PATCH ${EDIT_PATH}`]: () => ({ json: item(withThrottle) }),
+    });
+    renderScreen(() => <PoliciesSection />);
+    const editor = await openEditor();
+
+    // It arrives ticked, because the policy has one.
+    const toggle = editor.getByLabelText(THROTTLE) as HTMLInputElement;
+    expect(toggle.checked, "an existing throttle is not shown as set").toBe(true);
+
+    fireEvent.click(toggle);
+    fireEvent.click(editor.getByRole("button", { name: "Save" }));
+    await until(() => expect(net.to(EDIT_PATH)).toHaveLength(1));
+
+    // ⛔ `null`, NOT ABSENT. On a PATCH absent means "leave it alone", so omitting
+    // the field would show the throttle removed in the dialog and keep it on the
+    // server — the most expensive silent edit this form could make.
+    const sent = net.to(EDIT_PATH)[0]?.body as Record<string, unknown>;
+    expect(Object.hasOwn(sent, "throttle"), "the cleared throttle was omitted").toBe(true);
+    expect(sent.throttle).toBeNull();
+
+    const parsed = v.safeParse(UpdatePolicyRequestSchema, sent);
+    expect(parsed.success, JSON.stringify(parsed.issues?.map((i) => i.message))).toBe(true);
   });
 });
 
