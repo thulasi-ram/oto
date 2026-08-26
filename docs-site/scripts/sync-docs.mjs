@@ -42,6 +42,7 @@ const SOURCES = [
 		["README.md", "guides/overview.md"],
 		["CONTEXT.md", "architecture.md"],
 		["CONTRIBUTING.md", "contributing.md"],
+		["docs/releasing.md", "releasing.md"],
 		["docs/concepts.md", "concepts.md"],
 		["docs/ORCHESTRATION.md", "orchestration.md"],
 	]),

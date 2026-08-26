@@ -281,6 +281,7 @@ Postgres subchart — see ADRs [0001](docs/adr/0001-postgres-sole-datastore-rive
 | [`docs/setup/slack.md`](docs/setup/slack.md) | Connecting a workspace, and what to do about every Slack error oto classifies. |
 | [`docs/setup/tuning.md`](docs/setup/tuning.md) | `resolve_grace`, flap thresholds, retention windows, and how to derive each from your own rules. |
 | [`docs/runbooks/`](docs/runbooks/README.md) | One page per `oto_*` metric: what it counts, what a sustained value means, what to do. |
+| [`docs/releasing.md`](docs/releasing.md) | Cutting a tag, what the pipeline publishes to GHCR, and the one step it cannot do for you. |
 | [`docs/design/SPEC.md`](docs/design/SPEC.md) | The binding specification. It changes only through an ADR in the same commit. |
 | `docs/adr/` | Every decision and what superseded it — 50 of them, starting with [ADR 0001](docs/adr/0001-postgres-sole-datastore-river-job-queue.md). |
 

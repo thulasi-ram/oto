@@ -29,6 +29,7 @@ export default defineConfig({
 						{ label: 'Concepts', slug: 'concepts' },
 						{ label: 'Architecture', slug: 'architecture' },
 						{ label: 'Contributing', slug: 'contributing' },
+						{ label: 'Releasing', slug: 'releasing' },
 					],
 				},
 				{ label: 'Design', items: [{ autogenerate: { directory: 'design' } }] },

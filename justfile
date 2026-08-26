@@ -486,3 +486,149 @@ setup:
     fi
 
     echo "✓ ready — now run: just up"
+
+# --------------------------------------------------------------------------- #
+# Release                                                                      #
+# --------------------------------------------------------------------------- #
+
+# Cut a release tag, after proving the eight things that make one publishable.
+#
+# ⛔ THE TAG IS THE ONLY INPUT THE RELEASE PIPELINE HAS, AND IT IS PUSHED ONCE.
+# .github/workflows/release.yml has no `workflow_dispatch` on purpose and no
+# `cancel-in-progress`: everything it publishes is derived from the tag being
+# pushed, and there is no later run on the same ref to correct a bad one. So the
+# checks live HERE, before the tag exists, rather than in the workflow where the
+# only remaining move is to fail after a name is already taken.
+#
+# ⭐ IT CUTS AND DOES NOT PUSH. Creating a tag is local and free to undo
+# (`git tag -d`); pushing it publishes an immutable image to a public registry
+# and is not. Two steps, so the irreversible one is typed deliberately — the
+# recipe prints the exact command.
+#
+# ⚠️ THE PIPELINE RUNS NO TESTS, WHICH IS WHY CHECK 7 IS NOT OPTIONAL. release.yml
+# says so in its own header: `ci` has already run on this commit, so re-running
+# it would double the wall clock to re-answer an answered question. That bargain
+# holds only if something confirms the answer was green, and nothing downstream
+# of the tag does.
+#
+# Cut a release tag locally. Prints the push that publishes it.
+[group('release')]
+release version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    v='{{version}}'
+
+    # 1. The shape the pipeline actually triggers on. A tag that does not match
+    #    release.yml's glob does not fail — it publishes NOTHING, quietly, and
+    #    the first symptom is an operator pulling a tag that is not there.
+    if [[ ! "$v" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+      echo "✗ '$v' is not a release tag. release.yml triggers on v[0-9]+.[0-9]+.[0-9]+*" >&2
+      echo "  (the trailing * admits a prerelease: v0.1.0-rc.1)" >&2
+      exit 1
+    fi
+    bare="${v#v}"
+
+    # 2. A tag names a commit, never a working tree. Tagging with changes
+    #    unstaged publishes an image built from something nobody can check out.
+    if [ -n "$(git status --porcelain)" ]; then
+      echo "✗ the working tree is dirty. A tag names a commit, not your uncommitted work." >&2
+      git status --short >&2
+      exit 1
+    fi
+
+    # 3-4. On main, and in step with it. The image is built from the tagged
+    #      commit; releasing from a branch nobody has merged ships code no pull
+    #      request ever saw.
+    branch="$(git rev-parse --abbrev-ref HEAD)"
+    if [ "$branch" != "main" ]; then
+      echo "✗ on '$branch'. A release is cut from main." >&2
+      exit 1
+    fi
+    git fetch --quiet origin main
+    if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
+      echo "✗ HEAD and origin/main disagree. Push or pull first — the tag must name a commit others have." >&2
+      git --no-pager log --oneline HEAD...origin/main >&2 || true
+      exit 1
+    fi
+
+    # 5. A tag is pushed once. Re-using a name means either a rejected push or,
+    #    worse, a second digest answering to a string somebody already pinned.
+    if git rev-parse -q --verify "refs/tags/$v" >/dev/null; then
+      echo "✗ tag $v already exists locally. Delete it (git tag -d $v) or pick the next version." >&2
+      exit 1
+    fi
+    if [ -n "$(git ls-remote --tags origin "refs/tags/$v")" ]; then
+      echo "✗ tag $v already exists on origin. A published tag is never re-cut." >&2
+      exit 1
+    fi
+
+    # 6. ⭐ THE CHART'S DEFAULT IMAGE TAG IS `appVersion`, VERBATIM AND WITHOUT
+    #    THE `v`. _helpers.tpl falls back to .Chart.AppVersion, and release.yml
+    #    publishes `{{{{version}}}}` — the bare form — for exactly that reason. If
+    #    the two disagree, `helm install oto deploy/helm/oto` resolves to an
+    #    image tag nothing ever pushed, which is the ImagePullBackOff the whole
+    #    workflow exists to end.
+    app="$(awk -F'"' '/^appVersion:/ {print $2}' deploy/helm/oto/Chart.yaml)"
+    if [ "$app" != "$bare" ]; then
+      echo "✗ Chart.yaml appVersion is '$app', this tag is '$bare'." >&2
+      echo "  The chart's default image.tag IS appVersion, so they must match. Bump it and commit first." >&2
+      exit 1
+    fi
+    chart="$(awk '/^version:/ {print $2}' deploy/helm/oto/Chart.yaml)"
+    if [ "$chart" != "$bare" ]; then
+      # A warning, not a refusal: the chart version tracks template changes and
+      # is allowed to move independently of the application it deploys.
+      echo "⚠ Chart.yaml version is '$chart' while appVersion is '$bare'. Deliberate?" >&2
+    fi
+
+    # 7. CI green on this exact commit. See the header: the pipeline tests
+    #    nothing, so this is the only thing standing between a red main and a
+    #    published image.
+    sha="$(git rev-parse HEAD)"
+    if command -v gh >/dev/null 2>&1; then
+      verdict="$(gh run list --branch main --workflow ci --limit 20 \
+        --json headSha,conclusion,status \
+        --jq "[.[] | select(.headSha == \"$sha\")] | first | .conclusion // \"none\"" 2>/dev/null || echo unknown)"
+      case "$verdict" in
+        success) echo "✓ ci is green on $sha" ;;
+        none|null|"")
+          echo "✗ no ci run found for $sha. Push the commit and let ci finish before tagging it." >&2
+          exit 1 ;;
+        unknown)
+          echo "⚠ could not reach GitHub to check ci. Verify by hand before pushing the tag." >&2 ;;
+        *)
+          echo "✗ ci concluded '$verdict' on $sha. The release pipeline runs no tests of its own." >&2
+          exit 1 ;;
+      esac
+    else
+      echo "⚠ gh is not installed, so ci's verdict on $sha is unchecked. Verify by hand." >&2
+    fi
+
+    # 8. The image the pipeline will build, built here first. A cross-compile
+    #    that breaks does so on a laptop in two minutes rather than after a tag
+    #    has taken a name that cannot be reused.
+    echo "→ proving both architectures cross-compile"
+    docker buildx build --platform linux/amd64,linux/arm64 \
+      --build-arg "VERSION=$v" --build-arg "COMMIT=$sha" \
+      --output=type=cacheonly . >/dev/null
+
+    git tag -a "$v" -m "oto $v"
+    echo
+    echo "✓ cut $v at $sha"
+    echo
+    echo "  Nothing is published yet. To release:"
+    echo "      git push origin $v"
+    echo
+    echo "  That triggers .github/workflows/release.yml, which publishes"
+    echo "      ghcr.io/thulasi-ram/oto:$bare, :$v, :${bare%.*} and :sha-$sha"
+    echo "  To undo before pushing:  git tag -d $v"
+
+# Watch the release pipeline for a tag, and report what it published.
+[group('release')]
+release-watch version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    v='{{version}}'
+    gh run watch "$(gh run list --workflow release --limit 20 \
+      --json databaseId,headBranch --jq "[.[] | select(.headBranch == \"$v\")] | first | .databaseId")" \
+      --exit-status

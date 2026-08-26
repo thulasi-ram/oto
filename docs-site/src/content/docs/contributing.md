@@ -99,6 +99,15 @@ lists every recipe with its group.
 | `just ui-build` / `just ui-test` | `tsc --noEmit && vite build` / vitest |
 | `just ci` | every gate above, as one local sequence ([`justfile`](justfile) line 440) |
 
+| Release | |
+|---|---|
+| `just release <vX.Y.Z>` | eight checks, then an annotated tag. Cuts locally; never pushes |
+| `just release-watch <vX.Y.Z>` | follow that tag's pipeline run, exiting non-zero if it failed |
+
+Pushing the tag is what publishes, and it is typed by hand on purpose.
+[`docs/releasing.md`](/releasing/) is the whole procedure: what the eight checks are for, what
+the pipeline puts in GHCR, and the one step it cannot do for you.
+
 ## The gate set
 
 `just ci` and `.github/workflows/ci.yml` are kept in step deliberately: a contributor's green must
@@ -293,9 +302,10 @@ against the `main` baseline above, and say which gates you ran and which you cou
 ## Documentation
 
 [`docs-site/scripts/sync-docs.mjs`](docs-site/scripts/sync-docs.mjs) copies `README.md`,
-`CONTEXT.md`, `docs/ORCHESTRATION.md` and everything under `docs/adr/`, `docs/design/`,
-`docs/setup/` and `docs/runbooks/` into an Astro/Starlight site, adding the frontmatter Starlight
-needs and rewriting `*.md` links to clean URLs. It runs on `npm run dev` and `npm run build` inside
+`CONTEXT.md`, this file, `docs/concepts.md`, `docs/releasing.md`, `docs/ORCHESTRATION.md` and
+everything under `docs/adr/`, `docs/design/`, `docs/setup/` and `docs/runbooks/` into an
+Astro/Starlight site, adding the frontmatter Starlight needs and rewriting `*.md` links to clean
+URLs. It runs on `npm run dev` and `npm run build` inside
 `docs-site/` (`just docs`). Two things follow from that:
 
 - **The site is not wired to CI.** No workflow builds it, so a broken link or a page that fails
@@ -305,5 +315,8 @@ needs and rewriting `*.md` links to clean URLs. It runs on `npm run dev` and `np
   before regenerating, which destroys any page in those four directories with no source under
   `docs/`.
 
-Only `README.md` and `CONTEXT.md` are picked up from the repository root, so this document is not
-published to the site. Files added under `docs/setup/` are.
+A file added under `docs/adr/`, `docs/design/`, `docs/setup/` or `docs/runbooks/` is picked up by
+the directory listing and needs nothing else. A new top-level source — this document, `README.md`,
+`CONTEXT.md`, `docs/releasing.md` — has to be added to `SOURCES` in the script **and** to the
+Overview group in [`docs-site/astro.config.mjs`](docs-site/astro.config.mjs), or it syncs to a route
+with no way to navigate to it.
