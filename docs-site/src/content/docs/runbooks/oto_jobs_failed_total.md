@@ -13,7 +13,7 @@ title: oto_jobs_failed_total
 
 Job executions that returned an error. **One job can increment this many times** — once per failed
 attempt — so this is a rate, not a population. A snooze is *not* a failure and is not counted here
-(see [`oto_jobs_snoozed_total`](/runbooks/oto_jobs_snoozed_total/)); the whole point is that a busy thread
+(see [`oto_jobs_snoozed_total`](/oto/runbooks/oto_jobs_snoozed_total/)); the whole point is that a busy thread
 must not look like a broken one.
 
 `class` is the same closed set stored in `notification_deliveries.error_class`, so an operator
@@ -23,7 +23,7 @@ reading a dead delivery and an operator reading a dead job are reading the same 
 
 Retries are currently absorbing a real problem. It is a leading indicator: at the ceiling — 13
 attempts for `retryable`, 21 for `rate_limited` — these become entries on
-[`oto_jobs_dead_total`](/runbooks/oto_jobs_dead_total/), and *that* is unrecoverable work.
+[`oto_jobs_dead_total`](/oto/runbooks/oto_jobs_dead_total/), and *that* is unrecoverable work.
 
 The terminal classes (`permanent`, `config_invalid`, `auth_expired`) never retry, so for those this
 counter and the dead counter move together, once each.
@@ -44,5 +44,5 @@ counter and the dead counter move together, once each.
 - `rate_limited` — oto already honours `Retry-After` as a snooze rather than an attempt, so seeing
   this class *fail* rather than snooze means the provider is refusing beyond its own advice. Reduce
   fan-out (fewer channels per policy) before raising limits.
-- `config_invalid` / `auth_expired` — go to [`oto_jobs_dead_total`](/runbooks/oto_jobs_dead_total/); the
+- `config_invalid` / `auth_expired` — go to [`oto_jobs_dead_total`](/oto/runbooks/oto_jobs_dead_total/); the
   response is the same and it is already terminal.

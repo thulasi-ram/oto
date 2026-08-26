@@ -63,22 +63,22 @@ The screens below are a demo org (`Acme Corp`) with generated data — see
 
 **The queue.** One row per firing episode, not per alert. Ack receipts carry who and when.
 
-![The case queue](/assets/screenshots/cases.png)
+![The case queue](/oto/assets/screenshots/cases.png)
 
 **One episode, end to end.** Firing duration, the rule as it read at fire time, the full
 append-only timeline, and every delivery that went out.
 
-![A single case in detail](/assets/screenshots/case-detail.png)
+![A single case in detail](/oto/assets/screenshots/case-detail.png)
 
 **Rule drift.** The same alert, two episodes, two different rules — which is the whole
 reason this project exists.
 
-![Alert detail showing rule drift](/assets/screenshots/alert-detail.png)
+![Alert detail showing rule drift](/oto/assets/screenshots/alert-detail.png)
 
 **The delivery log.** Who was told, where, and whether it actually arrived. Failures are
 visible rather than swallowed.
 
-![The notification activity log](/assets/screenshots/notification-activity.png)
+![The notification activity log](/oto/assets/screenshots/notification-activity.png)
 
 ## Quick start
 
@@ -157,11 +157,11 @@ you do, the receiver points at an all-zero uuid that 404s on purpose, rather tha
 that looks plausible and silently is not.
 
 That same Prometheus is a legitimate `prometheus_url` for the source, which is what lets oto
-capture what a rule said at the moment it fired ([ADR 0009](/adr/0009-rule-snapshot-versioning-at-fire-time/)).
+capture what a rule said at the moment it fired ([ADR 0009](/oto/adr/0009-rule-snapshot-versioning-at-fire-time/)).
 
 ## Concepts
 
-Six nouns carry the whole model. [`docs/concepts.md`](/concepts/) is the full
+Six nouns carry the whole model. [`docs/concepts.md`](/oto/concepts/) is the full
 reference; this is the shape.
 
 | | |
@@ -242,8 +242,8 @@ This is enforced rather than promised. `tools/lintvocab` fails CI on thirteen ba
 words and six forbidden column names, and `notification_policies` has a `ChannelIDs` column
 and no other target field — "route this to a person" cannot be expressed without editing the
 struct. The reasoning is in
-[ADR 0013](/adr/0013-alert-first-scope-boundary/) and
-[`docs/design/SCOPE-BOUNDARY.md`](/design/SCOPE-BOUNDARY/), which adjudicates 32
+[ADR 0013](/oto/adr/0013-alert-first-scope-boundary/) and
+[`docs/design/SCOPE-BOUNDARY.md`](/oto/design/SCOPE-BOUNDARY/), which adjudicates 32
 feature requests one by one.
 
 ## Layout
@@ -268,27 +268,27 @@ tools/lintvocab/   the scope-boundary linter
 
 Stack: Go 1.26 (chi, pgx, River for jobs), Postgres 17 as the only datastore, SolidJS on the
 front end, Slack as the primary channel. No analytical store, no stream processor, no
-Postgres subchart — see ADRs [0001](/adr/0001-postgres-sole-datastore-river-job-queue/) and
-[0014](/adr/0014-postgres-only-no-analytical-store/).
+Postgres subchart — see ADRs [0001](/oto/adr/0001-postgres-sole-datastore-river-job-queue/) and
+[0014](/oto/adr/0014-postgres-only-no-analytical-store/).
 
 ## Where to read next
 
 | | |
 |---|---|
-| [`docs/concepts.md`](/concepts/) | The domain model in full: every noun, the state machines, worked examples. **Start here.** |
-| [`CONTEXT.md`](/architecture/) | Implementer's map: domain language, module map, layering rules. |
-| [`CONTRIBUTING.md`](/contributing/) | Setup, the task runner, what each gate catches, how to read a red one. |
-| [`docs/setup/configuration.md`](/setup/configuration/) | Every environment variable, its default, and whether it is required. |
-| [`docs/setup/slack.md`](/setup/slack/) | Connecting a workspace, and what to do about every Slack error oto classifies. |
-| [`docs/setup/tuning.md`](/setup/tuning/) | `resolve_grace`, flap thresholds, retention windows, and how to derive each from your own rules. |
-| [`docs/runbooks/`](/runbooks/) | One page per `oto_*` metric: what it counts, what a sustained value means, what to do. |
-| [`docs/releasing.md`](/releasing/) | Cutting a tag, what the pipeline publishes to GHCR, and the one step it cannot do for you. |
-| [`docs/design/SPEC.md`](/design/SPEC/) | The binding specification. It changes only through an ADR in the same commit. |
-| `docs/adr/` | Every decision and what superseded it — 50 of them, starting with [ADR 0001](/adr/0001-postgres-sole-datastore-river-job-queue/). |
+| [`docs/concepts.md`](/oto/concepts/) | The domain model in full: every noun, the state machines, worked examples. **Start here.** |
+| [`CONTEXT.md`](/oto/architecture/) | Implementer's map: domain language, module map, layering rules. |
+| [`CONTRIBUTING.md`](/oto/contributing/) | Setup, the task runner, what each gate catches, how to read a red one. |
+| [`docs/setup/configuration.md`](/oto/setup/configuration/) | Every environment variable, its default, and whether it is required. |
+| [`docs/setup/slack.md`](/oto/setup/slack/) | Connecting a workspace, and what to do about every Slack error oto classifies. |
+| [`docs/setup/tuning.md`](/oto/setup/tuning/) | `resolve_grace`, flap thresholds, retention windows, and how to derive each from your own rules. |
+| [`docs/runbooks/`](/oto/runbooks/) | One page per `oto_*` metric: what it counts, what a sustained value means, what to do. |
+| [`docs/releasing.md`](/oto/releasing/) | Cutting a tag, what the pipeline publishes to GHCR, and the one step it cannot do for you. |
+| [`docs/design/SPEC.md`](/oto/design/SPEC/) | The binding specification. It changes only through an ADR in the same commit. |
+| `docs/adr/` | Every decision and what superseded it — 50 of them, starting with [ADR 0001](/oto/adr/0001-postgres-sole-datastore-river-job-queue/). |
 
 ## Licence
 
-MIT — see [`LICENSE`](LICENSE) and [ADR 0019](/adr/0019-mit-licence/). No `ee/`
+MIT — see [`LICENSE`](LICENSE) and [ADR 0019](/oto/adr/0019-mit-licence/). No `ee/`
 directory, no feature behind a licence key, no CLA.
 
 Issues live in the repository itself via [`git-bug`](https://github.com/git-bug/git-bug):

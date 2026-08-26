@@ -23,7 +23,7 @@ Do not alert on this being non-zero. Two things are worth *looking* at:
 
 - The ratio `duplicate / (duplicate + accepted)` jumping without a change in Alertmanager's peer
   count. That is usually an upstream retrying because it never saw the 202 — check
-  [`oto_ingest_duration_seconds`](/runbooks/oto_ingest_duration_seconds/) for accepts that are slower than
+  [`oto_ingest_duration_seconds`](/oto/runbooks/oto_ingest_duration_seconds/) for accepts that are slower than
   the upstream's client timeout.
 - The ratio going to zero on an HA pair. That means only one peer is delivering, which is a
   problem in Alertmanager, not in oto.

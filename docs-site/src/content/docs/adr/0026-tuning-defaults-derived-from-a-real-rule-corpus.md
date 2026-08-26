@@ -23,10 +23,10 @@ title: 0026 — `refire_grace` and the flap thresholds, derived from a real rule
 
 **Status:** Accepted · 2026-08-09
 **Decided WITHOUT the owner.** See *How to overturn this*, below — it is designed to be cheap.
-**Relates to:** [0020](/adr/0020-broadcast-the-transitions-that-must-be-seen/) (why a re-fire inside the
+**Relates to:** [0020](/oto/adr/0020-broadcast-the-transitions-that-must-be-seen/) (why a re-fire inside the
 grace is broadcast at all, and the defect this ADR found in that guarantee),
-[0005](/adr/0005-durable-group-key-owns-the-slack-thread/) (why a closed generation means a new thread),
-[0024](/adr/0024-retention-defaults-and-cold-storage/) (the same "decided without the owner, derived not
+[0005](/oto/adr/0005-durable-group-key-owns-the-slack-thread/) (why a closed generation means a new thread),
+[0024](/oto/adr/0024-retention-defaults-and-cold-storage/) (the same "decided without the owner, derived not
 chosen" shape)
 **Amends:** SPEC §B.5 (`refire_grace` default), §B.6 (`flap_window` default), §D.1 (`orgs.settings`
 defaults)

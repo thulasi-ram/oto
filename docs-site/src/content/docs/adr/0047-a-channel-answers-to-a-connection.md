@@ -2,8 +2,8 @@
 title: 0047 — A channel answers to a connection, and Slack gets two scopes back
 ---
 **Status:** Accepted · 2026-08-21
-**Relates to:** [0018](/adr/0018-slack-distribution-model/) (the manifest this amends), [0008](/adr/0008-slack-update-in-place-primary/),
-[0034](/adr/0034-notifications-as-a-top-level-destination/) (where a channel is created)
+**Relates to:** [0018](/oto/adr/0018-slack-distribution-model/) (the manifest this amends), [0008](/oto/adr/0008-slack-update-in-place-primary/),
+[0034](/oto/adr/0034-notifications-as-a-top-level-destination/) (where a channel is created)
 
 ## Context
 

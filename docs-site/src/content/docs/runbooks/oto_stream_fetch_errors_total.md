@@ -32,7 +32,7 @@ design working.
 2. `GET /readyz` → `database`, `migrations`, and the `pools` block for general-pool saturation.
 3. Postgres: is `ui_events` partitioned as expected? The partitions are hourly and managed by
    `partitions.manage`; if that job is dead, a read can hit a missing partition. Check
-   [`oto_jobs_dead_total`](/runbooks/oto_jobs_dead_total/) for `kind="partitions.manage"`.
+   [`oto_jobs_dead_total`](/oto/runbooks/oto_jobs_dead_total/) for `kind="partitions.manage"`.
 4. Whether it started at a migration — `just status`, and `schema_version` from
    `GET /api/v1/version`.
 

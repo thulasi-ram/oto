@@ -11,7 +11,7 @@ title: oto_stream_events_published_total
 ## What it counts
 
 UI events accepted into a subscriber's bounded buffer — the successful counterpart of
-[`oto_stream_events_dropped_total`](/runbooks/oto_stream_events_dropped_total/).
+[`oto_stream_events_dropped_total`](/oto/runbooks/oto_stream_events_dropped_total/).
 
 ## Why there is no response
 
@@ -25,5 +25,5 @@ rate(oto_stream_events_dropped_total[5m])
 That ratio is worth alerting on. The raw published count is not — it scales with connections and
 with alert volume, and there is no wrong value.
 
-`published` far exceeding [`oto_stream_events_fetched_total`](/runbooks/oto_stream_events_fetched_total/) is
+`published` far exceeding [`oto_stream_events_fetched_total`](/oto/runbooks/oto_stream_events_fetched_total/) is
 expected: one fetched row fans out to every subscribed connection.

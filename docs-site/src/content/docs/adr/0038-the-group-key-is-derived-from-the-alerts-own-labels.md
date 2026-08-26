@@ -3,7 +3,7 @@ title: 0038 — The group key is derived from the alert's own labels
 ---
 **Status:** Accepted · 2026-08-18
 
-**Amends:** [0005](/adr/0005-durable-group-key-owns-the-slack-thread/) — the group key's inputs, and
+**Amends:** [0005](/oto/adr/0005-durable-group-key-owns-the-slack-thread/) — the group key's inputs, and
 nothing else. ADR 0005's central claim survives **unamended**: the AlertGroup generation still owns
 exactly one chat thread.
 

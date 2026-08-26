@@ -2,8 +2,8 @@
 title: 0015 — No stream processor; River in Postgres is the pipeline
 ---
 **Status:** Accepted · 2026-08-08
-**Relates to:** [0001](/adr/0001-postgres-sole-datastore-river-job-queue/) (River and the transactional
-outbox), [0014](/adr/0014-postgres-only-no-analytical-store/) (one datastore)
+**Relates to:** [0001](/oto/adr/0001-postgres-sole-datastore-river-job-queue/) (River and the transactional
+outbox), [0014](/oto/adr/0014-postgres-only-no-analytical-store/) (one datastore)
 
 ## Context
 
@@ -20,7 +20,7 @@ suppression logic in Go.
 The decisive argument is not "extra dependency" — it is that **adopting Benthos would remove a
 correctness guarantee we currently hold.** River enqueues a job in the *same transaction* as the state
 change that justifies it, which is what gives us the outbox property from
-[0001](/adr/0001-postgres-sole-datastore-river-job-queue/): either the occurrence opened and the
+[0001](/oto/adr/0001-postgres-sole-datastore-river-job-queue/): either the occurrence opened and the
 notification job exists, or neither happened. Benthos's at-least-once delivery is not transactional
 with our Postgres writes. We would be trading an invariant for a pipe.
 
@@ -37,13 +37,13 @@ The supporting arguments:
 
 **What we keep from the idea.** Benthos is Go, and Bloblang is importable as a library. When we want
 *user-authored input mapping* — "map this vendor's webhook into oto's alert model" without a
-recompile — embedding Bloblang (or CEL, per [0017](/adr/0017-matchers-over-cel/)) gives us that with no
+recompile — embedding Bloblang (or CEL, per [0017](/oto/adr/0017-matchers-over-cel/)) gives us that with no
 second runtime. That is the sanctioned path if the need arrives.
 
 ## Consequences
 
 - Throughput is bounded by Postgres and by River's worker pool rather than by a purpose-built stream
-  engine. This is acceptable at the volumes established in [0014](/adr/0014-postgres-only-no-analytical-store/).
+  engine. This is acceptable at the volumes established in [0014](/oto/adr/0014-postgres-only-no-analytical-store/).
 - Retry, backoff, dead-lettering and backpressure are ours to own and to test. They are already
   implemented in `internal/platform/jobs`, including the per-thread ordering primitive that no
   off-the-shelf processor provides.

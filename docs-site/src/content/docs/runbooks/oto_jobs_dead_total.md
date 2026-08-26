@@ -17,7 +17,7 @@ Jobs that **will never run again**. There are three ways in, and they are distin
 |---|---|---|
 | A terminal error class — `permanent`, `config_invalid`, `auth_expired` — which never retries | that class | `terminal_error` |
 | The retry budget was spent (13 attempts retryable, 21 rate-limited) | `retryable` / `rate_limited` | `attempts_exhausted` |
-| The payload version is newer than this binary | `permanent` | `unknown_payload_version` — also on [`oto_jobs_unknown_version_total`](/runbooks/oto_jobs_unknown_version_total/) |
+| The payload version is newer than this binary | `permanent` | `unknown_payload_version` — also on [`oto_jobs_unknown_version_total`](/oto/runbooks/oto_jobs_unknown_version_total/) |
 
 ## Why every increment matters
 

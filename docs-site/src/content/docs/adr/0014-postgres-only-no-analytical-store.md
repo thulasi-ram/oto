@@ -2,8 +2,8 @@
 title: 0014 — Postgres is the only store; no TSDB or column store in v1
 ---
 **Status:** Accepted · 2026-08-08
-**Relates to:** [0001](/adr/0001-postgres-sole-datastore-river-job-queue/) (Postgres as sole datastore),
-[0003](/adr/0003-alert-occurrence-event-separation/) (the event stream), [0016](/adr/0016-mcp-enrichment-no-firehose/)
+**Relates to:** [0001](/oto/adr/0001-postgres-sole-datastore-river-job-queue/) (Postgres as sole datastore),
+[0003](/oto/adr/0003-alert-occurrence-event-separation/) (the event stream), [0016](/oto/adr/0016-mcp-enrichment-no-firehose/)
 (the rule that protects this decision)
 **Resolves:** red-team memo objection 5 — *"Postgres is right for the alert entity and wrong for the
 event stream. Same word, two workloads."*
@@ -47,17 +47,17 @@ Revisit when any of these is observed, and not before:
 **"Observed" is doing real work in that sentence, and today nothing observes it.** No metric oto
 exports answers the first or the third, and the second is only half emitted. These three are also the
 reopen condition for the *other* decision derived from this one — that the never-reaped tables in
-[0024](/adr/0024-retention-defaults-and-cold-storage/) stay unpartitioned, because on each of them the
+[0024](/oto/adr/0024-retention-defaults-and-cold-storage/) stay unpartitioned, because on each of them the
 constraint a partition key would have to join is the product invariant itself. What is measured, what
 is not, and the `notification_deliveries` design that is ready for the day a trigger does fire, are in
-[0024 Amendment 3](/adr/0024-retention-defaults-and-cold-storage/#amendment-3--the-never-reaped-list-is-not-a-partitioning-backlog-and-the-blocker-is-uniqueness).
+[0024 Amendment 3](/oto/adr/0024-retention-defaults-and-cold-storage/#amendment-3--the-never-reaped-list-is-not-a-partitioning-backlog-and-the-blocker-is-uniqueness).
 
 ## Consequences
 
 - One dependency. `helm install` plus a Postgres URL remains the whole deployment story, which the red
   team identified as a real asset against Robusta (whose UI is enterprise-gated) and Keep.
 - Transactional integrity is preserved end to end: the outbox property in
-  [0001](/adr/0001-postgres-sole-datastore-river-job-queue/) depends on the job queue and the state change
+  [0001](/oto/adr/0001-postgres-sole-datastore-river-job-queue/) depends on the job queue and the state change
   sharing one transaction, which a second datastore would break.
 - Rollups are eventually consistent by minutes. Analytics screens must state their as-of time rather
   than implying live numbers.

@@ -2,8 +2,8 @@
 title: 0025 — The alert list resolves rule snapshots in a batch, not per row
 ---
 **Status:** Accepted · 2026-08-09
-**Relates to:** [0009](/adr/0009-rule-snapshot-versioning-at-fire-time/) (what a snapshot is),
-[0002](/adr/0002-domain-first-layout-three-model-sets/) and CONTEXT.md §5.4–§5.5 (the layering rule
+**Relates to:** [0009](/oto/adr/0009-rule-snapshot-versioning-at-fire-time/) (what a snapshot is),
+[0002](/oto/adr/0002-domain-first-layout-three-model-sets/) and CONTEXT.md §5.4–§5.5 (the layering rule
 this is about), `api/openapi/openapi.yaml` (`batchGetRuleSnapshots`, `RuleSnapshotRefDTO`)
 
 ## Context

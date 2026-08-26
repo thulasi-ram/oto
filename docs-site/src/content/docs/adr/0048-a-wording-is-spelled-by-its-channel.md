@@ -2,9 +2,9 @@
 title: 0048 — A Wording is spelled by its channel, and the marks in between are oto's
 ---
 **Status:** **WITHDRAWN** · 2026-08-22 · superseded by
-[0050](/adr/0050-a-notification-template-is-one-whole-message/)
-**Relates to:** [0037](/adr/0037-wordings-are-liquid-and-structure-stays-otos/) (the ADR this one
-extended, itself superseded by 0050), [0049](/adr/0049-a-wording-is-selected-by-its-own-clause-not-by-a-route/)
+[0050](/oto/adr/0050-a-notification-template-is-one-whole-message/)
+**Relates to:** [0037](/oto/adr/0037-wordings-are-liquid-and-structure-stays-otos/) (the ADR this one
+extended, itself superseded by 0050), [0049](/oto/adr/0049-a-wording-is-selected-by-its-own-clause-not-by-a-route/)
 (withdrawn alongside this one)
 
 > **Tombstone.** This file exists so the ADR numbering has no silent hole. The decision it recorded
@@ -21,6 +21,6 @@ emphasis silently.
 ## Why it is withdrawn
 
 Not because the dialect argument was wrong — it was not — but because the thing it spelled stopped
-existing. [ADR 0050](/adr/0050-a-notification-template-is-one-whole-message/) replaces per-Stanza
+existing. [ADR 0050](/oto/adr/0050-a-notification-template-is-one-whole-message/) replaces per-Stanza
 Wordings with one whole-message NotificationTemplate, so there is no per-Stanza body for a Dialect to
 spell. 0050 is the decision in force; read it instead of this.

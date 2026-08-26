@@ -296,22 +296,22 @@ by an ADR**. Each is kept below with the decision that closed it, because the
 question is part of the record of how the answer was reached. Nothing in this
 section is open.
 
-1. **RESOLVED by [ADR 0016](/adr/0016-mcp-enrichment-no-firehose/)** — cluster
+1. **RESOLVED by [ADR 0016](/oto/adr/0016-mcp-enrichment-no-firehose/)** — cluster
    context arrives via MCP, on demand, and oto never reads the Kubernetes event
    firehose. The question was whether oto is k8s-*enriched* or only
    k8s-*shaped*: all Kubernetes API enrichment was deferred — it needs cluster
    RBAC and it is Robusta's turf — leaving oto grouping by namespace and cluster
    and installing by Helm without ever reading the cluster, which looked like it
    might contradict "k8s cloud native" as intended.
-2. **RESOLVED by [ADR 0018](/adr/0018-slack-distribution-model/)** — a
+2. **RESOLVED by [ADR 0018](/oto/adr/0018-slack-distribution-model/)** — a
    customer-built internal app with credentials in config; no Marketplace
    listing and no oto-operated service. The question was which of Marketplace,
    per-customer internal app or BYO-token to build for, since it sets the
    rate-limit tier. The assumption recorded here at the time was "BYO-token
    self-hosted, Socket Mode default"; the first half held and the second did
    not — Socket Mode was never built, and
-   [slack.md](/setup/slack/) says why.
-3. **RESOLVED by [ADR 0019](/adr/0019-mit-licence/)** — MIT, and `LICENSE` is
+   [slack.md](/oto/setup/slack/) says why.
+3. **RESOLVED by [ADR 0019](/oto/adr/0019-mit-licence/)** — MIT, and `LICENSE` is
    committed. The question was whether AGPL was worth being the most restrictive
    option in a permissive field; Keep and Robusta are both MIT-cored.
 
@@ -322,7 +322,7 @@ written to be cheap to overturn — and `refire_grace` was in fact overturned:
 see the *OVERTAKEN* follow-up on decision 9.
 
 4. **RESOLVED by
-   [ADR 0045](/adr/0045-a-case-is-a-conversation-and-a-thread-per-alert-is-accepted/)**
+   [ADR 0045](/oto/adr/0045-a-case-is-a-conversation-and-a-thread-per-alert-is-accepted/)**
    — one Slack thread per alert is the accepted cost, and the opt-in digest is
    the only collapse mechanism. The question was how loud a re-fire should be,
    and it was the successor to the one decision 8 left open: with `alert_groups`

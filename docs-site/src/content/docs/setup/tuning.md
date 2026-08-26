@@ -4,7 +4,7 @@ title: Tuning oto
 oto's defaults are **derived from a measured corpus** — the Alertmanager route timings the ecosystem
 actually ships, and the `for:` durations real rule packs actually use — rather than chosen. Both
 tables, with their sources, are in *[The numbers oto's defaults are derived from](#the-numbers-otos-defaults-are-derived-from)*
-below, and the decision is [ADR 0026](/adr/0026-tuning-defaults-derived-from-a-real-rule-corpus/).
+below, and the decision is [ADR 0026](/oto/adr/0026-tuning-defaults-derived-from-a-real-rule-corpus/).
 
 They are still not right for every install, because **the correct value for almost every knob below is
 a function of your own `alertmanager.yml` and your own alerting rules.** A setting that is sensible
@@ -208,7 +208,7 @@ meaningful or dead code. (It used to bound two more settings, `group_close_delay
 
 **Every default on this page is derived from the two tables below rather than from a plausible
 guess**, and if your own numbers differ from them, your own numbers win. The full decision, including
-what was rejected and how to overturn it, is [ADR 0026](/adr/0026-tuning-defaults-derived-from-a-real-rule-corpus/).
+what was rejected and how to overturn it, is [ADR 0026](/oto/adr/0026-tuning-defaults-derived-from-a-real-rule-corpus/).
 
 ### 1. What the ecosystem actually sets in `alertmanager.yml`
 
@@ -296,7 +296,7 @@ an inert key is stored and ignored — so nothing breaks. Nothing happens either
 
 **What happened, in the order it happened.**
 
-1. [ADR 0040](/adr/0040-a-case-is-open-or-closed-and-never-reopened/) made an AlertCase strictly
+1. [ADR 0040](/oto/adr/0040-a-case-is-open-or-closed-and-never-reopened/) made an AlertCase strictly
    terminal: **every** re-fire opens the next episode, unacknowledged, whatever the clock says. That
    removed transition T8 — the edge `refire_grace` selected — so the setting stopped deciding
    anything about a case.
@@ -332,7 +332,7 @@ replacement knob would have had to preserve was never working.
 `group_interval: 5m` (the one Alertmanager number the ecosystem does not override), and found three
 arithmetic defects in the old 600s value on the way. None of that becomes wrong; it simply no longer
 has a setting to be about. Read
-[ADR 0026](/adr/0026-tuning-defaults-derived-from-a-real-rule-corpus/) for it, and read
+[ADR 0026](/oto/adr/0026-tuning-defaults-derived-from-a-real-rule-corpus/) for it, and read
 *The three Alertmanager numbers everything depends on*, above, which is unaffected — those numbers
 still bound `resolve_grace`, the case retention window W, and any digest window you pick.
 
@@ -364,7 +364,7 @@ and nothing writes them again. See **ADR 0041**, Amendment 1, and SPEC §B.6.2.
 > **`flap_window` was 1800s and it was wrong. `flap_threshold` was 5 and it survived.** Against the
 > corpus above, `5`-in-`30m` was unreachable for *every* rule shape — the damper was dead code that
 > looked configured. See *The `for:` trap*, below, and
-> [ADR 0026](/adr/0026-tuning-defaults-derived-from-a-real-rule-corpus/).
+> [ADR 0026](/oto/adr/0026-tuning-defaults-derived-from-a-real-rule-corpus/).
 
 **What it did.** `flap_score` was an EWMA of state transitions per hour. When an alert exceeded
 `flap_threshold` transitions within `flap_window`, oto marked it flapping and changed behaviour: the
@@ -478,7 +478,7 @@ problem: they notify thread participants and nobody else.
 
 `reply_broadcast` (Slack's *"Also send to #channel"*) is the antidote. The thread stays the record; the
 one change that matters surfaces once in the channel. See
-[ADR 0020](/adr/0020-broadcast-the-transitions-that-must-be-seen/) for the full reasoning.
+[ADR 0020](/oto/adr/0020-broadcast-the-transitions-that-must-be-seen/) for the full reasoning.
 
 **Broadcast by default — two transitions, and the test is "is the quiet form *invisible*?"**
 
@@ -490,7 +490,7 @@ one change that matters surfaces once in the channel. See
 **There is no severity-increase broadcast, and there cannot be.** `severity` is a Prometheus label and
 labels are hashed into an Alert's identity, so `warning` and `critical` versions of one rule are two
 different Alerts with two different threads — no card ever goes from amber to red. See
-[ADR 0020, Amendment 2](/adr/0020-broadcast-the-transitions-that-must-be-seen/).
+[ADR 0020, Amendment 2](/oto/adr/0020-broadcast-the-transitions-that-must-be-seen/).
 
 **Never broadcast:** acknowledged, comment, enriched, snoozed. Each is a fact about the *response*,
 addressed to people already in the thread. Broadcasting an ack would double the channel traffic of every
@@ -508,7 +508,7 @@ because a resolve arrived quietly.
 2. **A broadcast is a `chat.postMessage`**, so it spends the ~1 message/second/channel budget — unlike
    an update, which is Tier 3 and effectively free. Two hundred pods alerting at once therefore spend
    two hundred seconds of that budget if every one of them broadcasts. **oto damps none of this for
-   you** — storm collapse was removed ([ADR 0042](/adr/0042-storm-damping-is-removed/)) and nothing
+   you** — storm collapse was removed ([ADR 0042](/oto/adr/0042-storm-damping-is-removed/)) and nothing
    replaced it at the notification layer. The two default broadcasts are the whole of the defence, and
    `broadcast_on_resolved` is the only one you can add.
 
@@ -548,7 +548,7 @@ the alert resolving, and a fast, wrong expiry is worse than a slow, correct one.
 *when* something fires. These decide how far back you can still look, they work by dropping whole
 partitions, and a dropped partition is gone — there is no undo, no soft delete and, today, no export.
 Read this section before you lower either number. The full reasoning and the measurements behind the
-defaults are in [ADR 0024](/adr/0024-retention-defaults-and-cold-storage/).
+defaults are in [ADR 0024](/oto/adr/0024-retention-defaults-and-cold-storage/).
 
 ### What retention never touches
 
@@ -601,7 +601,7 @@ returning anything older than the window. The alert page, the episode list, the 
 the delivery record are all unaffected.
 
 Thirteen months is the longest default that keeps a single org inside oto's one-Postgres design
-([ADR 0014](/adr/0014-postgres-only-no-analytical-store/)): at that design's own pessimistic
+([ADR 0014](/oto/adr/0014-postgres-only-no-analytical-store/)): at that design's own pessimistic
 ceiling it is about 130 million rows and 98 GB. Year-on-year comparison — the reason 13 was originally
 given — is served by the daily rollups, which are never deleted, so it works at any setting here.
 

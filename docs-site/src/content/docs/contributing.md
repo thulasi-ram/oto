@@ -1,14 +1,14 @@
 ---
 title: Contributing to oto
 ---
-oto is a flight recorder for alerts. Read [CONTEXT.md](/architecture/) first: it carries the domain
+oto is a flight recorder for alerts. Read [CONTEXT.md](/oto/architecture/) first: it carries the domain
 language, the module map and the layering rules, and most refused changes are refused for
-contradicting one of the three. [docs/design/SPEC.md](/design/SPEC/) is binding and meant to
+contradicting one of the three. [docs/design/SPEC.md](/oto/design/SPEC/) is binding and meant to
 be implemented literally; it changes only through an ADR in the same commit.
 
 ## Ground rules
 
-- **MIT licence** — see [LICENSE](LICENSE) and [ADR 0019](/adr/0019-mit-licence/). No `ee/`
+- **MIT licence** — see [LICENSE](LICENSE) and [ADR 0019](/oto/adr/0019-mit-licence/). No `ee/`
   directory, nothing behind a licence key, and **no CLA**: a contribution needs no paperwork.
 - **Claims are backed or removed.** An unverified count, or a comment describing deleted machinery
   in the present tense, is treated as a defect in its own right.
@@ -61,11 +61,11 @@ lines on macOS and Linux. helm is **installed**, not warned about: `just ci` dep
 `just helm-check`, so a tool the setup recipe could only print a sentence about is a fresh clone
 whose first `just ci` fails and reads as a broken repository. `.env` must exist, because the
 justfile sets `dotenv-load`; `cp .env.example .env` is enough to boot, and every variable is
-documented in [docs/setup/configuration.md](/setup/configuration/).
+documented in [docs/setup/configuration.md](/oto/setup/configuration/).
 
 ## The task runner
 
-`just` is the only task runner ([ADR 0021](/adr/0021-correctness-and-testing-strategy/): a
+`just` is the only task runner ([ADR 0021](/oto/adr/0021-correctness-and-testing-strategy/): a
 second one is a second answer to what green means, and the two drifted). `just` with no arguments
 lists every recipe with its group.
 
@@ -74,7 +74,8 @@ lists every recipe with its group.
 | `just up` | infra, migrations, `go run ./cmd/oto` and the Vite dev server, in one foreground process |
 | `just infra` / `just down` | compose Postgres, Alertmanager, Prometheus, blocking until healthy / stop them, keeping the volume |
 | `just api` / `just worker` | API and worker in one process / the worker alone |
-| `just ui` / `just docs` | Vite dev server (proxies `/api`, `/healthz`) / the Starlight docs site |
+| `just ui` / `just docs` | Vite dev server (proxies `/api`, `/healthz`) / the Starlight docs site on `/oto/` |
+| `just docs-check` | build the docs site and fail on any internal link that does not resolve |
 | `just logs [service]` | tail container logs |
 | `just health` / `just metrics [filter]` | `/healthz` and `/readyz` / oto's own Prometheus metrics |
 | `just fire-alert <source-id> [token] [status]` | POST a synthetic Alertmanager webhook at the ingest endpoint |
@@ -105,7 +106,7 @@ lists every recipe with its group.
 | `just release-watch <vX.Y.Z>` | follow that tag's pipeline run, exiting non-zero if it failed |
 
 Pushing the tag is what publishes, and it is typed by hand on purpose.
-[`docs/releasing.md`](/releasing/) is the whole procedure: what the eight checks are for, what
+[`docs/releasing.md`](/oto/releasing/) is the whole procedure: what the eight checks are for, what
 the pipeline puts in GHCR, and the one step it cannot do for you.
 
 ## The gate set
@@ -255,7 +256,7 @@ notifications entirely disabled.
 
 The scope boundary always drifts in *language* before it drifts in schema: a word arrives, then the
 concept, then the column. **AC-49** is the acceptance criterion in
-[SCOPE-BOUNDARY.md](/design/SCOPE-BOUNDARY/), restated as SPEC §P-18, that bans a fixed list
+[SCOPE-BOUNDARY.md](/oto/design/SCOPE-BOUNDARY/), restated as SPEC §P-18, that bans a fixed list
 of words and a fixed list of person-subject column names across `internal/`, `web/src/` and
 `db/migrations/` and requires a lint rule to enforce it. [`tools/lintvocab`](tools/lintvocab/) is
 that rule — nineteen patterns.
@@ -263,7 +264,7 @@ that rule — nineteen patterns.
 The shape of the rule: 13 banned concept words and 6 forbidden person-subject column names, matched
 on stems rather than exact spellings, so an inflection is the same violation as the root. The
 enumeration itself is stated in exactly one place —
-[docs/concepts.md § 6, The boundary](/concepts/#6-the-boundary) — and is not repeated here,
+[docs/concepts.md § 6, The boundary](/oto/concepts/#6-the-boundary) — and is not repeated here,
 because three copies of a list drift. A word can be renamed; a column has rows, which is why the two
 halves are separate lists rather than one.
 
@@ -308,8 +309,16 @@ Astro/Starlight site, adding the frontmatter Starlight needs and rewriting `*.md
 URLs. It runs on `npm run dev` and `npm run build` inside
 `docs-site/` (`just docs`). Two things follow from that:
 
-- **The site is not wired to CI.** No workflow builds it, so a broken link or a page that fails
-  Starlight's schema is found by running `just docs`, and only then.
+- **The site is built, link-checked and deployed by CI.**
+  [`.github/workflows/pages.yml`](.github/workflows/pages.yml) publishes it to
+  <https://thulasi-ram.github.io/oto> on every push to `main` that touches a source doc. It builds
+  from `docs/` rather than from the committed mirror, so a missed sync deploys the right page — but
+  re-sync anyway, because the mirror is what makes a docs change reviewable. `just docs-check` is
+  the same build and the same link gate, locally.
+- **It is served from a path, not a domain root.** `docs-site/site.config.mjs` holds `base` and is
+  read by both the Astro config and the sync script, because Astro prefixes only the URLs it
+  generates and never an href written into Markdown. Setting `base` in the Astro config alone gives
+  a site whose nav works and whose in-content links all 404.
 - **The generated pages under `docs-site/src/content/docs/` are committed**, so they can go stale
   against their sources. The sync script also removes `adr/`, `design/`, `setup/` and `runbooks/`
   before regenerating, which destroys any page in those four directories with no source under

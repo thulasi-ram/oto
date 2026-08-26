@@ -201,7 +201,7 @@ the amendment:
   ADR does not design its notification behaviour. It only records that the notification layer is the
   wrong home for it, and why.
 - **Whether flap damping survives in its current form.** ⛔ **ANSWERED — IT DOES NOT.** Recorded in
-  [ADR 0041](/adr/0041-the-alert-case-allocation-and-the-rule-that-decides-it/) Amendment 1 and SPEC
+  [ADR 0041](/oto/adr/0041-the-alert-case-allocation-and-the-rule-that-decides-it/) Amendment 1 and SPEC
   §B.6.2, on 2026-08-19, the same day as this ADR: W makes the mechanism redundant AND makes the
   detector lie. `stateChangeCountsSQL` counts `case.opened`/`case.resolved`, and a flap absorbed
   inside W appends neither, so a damped episode contributes about two of the five transitions the

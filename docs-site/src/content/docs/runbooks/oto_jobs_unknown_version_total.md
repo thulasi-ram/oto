@@ -14,7 +14,7 @@ title: oto_jobs_unknown_version_total
 Jobs parked because their payload version is **newer than this worker understands** (SPEC §G.3).
 The check runs before the handler and before any timing, so the job is never half-processed. It is
 cancelled with `dead_reason="unknown_payload_version"` and also counted on
-[`oto_jobs_dead_total`](/runbooks/oto_jobs_dead_total/) with `class="permanent"`.
+[`oto_jobs_dead_total`](/oto/runbooks/oto_jobs_dead_total/) with `class="permanent"`.
 
 Parking rather than guessing is deliberate: a worker that interpreted a payload shape it does not
 know would do the wrong thing durably.

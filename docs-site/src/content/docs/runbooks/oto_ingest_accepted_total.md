@@ -13,7 +13,7 @@ title: oto_ingest_accepted_total
 
 Batches durably persisted and enqueued. oto answers 202 only after the batch is committed, so a
 2xx is a promise and this counter counts the promises. A batch collapsed by `ingest_dedup` is
-**not** counted here — it lands on [`oto_ingest_duplicate_total`](/runbooks/oto_ingest_duplicate_total/).
+**not** counted here — it lands on [`oto_ingest_duplicate_total`](/oto/runbooks/oto_ingest_duplicate_total/).
 
 ## What a value means
 
@@ -31,8 +31,8 @@ Batches durably persisted and enqueued. oto answers 202 only after the batch is 
    nothing is being expired either (§B.4).
 2. Upstream: Alertmanager's own `alertmanager_notifications_failed_total{integration="webhook"}`
    and its log. A 4xx there means Alertmanager has **deleted** the notification permanently.
-3. Is anything else refusing the batch first — [`oto_ingest_shed_total`](/runbooks/oto_ingest_shed_total/)
-   (503s) or [`oto_ingest_rejected_total`](/runbooks/oto_ingest_rejected_total/) with
+3. Is anything else refusing the batch first — [`oto_ingest_shed_total`](/oto/runbooks/oto_ingest_shed_total/)
+   (503s) or [`oto_ingest_rejected_total`](/oto/runbooks/oto_ingest_rejected_total/) with
    `reason="unknown_source"` (a soft-deleted source, or `push_enabled=false`).
 4. Prove the path by hand: `just fire-alert <source-id> <ingest-token>`.
 

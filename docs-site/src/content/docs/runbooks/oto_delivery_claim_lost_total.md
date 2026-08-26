@@ -38,7 +38,7 @@ already happened. The counter, plus the log line, are the entire recovery mechan
 2. `notification_deliveries` for `delivery_id`: what status is it in now, and did another worker
    complete it?
 3. `channel_threads` for `thread_id`: is `provider_thread_id` set, and does it match the orphan?
-4. [`oto_job_duration_seconds`](/runbooks/oto_job_duration_seconds/) for `kind="deliver.dispatch"` —
+4. [`oto_job_duration_seconds`](/oto/runbooks/oto_job_duration_seconds/) for `kind="deliver.dispatch"` —
    compare the provider-call latency against the 120 s lease.
 
 ## What to do

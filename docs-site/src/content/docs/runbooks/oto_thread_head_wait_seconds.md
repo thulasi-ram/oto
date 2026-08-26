@@ -28,20 +28,20 @@ alerts are being fired, deliveries are being minted, and nobody is seeing them.
 
 ## What to check
 
-1. [`oto_thread_order_decisions_total`](/runbooks/oto_thread_order_decisions_total/): is the wait
+1. [`oto_thread_order_decisions_total`](/oto/runbooks/oto_thread_order_decisions_total/): is the wait
    `awaiting_root` (the root never landed) or `awaiting_predecessor` (one slot in flight)?
 2. `channel_threads` for the worst thread: `last_sent_seq` versus `next_seq`, and the age of the
    `sending` row. The §G.5 claim lease is 120 s — a `sending` row older than that is treated as
    abandoned.
-3. [`oto_job_queue_depth`](/runbooks/oto_job_queue_depth/) for `deliver_slack`. That queue is narrow on
+3. [`oto_job_queue_depth`](/oto/runbooks/oto_job_queue_depth/) for `deliver_slack`. That queue is narrow on
    purpose (Slack allows about 1 msg/s per channel), so a fan-out spike shows up here as wait.
-4. Provider latency: [`oto_job_duration_seconds`](/runbooks/oto_job_duration_seconds/) for
+4. Provider latency: [`oto_job_duration_seconds`](/oto/runbooks/oto_job_duration_seconds/) for
    `kind="deliver.dispatch"`.
 
 ## What to do
 
 - If it is one thread: let the gate recover it, and check
-  [`oto_thread_gap_recovered_total`](/runbooks/oto_thread_gap_recovered_total/) for what it had to skip.
+  [`oto_thread_gap_recovered_total`](/oto/runbooks/oto_thread_gap_recovered_total/) for what it had to skip.
 - If it is many threads on one channel: the provider is slow or throttling. Reduce fan-out —
   more `deliver_slack` workers will not beat a per-channel write limit.
 - If `awaiting_root` dominates: root posts are failing. Look at the delivery errors for

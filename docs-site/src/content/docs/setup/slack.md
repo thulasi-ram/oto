@@ -5,7 +5,7 @@ oto uses a **Slack app you create in your own workspace**. There is no OAuth flo
 no "Add to Slack" button, no Slack Marketplace listing and no oto-operated service
 in the middle. You create an app, install it, and paste two credentials into your
 own oto configuration. That is the whole integration. The reasoning is in
-[ADR 0018](/adr/0018-slack-distribution-model/).
+[ADR 0018](/oto/adr/0018-slack-distribution-model/).
 
 > **If you want the Acknowledge button on alert cards to work, [section 3](#3-turn-on-interactivity--required-for-the-acknowledge-button)
 > is not optional and Socket Mode is not an option.** oto implements one
@@ -58,7 +58,7 @@ entire list.**
 oto makes exactly five Slack calls — `chat.postMessage`, `chat.update`,
 `auth.test`, `conversations.list` and `conversations.info` — and the third
 needs no scope at all. The other two are `channels:read`/`groups:read`, added
-back in [ADR 0047](/adr/0047-a-channel-answers-to-a-connection/) so the
+back in [ADR 0047](/oto/adr/0047-a-channel-answers-to-a-connection/) so the
 settings screen can turn a typed channel **name** into its **id**, or the
 reverse, instead of you copying an id out of Slack's own UI by hand: **Settings
 → Connections → (your Slack connection) →** creating or editing a channel now
@@ -73,7 +73,7 @@ Notably absent:
 - `users:read` — oto never reads your member directory. An acknowledgement is
   attributed from the signed interaction payload.
 - every `*:history` scope, and `conversations.replies` — oto never reads
-  messages back (see [ADR 0008](/adr/0008-slack-update-in-place-primary/)).
+  messages back (see [ADR 0008](/oto/adr/0008-slack-update-in-place-primary/)).
   `conversations.list`/`.info` return channel **metadata** (name, id, archive
   state), never message content.
 - `files:write`, `incoming-webhook` — oto uploads nothing and posts under a bot
@@ -387,10 +387,10 @@ messages than expected.
 
 **Removed.** Do not go looking for flap damping — there is none. It was retired
 (git-bug `235f347`) and `flapping` left the suppression chain with storm collapse
-([ADR 0042](/adr/0042-storm-damping-is-removed/)); the `flap_*` tuning keys
+([ADR 0042](/oto/adr/0042-storm-damping-is-removed/)); the `flap_*` tuning keys
 outlived the mechanism they configured. oto damps nothing on its own judgement, and
 a burst of real firings is reported in full, by design — one conversation per alert
-([ADR 0045](/adr/0045-a-case-is-a-conversation-and-a-thread-per-alert-is-accepted/)),
+([ADR 0045](/oto/adr/0045-a-case-is-a-conversation-and-a-thread-per-alert-is-accepted/)),
 which is the accepted cost, not a bug to tune away.
 
 Two things are actually actionable, and both are opt-in:
@@ -398,11 +398,11 @@ Two things are actually actionable, and both are opt-in:
 - A **notification policy count condition** (`count_min` over `count_window_s`) —
   "do not speak until this has happened five times in an hour". This is the
   supported replacement for what flap damping was reaching for (git-bug `7570090`,
-  [ADR 0044](/adr/0044-a-count-condition-is-a-silence-the-operator-asked-for/)).
+  [ADR 0044](/oto/adr/0044-a-count-condition-is-a-silence-the-operator-asked-for/)).
   It binds to Cases.
 - A **digest** (`digest_window_s`), which collapses a window into one message.
 
-Then check your Alertmanager `group_by` in [tuning.md](/setup/tuning/): oto reports what
+Then check your Alertmanager `group_by` in [tuning.md](/oto/setup/tuning/): oto reports what
 it is sent, so a source fanning one event into many alerts is fixed at the source.
 
 ### The Acknowledge button does nothing
@@ -452,7 +452,7 @@ Two of those are worth knowing about individually.
 > person who can close it.**
 
 > **There is a step-by-step run sheet:
-> [slack-live-verification.md](/setup/slack-live-verification/).** Eleven numbered steps,
+> [slack-live-verification.md](/oto/setup/slack-live-verification/).** Eleven numbered steps,
 > each naming the exact observation it needs and which ADR unknown it discharges,
 > ending in what to write down and where. Use it instead of the tables below if you
 > are actually sitting down to do this; the tables here are the reasoning, and that
@@ -469,9 +469,9 @@ offline check had caught. **Everything else oto claims about Slack's behaviour i
 still checked by oto against oto** — every rule lives in
 `internal/channels/render/slack/validate.go`, a closed loop that cannot detect a
 wrong belief. Two ADRs rest on that loop:
-[0008](/adr/0008-slack-update-in-place-primary/) (update in place, never
+[0008](/oto/adr/0008-slack-update-in-place-primary/) (update in place, never
 watched happening) and
-[0020](/adr/0020-broadcast-the-transitions-that-must-be-seen/) (broadcast,
+[0020](/oto/adr/0020-broadcast-the-transitions-that-must-be-seen/) (broadcast,
 one client, one observer).
 
 Two things have been done to make your thirty minutes count.
@@ -503,7 +503,7 @@ file paste its contents over the sample payload.
 | 6 | `broadcast_unacked_reminder.blockkit.json` | One section. | — |
 
 > A seventh file, `storm_notice.blockkit.json`, was deleted with storm damping
-> ([ADR 0042](/adr/0042-storm-damping-is-removed/)).
+> ([ADR 0042](/oto/adr/0042-storm-damping-is-removed/)).
 
 **What this cannot check, and it is a lot.** Block Kit Builder renders
 `blocks` only. It cannot render `attachments`, and *every* oto block lives inside

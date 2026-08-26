@@ -21,4 +21,4 @@ The one genuinely useful derived alert is *absence* for a kind that must always 
 `partitions.manage`, for instance, whose failure to run eventually means no partition exists for
 tomorrow's rows. If you add that rule, alert on the periodic kinds specifically rather than on this
 metric as a whole; a global drop is already covered by
-[`oto_job_queue_depth`](/runbooks/oto_job_queue_depth/) and `OtoDown`.
+[`oto_job_queue_depth`](/oto/runbooks/oto_job_queue_depth/) and `OtoDown`.

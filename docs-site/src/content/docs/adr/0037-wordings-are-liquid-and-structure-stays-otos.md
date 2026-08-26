@@ -2,7 +2,7 @@
 title: 0037 — A Wording is Liquid, and the structure around it stays oto's
 ---
 **Status:** **SUPERSEDED** · 2026-08-18 · withdrawn 2026-08-22 by
-[0050](/adr/0050-a-notification-template-is-one-whole-message/), which replaces per-Stanza Wordings with
+[0050](/oto/adr/0050-a-notification-template-is-one-whole-message/), which replaces per-Stanza Wordings with
 one whole-message NotificationTemplate
 
 > **Read 0050 first.** This ADR's safety argument was sound and much of it survives verbatim — the
@@ -14,12 +14,12 @@ one whole-message NotificationTemplate
 > "so where is my template?". 0050 answers it.
 >
 > ADRs 0048 and 0049, which extended this one, are withdrawn with it.
-**Relates to:** [0008](/adr/0008-slack-update-in-place-primary/) (the card's structure; a broken layout is a
-dead delivery), [0017](/adr/0017-matchers-over-cel/) (matchers, not an expression language — this ADR keeps
+**Relates to:** [0008](/oto/adr/0008-slack-update-in-place-primary/) (the card's structure; a broken layout is a
+dead delivery), [0017](/oto/adr/0017-matchers-over-cel/) (matchers, not an expression language — this ADR keeps
 that refusal for predicates and narrows it for prose),
-[0020](/adr/0020-broadcast-the-transitions-that-must-be-seen/) (the typed-knob precedent, and the unread-knob
+[0020](/oto/adr/0020-broadcast-the-transitions-that-must-be-seen/) (the typed-knob precedent, and the unread-knob
 trap)
-**Design note:** withdrawn with this ADR; see [0050](/adr/0050-a-notification-template-is-one-whole-message/).
+**Design note:** withdrawn with this ADR; see [0050](/oto/adr/0050-a-notification-template-is-one-whole-message/).
 
 > ⛔ **READ 0048 (withdrawn) BEFORE ACTING ON THIS ADR.** Its
 > central ruling — a Wording is Liquid, its output type is a string, and Go builds every block — stands

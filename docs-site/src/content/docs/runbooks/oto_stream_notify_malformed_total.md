@@ -35,7 +35,7 @@ the next thing that breaks it may not be so harmless.
    `schema_version`; `just status` for migration state.
 3. `pg_stat_activity` and your own tooling for anything else connected to this database that might
    be issuing NOTIFY.
-4. [`oto_stream_poll_recovered_total`](/runbooks/oto_stream_poll_recovered_total/) — it should be absorbing
+4. [`oto_stream_poll_recovered_total`](/oto/runbooks/oto_stream_poll_recovered_total/) — it should be absorbing
    the missed doorbells. If it is not, events are also not being written.
 
 ## What to do

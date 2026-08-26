@@ -160,6 +160,20 @@ ui:
 docs:
     cd {{docs_dir}} && npm run dev
 
+# Build the docs site the way .github/workflows/pages.yml does, and check every
+# internal link resolves.
+#
+# ⛔ THE LINK CHECK IS THE POINT. ~280 in-content links are written by
+# `sync-docs.mjs` and read by nothing else in the repository: `just
+# lint-vocabulary` does not look at docs-site/, and the sync script leaves a
+# link it cannot resolve alone rather than guessing. A doc renamed under `docs/`
+# used to take every pointer at it down silently.
+#
+# Build the docs site and check every internal link.
+[group('run')]
+docs-check:
+    cd {{docs_dir}} && npm run verify
+
 # Tail container logs.
 [group('run')]
 logs service="":

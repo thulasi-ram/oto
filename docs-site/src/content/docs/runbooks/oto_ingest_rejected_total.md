@@ -53,7 +53,7 @@ Observations oto refused to normalise. **Every increment has a row behind it** i
 - **`too_many_alerts`**: raise `group_by` cardinality upstream or accept truncation; check
   `docs/setup/tuning.md` before changing the cap.
 - **`timestamp_out_of_window`**: this is a clock problem, not a payload problem — see
-  [`oto_clock_skew_seconds`](/runbooks/oto_clock_skew_seconds/).
+  [`oto_clock_skew_seconds`](/oto/runbooks/oto_clock_skew_seconds/).
 - **Label/annotation caps**: usually one noisy rule attaching a stack trace as a label. Fix the
   rule; the caps exist so one rule cannot make the store unqueryable.
 - **`invalid_label_value` or `annotation_unstorable`**: an upstream is putting raw bytes into a

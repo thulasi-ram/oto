@@ -7,10 +7,10 @@ can be done by an agent, a test or a fake.** That is the whole reason it exists.
 
 **What it settles.** Four things oto claims about Slack have never been watched
 happening: the in-place `chat.update` that
-[ADR 0008](/adr/0008-slack-update-in-place-primary/) makes load-bearing, an
+[ADR 0008](/oto/adr/0008-slack-update-in-place-primary/) makes load-bearing, an
 `@`-mention that actually reaches a phone, the resolved and snoozed cards, and
 whether Slack's four clients agree with each other —
-[ADR 0020](/adr/0020-broadcast-the-transitions-that-must-be-seen/) Amendment 4
+[ADR 0020](/oto/adr/0020-broadcast-the-transitions-that-must-be-seen/) Amendment 4
 records that last one as unknown in writing. Each step below names the unknown it
 discharges.
 
@@ -22,7 +22,7 @@ discharges.
 
 ## Before you start
 
-1. Install the app and invite it: [slack.md sections 1–3 and 5](/setup/slack/). Use a
+1. Install the app and invite it: [slack.md sections 1–3 and 5](/oto/setup/slack/). Use a
    **scratch channel** — you are going to leave test cards in it. Interactivity
    (section 3) is required for step 4.
 2. **Removed.** This step set the reminder audience and is gone with step 8 (git-bug
@@ -71,7 +71,7 @@ three buttons and a `…` overflow — **plus a red `#a30200` bar down the left 
 
 **Discharges:** nothing that is open. It is the baseline the next nine steps are
 read against, and the colour bar is the one thing
-[Block Kit Builder cannot show](/setup/slack/#71-five-minutes-no-workspace-admin-needed-block-kit-builder).
+[Block Kit Builder cannot show](/oto/setup/slack/#71-five-minutes-no-workspace-admin-needed-block-kit-builder).
 
 **If it fails:** no colour bar means attachments have stopped rendering, and §H.2's
 peripheral-vision answer to *"do I need to act?"* is gone. That is an ADR 0008
@@ -251,7 +251,7 @@ may ever depend on colour.
   already uses for *"three verified facts"*. Update in place has been the primary
   verb since 2026-08-07 on the strength of rate-limit documentation alone; step 4 is
   the first time anybody has watched it work.
-- **[slack.md](/setup/slack/)**: anything in section 7 or in Troubleshooting that turned
+- **[slack.md](/oto/setup/slack/)**: anything in section 7 or in Troubleshooting that turned
   out to be untrue. A setup document that describes behaviour nobody has seen is the
   thing this run exists to fix.
 - **git-bug `2078a07`**: the step numbers that passed, the step numbers that failed,
@@ -267,7 +267,7 @@ may ever depend on colour.
 ## What this run still cannot settle
 
 Listed so their absence is not mistaken for a pass. None has a documented answer and
-none has an offline test; [slack.md §7.4](/setup/slack/#74-what-is-still-unverifiable-after-all-of-the-above)
+none has an offline test; [slack.md §7.4](/oto/setup/slack/#74-what-is-still-unverifiable-after-all-of-the-above)
 carries the same list with the reasoning.
 
 - **The attachment block limit.** Slack documents 50 blocks per *message* and states

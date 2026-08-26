@@ -25,4 +25,4 @@ It is the denominator for every rate you actually alert on:
   deadline.
 
 `started` going to zero for a kind while `enqueued` keeps rising is the workers being gone, and
-that is visible sooner and more cheaply on [`oto_job_queue_depth`](/runbooks/oto_job_queue_depth/).
+that is visible sooner and more cheaply on [`oto_job_queue_depth`](/oto/runbooks/oto_job_queue_depth/).

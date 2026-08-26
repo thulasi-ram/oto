@@ -1,7 +1,15 @@
 # Working in `docs-site/`
 
-This directory is a Starlight **mirror** of oto's documentation. It is not wired
-to CI and it is not deployed. See `README.md` here for how to run it.
+This directory is a Starlight **mirror** of oto's documentation. It is built and
+deployed by `.github/workflows/pages.yml` on every push to `main` that touches a
+source doc, and served at <https://thulasi-ram.github.io/oto>. See `README.md`
+here for how to run it.
+
+⛔ **The site is served from a PATH, not a domain root.** `site.config.mjs` holds
+`base` and is read by BOTH `astro.config.mjs` and `scripts/sync-docs.mjs`, because
+Astro prefixes only the URLs it generates and never an href sitting in Markdown.
+Never set `base` in the Astro config alone: the result is a site whose nav works
+and whose ~280 in-content links all 404.
 
 ## The source of truth is outside this directory
 
@@ -47,4 +55,9 @@ re-run the sync and commit the regenerated pages alongside it.
 Prose follows the repository's conventions: sentence-case headings, no emoji, no
 first person, and the vocabulary ban in `docs/design/SCOPE-BOUNDARY.md` §5.
 `just lint-vocabulary` gates `internal/`, `web/src/` and `db/migrations/` only —
-it does not read this directory, so nothing here is caught automatically.
+it does not read this directory, so **prose** here is caught by nothing.
+
+**Links are.** `just docs-check` (`npm run verify`) builds the site and fails on
+an internal link that does not resolve, one that is missing the base, or one the
+sync could not rewrite and left as a `.md` path. The Pages workflow runs it, so a
+renamed doc under `docs/` no longer takes every pointer at it down in silence.

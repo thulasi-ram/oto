@@ -41,7 +41,7 @@ people are not being told things oto decided to tell them.
    `dead` rows points at the channel.
 3. The channel's health and UI banner — `config_invalid` and `auth_expired` are the two classes
    that set it, and they are the usual cause of `dead_delivery` en masse.
-4. [`oto_jobs_dead_total`](/runbooks/oto_jobs_dead_total/) for `kind="deliver.dispatch"`: the same failures
+4. [`oto_jobs_dead_total`](/oto/runbooks/oto_jobs_dead_total/) for `kind="deliver.dispatch"`: the same failures
    seen from the job runtime.
 5. `channel_threads` for the thread: `last_sent_seq` versus `next_seq`, and whether the thread is
    marked dead. (`frozen` was a fourth state and is gone — git-bug e5c060b; nothing ever wrote it,

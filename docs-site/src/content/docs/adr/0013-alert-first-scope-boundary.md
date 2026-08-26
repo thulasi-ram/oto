@@ -7,7 +7,7 @@ slippery-slope map and the handoff contract). This ADR records the *decision*; t
 engineers cite when refusing a feature.
 **Resolves:** red-team memo §7, open decision **3** — *"Is oto alert-first forever, or does it grow
 incidents and on-call?"*
-**Applied by name in:** [0036](/adr/0036-alertoccurrence-becomes-alertcase/) — `AlertOccurrence` becomes
+**Applied by name in:** [0036](/oto/adr/0036-alertoccurrence-becomes-alertcase/) — `AlertOccurrence` becomes
 `AlertCase`, which is the first time a word adjacent to §A.1's scope-ban family has been argued
 through FR-1 rather than admitted because the list did not happen to contain it. Its §2 grants the
 word with six limits, in the same shape as this ADR's anti-rota clause; §5.6's column ban re-points at

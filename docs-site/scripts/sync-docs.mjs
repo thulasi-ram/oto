@@ -25,6 +25,14 @@
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, existsSync, cpSync } from "node:fs";
 import { join, dirname, basename, extname, posix } from "node:path";
 
+// ⛔ EVERY ABSOLUTE PATH THIS SCRIPT WRITES IS PREFIXED WITH THE SITE'S BASE, AND
+// IT HAS TO BE DONE HERE. Astro applies `base` to the URLs it generates — assets,
+// the sidebar, the search index — and cannot apply it to an href sitting in
+// Markdown, because it has no way to tell a route it produced from a string a
+// human typed. This script produces those strings, so this script prefixes them.
+// See site.config.mjs for what happens when only one of the two is done.
+import { withBase } from "../site.config.mjs";
+
 const REPO_ROOT = join(import.meta.dirname, "..", "..");
 const OUT_ROOT = join(import.meta.dirname, "..", "src", "content", "docs");
 
@@ -69,7 +77,7 @@ function listDir(rel) {
 const ROUTES = new Map(
 	SOURCES.map(([src, dest]) => [
 		posix.normalize(src),
-		"/" + dest.replace(/\.md$/, "/").replace(/index\/$/, ""),
+		withBase("/" + dest.replace(/\.md$/, "/").replace(/index\/$/, "")),
 	]),
 );
 
@@ -115,7 +123,9 @@ function rewriteImages(body, srcDir) {
 		const resolved = posix.normalize(posix.join(srcDir, path));
 		if (!resolved.startsWith("docs/assets/")) return whole; // not ours to move
 		if (!existsSync(join(REPO_ROOT, resolved))) missingAssets.push(resolved);
-		return `![${alt}](/${resolved.slice("docs/".length)}${rest})`;
+		// Prefixed for the reason the *.md routes above are: Astro resolves this
+		// at request time as a plain URL, not as one of its own.
+		return `![${alt}](${withBase("/" + resolved.slice("docs/".length))}${rest})`;
 	});
 }
 

@@ -15,7 +15,7 @@ title: 0039 — Group close stays activity-driven
 
 **Status:** Accepted · 2026-08-18
 
-**Amends:** [0038](/adr/0038-the-group-key-is-derived-from-the-alerts-own-labels/) — records what the
+**Amends:** [0038](/oto/adr/0038-the-group-key-is-derived-from-the-alerts-own-labels/) — records what the
 derived key deliberately did *not* change. ADR 0005's thread-ownership claim survives unamended.
 
 ## Context

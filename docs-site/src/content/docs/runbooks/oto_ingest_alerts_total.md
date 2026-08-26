@@ -11,7 +11,7 @@ title: oto_ingest_alerts_total
 ## What it counts
 
 Individual alerts accepted for processing, as opposed to the batches that carried them
-([`oto_ingest_accepted_total`](/runbooks/oto_ingest_accepted_total/)). Incremented only for a batch that
+([`oto_ingest_accepted_total`](/oto/runbooks/oto_ingest_accepted_total/)). Incremented only for a batch that
 was not a duplicate.
 
 ## Why there is no response

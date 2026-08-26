@@ -6,9 +6,9 @@ vocabulary on 2026-08-19 (git-bug `e5c060b`, migration `00066`); the decision it
 intact and the gate order is now `dead` → unsequenced → already-resolved → root →
 predecessor → proceed. See the callout under **Decision**.
 **Amends:** SPEC §G.7 (which specified the opposite order, and a single-transaction send)
-**Relates to:** [0005](/adr/0005-durable-group-key-owns-the-slack-thread/) (the thread a generation owns),
-[0008](/adr/0008-slack-update-in-place-primary/) (update-in-place, which is why a duplicate root is the
-expensive failure), [0021](/adr/0021-correctness-and-testing-strategy/) (the audit that found both)
+**Relates to:** [0005](/oto/adr/0005-durable-group-key-owns-the-slack-thread/) (the thread a generation owns),
+[0008](/oto/adr/0008-slack-update-in-place-primary/) (update-in-place, which is why a duplicate root is the
+expensive failure), [0021](/oto/adr/0021-correctness-and-testing-strategy/) (the audit that found both)
 
 ## Context
 

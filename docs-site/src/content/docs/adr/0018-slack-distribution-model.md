@@ -2,8 +2,8 @@
 title: "0018 — Slack distribution: a customer-built internal app, credentials in config"
 ---
 **Status:** Accepted · 2026-08-08
-**Relates to:** [0008](/adr/0008-slack-update-in-place-primary/) (`chat.update` is the primary verb, and
-oto never reads Slack back), [0013](/adr/0013-alert-first-scope-boundary/) (oto tells the thing that
+**Relates to:** [0008](/oto/adr/0008-slack-update-in-place-primary/) (`chat.update` is the primary verb, and
+oto never reads Slack back), [0013](/oto/adr/0013-alert-first-scope-boundary/) (oto tells the thing that
 pages; it does not page)
 **Artefacts:** `deploy/slack/manifest.yaml`, `docs/setup/slack.md`
 

@@ -2,9 +2,9 @@
 title: 0022 — Length-prefixed identity pre-images
 ---
 **Status:** Accepted · 2026-08-09 · amended 2026-08-20 (Amendment 1)
-**Amends:** [0004](/adr/0004-alert-identity-key-and-fingerprint/) (which specified the `0x00` framing),
+**Amends:** [0004](/oto/adr/0004-alert-identity-key-and-fingerprint/) (which specified the `0x00` framing),
 SPEC §C.0–§C.7
-**Relates to:** [0021](/adr/0021-correctness-and-testing-strategy/) (the tests that found this)
+**Relates to:** [0021](/oto/adr/0021-correctness-and-testing-strategy/) (the tests that found this)
 
 ## Context
 

@@ -10,10 +10,10 @@ before it was written. Kept as the record of the objections the design had to an
 > **Read this as a document from 2026-08-07, not as a description of oto today.** It is dated by
 > construction: every claim about what oto has, lacks or has not yet decided was true of an empty
 > repository. oto has since been implemented, and the memo's open questions were closed by ADRs —
-> the licence by [0019](/adr/0019-mit-licence/), Kubernetes enrichment by
-> [0016](/adr/0016-mcp-enrichment-no-firehose/), Slack distribution by
-> [0018](/adr/0018-slack-distribution-model/). Where this memo and
-> [SPEC.md](/design/SPEC/) disagree, the SPEC wins; it sits below the SPEC and above
+> the licence by [0019](/oto/adr/0019-mit-licence/), Kubernetes enrichment by
+> [0016](/oto/adr/0016-mcp-enrichment-no-firehose/), Slack distribution by
+> [0018](/oto/adr/0018-slack-distribution-model/). Where this memo and
+> [SPEC.md](/oto/design/SPEC/) disagree, the SPEC wins; it sits below the SPEC and above
 > `architect-proposal.md` in the precedence order the SPEC declares.
 
 ---

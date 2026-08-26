@@ -2,10 +2,10 @@
 title: 0021 — Correctness and testing strategy
 ---
 **Status:** Accepted · 2026-08-09
-**Relates to:** [0001](/adr/0001-postgres-sole-datastore-river-job-queue/) (River in Postgres — the
-outbox is a real collaborator, never a mock), [0006](/adr/0006-reconciler-is-mandatory/) (the reconciler
-is the only way into `suppressed`), [0007](/adr/0007-webhook-response-contract/) (the 202 promise),
-[0011](/adr/0011-seven-layer-validation/) (where each bound is enforced)
+**Relates to:** [0001](/oto/adr/0001-postgres-sole-datastore-river-job-queue/) (River in Postgres — the
+outbox is a real collaborator, never a mock), [0006](/oto/adr/0006-reconciler-is-mandatory/) (the reconciler
+is the only way into `suppressed`), [0007](/oto/adr/0007-webhook-response-contract/) (the 202 promise),
+[0011](/oto/adr/0011-seven-layer-validation/) (where each bound is enforced)
 
 ## Context
 
@@ -52,7 +52,7 @@ at an adapter boundary that leaves the process**:
 | `platform/clock` via `FakeClock` | — |
 
 There is no Redis, no second datastore, and no message broker to stub
-([0001](/adr/0001-postgres-sole-datastore-river-job-queue/), [0015](/adr/0015-no-stream-processor/)).
+([0001](/oto/adr/0001-postgres-sole-datastore-river-job-queue/), [0015](/oto/adr/0015-no-stream-processor/)).
 **Mocking a repository is not permitted** — a mocked DB lies about SQL semantics, and every invariant
 that matters here (dedup on the identity key, per-thread sequence gating on advisory locks, the
 `ON CONFLICT` that *is* the idempotency mechanism) lives in the SQL.
@@ -73,7 +73,7 @@ Four targeted integration tests guard the paths that must not break, against rea
 
 1. **The 202 is durable.** Kill the process between the webhook's commit and batch processing; on
    restart the raw batch is present and processed exactly once. A 2xx we cannot honour is the one
-   failure that deletes an alert forever ([0007](/adr/0007-webhook-response-contract/)).
+   failure that deletes an alert forever ([0007](/oto/adr/0007-webhook-response-contract/)).
 2. **Never fabricate a resolution.** With `source_health.status != 'healthy'`, the reaper is blocked
    and no occurrence transitions to `expired`.
 3. **Clamp, never reject.** A backward-skewed upstream `startsAt` clamps `ended_at`, flags
@@ -113,7 +113,7 @@ A settings *form* is UI; the setting *behind* it is not, and falls under the con
   ever shrinks**: a gate with a permanent amnesty list is a gate nobody reads. Regenerating the
   baseline to absorb a new finding is not permitted; the finding is fixed, or the declaration is
   deleted. `tools/lintvocab` stays on the same terms for a different job — defending the scope
-  boundary ([0013](/adr/0013-alert-first-scope-boundary/)).
+  boundary ([0013](/oto/adr/0013-alert-first-scope-boundary/)).
 - Six untested domains are a backlog, not a blocker. Order by wedge proximity: `grouping` (it owns
   the thread), `rules` (the differentiator), `streaming`, `enrichment`, `silences`, `stats`.
 - CI wall-clock rises with testcontainers. Accepted: one container per package, schema-per-test.

@@ -27,5 +27,5 @@ Worth reading, never worth paging:
 - A coalesce rate that is high *outside* a storm suggests something is rewriting group state in a
   tight loop. That is worth a look in the ingest path, not in streaming.
 
-Do not confuse this with [`oto_stream_events_dropped_total`](/runbooks/oto_stream_events_dropped_total/).
+Do not confuse this with [`oto_stream_events_dropped_total`](/oto/runbooks/oto_stream_events_dropped_total/).
 Coalescing replaces; dropping discards and forces a resync.

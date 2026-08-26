@@ -16,7 +16,7 @@ oto's handlers blew up in oto's own metric namespace, so oto recovers first and 
 
 A recovered panic is converted to a **retryable** error on purpose: a transient nil dereference
 during a rolling deploy should not discard an alert. A genuine one hits the attempt ceiling within
-minutes and shows up on [`oto_jobs_dead_total`](/runbooks/oto_jobs_dead_total/).
+minutes and shows up on [`oto_jobs_dead_total`](/oto/runbooks/oto_jobs_dead_total/).
 
 ## What a non-zero value means
 
@@ -39,6 +39,6 @@ handler panic — every hostile input is meant to be a classified error long bef
   Prefer a failing test in `test/integration/` over a defensive nil check: a panic that is patched
   without a reproduction comes back.
 - If it is deploy-shaped and the previous build was clean, roll back — but check
-  [`oto_jobs_unknown_version_total`](/runbooks/oto_jobs_unknown_version_total/) first, because rolling back
+  [`oto_jobs_unknown_version_total`](/oto/runbooks/oto_jobs_unknown_version_total/) first, because rolling back
   a payload-version bump strands jobs.
 - Do not silence it by widening a `recover`. The counter exists so this cannot be absorbed quietly.

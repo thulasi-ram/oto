@@ -34,11 +34,11 @@ fixes.
 
 ## What to check
 
-1. [`oto_job_queue_depth`](/runbooks/oto_job_queue_depth/) for `queue="ingest"`, `state="available"` — the
+1. [`oto_job_queue_depth`](/oto/runbooks/oto_job_queue_depth/) for `queue="ingest"`, `state="available"` — the
    25 000 default is roughly two and a half minutes of backlog at 16 workers, chosen to sit inside
    Alertmanager's retry budget.
 2. `GET /readyz` — the `pools` block reports saturation without scraping `/metrics`.
-3. [`oto_ingest_process_duration_seconds`](/runbooks/oto_ingest_process_duration_seconds/): are batches
+3. [`oto_ingest_process_duration_seconds`](/oto/runbooks/oto_ingest_process_duration_seconds/): are batches
    slow, or merely numerous?
 4. Postgres: `log_min_duration_statement` is 500 ms in the dev compose; look for the statement that
    got slow, and for lock waits.

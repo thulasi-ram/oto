@@ -73,7 +73,8 @@ lists every recipe with its group.
 | `just up` | infra, migrations, `go run ./cmd/oto` and the Vite dev server, in one foreground process |
 | `just infra` / `just down` | compose Postgres, Alertmanager, Prometheus, blocking until healthy / stop them, keeping the volume |
 | `just api` / `just worker` | API and worker in one process / the worker alone |
-| `just ui` / `just docs` | Vite dev server (proxies `/api`, `/healthz`) / the Starlight docs site |
+| `just ui` / `just docs` | Vite dev server (proxies `/api`, `/healthz`) / the Starlight docs site on `/oto/` |
+| `just docs-check` | build the docs site and fail on any internal link that does not resolve |
 | `just logs [service]` | tail container logs |
 | `just health` / `just metrics [filter]` | `/healthz` and `/readyz` / oto's own Prometheus metrics |
 | `just fire-alert <source-id> [token] [status]` | POST a synthetic Alertmanager webhook at the ingest endpoint |
@@ -307,8 +308,16 @@ Astro/Starlight site, adding the frontmatter Starlight needs and rewriting `*.md
 URLs. It runs on `npm run dev` and `npm run build` inside
 `docs-site/` (`just docs`). Two things follow from that:
 
-- **The site is not wired to CI.** No workflow builds it, so a broken link or a page that fails
-  Starlight's schema is found by running `just docs`, and only then.
+- **The site is built, link-checked and deployed by CI.**
+  [`.github/workflows/pages.yml`](.github/workflows/pages.yml) publishes it to
+  <https://thulasi-ram.github.io/oto> on every push to `main` that touches a source doc. It builds
+  from `docs/` rather than from the committed mirror, so a missed sync deploys the right page — but
+  re-sync anyway, because the mirror is what makes a docs change reviewable. `just docs-check` is
+  the same build and the same link gate, locally.
+- **It is served from a path, not a domain root.** `docs-site/site.config.mjs` holds `base` and is
+  read by both the Astro config and the sync script, because Astro prefixes only the URLs it
+  generates and never an href written into Markdown. Setting `base` in the Astro config alone gives
+  a site whose nav works and whose in-content links all 404.
 - **The generated pages under `docs-site/src/content/docs/` are committed**, so they can go stale
   against their sources. The sync script also removes `adr/`, `design/`, `setup/` and `runbooks/`
   before regenerating, which destroys any page in those four directories with no source under

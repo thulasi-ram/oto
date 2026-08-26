@@ -2,8 +2,8 @@
 title: 0017 — Alertmanager-style matchers, not CEL; and a filter AST that keeps the door open
 ---
 **Status:** Accepted · 2026-08-08
-**Relates to:** [0013](/adr/0013-alert-first-scope-boundary/) (policies route signals, never people),
-[0014](/adr/0014-postgres-only-no-analytical-store/) (indexed queries are what make Postgres-only work)
+**Relates to:** [0013](/oto/adr/0013-alert-first-scope-boundary/) (policies route signals, never people),
+[0014](/oto/adr/0014-postgres-only-no-analytical-store/) (indexed queries are what make Postgres-only work)
 
 ## Context
 
@@ -60,7 +60,7 @@ general language.
   filters plus free-text search is the ceiling, and some genuinely reasonable query will not be
   expressible. Accepted.
 - Every filter is index-backed, so search latency stays predictable as the event table grows — which is
-  one of the load-bearing assumptions of [0014](/adr/0014-postgres-only-no-analytical-store/).
+  one of the load-bearing assumptions of [0014](/oto/adr/0014-postgres-only-no-analytical-store/).
 - The AST is extra indirection for a v1 that has only one front end compiling to it. That cost is
   deliberate and small.
 - Saved views become the answer to "I need this complicated query often", which is usually the real

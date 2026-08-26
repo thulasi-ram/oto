@@ -24,8 +24,8 @@ mechanism, not a repair.
 The poll has stopped being a safety net and started being the delivery mechanism. Either:
 
 - **notifications are being missed** — check
-  [`oto_stream_listener_reconnects_total`](/runbooks/oto_stream_listener_reconnects_total/) and
-  [`oto_stream_notify_malformed_total`](/runbooks/oto_stream_notify_malformed_total/); or
+  [`oto_stream_listener_reconnects_total`](/oto/runbooks/oto_stream_listener_reconnects_total/) and
+  [`oto_stream_notify_malformed_total`](/oto/runbooks/oto_stream_notify_malformed_total/); or
 - **write concurrency has risen sharply**, so more rows commit out of order — usually a storm, and
   self-correcting.
 
@@ -34,7 +34,7 @@ lost either way, because `ui_events` is the durable spine and the poll reads it.
 
 ## What to check
 
-1. Compare with [`oto_stream_notify_received_total`](/runbooks/oto_stream_notify_received_total/). Poll
+1. Compare with [`oto_stream_notify_received_total`](/oto/runbooks/oto_stream_notify_received_total/). Poll
    recoveries approaching the doorbell rate means the doorbell is not working.
 2. Reconnects in the same window — one reconnect is one gap.
 3. Ingest volume in the same window: a storm raises this legitimately.

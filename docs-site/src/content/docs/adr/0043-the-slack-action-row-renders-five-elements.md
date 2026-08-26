@@ -10,8 +10,8 @@ most **4**"*. The **25** in that row is Slack's and is untouched; only oto's own
 is unchanged at 25 and V8 still enforces it (§H.7, `validate.go`).
 **Goldens:** `root_snoozed.golden.json` (4 buttons + overflow) and `root_unsnoozed.golden.json`
 (3 buttons + select + overflow) — the two widest rows oto can draw, pinned in bytes.
-**Relates to:** [0018](/adr/0018-slack-distribution-model/) (the card is the product surface),
-[0013](/adr/0013-alert-first-scope-boundary/) (why a person is never the subject of an action).
+**Relates to:** [0018](/oto/adr/0018-slack-distribution-model/) (the card is the product surface),
+[0013](/oto/adr/0013-alert-first-scope-boundary/) (why a person is never the subject of an action).
 
 > ⛔ **THIS ADR IS LATE, AND ITS LATENESS IS THE FIRST THING IT RECORDS.** The snooze work raised the
 > rendered limit in `root.go` and then **edited SPEC §H.7 to match** — four became five in the

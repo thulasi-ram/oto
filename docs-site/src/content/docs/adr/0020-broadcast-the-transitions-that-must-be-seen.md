@@ -69,9 +69,9 @@ audience are REMOVED** (git-bug `bd0fb1d`) — see the callout below. See
 > `text` must be self-sufficient** and **no broadcast may depend on a button** — the first on
 > independent grounds, the second now on direct evidence.
 
-**Relates to:** [0008](/adr/0008-slack-update-in-place-primary/) (`chat.update` is the primary verb),
-[0005](/adr/0005-durable-group-key-owns-the-slack-thread/) (the group owns the thread),
-[0013](/adr/0013-alert-first-scope-boundary/) (oto pages nobody)
+**Relates to:** [0008](/oto/adr/0008-slack-update-in-place-primary/) (`chat.update` is the primary verb),
+[0005](/oto/adr/0005-durable-group-key-owns-the-slack-thread/) (the group owns the thread),
+[0013](/oto/adr/0013-alert-first-scope-boundary/) (oto pages nobody)
 **Touches:** SPEC §H.1 (S3, S5), §H.5, §H.6, `internal/notification/domain/mode.go`
 
 ## Context

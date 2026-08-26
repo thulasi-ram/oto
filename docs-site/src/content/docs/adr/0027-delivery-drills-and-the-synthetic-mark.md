@@ -3,10 +3,10 @@ title: "0027 — Delivery drills: a synthetic alert through the real pipeline, a
 ---
 **Status:** Accepted · 2026-08-09
 **Decided WITHOUT the owner.** See *How to overturn this*, below.
-**Relates to:** [0024](/adr/0024-retention-defaults-and-cold-storage/) (what retention deletes, and the
-row-level prunes this joins), [0009](/adr/0009-rule-snapshot-versioning-at-fire-time/) (why the
-rule-snapshot stage may honestly skip), [0013](/adr/0013-alert-first-scope-boundary/) (FR-1),
-[0014](/adr/0014-postgres-only-no-analytical-store/) (why `alert_quality_daily` exists at all)
+**Relates to:** [0024](/oto/adr/0024-retention-defaults-and-cold-storage/) (what retention deletes, and the
+row-level prunes this joins), [0009](/oto/adr/0009-rule-snapshot-versioning-at-fire-time/) (why the
+rule-snapshot stage may honestly skip), [0013](/oto/adr/0013-alert-first-scope-boundary/) (FR-1),
+[0014](/oto/adr/0014-postgres-only-no-analytical-store/) (why `alert_quality_daily` exists at all)
 **Amends:** SPEC §D (new table `delivery_drills`, `alerts.synthetic`, `alert_groups.synthetic`,
 `ingest_batches.mode` widened), §E (new `Drills` tag), §G.1 (the synthetic accept mode)
 **Resolves:** git-bug `f7063f7` — *"Nothing can push a synthetic alert through the real pipeline, so

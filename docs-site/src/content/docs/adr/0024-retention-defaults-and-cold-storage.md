@@ -3,10 +3,10 @@ title: 0024 — Retention defaults, what each boundary destroys, and cold storag
 ---
 **Status:** Accepted · 2026-08-09
 **Decided WITHOUT the owner.** See *How to overturn this*, below — it is designed to be cheap.
-**Relates to:** [0014](/adr/0014-postgres-only-no-analytical-store/) (the scale envelope this is derived
-from, and the `DETACH` → Parquet escape hatch), [0003](/adr/0003-alert-occurrence-event-separation/)
+**Relates to:** [0014](/oto/adr/0014-postgres-only-no-analytical-store/) (the scale envelope this is derived
+from, and the `DETACH` → Parquet escape hatch), [0003](/oto/adr/0003-alert-occurrence-event-separation/)
 (why the projections survive what the event stream does not),
-[0001](/adr/0001-postgres-sole-datastore-river-job-queue/)
+[0001](/oto/adr/0001-postgres-sole-datastore-river-job-queue/)
 **Amends:** SPEC §D.1 (`raw_retention_days` default), §D.3, §D.4, §D.11
 **Resolves:** git-bug `344bf68` — *"Retention defaults delete the history the product is selling, on
 no stated requirement"*, and `docs/ORCHESTRATION.md` open question 5. Also git-bug `747bde8` — the

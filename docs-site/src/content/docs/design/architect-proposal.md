@@ -1,13 +1,13 @@
 ---
 title: oto — System Design Proposal
 ---
-> **Status:** SUPERSEDED by [SPEC.md](/design/SPEC/), which is binding and says so in its own preamble.
+> **Status:** SUPERSEDED by [SPEC.md](/oto/design/SPEC/), which is binding and says so in its own preamble.
 > **Audience:** engineering and product.
 > **Scope as proposed:** the complete v1 architecture for an alert-first, lifecycle-centric alert
 > management platform.
 
 > **HISTORICAL. THIS IS THE ORIGINAL PROPOSAL AND IT IS NOT THE SPECIFICATION.** Where it and
-> [SPEC.md](/design/SPEC/) disagree, the SPEC wins, and `CONTEXT.md` is the current domain vocabulary.
+> [SPEC.md](/oto/design/SPEC/) disagree, the SPEC wins, and `CONTEXT.md` is the current domain vocabulary.
 > The proposal is kept because it is the record of what was proposed and why, and reading it as
 > current will mislead you: it still describes `AlertOccurrence` (now `AlertCase`), transition **T8**
 > (retired by ADR 0040 — a Case is strictly terminal), `refire_grace` and `group_close_delay` (both

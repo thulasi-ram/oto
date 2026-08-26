@@ -26,11 +26,11 @@ crash between commit and completion) and needs no response.
 
 ## What to check
 
-1. [`oto_job_queue_depth`](/runbooks/oto_job_queue_depth/) for `queue="ingest"` — is it one slow batch or a
+1. [`oto_job_queue_depth`](/oto/runbooks/oto_job_queue_depth/) for `queue="ingest"` — is it one slow batch or a
    thousand queued ones?
-2. [`oto_job_duration_seconds`](/runbooks/oto_job_duration_seconds/) for `kind="ingest.process_batch"`,
+2. [`oto_job_duration_seconds`](/oto/runbooks/oto_job_duration_seconds/) for `kind="ingest.process_batch"`,
    which is the same work seen by the job runtime and carries the outcome split.
-3. Batch size (see [`oto_ingest_alerts_total`](/runbooks/oto_ingest_alerts_total/)). A 5 000-alert storm
+3. Batch size (see [`oto_ingest_alerts_total`](/oto/runbooks/oto_ingest_alerts_total/)). A 5 000-alert storm
    batch is *expected* to take seconds.
 4. Postgres contention on `alerts`, `cases` and `alert_groups`.
 

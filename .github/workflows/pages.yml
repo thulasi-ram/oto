@@ -1,0 +1,106 @@
+name: pages
+
+# The docs site, built and served at https://thulasi-ram.github.io/oto.
+#
+# ⭐ THE MIRROR IS GENERATED AND CHECKED IN, WHICH IS WHY THIS WORKFLOW BUILDS
+# FROM SOURCE RATHER THAN PUBLISHING WHAT IS COMMITTED. `docs-site/scripts/
+# sync-docs.mjs` regenerates every page under `src/content/docs/` from `docs/`
+# and the root Markdown, and `npm run build` runs it first — so a commit that
+# edited a source doc without re-running the sync still deploys the CORRECT
+# page. The committed mirror stays useful for reading a diff; it is not the
+# thing served.
+#
+# ⛔ `check-links` IS NOT OPTIONAL AND IS THE REASON THIS IS A WORKFLOW RATHER
+# THAN A ONE-LINE DEPLOY ACTION. The site carries ~280 in-content links that
+# nothing else in the repository reads: `just lint-vocabulary` does not look at
+# docs-site/, no test renders Markdown, and the sync script deliberately leaves
+# a link it cannot resolve alone instead of guessing. Until this ran, a renamed
+# doc took every pointer at it down silently. See docs-site/scripts/check-links.mjs.
+
+on:
+  push:
+    branches: [main]
+    # ⚠️ PATH-FILTERED, AND THE LIST IS LONGER THAN IT LOOKS BECAUSE THE SOURCES
+    # ARE NOT ALL UNDER docs/. README.md and CONTRIBUTING.md are synced too
+    # (SOURCES in sync-docs.mjs is the authority), so a change to either must
+    # redeploy or the site quietly serves the previous text. When in doubt, add
+    # the path: a wasted three-minute build is cheaper than a stale page nobody
+    # notices.
+    paths:
+      - "docs/**"
+      - "docs-site/**"
+      - "README.md"
+      - "CONTEXT.md"
+      - "CONTRIBUTING.md"
+      - ".github/workflows/pages.yml"
+  # Unlike release.yml, a manual run here is safe and useful: the site is
+  # replaced wholesale on every deploy, there is no immutable artifact and no
+  # name that can be taken, so re-running is how you recover from anything.
+  workflow_dispatch:
+
+# One deploy at a time, and DO cancel a superseded one — the opposite of
+# release.yml's rule, for the opposite reason. There is exactly one live site;
+# a run made obsolete by a newer push has nothing to protect, and letting it
+# finish only risks it landing last and publishing the older tree.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # The same pin ci.yml carries, for the same reason: a contributor's green must
+  # be CI's green, and the docs build is a Node build like any other.
+  NODE_VERSION: "24"
+
+jobs:
+  build:
+    name: docs / build + check links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: docs-site/package-lock.json
+
+      # `configure-pages` is what supplies the deploy step's environment. It is
+      # NOT what tells Astro where the site lives: `site` and `base` come from
+      # docs-site/site.config.mjs, which sync-docs.mjs reads too, so the URLs
+      # Astro generates and the ones written into page content cannot disagree.
+      - uses: actions/configure-pages@v5
+
+      - name: npm ci
+        run: npm ci
+        working-directory: docs-site
+
+      # Runs the sync first (npm run build does), so the deployed pages are
+      # derived from this commit's docs/ rather than from the committed mirror.
+      - name: build
+        run: npm run build
+        working-directory: docs-site
+
+      - name: every internal link resolves
+        run: npm run check-links
+        working-directory: docs-site
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs-site/dist
+
+  deploy:
+    name: docs / deploy
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write # publish the artifact as the live site
+      id-token: write # the OIDC token the deploy is authenticated with
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

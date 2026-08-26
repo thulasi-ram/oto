@@ -2,12 +2,12 @@
 title: 0050 — A NotificationTemplate is one whole message, and its policy says which one
 ---
 **Status:** Accepted · 2026-08-22
-**Supersedes:** [0037](/adr/0037-wordings-are-liquid-and-structure-stays-otos/) (Wordings, per-Stanza
+**Supersedes:** [0037](/oto/adr/0037-wordings-are-liquid-and-structure-stays-otos/) (Wordings, per-Stanza
 overrides), and the two ADRs that extended it — 0048 (a Wording is spelled by its channel) and 0049
 (a Wording is selected by its own clause), both withdrawn with this one.
-**Relates to:** [0017](/adr/0017-matchers-over-cel/) (the `when` clause this
-stops duplicating), [0008](/adr/0008-slack-update-in-place-primary/) (why a rendered payload is hashed),
-[0034](/adr/0034-notifications-as-a-top-level-destination/) (where a policy is written)
+**Relates to:** [0017](/oto/adr/0017-matchers-over-cel/) (the `when` clause this
+stops duplicating), [0008](/oto/adr/0008-slack-update-in-place-primary/) (why a rendered payload is hashed),
+[0034](/oto/adr/0034-notifications-as-a-top-level-destination/) (where a policy is written)
 
 ## Context
 

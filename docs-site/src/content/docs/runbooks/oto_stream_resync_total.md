@@ -17,7 +17,7 @@ again than let it render stale state.
 
 | `reason` | Cause |
 |---|---|
-| `buffer_overflow` | that connection fell behind and its buffer was dropped — see [`oto_stream_events_dropped_total`](/runbooks/oto_stream_events_dropped_total/) |
+| `buffer_overflow` | that connection fell behind and its buffer was dropped — see [`oto_stream_events_dropped_total`](/oto/runbooks/oto_stream_events_dropped_total/) |
 | `replay_window_exceeded` | the client's `Last-Event-ID` is older than the 24 h `ui_events` retention, or the gap exceeds `MaxReplayRows` (10 000) |
 
 ## What a sustained rate means
@@ -33,10 +33,10 @@ again than let it render stale state.
 
 1. Split by reason; they have nothing in common except the frame.
 2. For `buffer_overflow`: go to
-   [`oto_stream_events_dropped_total`](/runbooks/oto_stream_events_dropped_total/).
+   [`oto_stream_events_dropped_total`](/oto/runbooks/oto_stream_events_dropped_total/).
 3. For `replay_window_exceeded`: is `ui_events` retention what you think? The partitions are hourly
    and dropped at 24 h by `partitions.manage`. If that job is failing, retention shrinks —
-   check [`oto_jobs_dead_total`](/runbooks/oto_jobs_dead_total/) for `kind="partitions.manage"`.
+   check [`oto_jobs_dead_total`](/oto/runbooks/oto_jobs_dead_total/) for `kind="partitions.manage"`.
 4. Gaps in `seq` are **normal** — it is a global sequence and a rolled-back transaction consumes a
    value. A client that treats a gap as loss will resync forever; if a bespoke client is doing
    that, this counter is where it shows.

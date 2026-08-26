@@ -2,9 +2,9 @@
 title: 0016 — Cluster context arrives via MCP, on demand; never the Kubernetes event firehose
 ---
 **Status:** Accepted · 2026-08-08
-**Relates to:** [0014](/adr/0014-postgres-only-no-analytical-store/) (this is the rule that protects it),
-[0009](/adr/0009-rule-snapshot-versioning-at-fire-time/) (snapshot-at-fire-time semantics),
-[0013](/adr/0013-alert-first-scope-boundary/) (oto is a flight recorder, not an observability store)
+**Relates to:** [0014](/oto/adr/0014-postgres-only-no-analytical-store/) (this is the rule that protects it),
+[0009](/oto/adr/0009-rule-snapshot-versioning-at-fire-time/) (snapshot-at-fire-time semantics),
+[0013](/oto/adr/0013-alert-first-scope-boundary/) (oto is a flight recorder, not an observability store)
 **Resolves:** the open question *"is oto k8s-enriched or only k8s-shaped?"*
 
 ## Context
@@ -35,11 +35,11 @@ Two constraints fall out of the existing enrichment design and are binding:
 
 **⛔ The prohibition.** oto does not subscribe to, ingest, or store the Kubernetes Events stream.
 
-This is the rule that keeps [0014](/adr/0014-postgres-only-no-analytical-store/) true. Every argument for
+This is the rule that keeps [0014](/oto/adr/0014-postgres-only-no-analytical-store/) true. Every argument for
 Postgres-only rests on oto's data being human-scale. Kubernetes Events are machine-scale — a busy
 cluster emits thousands per minute — and ingesting them would, in one decision, force a time-series
 store, invert the storage architecture, and turn oto into an observability product. It would also
-breach [0013](/adr/0013-alert-first-scope-boundary/): a k8s Event stream is not a fact about a signal we
+breach [0013](/oto/adr/0013-alert-first-scope-boundary/): a k8s Event stream is not a fact about a signal we
 were told about, it is a general-purpose telemetry feed.
 
 What we do instead: at enrichment time, fetch **only the events relevant to this alert** — same

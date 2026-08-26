@@ -4,12 +4,18 @@ description: The alert history layer your Prometheus stack does not have.
 template: splash
 hero:
   tagline: The alert history layer your Prometheus stack does not have — self-hosted, with a UI, without adopting an AIOps platform or a paid SaaS.
+  # These two carry the site base by hand, and they are the only links in the
+  # tree that do. Starlight does not prefix a hero action's `link` — it is
+  # emitted verbatim, exactly like an href in Markdown — so a base set only in
+  # astro.config.mjs leaves the front page's two buttons pointing off the site.
+  # `npm run check-links` is what makes hardcoding it safe: change the base and
+  # the gate fails naming this file, rather than the buttons quietly 404ing.
   actions:
     - text: Read the introduction
-      link: /guides/overview/
+      link: /oto/guides/overview/
       icon: right-arrow
     - text: Architecture
-      link: /architecture/
+      link: /oto/architecture/
       icon: document
       variant: minimal
 ---

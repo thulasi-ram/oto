@@ -2,12 +2,12 @@
 title: 0036 — AlertOccurrence becomes AlertCase, and `case` is argued against FR-1 by name
 ---
 **Status:** Accepted · 2026-08-18 · **narrowed in part by
-[0040](/adr/0040-a-case-is-open-or-closed-and-never-reopened/)**, which keeps this entity exactly as this
+[0040](/oto/adr/0040-a-case-is-open-or-closed-and-never-reopened/)**, which keeps this entity exactly as this
 ADR defines it — one contiguous firing episode, `(alert_id, seq)` — and narrows its `state` column to
 `open | closed`. Read 0040 before adding anything to `alert_cases.state`.
-**Relates to:** [0003](/adr/0003-alert-occurrence-event-separation/) (the three entities — this renames the
-middle one and changes nothing about it), [0013](/adr/0013-alert-first-scope-boundary/) (the boundary this
-ADR argues against by name), [0024](/adr/0024-retention-defaults-and-cold-storage/) (why the episode row
+**Relates to:** [0003](/oto/adr/0003-alert-occurrence-event-separation/) (the three entities — this renames the
+middle one and changes nothing about it), [0013](/oto/adr/0013-alert-first-scope-boundary/) (the boundary this
+ADR argues against by name), [0024](/oto/adr/0024-retention-defaults-and-cold-storage/) (why the episode row
 survives what the event stream does not)
 **Amends:** SPEC §A (the `AlertOccurrence` row, `docs/design/SPEC.md:89`), §A.1, §B and §B.1, §D.4,
 §I.1; SCOPE-BOUNDARY §5.1 and the §5.6 column ban, re-pointed at the renamed table

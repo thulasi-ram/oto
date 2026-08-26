@@ -14,15 +14,15 @@ ruling has no DDL.
 §J's AC-14 (a deferral becomes a live, testable assertion). **§H.3 is not amended** — *"posted once
 per Case conversation — one Case, one root, always"* already says what this ADR authorises, which is
 the point: the behaviour was never in doubt, only its licence.
-**Relates to:** [0042](/adr/0042-storm-damping-is-removed/) — 0042 removed the *delivery-time* damper
+**Relates to:** [0042](/oto/adr/0042-storm-damping-is-removed/) — 0042 removed the *delivery-time* damper
 and this document rules on what the removal of the *structural* one costs. **0042 is not
 superseded and is not weakened**: its §3 principle — oto may be quiet for a reason outside its own
 judgement and never for its own opinion — is the reason a per-alert conversation is the only
-honest default here. [0038](/adr/0038-the-group-key-is-derived-from-the-alerts-own-labels/) — the ADR
+honest default here. [0038](/oto/adr/0038-the-group-key-is-derived-from-the-alerts-own-labels/) — the ADR
 that made the split key derived from the alert's own labels. Its amendment stands; the **entity**
 it keyed is gone, so the key it specifies now identifies nothing and is read only by
-`tools/groupreplay` (SPEC §C.4). [0040](/adr/0040-a-case-is-open-or-closed-and-never-reopened/) and
-[0041](/adr/0041-the-alert-case-allocation-and-the-rule-that-decides-it/) — what a Case is, and the
+`tools/groupreplay` (SPEC §C.4). [0040](/oto/adr/0040-a-case-is-open-or-closed-and-never-reopened/) and
+[0041](/oto/adr/0041-the-alert-case-allocation-and-the-rule-that-decides-it/) — what a Case is, and the
 rule that allocates one.
 
 > ⚠️ **THIS ADR RATIFIES A BEHAVIOUR THAT WAS ALREADY LIVE, AND SAYS SO FIRST.** `7570090` deleted

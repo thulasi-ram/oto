@@ -51,7 +51,7 @@ For every alert that has ever fired, oto can show: when it first appeared, every
 |---|---|---|
 | C1 | Architect enters `suppressed` from webhook ingest. Research: suppressed alerts are dropped by `MuteStage` and **never reach a webhook**; `alerts[].status` is only `firing\|resolved`. | `suppressed` is set **only** by the API v2 reconciler (`status.state == "suppressed"`) or by an oto-observed silence match. Ingest MUST NOT produce `suppressed`. The reconciler is CORE, not optional. |
 | C2 | Architect treats absence-from-Alertmanager as resolution. | Absence produces `expired`, never `resolved`. `resolved` requires an explicit per-alert `status="resolved"` observation. |
-| C3 | Architect derives group identity from an oto "grouping rule" engine. Research: `groupKey` embeds route config and changes on `alertmanager.yml` reload. | Durable `group_key`, computed by oto and never parsed out of AM's. AM's `groupKey` is stored as `source_group_key` for observability only and MUST NOT be parsed. The configurable grouping-rule engine is CUT. **⚠️ AMENDED — [ADR 0038](/adr/0038-the-group-key-is-derived-from-the-alerts-own-labels/):** the key was `H(org_id, source_id, receiver, sorted groupLabels)` and is now `H(org_id, cluster_key, alertname, namespace-or-∅)` — the alert's own labels. The C3 ruling *survives* the amendment and is what forced it: a key built from `receiver` and `groupLabels` still embedded route config, so `continue: true` gave one alert two threads. Still fixed, still not a rule engine. See §C.4. |
+| C3 | Architect derives group identity from an oto "grouping rule" engine. Research: `groupKey` embeds route config and changes on `alertmanager.yml` reload. | Durable `group_key`, computed by oto and never parsed out of AM's. AM's `groupKey` is stored as `source_group_key` for observability only and MUST NOT be parsed. The configurable grouping-rule engine is CUT. **⚠️ AMENDED — [ADR 0038](/oto/adr/0038-the-group-key-is-derived-from-the-alerts-own-labels/):** the key was `H(org_id, source_id, receiver, sorted groupLabels)` and is now `H(org_id, cluster_key, alertname, namespace-or-∅)` — the alert's own labels. The C3 ruling *survives* the amendment and is what forced it: a key built from `receiver` and `groupLabels` still embedded route config, so `continue: true` gave one alert two threads. Still fixed, still not a rule engine. See §C.4. |
 | C4 | Architect returns 202 but never specifies failure codes. Research: 4xx/429 = permanent, silent loss; only 5xx is retried. | Ingest returns **202** on durable accept, **503 + `Retry-After`** for any transient condition (overload, pool exhaustion, Postgres slow). **NEVER 429. NEVER 4xx for anything transient.** 401 (bad token) and 413 (oversize) are the only permitted 4xx and both are genuinely permanent. |
 | C5 | Architect never mentions `notification_reason`. | `notification_reason` is persisted on every batch and drives the post-vs-update decision table (§H.6). Empty (AM < 0.32.0) falls back to fingerprint-set diffing. |
 | C6 | Architect uses a Block Kit `header` block for the title. Research: `header` is `plain_text` only — no bold, no links. | Title is a **`section`** with a bold mrkdwn link. `header` MUST NOT be used. The `alert` block MUST NOT be used (modals only). |
@@ -943,7 +943,7 @@ recorded in `GroupFacts.AlertmanagerURL` rather than here.
 
 ✅ **ONE CONSEQUENCE IS OPERATOR-VISIBLE, AND THE OWNER RULED ON IT: `N` firing alerts now open `N`
 Slack threads, by construction, AND THAT IS ACCEPTED** (ruled 2026-08-20,
-[ADR 0045](/adr/0045-a-case-is-a-conversation-and-a-thread-per-alert-is-accepted/)). The reasoning
+[ADR 0045](/oto/adr/0045-a-case-is-a-conversation-and-a-thread-per-alert-is-accepted/)). The reasoning
 that made this worth ruling on is unchanged by the ruling, and is kept because it is what a reader
 comes to this section for: **the group was the only mechanism that collapsed many firing alerts into
 one conversation.** The surviving collapse mechanism is the **digest** — policy-keyed, needs no group
@@ -1154,7 +1154,7 @@ idempotency_key := hex( sha256(
 > collapse behaviour per Reason.
 >
 > ⭐ **NO ADR IS OWED FOR THE GAP, AND ONE IS OWED FOR THE WIRING.** [ADR
-> 0022](/adr/0022-length-prefixed-identity-preimages/) governs how a §C pre-image is FRAMED, and
+> 0022](/oto/adr/0022-length-prefixed-identity-preimages/) governs how a §C pre-image is FRAMED, and
 > a constant input changes no byte layout, forges no field boundary and touches neither bound its
 > Amendment 1 declared binding (a fixed-width appended field, a decimal tail). Which VALUE a caller
 > supplies is this section's subject, so this section is the whole record. The day the column is
@@ -4202,7 +4202,7 @@ Slack rate limiting is handled **reactively**, by the `rate_limited` row above: 
 **Guaranteed:** within one `ChannelThread`, the root message lands first and replies appear in lifecycle order.
 **Not guaranteed and not desired:** ordering across threads. Parallelism across threads is the point.
 
-> ⚠️ **AMENDED — [ADR 0023](/adr/0023-terminal-states-first-and-the-three-phase-send/).** This section used to print an ordering switch that tested *"the root has not landed"* **before** *"the thread is dead"*, and a send whose provider call sat in the same transaction as the sequence advance. Both were wrong in the way that costs a destination its voice for a week. The first wedges the exact case §G.7.3 exists to rescue: a root delivery that dies terminally leaves the thread with no `provider_thread_id`, so every delivery behind it matched case 1 and snoozed at 0.5 Hz — forever, consuming no attempt, reaching no dead-letter, raising nothing. The second re-posted the message whenever the COMMIT after `chat.postMessage` failed. What follows is what the code does; ADR 0023 records why.
+> ⚠️ **AMENDED — [ADR 0023](/oto/adr/0023-terminal-states-first-and-the-three-phase-send/).** This section used to print an ordering switch that tested *"the root has not landed"* **before** *"the thread is dead"*, and a send whose provider call sat in the same transaction as the sequence advance. Both were wrong in the way that costs a destination its voice for a week. The first wedges the exact case §G.7.3 exists to rescue: a root delivery that dies terminally leaves the thread with no `provider_thread_id`, so every delivery behind it matched case 1 and snoozed at 0.5 Hz — forever, consuming no attempt, reaching no dead-letter, raising nothing. The second re-posted the message whenever the COMMIT after `chat.postMessage` failed. What follows is what the code does; ADR 0023 records why.
 
 Mechanism — per-thread sequence gating with a Postgres advisory lock. No global serialisation, no per-thread queue:
 
@@ -4736,7 +4736,7 @@ still render. See the † under §H.5.
 | `section.fields` | **10 items, 2 000 chars each** | drop the lowest-priority fields. **Render order and shed order are two orders and both are declared below** — this cell used to carry the single list `Status, Severity, Service, Namespace, Started, Firing-for, Flapping, Team`, and one list is what made ordering unshippable |
 | `header.text` | 150 chars, `plain_text` only | **not used at all** (S1) |
 | `context.elements` | **10 items** | merge into one mrkdwn element |
-| `actions.elements` | **25 elements** | v1 renders at most **5**: up to 4 buttons, at most one snooze select, and the links overflow. §B.8.6 requires the snooze pair to be VISIBLE ("the `Snooze` action becomes `:bell: Unsnooze`"), so the budget moved rather than the requirement; the row is 4 buttons + overflow, or 3 buttons + the select + overflow. **This line read "at most 4" and was widened by [ADR 0043](/adr/0043-the-slack-action-row-renders-five-elements/)** (git-bug `78388fb`), which records the foreclosed alternatives — the overflow is at its five-option ceiling, and a modal needs a `trigger_id` on §H.8's 3-second path. Five is the SMALLEST number that satisfies §B.8.6; the next widening owes its own ADR |
+| `actions.elements` | **25 elements** | v1 renders at most **5**: up to 4 buttons, at most one snooze select, and the links overflow. §B.8.6 requires the snooze pair to be VISIBLE ("the `Snooze` action becomes `:bell: Unsnooze`"), so the budget moved rather than the requirement; the row is 4 buttons + overflow, or 3 buttons + the select + overflow. **This line read "at most 4" and was widened by [ADR 0043](/oto/adr/0043-the-slack-action-row-renders-five-elements/)** (git-bug `78388fb`), which records the foreclosed alternatives — the overflow is at its five-option ceiling, and a modal needs a `trigger_id` on §H.8's 3-second path. Five is the SMALLEST number that satisfies §B.8.6; the next widening owes its own ADR |
 | `button.text` | **75 chars** (visually truncates ~30) | labels are short and repetitive by design |
 | `button.url` / `image.image_url` | 3 000 chars | truncate query params, keep the base URL |
 | `button.value` | 2 000 chars | oto uses a 26-char UUID (S8) |
@@ -4757,7 +4757,7 @@ position in that sequence decides two unrelated questions at once: where a reade
 whether they see it at all. The field appended LAST is the field absent FIRST. An operator dragging
 `Team` above `Status` would not be choosing a layout — they would be choosing to drop `Status` on a
 card that has twelve facts and room for ten, and no surface would tell them so.
-[ADR 0050](/adr/0050-a-notification-template-is-one-whole-message/) left field ordering undecided
+[ADR 0050](/oto/adr/0050-a-notification-template-is-one-whole-message/) left field ordering undecided
 for exactly this reason and named this section as the defect to fix first. This is that fix: the two
 orders are named apart here so that a later ordering control can move the first without touching the
 second.
@@ -5108,7 +5108,7 @@ Numbered, user-observable. v1 is not done until every one of these is demonstrab
 11. An alert that resolves and re-fires — at 2 minutes or at 2 hours — creates **case #N+1**, `unacked`, and a **new root message**, because a new Case is a new conversation (git-bug `7570090`). ⛔ **THE CLOCK NO LONGER CHOOSES.** This criterion previously demanded a thread reply at 2 minutes (the group generation still open) and a new root at 2 hours (the generation having closed); `group_close_delay_s` was the timer and it is deleted. The episode was never clock-dependent and now the Slack message is not either.
 12. Acking from the Slack button and acking from `POST /api/v1/cases/{id}/ack` produce byte-identical state and go through the **same service method**.
 13. An alert flapping 30 times an hour produces **one Case and one root card** for as long as it keeps re-firing inside its retention window W (§B.3, §B.6.2) — the noise is not made rather than withheld, and nothing is damped at delivery. With W unset (the default, 0) it produces one Case per firing, all of them visible. `flap_score` / `is_flapping` are retired in place and no longer part of this claim.
-14. **300 alerts arriving in 30 seconds produce 300 conversations and 300 root cards, and oto withholds none of them.** Every one of the 300 is delivered: storm damping was removed (ADR 0042) and **nothing replaced it**, so no alert is dropped, downgraded, delayed or collapsed on oto's own judgement. Ingest keeps up — the batch is accepted inside the **§G.2 budget** with no alert lost and no `ingest_rejections` row it did not earn on its own content — and the ordering gate walks to the end of every one of the 300 threads. **The only mechanism that collapses many firings into one message is the opt-in digest** (§H, `notification_policies.digest_window_s`): an org that has configured none gets one root card per Case, by construction, and that is the accepted behaviour rather than a defect to be measured against a ratio. ⛔ **THIS CRITERION WAS INVERTED AND THE INVERSION IS NOW RULED, NOT OPEN** (git-bug `7570090`, migration `00069`; **[ADR 0045](/adr/0045-a-case-is-a-conversation-and-a-thread-per-alert-is-accepted/)**; §C.4). It read: *"300 alerts arriving for one group in 30 seconds produce **one** root card and **one** Slack thread, because they share a `group_key` and the generation owns the thread."* Nothing owns a `group_key` any more, and the owner ruled on **2026-08-20** that a conversation per alert is accepted — so the fan-out above is the criterion, and the sentence that used to defer it to a pending product ruling is gone.
+14. **300 alerts arriving in 30 seconds produce 300 conversations and 300 root cards, and oto withholds none of them.** Every one of the 300 is delivered: storm damping was removed (ADR 0042) and **nothing replaced it**, so no alert is dropped, downgraded, delayed or collapsed on oto's own judgement. Ingest keeps up — the batch is accepted inside the **§G.2 budget** with no alert lost and no `ingest_rejections` row it did not earn on its own content — and the ordering gate walks to the end of every one of the 300 threads. **The only mechanism that collapses many firings into one message is the opt-in digest** (§H, `notification_policies.digest_window_s`): an org that has configured none gets one root card per Case, by construction, and that is the accepted behaviour rather than a defect to be measured against a ratio. ⛔ **THIS CRITERION WAS INVERTED AND THE INVERSION IS NOW RULED, NOT OPEN** (git-bug `7570090`, migration `00069`; **[ADR 0045](/oto/adr/0045-a-case-is-a-conversation-and-a-thread-per-alert-is-accepted/)**; §C.4). It read: *"300 alerts arriving for one group in 30 seconds produce **one** root card and **one** Slack thread, because they share a `group_key` and the generation owns the thread."* Nothing owns a `group_key` any more, and the owner ruled on **2026-08-20** that a conversation per alert is accepted — so the fan-out above is the criterion, and the sentence that used to defer it to a pending product ruling is gone.
 
 **The differentiator**
 
@@ -6045,7 +6045,7 @@ Checks, in the order they run:
 | V5 | `section.text` length | `<= 3000` | `render_invalid` |
 | V6 | `section.fields` | `<= 10` items, each `<= 2000` chars | `render_invalid` |
 | V7 | `context.elements` | `<= 10` | `render_invalid` |
-| V8 | `actions.elements` | `<= 25` (oto renders `<= 5` — [ADR 0043](/adr/0043-the-slack-action-row-renders-five-elements/); this cell said `<= 4` and contradicted §H.7 in the same document) | `render_invalid` |
+| V8 | `actions.elements` | `<= 25` (oto renders `<= 5` — [ADR 0043](/oto/adr/0043-the-slack-action-row-renders-five-elements/); this cell said `<= 4` and contradicted §H.7 in the same document) | `render_invalid` |
 | V9 | `button.text` | `<= 75` chars, `plain_text` | `render_invalid` |
 | V10 | `button.url` / `image.image_url` | `<= 3000` chars, absolute http(s) | `render_invalid` |
 | V11 | `button.value` | `<= 2000`; oto asserts it is a bare UUID (S8) | `render_invalid` |
@@ -6644,8 +6644,8 @@ of the 54 call sites was on the correct side of that line already; what was miss
 }
 ```
 
-> ⚠️ **AMENDED TWICE — [ADR 0031](/adr/0031-sharp-corners-and-crisper-grid/), then
-> [ADR 0046](/adr/0046-corners-round-again/).** The three radius steps above were *derived*
+> ⚠️ **AMENDED TWICE — [ADR 0031](/oto/adr/0031-sharp-corners-and-crisper-grid/), then
+> [ADR 0046](/oto/adr/0046-corners-round-again/).** The three radius steps above were *derived*
 > from the 3px/4px/6px census this section describes — not designed — and that census is still the
 > accurate history of why three tiers exist and where the line between `chip` and `control` falls.
 > ADR 0031 took the **value** each step holds to 0px, an explicit Bloomberg-terminal/Swiss-Modernist

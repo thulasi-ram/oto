@@ -27,7 +27,7 @@ and shown by `GET /api/v1/sources/{id}/health`.
   skew.
 - **Large negative** (upstream ahead of oto): timestamps in the future. B12/B13 turn the extreme
   cases into `timestamp_out_of_window` on
-  [`oto_ingest_rejected_total`](/runbooks/oto_ingest_rejected_total/) — B12 drops the alert, B13 clamps and
+  [`oto_ingest_rejected_total`](/oto/runbooks/oto_ingest_rejected_total/) — B12 drops the alert, B13 clamps and
   keeps it. So sustained skew here is the leading indicator of that rejection.
 - **Bimodal**: two sources with different clocks. The histogram is global; the per-source EWMA on
   source health is what separates them.
@@ -36,7 +36,7 @@ and shown by `GET /api/v1/sources/{id}/health`.
 
 1. `GET /api/v1/sources/{id}/health` → `clock_skew_ms`, per source. Find which one.
 2. NTP on the host running that Alertmanager, and on the oto host. One of the two is wrong.
-3. `timestamp_out_of_window` on [`oto_ingest_rejected_total`](/runbooks/oto_ingest_rejected_total/) — if it
+3. `timestamp_out_of_window` on [`oto_ingest_rejected_total`](/oto/runbooks/oto_ingest_rejected_total/) — if it
    is climbing alongside, you are already losing observations.
 4. Delivery delay masquerading as skew: an Alertmanager that retried for four minutes produces a
    four-minute "skew" with perfectly correct clocks. Cross-check against the retry counters

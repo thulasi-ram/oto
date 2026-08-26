@@ -13,7 +13,7 @@ gains `subject_kinds`, `count_min`, `count_window_s` and four CHECKs; and
 to seven, plus `notif_policy_idx`.
 **Amends:** SPEC §B.8.2 (the precedence chain, six values → seven), §D.8 (the two tables' DDL),
 §H.6 and the `NotificationSuppressedReason` schema in `api/openapi/openapi.yaml`.
-**Relates to:** [0042](/adr/0042-storm-damping-is-removed/) — this is the ADR a reader of 0042 needs in
+**Relates to:** [0042](/oto/adr/0042-storm-damping-is-removed/) — this is the ADR a reader of 0042 needs in
 order to be told why a new damper is admissible at all. 0042 is **not** superseded: §3's ruling that
 oto may not withhold on its own judgement is the test this axis had to pass, and §4's "nothing
 replaces it *at the notification layer*" is unchanged, because what arrives here is a **policy

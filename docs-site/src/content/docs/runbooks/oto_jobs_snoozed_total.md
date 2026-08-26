@@ -21,7 +21,7 @@ indistinguishable from a broken one. The reasons seen in the tree today:
 |---|---|---|
 | `not_due` | dispatch | the delivery's `next_attempt_at` has not arrived |
 | `rate_limited` | job runtime and dispatch | the provider asked for a delay; `Retry-After` is honoured exactly |
-| ordering-gate reasons — `awaiting_root`, `awaiting_predecessor` | dispatch | the thread head has not reached this slot yet (see [`oto_thread_order_decisions_total`](/runbooks/oto_thread_order_decisions_total/)) |
+| ordering-gate reasons — `awaiting_root`, `awaiting_predecessor` | dispatch | the thread head has not reached this slot yet (see [`oto_thread_order_decisions_total`](/oto/runbooks/oto_thread_order_decisions_total/)) |
 
 ## What a sustained rate means
 
@@ -31,7 +31,7 @@ Per reason:
   per-channel write limit is about one message a second, which is why `deliver_slack` is a narrow
   queue: more workers buy contention, not throughput.
 - **`awaiting_*` sustained** — deliveries are stacking behind a thread head. Cross-check
-  [`oto_thread_head_wait_seconds`](/runbooks/oto_thread_head_wait_seconds/); if that is also climbing, one
+  [`oto_thread_head_wait_seconds`](/oto/runbooks/oto_thread_head_wait_seconds/); if that is also climbing, one
   thread is stalled and the gate is doing its job of not reordering around it.
 - **`not_due` sustained** — normal. It is the scheduler polling work that is not ready.
 
@@ -48,4 +48,4 @@ Per reason:
 - Reduce fan-out, or accept the pacing. Slack's limit is not negotiable and oto respecting it is
   correct behaviour.
 - If a thread is genuinely stuck, the gate will recover it and record why — see
-  [`oto_thread_gap_recovered_total`](/runbooks/oto_thread_gap_recovered_total/).
+  [`oto_thread_gap_recovered_total`](/oto/runbooks/oto_thread_gap_recovered_total/).

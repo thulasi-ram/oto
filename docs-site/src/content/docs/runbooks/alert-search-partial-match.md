@@ -24,7 +24,7 @@ accelerates `ILIKE '%...%'`) is the tool for exactly that gap. Enabling it lets 
 `internal/platform/migrate` runs oto's own migrations, all-or-nothing: any one step failing fails the
 whole `oto migrate` run. Attempting `CREATE EXTENSION pg_trgm` there would hard-fail startup on any
 managed Postgres that does not permit extensions — the exact failure mode
-[ADR 0014](/adr/0014-postgres-only-no-analytical-store/) rejected TimescaleDB over. `pg_trgm` is
+[ADR 0014](/oto/adr/0014-postgres-only-no-analytical-store/) rejected TimescaleDB over. `pg_trgm` is
 far more widely available than TimescaleDB (it ships in Postgres's own `contrib`), but the reasoning
 still holds: a migration oto controls must never bet the boot sequence on a privilege the operator may
 not have granted.

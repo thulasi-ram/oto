@@ -147,8 +147,8 @@ and read by nothing; they are gone.
 
 Workspace credentials — the bot token and the workspace itself — are **not** environment variables.
 They are per-org records, configured through the API and sealed with `OTO_SECURITY_SECRET_KEY`. See
-[slack.md](/setup/slack/) for the credentials and the app manifest, and
-[slack-live-verification.md](/setup/slack-live-verification/) for what to check against a real workspace.
+[slack.md](/oto/setup/slack/) for the credentials and the app manifest, and
+[slack-live-verification.md](/oto/setup/slack-live-verification/) for what to check against a real workspace.
 
 The generic-webhook provider has no variables of its own. Its two trust decisions come from the
 security section: `OTO_SECURITY_ALLOW_PRIVATE_TARGETS` and `OTO_SECURITY_ALLOW_INSECURE_TLS`.
@@ -205,7 +205,7 @@ and `redact_annotations` on the alert source (`POST`/`PATCH /api/v1/sources`). T
 patterns applied to label and annotation **values** before `ingest_batches.payload` is written, so a
 matched value never reaches disk.
 
-The metric names oto exports each have a runbook in [`../runbooks/`](/runbooks/).
+The metric names oto exports each have a runbook in [`../runbooks/`](/oto/runbooks/).
 
 ## Retention
 
@@ -252,7 +252,7 @@ decide nothing, because flap damping was retired (ADR 0042 Amendment 3, SPEC §B
 names on the standing rule that deleting a settings key is a contract change of its own.
 
 Derived defaults, the corpus each number was read off, and the retention windows in operational
-terms are in [tuning.md](/setup/tuning/); they are not repeated here.
+terms are in [tuning.md](/oto/setup/tuning/); they are not repeated here.
 
 ## Local dev Alertmanager wiring
 
@@ -292,9 +292,9 @@ and `internal/channels/registry/registry.go:42`; the value actually wired there 
 
 ## Related pages
 
-- [tuning.md](/setup/tuning/) — the per-org settings in operational terms, the corpus the defaults were
+- [tuning.md](/oto/setup/tuning/) — the per-org settings in operational terms, the corpus the defaults were
   derived from, and the retention windows.
-- [slack.md](/setup/slack/) — connecting a workspace: the three credentials, the app manifest, and every
+- [slack.md](/oto/setup/slack/) — connecting a workspace: the three credentials, the app manifest, and every
   Slack error oto classifies.
-- [slack-live-verification.md](/setup/slack-live-verification/) — the checklist for a real workspace.
-- [`../runbooks/README.md`](/runbooks/) — one runbook per exported metric.
+- [slack-live-verification.md](/oto/setup/slack-live-verification/) — the checklist for a real workspace.
+- [`../runbooks/README.md`](/oto/runbooks/) — one runbook per exported metric.

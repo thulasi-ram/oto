@@ -13,7 +13,7 @@ title: oto_ingest_duration_seconds
 
 The webhook accept path end to end: decode, validate, commit, enqueue, answer. It stops when oto
 answers, not when the batch is processed — that is
-[`oto_ingest_process_duration_seconds`](/runbooks/oto_ingest_process_duration_seconds/).
+[`oto_ingest_process_duration_seconds`](/oto/runbooks/oto_ingest_process_duration_seconds/).
 
 **p99 budget is 250 ms. The hard ceiling is 5 s**, because Alertmanager's retry floor is 10 s: an
 accept slower than that is competing with the upstream's own retry.
@@ -22,15 +22,15 @@ accept slower than that is competing with the upstream's own retry.
 
 The 202 is oto's promise that a batch is durable. Making the upstream wait for it costs the
 upstream a connection and, past a few seconds, its patience — which shows up as duplicate
-deliveries ([`oto_ingest_duplicate_total`](/runbooks/oto_ingest_duplicate_total/)) and then as gaps.
+deliveries ([`oto_ingest_duplicate_total`](/oto/runbooks/oto_ingest_duplicate_total/)) and then as gaps.
 
 Read the `outcome` label before anything else:
 
 - `accepted` slow → the commit is slow. A database problem.
 - `unavailable` slow → you are queueing before shedding; see
-  [`oto_ingest_shed_total`](/runbooks/oto_ingest_shed_total/).
+  [`oto_ingest_shed_total`](/oto/runbooks/oto_ingest_shed_total/).
 - `undecodable` slow → a huge body being parsed and refused. Check `body_too_large` on
-  [`oto_ingest_rejected_total`](/runbooks/oto_ingest_rejected_total/).
+  [`oto_ingest_rejected_total`](/oto/runbooks/oto_ingest_rejected_total/).
 
 ## What to check
 

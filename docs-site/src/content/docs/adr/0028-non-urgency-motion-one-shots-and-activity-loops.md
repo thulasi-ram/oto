@@ -5,8 +5,8 @@ title: "0028 — Non-urgency motion: one-shot events, honest activity loops, and
 **Decided WITHOUT the owner.** See *How to overturn this*, below. One part of it was not open:
 the ticket records the owner's instruction to **add a U9 rather than amend U4**, and that ordering
 is honoured here rather than relitigated.
-**Relates to:** [0012](/adr/0012-pastel-chrome-saturated-state/) (the two-tier palette, and U1/U4 —
-the rules this sits beside without touching), [0010](/adr/0010-sse-with-durable-resume/) (the durable
+**Relates to:** [0012](/oto/adr/0012-pastel-chrome-saturated-state/) (the two-tier palette, and U1/U4 —
+the rules this sits beside without touching), [0010](/oto/adr/0010-sse-with-durable-resume/) (the durable
 resume point whose presence is the signal that was mistaken for a page load)
 **Amends:** SPEC §M.3 (new rule **U9**), §M.7 (the motion gate, which knew of exactly one
 animation), §J AC-47 (which asserted the same)

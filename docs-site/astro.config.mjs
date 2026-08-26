@@ -3,8 +3,17 @@ import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import starlightThemeBlack from 'starlight-theme-black';
 
+import { base, site } from './site.config.mjs';
+
 // https://astro.build/config
 export default defineConfig({
+	// ⛔ BOTH COME FROM site.config.mjs, WHICH scripts/sync-docs.mjs ALSO READS.
+	// Setting `base` here alone prefixes everything Astro generates and NOTHING
+	// the sync script writes into page content, which renders a site whose nav
+	// works and whose in-content links all 404. That file's header is the full
+	// argument.
+	site,
+	base,
 	integrations: [
 		starlight({
 			title: 'oto',

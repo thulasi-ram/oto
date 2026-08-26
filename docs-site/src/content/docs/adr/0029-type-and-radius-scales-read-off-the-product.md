@@ -7,7 +7,7 @@ ADR 0031 (2026-08-16) — see *How to overturn this* for why the census below st
 answer and it is honoured rather than relitigated: derive the scale from what is in use, resolve the
 stragglers deliberately, and land a gate — *"a half-migration that leaves both spellings live is the
 worst outcome"*.
-**Relates to:** [0012](/adr/0012-pastel-chrome-saturated-state/) (the two-tier palette — the axis that
+**Relates to:** [0012](/oto/adr/0012-pastel-chrome-saturated-state/) (the two-tier palette — the axis that
 had names and a gate from the first commit, and the model this follows)
 **Amends:** SPEC §M.3 (new rule **U10**), §M.7 (a ninth row), and adds §M.8
 **Resolves:** git-bug `fe858fe` — *"The token system covers exactly one axis: 285 font sizes and 57

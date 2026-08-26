@@ -15,7 +15,7 @@ a reader**: a slow browser cannot slow down ingestion, so its buffer is dropped 
 
 A drop is not silent data loss. The subscriber is immediately sent a `resync` frame with
 `reason="buffer_overflow"` — "everything you have is suspect, refetch" — which is why this metric
-moves together with [`oto_stream_resync_total`](/runbooks/oto_stream_resync_total/).
+moves together with [`oto_stream_resync_total`](/oto/runbooks/oto_stream_resync_total/).
 
 ## What a sustained rate means
 
@@ -28,12 +28,12 @@ authoritative.
 
 1. The ratio, not the raw count:
    `rate(dropped) / (rate(published) + rate(dropped))`, against
-   [`oto_stream_connections`](/runbooks/oto_stream_connections/).
+   [`oto_stream_connections`](/oto/runbooks/oto_stream_connections/).
 2. Is it correlated with an ingest spike? Compare with
-   [`oto_ingest_alerts_total`](/runbooks/oto_ingest_alerts_total/). A storm explains it.
+   [`oto_ingest_alerts_total`](/oto/runbooks/oto_ingest_alerts_total/). A storm explains it.
 3. Is it one pod? Drops concentrated on a single pod with normal connection counts points at that
    pod, not at the clients.
-4. [`oto_stream_events_coalesced_total`](/runbooks/oto_stream_events_coalesced_total/): if coalescing is
+4. [`oto_stream_events_coalesced_total`](/oto/runbooks/oto_stream_events_coalesced_total/): if coalescing is
    *not* rising during the same window, frames are arriving spread out rather than bunched, which
    points at a slow reader rather than a fast writer.
 

@@ -24,7 +24,7 @@ ingest pool so that stream plumbing can never eat ingestion capacity.
 One or two at startup or after a database restart is expected. Repeated reconnects mean the
 connection keeps being killed, and every gap is covered only by the poll — so the UI's latency
 degrades from "instant" to "one poll interval", and
-[`oto_stream_poll_recovered_total`](/runbooks/oto_stream_poll_recovered_total/) rises with it.
+[`oto_stream_poll_recovered_total`](/oto/runbooks/oto_stream_poll_recovered_total/) rises with it.
 
 Usual causes: a connection-lifetime setting expiring the LISTEN connection, a pooler (PgBouncer in
 transaction mode **cannot** carry LISTEN), an idle-session timeout, a network path with an

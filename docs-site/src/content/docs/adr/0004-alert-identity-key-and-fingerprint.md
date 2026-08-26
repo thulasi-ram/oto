@@ -22,7 +22,7 @@ Two keys, both stored, both indexed, with different jobs.
 "ak_" || base32hexLower(sha256(field(org_id) || field(cluster_key) || canon(labels, ignore))[0:16])
 ```
 where `field(x) := uint32be(len(x)) || x`. The `0x00` separators this ADR originally
-specified were replaced pre-release by [0022](/adr/0022-length-prefixed-identity-preimages/):
+specified were replaced pre-release by [0022](/oto/adr/0022-length-prefixed-identity-preimages/):
 NUL termination is injective only if no field can contain a NUL, and `receiver`, `expr`
 and Alertmanager's `groupKey` all can.
 128 bits, scoped by `(org, cluster_key)`, with a per-source `ignore_labels` deny-list applied
