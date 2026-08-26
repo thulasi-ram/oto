@@ -107,21 +107,40 @@ digest:
 - **The manifest lists both architectures.** A single-architecture manifest is an
   ImagePullBackOff on half the clusters it was promised to.
 
-## The one manual step, the first time
+## Package visibility
 
-**A new GHCR package is private.** Nothing in the workflow can change that: the
-built-in `GITHUB_TOKEN` can push to a package under the repository's own owner,
-and cannot make it public. Until somebody does, `helm install` fails to pull for
-everyone outside the org, which looks exactly like a broken release.
+**Checked on the first real run (`v0.1.0`) and it needed no intervention.** The
+package inherited this repository's public visibility, so the four tags were
+anonymously pullable the moment the workflow finished — verified with a token
+from `ghcr.io/token` carrying no credentials, and by `docker run` on a machine
+with no `ghcr.io` entry in its Docker config.
 
-After the first successful run, once:
+This is worth stating because the expectation recorded during the build was the
+opposite — that a new GHCR package is private until somebody flips it — and a
+release note that sends a maintainer to change a setting that is already correct
+is its own small trap.
 
-*GitHub → the `oto` package → Package settings → Change visibility → Public.*
+It is still the thing to check first if a pull fails for someone outside the org,
+because nothing in the workflow can fix it: the built-in `GITHUB_TOKEN` pushes to
+a package under the repository's own owner and cannot change its visibility.
 
-The alternative, for a private deployment, is `imagePullSecrets` — the chart
-already projects them into all four pod specs.
+*GitHub → the `oto` package → Package settings → Change visibility.*
+
+For a genuinely private deployment the answer is `imagePullSecrets`, which the
+chart already projects into all four pod specs.
 
 ## Verifying a release
+
+What `v0.1.0` actually published, as the shape to expect:
+
+```
+ghcr.io/thulasi-ram/oto  0.1.0  0.1  v0.1.0  sha-267d5e12…  (linux/amd64, linux/arm64)
+oto v0.1.0 (commit 267d5e12c87f4d12eee8deaac8f73d2d7db84619, built 2026-08-26T10:40:39.670Z, go1.26.7)
+helm template … → image: ghcr.io/thulasi-ram/oto:0.1.0
+```
+
+That last line is the whole point of the appVersion check: the chart's default,
+with no `image.tag` set, resolves to a tag that exists.
 
 ```bash
 docker pull ghcr.io/thulasi-ram/oto:0.1.0
