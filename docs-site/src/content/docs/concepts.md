@@ -549,7 +549,7 @@ work*. Identical columns; opposite products.
 Refusals on that test are permanent; refusals made on *safety* grounds — the read-only silence
 mirror — are a separate axis and the only ones that can be earned later. The full argument is ADR
 0013, "Alert-first scope boundary", clause by clause in
-[`docs/design/SCOPE-BOUNDARY.md`](/oto/design/SCOPE-BOUNDARY/).
+[`docs/design/SCOPE-BOUNDARY.md`](/oto/design/scope-boundary/).
 
 ---
 
@@ -594,8 +594,8 @@ each; adding any of them needs an ADR arguing against the Flight Recorder Test b
 | Document | What it is for |
 |---|---|
 | [`CONTEXT.md`](/oto/architecture/) | The short orientation for implementers: the domain-language table, the module map, the four doors that must stay shut. Read it before touching code. |
-| [`docs/design/SPEC.md`](/oto/design/SPEC/) | The binding specification. Large — navigate to the section for your module rather than reading it through. |
-| [`docs/design/SCOPE-BOUNDARY.md`](/oto/design/SCOPE-BOUNDARY/) | Every scope question, argued clause by clause, with the verdict and the reasoning. Where AC-49's banned-word list is defined. |
+| [`docs/design/SPEC.md`](/oto/design/spec/) | The binding specification. Large — navigate to the section for your module rather than reading it through. |
+| [`docs/design/SCOPE-BOUNDARY.md`](/oto/design/scope-boundary/) | Every scope question, argued clause by clause, with the verdict and the reasoning. Where AC-49's banned-word list is defined. |
 | `docs/adr/` | Fifty architecture decision records. The ones this document leans on most: [0013](/oto/adr/0013-alert-first-scope-boundary/) (scope boundary), 0040 (a case never reopens), 0045 (a case is a conversation), 0050 (a template is one whole message), 0009 (rule snapshots at fire time), 0023 (terminal states first), 0010 (SSE with durable resume). |
 | `docs/setup/` | Operator-facing setup: [`slack.md`](/oto/setup/slack/) for the Slack app, [`tuning.md`](/oto/setup/tuning/) for the shipped defaults and what to change. |
 | [`docs/runbooks/README.md`](/oto/runbooks/) | One runbook per exported metric, keyed by metric name. |

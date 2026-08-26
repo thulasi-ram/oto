@@ -11,6 +11,13 @@ Astro prefixes only the URLs it generates and never an href sitting in Markdown.
 Never set `base` in the Astro config alone: the result is a site whose nav works
 and whose ~280 in-content links all 404.
 
+⚠️ **Starlight lower-cases its slugs, so a SHOUTING filename does not keep its
+case in the route.** `docs/design/SPEC.md` is served at `/design/spec/`. The sync
+script lower-cases the routes it writes for that reason. This is the one rule a
+case-insensitive filesystem will not let you discover locally, which is why
+`check-links.mjs` compares against the exact paths the build wrote rather than
+asking the filesystem.
+
 ## The source of truth is outside this directory
 
 Every page under `src/content/docs/` except `index.mdx` and the hand-authored

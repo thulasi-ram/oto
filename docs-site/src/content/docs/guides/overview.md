@@ -243,7 +243,7 @@ words and six forbidden column names, and `notification_policies` has a `Channel
 and no other target field — "route this to a person" cannot be expressed without editing the
 struct. The reasoning is in
 [ADR 0013](/oto/adr/0013-alert-first-scope-boundary/) and
-[`docs/design/SCOPE-BOUNDARY.md`](/oto/design/SCOPE-BOUNDARY/), which adjudicates 32
+[`docs/design/SCOPE-BOUNDARY.md`](/oto/design/scope-boundary/), which adjudicates 32
 feature requests one by one.
 
 ## Layout
@@ -283,7 +283,7 @@ Postgres subchart — see ADRs [0001](/oto/adr/0001-postgres-sole-datastore-rive
 | [`docs/setup/tuning.md`](/oto/setup/tuning/) | `resolve_grace`, flap thresholds, retention windows, and how to derive each from your own rules. |
 | [`docs/runbooks/`](/oto/runbooks/) | One page per `oto_*` metric: what it counts, what a sustained value means, what to do. |
 | [`docs/releasing.md`](/oto/releasing/) | Cutting a tag, what the pipeline publishes to GHCR, and the one step it cannot do for you. |
-| [`docs/design/SPEC.md`](/oto/design/SPEC/) | The binding specification. It changes only through an ADR in the same commit. |
+| [`docs/design/SPEC.md`](/oto/design/spec/) | The binding specification. It changes only through an ADR in the same commit. |
 | `docs/adr/` | Every decision and what superseded it — 50 of them, starting with [ADR 0001](/oto/adr/0001-postgres-sole-datastore-river-job-queue/). |
 
 ## Licence

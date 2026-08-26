@@ -13,7 +13,7 @@ before it was written. Kept as the record of the objections the design had to an
 > the licence by [0019](/oto/adr/0019-mit-licence/), Kubernetes enrichment by
 > [0016](/oto/adr/0016-mcp-enrichment-no-firehose/), Slack distribution by
 > [0018](/oto/adr/0018-slack-distribution-model/). Where this memo and
-> [SPEC.md](/oto/design/SPEC/) disagree, the SPEC wins; it sits below the SPEC and above
+> [SPEC.md](/oto/design/spec/) disagree, the SPEC wins; it sits below the SPEC and above
 > `architect-proposal.md` in the precedence order the SPEC declares.
 
 ---

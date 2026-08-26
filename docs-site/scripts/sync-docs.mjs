@@ -74,10 +74,21 @@ function listDir(rel) {
 }
 
 // repo-root-relative source path -> clean Starlight route.
+// ⛔ LOWERCASED, BECAUSE STARLIGHT LOWERCASES ITS SLUGS AND THIS TABLE DOES NOT
+// GET A VOTE. Astro derives a content collection's slug from the file id and
+// lower-cases it, so `docs/design/SPEC.md` is served at `/design/spec/` — while
+// this map, built from the destination FILENAME, produced `/design/SPEC/`.
+//
+// Two files in the tree SHOUT (`SPEC.md`, `SCOPE-BOUNDARY.md`) and both were
+// linked from the overview, the concepts page and CONTRIBUTING: ten references
+// at a 404, since the mirror was written. It survived because a case-insensitive
+// filesystem answers `existsSync` for either spelling, so it reproduced only on
+// Linux — which is to say, only on the deployed site and in CI. check-links.mjs
+// compares against the paths the build actually wrote for exactly this reason.
 const ROUTES = new Map(
 	SOURCES.map(([src, dest]) => [
 		posix.normalize(src),
-		withBase("/" + dest.replace(/\.md$/, "/").replace(/index\/$/, "")),
+		withBase("/" + dest.replace(/\.md$/, "/").replace(/index\/$/, "").toLowerCase()),
 	]),
 );
 

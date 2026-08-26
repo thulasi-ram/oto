@@ -3,7 +3,7 @@ title: Contributing to oto
 ---
 oto is a flight recorder for alerts. Read [CONTEXT.md](/oto/architecture/) first: it carries the domain
 language, the module map and the layering rules, and most refused changes are refused for
-contradicting one of the three. [docs/design/SPEC.md](/oto/design/SPEC/) is binding and meant to
+contradicting one of the three. [docs/design/SPEC.md](/oto/design/spec/) is binding and meant to
 be implemented literally; it changes only through an ADR in the same commit.
 
 ## Ground rules
@@ -256,7 +256,7 @@ notifications entirely disabled.
 
 The scope boundary always drifts in *language* before it drifts in schema: a word arrives, then the
 concept, then the column. **AC-49** is the acceptance criterion in
-[SCOPE-BOUNDARY.md](/oto/design/SCOPE-BOUNDARY/), restated as SPEC §P-18, that bans a fixed list
+[SCOPE-BOUNDARY.md](/oto/design/scope-boundary/), restated as SPEC §P-18, that bans a fixed list
 of words and a fixed list of person-subject column names across `internal/`, `web/src/` and
 `db/migrations/` and requires a lint rule to enforce it. [`tools/lintvocab`](tools/lintvocab/) is
 that rule — nineteen patterns.

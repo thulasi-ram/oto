@@ -21,8 +21,8 @@
 //      site.config.mjs.
 //
 // Run after a build: `npm run check-links`, or `npm run verify` for both.
-import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { readdirSync, readFileSync, existsSync } from "node:fs";
+import { join, relative, sep } from "node:path";
 
 import { base } from "../site.config.mjs";
 
@@ -47,18 +47,33 @@ if (pages.length === 0) {
 
 const prefix = base === "/" || base === "" ? "" : base;
 
+// ⛔ AN EXPLICIT SET OF WHAT THE BUILD WROTE, NOT `existsSync`, AND THE
+// DIFFERENCE IS THE WHOLE VALUE OF THIS GATE. A case-insensitive filesystem —
+// every default macOS one — answers `existsSync("dist/design/SPEC")` for a
+// directory actually named `spec`. So a link whose case does not match the route
+// Starlight generated passes on a laptop and 404s on Linux, which is to say it
+// passes everywhere except CI and production.
+//
+// That is not hypothetical: Starlight lower-cases its slugs, `docs/design/SPEC.md`
+// is served at `/design/spec/`, and the sync script pointed ten references at
+// `/design/SPEC/` from the day the mirror existed. This set is compared exactly,
+// so the laptop and the runner agree.
+const built = new Set(
+	walk(DIST).map((f) => "/" + relative(DIST, f).split(sep).join("/")),
+);
+
 /** Does an absolute site path resolve to something the build wrote? */
 function resolves(path) {
 	// Astro does not nest dist/ under `base` — dist IS the base root — so the
-	// prefix is stripped before looking on disk.
+	// prefix is stripped before looking it up.
 	let rel = path;
 	if (prefix !== "") {
 		if (rel === prefix) rel = "/";
 		else rel = rel.slice(prefix.length);
 	}
-	const target = join(DIST, rel);
-	if (existsSync(target) && statSync(target).isFile()) return true;
-	return existsSync(join(target, "index.html"));
+	if (rel === "") rel = "/";
+	if (built.has(rel)) return true;
+	return built.has(rel.endsWith("/") ? `${rel}index.html` : `${rel}/index.html`);
 }
 
 const problems = [];
