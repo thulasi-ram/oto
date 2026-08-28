@@ -4,10 +4,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"testing/fstest"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/thulasiram/oto/web"
 )
 
 // The SPA fallback's rules, pinned.
@@ -164,6 +167,44 @@ func TestUIDoesNotServeADirectoryListing(t *testing.T) {
 	// exact build.
 	body, _ := io.ReadAll(rec.Body)
 	require.NotContains(t, string(body), "app-abc123.js", "the asset directory was listed")
+}
+
+// TestTheRealEmbeddedUIServesThroughTheRealMount closes the one seam the tests
+// above cannot: they run the handler over an fstest.MapFS, which proves the
+// RULES and says nothing about `web/embed.go`'s `fs.Sub`, the actual index.html
+// Vite emits, or the two being wired together.
+//
+// ⚠️ IT SKIPS WHERE THERE IS NOTHING TO TEST, which is ci and every fresh clone.
+// That is not a hole: the same property is asserted on the PUBLISHED image, by
+// `oto version` reporting `ui: embedded (N files)` in both workflows — which is
+// the environment where being wrong actually costs something.
+func TestTheRealEmbeddedUIServesThroughTheRealMount(t *testing.T) {
+	if !web.Present() {
+		t.Skip("no web/dist in this checkout; run `just ui-build`. The published image is asserted instead.")
+	}
+
+	h := uiRoot()
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Header().Get("Content-Type"), "text/html")
+	body, _ := io.ReadAll(rec.Body)
+	require.Contains(t, strings.ToLower(string(body)), "<!doctype html")
+	require.Contains(t, string(body), "/assets/",
+		"the real index.html should reference at least one hashed bundle")
+
+	// A deep link, through the real FS.
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/alerts", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Header().Get("Content-Type"), "text/html")
+
+	// And the namespace refusal, through the real mount rather than a wrapper the
+	// test assembled.
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v2/alerts", nil))
+	require.Equal(t, http.StatusNotFound, rec.Code)
 }
 
 func TestUIWithNoBuildSaysSoInsteadOf404(t *testing.T) {
