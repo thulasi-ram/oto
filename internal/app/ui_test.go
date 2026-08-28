@@ -113,23 +113,36 @@ func TestUIRefusesToInventFilesThatLookLikeFiles(t *testing.T) {
 // is why `/metrics` is here as well: `telemetry.metrics_enabled: false`
 // unregisters it, and a Prometheus scrape answered 200 text/html is a target that
 // looks healthy while reporting nothing.
+// ⚠️ BOTH STATES OF THE MOUNT, AND THE SECOND ONE IS WHY THIS TABLE EXISTS.
+// The refusal was first written inside the serving handler only, so a binary with
+// no UI — every fresh clone, and any image whose node stage broke — answered
+// `/api/v2/alerts` with 503 and "no web UI is embedded". ci caught it, because
+// its checkout has no `web/dist` while a developer's usually does: the same code
+// path, opposite defaults, and the local run was the one that lied.
 func TestUINeverAnswersForReservedNamespaces(t *testing.T) {
-	h := newUIHandler(testUIFS())
+	states := map[string]http.Handler{
+		"ui embedded": refuseReserved(newUIHandler(testUIFS())),
+		"ui absent":   refuseReserved(http.HandlerFunc(uiAbsent)),
+	}
 
-	for _, p := range []string{
-		"/api", "/api/", "/api/v1/anything", "/api/v2/alerts", "/api/v99/x",
-		"/healthz", "/readyz", "/metrics", "/openapi.json",
-	} {
-		t.Run(p, func(t *testing.T) {
-			rec := httptest.NewRecorder()
-			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, p, nil))
+	for state, h := range states {
+		for _, p := range []string{
+			"/api", "/api/", "/api/v1/anything", "/api/v2/alerts", "/api/v99/x",
+			"/healthz", "/readyz", "/metrics", "/openapi.json",
+		} {
+			t.Run(state+" "+p, func(t *testing.T) {
+				rec := httptest.NewRecorder()
+				h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, p, nil))
 
-			require.Equal(t, http.StatusNotFound, rec.Code,
-				"a reserved path was answered by the SPA")
-			body, _ := io.ReadAll(rec.Body)
-			require.NotContains(t, string(body), "<!doctype html>",
-				"a reserved path was served the SPA shell")
-		})
+				require.Equal(t, http.StatusNotFound, rec.Code,
+					"a reserved path was answered by the UI mount")
+				body, _ := io.ReadAll(rec.Body)
+				require.NotContains(t, string(body), "<!doctype html>",
+					"a reserved path was served the SPA shell")
+				require.NotContains(t, string(body), "no web UI is embedded",
+					"a reserved path was answered by the no-UI handler")
+			})
+		}
 	}
 }
 

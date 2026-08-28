@@ -46,24 +46,47 @@ const (
 // "chi does the right thing" is a claim about a dependency and not a property of
 // this code.
 func (c *Container) mountUI(r chi.Router) {
-	sub, err := web.FS()
-	if err != nil || !web.Present() {
-		// ⭐ A SENTENCE, NOT A 404, AND NOT A PANIC. `web/dist` is a build output
-		// that is not committed, so a `go build` without `npm run build` is the
-		// ordinary state of a developer's machine and must still boot. Answering
-		// `404 page not found` here is what sent a reader looking for a missing
-		// route when the truth was a missing build step — the exact confusion
-		// this feature exists to end. 503 rather than 500: nothing is broken, a
-		// component is absent.
-		r.Method(http.MethodGet, "/*", http.HandlerFunc(uiAbsent))
-		r.Method(http.MethodHead, "/*", http.HandlerFunc(uiAbsent))
-		return
-	}
-	h := newUIHandler(sub)
+	h := uiRoot()
 	// GET and HEAD only. A POST to an unknown path answering 200 index.html
 	// tells a client its write succeeded.
 	r.Method(http.MethodGet, "/*", h)
 	r.Method(http.MethodHead, "/*", h)
+}
+
+// uiRoot is the handler mounted at `/*`, in whichever of its two states this
+// binary is in.
+//
+// ⛔ THE RESERVED-NAMESPACE REFUSAL WRAPS BOTH STATES, AND SPLITTING IT WAS A
+// BUG A GATE CAUGHT. It was first written inside the serving handler only, so a
+// binary with no UI — a plain `go build`, or an image whose node stage broke —
+// answered `/api/v2/alerts` with 503 and "no web UI is embedded". Less harmful
+// than serving HTML to a JSON client and the same defect: the UI handler
+// answering for the API's namespace. There is one place for that rule now, ahead
+// of both, because "remember to add it to the other branch too" is not a design.
+func uiRoot() http.Handler {
+	sub, err := web.FS()
+	if err != nil || !web.Present() {
+		return refuseReserved(http.HandlerFunc(uiAbsent))
+	}
+	return refuseReserved(newUIHandler(sub))
+}
+
+// refuseReserved 404s anything belonging to the API or to an operational probe
+// before the UI handler can see it.
+func refuseReserved(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isReserved(normalisePath(r.URL.Path)) {
+			http.NotFound(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// normalisePath turns a request path into an fs entry name: no leading slash, no
+// `.` or `..` segments, no doubled separators.
+func normalisePath(p string) string {
+	return strings.TrimPrefix(path.Clean("/"+strings.TrimPrefix(p, "/")), "/")
 }
 
 func uiAbsent(w http.ResponseWriter, _ *http.Request) {
@@ -83,6 +106,12 @@ func uiAbsent(w http.ResponseWriter, _ *http.Request) {
 //
 // ⚠️ IT IS A LIST OF ROOTS AND NOT OF ROUTES, because the danger is precisely the
 // path that is NOT mounted: a mounted route never reaches this handler at all.
+// `/api/v1/x` is safe because chi resolves the mount first; `/api/v2/x` matches
+// nothing and lands here, which is how the defect this list closes was found.
+//
+// ⛔ `metrics` IS HERE EVEN THOUGH IT IS NORMALLY REGISTERED.
+// `telemetry.metrics_enabled: false` unregisters it, and a Prometheus scrape
+// answered 200 text/html is a target that looks up while reporting nothing.
 var reservedRoots = []string{"api", "healthz", "readyz", "metrics", "openapi.json"}
 
 // isReserved reports whether name lives in a namespace that belongs to the API or
@@ -102,28 +131,7 @@ type uiHandler struct{ fsys fs.FS }
 func newUIHandler(fsys fs.FS) *uiHandler { return &uiHandler{fsys: fsys} }
 
 func (u *uiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	name := strings.TrimPrefix(path.Clean("/"+strings.TrimPrefix(r.URL.Path, "/")), "/")
-
-	// ⛔ RESERVED SPACE IS REFUSED BEFORE ANYTHING ELSE, AND A GATE CAUGHT THIS
-	// BEING WRONG. The first version of this handler relied on chi resolving the
-	// `/api/v1` mount ahead of `/*`, which it does — and concluded the API was
-	// therefore safe, which it was not: `/api/v2/alerts` matches NO mount, fell
-	// through to here, has no dot in its last segment, and was served index.html
-	// with a 200. So a client pinned to an API version oto does not serve, or one
-	// typing `/api/v2` from a newer client's docs, received HTML where it expected
-	// JSON — the exact failure this handler's own comments warned about, arriving
-	// through a path those comments had not considered.
-	//
-	// The rule is therefore about the NAMESPACE and not about which routes happen
-	// to be mounted: `/api/**` belongs to the API whether a version of it exists
-	// or not, and the operational paths belong to probes. `/metrics` matters even
-	// though it is normally registered — `telemetry.metrics_enabled: false`
-	// unregisters it, and a Prometheus scrape answered with 200 text/html is a
-	// target that looks up while it is reporting nothing.
-	if isReserved(name) {
-		http.NotFound(w, r)
-		return
-	}
+	name := normalisePath(r.URL.Path)
 
 	if name == "" || name == indexFile {
 		u.serveIndex(w, r)
