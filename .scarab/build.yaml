@@ -12,12 +12,13 @@
 # somebody typed here, which is why `main` is the only one and why a `v*.*.*`
 # release still belongs to release.yml (see "what this cannot do" below).
 #
-# ⚠️ THE PUBLISHED IMAGE ANSWERS `oto dev`. Scarab's `BuildSpec` carries
+# ⚠️ ANYTHING THIS BUILT WOULD ANSWER `oto dev`. Scarab's `BuildSpec` carries
 # `context`, `dockerfile`, `image` and `push` and nothing else — there is no
 # build-arg surface — so the Dockerfile's VERSION/COMMIT/BUILD_DATE ARGs keep
-# their defaults and GET /api/v1/version cannot say which build it is. That is
-# survivable for a moving `main` tag, whose whole promise is "the tip", and it is
-# exactly why a release must not be cut from here.
+# their defaults and GET /api/v1/version cannot say which build it is. It was one
+# of the reasons a release must not be cut from here, and it became the reason
+# this pipeline must not publish at all once Actions started publishing `:main`
+# with the stamps passed.
 
 on:
   # ⛔ NOT every push. `main` only. A build step's tag is a literal, so a push on
@@ -59,7 +60,24 @@ steps:
       # only attaches when the image reference starts with `ghcr.io/`, and the
       # installation token is scoped to this repository.
       image: ghcr.io/thulasi-ram/oto:main
-      push: true
+      # ⛔ NOT PUSHED ANY MORE — .github/workflows/main-image.yml OWNS `:main`.
+      # Scarab is alpha, and across four runs this pipeline published nothing:
+      # three never scheduled (a CPU request larger than the whole demo node) and
+      # the fourth built correctly and then reached GHCR with no credential,
+      # falling back to anonymous for a 403. A tag a deployment can pin must come
+      # from the path that is stable.
+      #
+      # ⛔ AND LEAVING IT `true` WOULD HAVE BEEN WORSE THAN USELESS. Two
+      # publishers racing one moving tag means whichever finishes last wins, and
+      # Scarab's build is single-architecture with no linker stamps — so a green
+      # Scarab run could overwrite a good multi-arch stamped `:main` with an
+      # amd64-only image answering `oto dev`. The failure would surface as an
+      # ImagePullBackOff on an arm64 node, hours later, with nothing to point at.
+      #
+      # The pipeline keeps its remaining value: it still proves the Dockerfile
+      # builds on every push to main, which is the half of ADR-0018's promise that
+      # never depended on the registry.
+      push: false
 
     # ⚠️ SINGLE-ARCHITECTURE, WHATEVER THE BUILD NODE IS. Scarab compiles a build
     # step to one `buildctl build` with no `--opt platform=`, so there is no
@@ -113,5 +131,7 @@ steps:
 #      action; Scarab's own supply-chain story (ADR-0015 keyless cosign) is not
 #      wired to the build step yet.
 #
-# What it does do, every time main moves: prove the Dockerfile still builds and
-# leave a pullable `:main` at the tip.
+# What it does do, every time main moves: prove the Dockerfile still builds.
+# Publishing `:main` moved to .github/workflows/main-image.yml — see the ⛔ block
+# on `push:` above for why, and note that reasons 1-4 are now moot here rather
+# than merely accepted: a pipeline that pushes nothing cannot mis-tag anything.

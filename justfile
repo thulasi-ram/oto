@@ -334,7 +334,11 @@ build:
 [group('check')]
 clean:
     rm -rf bin
-    cd {{web_dir}} && rm -rf dist
+    # ⛔ THE CONTENTS, KEEPING `.gitkeep`. `web/embed.go` embeds `all:dist`, and a
+    # go:embed pattern matching nothing is a COMPILE error — so removing the
+    # directory outright leaves `go build ./...` broken until the next
+    # `npm run build`, which is a confusing way to answer `just clean`.
+    cd {{web_dir}} && find dist -mindepth 1 ! -name .gitkeep -delete 2>/dev/null || true
 
 # Typecheck and build the UI.
 [group('check')]

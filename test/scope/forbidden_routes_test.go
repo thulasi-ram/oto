@@ -220,6 +220,24 @@ func forbiddenRouteFailure(bad []route) string {
 func mountedRouter(t *testing.T) chi.Routes {
 	t.Helper()
 
+	handler := mountedHandler(t)
+	routes, ok := handler.(chi.Routes)
+	if !ok {
+		t.Fatalf("Router() returned %T, which does not implement chi.Routes.\n\n"+
+			"AC-51 is asserted by WALKING the tree. A router that cannot be walked "+
+			"cannot be asserted about, and swapping chi for something opaque is a "+
+			"decision that has to take this gate with it.", handler)
+	}
+	return routes
+}
+
+// mountedHandler is the same real surface, kept as an http.Handler so a gate can
+// SEND a request rather than only walk the trie. ui_catchall_test.go needs that:
+// "does `/*` swallow an API path" is a question about dispatch at request time,
+// and a route pattern cannot answer it.
+func mountedHandler(t *testing.T) http.Handler {
+	t.Helper()
+
 	h := harness.New(t)
 
 	cfg := config.Default()
@@ -252,14 +270,7 @@ func mountedRouter(t *testing.T) chi.Routes {
 	}
 	t.Cleanup(func() { _ = c.Close(context.Background()) })
 
-	routes, ok := c.Router().(chi.Routes)
-	if !ok {
-		t.Fatalf("Router() returned %T, which does not implement chi.Routes.\n\n"+
-			"AC-51 is asserted by WALKING the tree. A router that cannot be walked "+
-			"cannot be asserted about, and swapping chi for something opaque is a "+
-			"decision that has to take this gate with it.", c.Router())
-	}
-	return routes
+	return c.Router()
 }
 
 // TestNoResolutionRouteIsMounted is AC-51.

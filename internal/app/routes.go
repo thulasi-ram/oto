@@ -111,6 +111,12 @@ func (c *Container) Router() http.Handler {
 
 	r.Mount("/api/v1", v1)
 
+	// ⛔ LAST, AND AFTER THE MOUNT, BECAUSE IT CLAIMS `/*`. The SPA's catch-all
+	// must never be the thing that answers an API path — see the ⛔ block in
+	// ui.go. chi resolves the more specific pattern first, so this ordering is
+	// documentation rather than mechanism; ui_test.go is the mechanism.
+	c.mountUI(r)
+
 	return r
 }
 

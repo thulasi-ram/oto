@@ -9,7 +9,14 @@ __debug_bin*
 
 # --- Node / UI ---
 node_modules/
-web/dist/
+# ⛔ THE CONTENTS, NOT THE DIRECTORY, AND `.gitkeep` SURVIVES. `web/embed.go`
+# embeds `all:dist`, and a `go:embed` pattern that matches NOTHING is a compile
+# error — so ignoring the directory itself would break `go build ./...` on every
+# fresh clone until somebody ran `npm run build`. Git also cannot re-include a
+# file whose parent directory is excluded, which is why this is `web/dist/*`
+# rather than `web/dist/`.
+web/dist/*
+!web/dist/.gitkeep
 web/.vite/
 web/coverage/
 web/test-results/

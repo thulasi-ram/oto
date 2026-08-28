@@ -102,13 +102,20 @@ Then open <http://localhost:5173> and log in with that email and passphrase.
 
 | | |
 |---|---|
-| UI | <http://localhost:5173> |
+| UI | <http://localhost:5173> — the Vite dev server, with hot reload |
 | API | <http://localhost:8080> — `/healthz`, `/readyz`, `/metrics`, `/api/v1/…` |
 | Alertmanager | <http://localhost:9093> |
 | Prometheus | <http://localhost:9090> — evaluates `deploy/prometheus/oto-rules.yaml` |
 
 `just health` curls `/healthz` then `/readyz`; `/readyz` touches the database, so a green
 there proves Postgres and the migrations too. `just` on its own lists every recipe.
+
+**In a deployment there is no second port.** The released image serves the UI from the same
+origin as the API, at `/` — the SPA calls relative paths (`/api/v1/…`) and has no
+base-URL setting, so same-origin is the only arrangement that works. `:5173` above is the
+dev server and exists only so that hot reload does. A binary you built yourself with
+`go build` carries no UI until `just ui-build` has written `web/dist`; it says so at `/`
+rather than 404ing, and `oto version` reports `ui: absent` or `ui: embedded (N files)`.
 
 `bootstrap` prints a personal access token **once** — only its sha256 is stored. Losing it
 is not losing API access: **Settings → Access tokens** mints more. Minting always requires a

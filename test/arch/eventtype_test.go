@@ -65,7 +65,13 @@ import (
 // `_test.go`: a fake or a fixture that spells a value out is a readability
 // question, not a second source of truth. `pkg/` holds no Go at all today, and the
 // coverage test above is what notices if it ever does.
-var eventTypeTrees = []string{"internal", "cmd", "tools", "api", "db"}
+//
+// `web/` joined the list when the SPA started shipping inside the binary: it holds
+// exactly one Go file (web/embed.go, the `go:embed` of the built assets), and the
+// coverage test above is what noticed. One file is not a reason to leave a tree
+// unscanned — `api/` and `db/` are barely larger, and the point of the gate is
+// that nobody has to remember.
+var eventTypeTrees = []string{"internal", "cmd", "tools", "api", "db", "web"}
 
 // eventTypeExempt names the packages allowed to hold an `alert_events.type`
 // literal, and returns "" for everything else.

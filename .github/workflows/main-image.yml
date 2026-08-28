@@ -1,0 +1,159 @@
+name: main-image
+
+# The moving `:main` image, published by GitHub Actions.
+#
+# ⭐ WHY THIS EXISTS RATHER THAN .scarab/build.yaml. `ghcr.io/thulasi-ram/oto:main`
+# was Scarab's job and Scarab is alpha: across four runs it published nothing —
+# three died unscheduled (a CPU request larger than the demo node, f878c63) and
+# the fourth reached the registry with no credential at all. A tag that a
+# deployment can pin has to come from the path that is stable, and for this
+# repository that is Actions. Scarab still builds the Dockerfile on every push to
+# main; it no longer publishes (see the ⭐ block in .scarab/build.yaml).
+#
+# ⛔ IT IS NOT A RELEASE, AND IT MUST NEVER GROW INTO ONE. release.yml owns every
+# artifact anybody pins: the semver tags, the linker stamps that answer
+# GET /api/v1/version, the provenance attestation and the OCI chart. This
+# publishes ONE moving tag whose only promise is "the tip of main, and it built".
+# Nothing here derives a version, because there is no version to derive: a
+# release is a tag (release.yml's header says why).
+#
+# ⚠️ `:main` IS FOR A DEMO OR A DEV CLUSTER, NEVER FOR A DEPLOYMENT YOU HAVE TO
+# REASON ABOUT LATER. values.yaml argues the case in the chart's own voice: a
+# floating tag makes "which build is this" unanswerable from the outside. The
+# `:sha-<commit>` tag below is published beside it so that anyone who wants the
+# same bytes tomorrow has something immutable to pin.
+
+on:
+  # ⭐ GATED ON ci, NOT ON THE PUSH. `just release` check 7 exists because
+  # "nothing downstream of the tag confirms ci was green", and a moving tag
+  # deserves the same bargain: a `:main` built from a red commit is worse than no
+  # `:main`, because it looks identical to a good one. `workflow_run` fires after
+  # ci concludes, and the `conclusion` check below is what makes the gate real —
+  # the trigger fires on failure too.
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+
+# ⚠️ cancel-in-progress: true, THE OPPOSITE OF release.yml, AND FOR THE OPPOSITE
+# REASON. There, cancelling a half-finished multi-architecture push can leave a
+# manifest list pointing at blobs that never finished uploading, and a tag is
+# pushed once so no later run corrects it. Here a newer main SHOULD supersede an
+# older one — `:main` means the tip, the next run republishes it in full, and
+# racing two pushes at one moving tag is how the tag ends up naming the older
+# commit.
+concurrency:
+  group: main-image
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  image:
+    name: image / build + push (ghcr :main)
+    runs-on: ubuntu-latest
+    # ⛔ THE GATE. `workflow_run` delivers every conclusion, including `failure`,
+    # `cancelled` and `skipped`. Without this line the workflow publishes the tip
+    # of a red main and reports success for doing it.
+    if: github.event.workflow_run.conclusion == 'success'
+    permissions:
+      contents: read
+      packages: write # push the image to GHCR under this repository's owner
+    steps:
+      # ⛔ THE TRIGGERING COMMIT, NOT THE BRANCH HEAD. A `workflow_run` checkout
+      # defaults to the default branch's tip, which by now may be a LATER commit
+      # that ci has not finished judging — so the gate above would be vouching
+      # for one commit while the build shipped another.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: ref
+        name: derive the image reference from the triggering commit
+        run: |
+          # Lower-cased once and reused: an OCI repository path must be lower
+          # case and a GitHub owner need not be. release.yml leans on
+          # metadata-action for this; there is no metadata-action here, because
+          # there is no semver to derive.
+          image="$(echo '${{ env.IMAGE_NAME }}' | tr '[:upper:]' '[:lower:]')"
+          sha='${{ github.event.workflow_run.head_sha }}'
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "tags=${{ env.REGISTRY }}/$image:main,${{ env.REGISTRY }}/$image:sha-$sha" >> "$GITHUB_OUTPUT"
+
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          # Both, for the same reason release.yml builds both: CGO is off, the
+          # Dockerfile cross-compiles from $BUILDPLATFORM, and an arm64 node pool
+          # pulling this tag would otherwise ImagePullBackOff. It is also what the
+          # Scarab demo node happens to be.
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.ref.outputs.tags }}
+          # ⭐ STAMPED, WHICH IS THE OTHER THING SCARAB COULD NOT DO. Its BuildSpec
+          # carries no build-arg surface, so every image it published answered
+          # `oto dev` and GET /api/v1/version could not say which build it was.
+          # VERSION is `main` rather than a version number, deliberately: this
+          # artifact has no version, and claiming one would be a lie a support
+          # thread later has to unpick. COMMIT is what actually identifies it.
+          build-args: |
+            VERSION=main
+            COMMIT=${{ steps.ref.outputs.sha }}
+            BUILD_DATE=${{ github.event.workflow_run.updated_at }}
+          # buildx's own provenance adds `unknown/unknown` entries to the manifest
+          # list. release.yml replaces it with a signed attestation; a moving tag
+          # gets neither, because an attestation is only worth minting for bytes
+          # somebody can still fetch tomorrow.
+          provenance: false
+
+      # ⭐ THE SAME TWO ASSERTIONS release.yml MAKES, AGAINST THE PUBLISHED BYTES.
+      # Pulled by digest rather than by tag: `:main` may already have moved by the
+      # time this step runs, and asserting over a tag that another run can
+      # overwrite is an assertion about nothing.
+      - name: the published image knows which build it is, and carries the UI
+        run: |
+          ref='${{ env.REGISTRY }}/${{ steps.ref.outputs.image }}@${{ steps.build.outputs.digest }}'
+          printed="$(docker run --rm "$ref" version)"
+          echo "$printed"
+          case "$printed" in
+            "oto main (commit ${{ steps.ref.outputs.sha }}, built "*) ;;
+            *) echo "::error::the version stamp is wrong: $printed"; exit 1 ;;
+          esac
+          # ⛔ AND THAT THE SPA IS IN THERE. `web/dist` is a build output that is
+          # not committed, so the ONLY thing standing between a working image and
+          # one that answers `404 page not found` at `/` is the Dockerfile's node
+          # stage — which is exactly the kind of step that can be dropped in a
+          # refactor with every test still green. This is the assertion that
+          # noticing costs one line.
+          case "$printed" in
+            *"ui: embedded ("*) ;;
+            *) echo "::error::the image carries no web UI: $printed"; exit 1 ;;
+          esac
+
+      - name: the manifest lists both architectures
+        run: |
+          ref='${{ env.REGISTRY }}/${{ steps.ref.outputs.image }}@${{ steps.build.outputs.digest }}'
+          platforms="$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest}}' \
+            | jq -r '.manifests[].platform | "\(.os)/\(.architecture)"')"
+          echo "$platforms"
+          for want in linux/amd64 linux/arm64; do
+            case "$platforms" in
+              *"$want"*) ;;
+              *) echo "::error::the manifest list is missing $want"; exit 1 ;;
+            esac
+          done

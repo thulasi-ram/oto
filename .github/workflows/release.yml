@@ -168,6 +168,24 @@ jobs:
             "oto ${{ github.ref_name }} (commit ${{ github.sha }}, built "*) ;;
             *) echo "::error::the version stamp is wrong: $printed"; exit 1 ;;
           esac
+          # ⛔ AND THAT THE SPA IS ACTUALLY IN THERE. 0.1.0 through 0.1.2 shipped
+          # no web UI at all: `web/dist` is a build output that is not committed,
+          # nothing embedded it, and the image answered `/` with `404 page not
+          # found` — so README's own setup step ("create a source in the UI") was
+          # impossible on a real deployment, and no gate anywhere noticed for
+          # three releases. The Dockerfile's node stage is the only thing standing
+          # between that and a working image, and a stage is exactly the sort of
+          # thing a refactor drops with every test still green.
+          case "$printed" in
+            *"ui: embedded ("*) ;;
+            *) echo "::error::the image carries no web UI: $printed"; exit 1 ;;
+          esac
+          # `embedded (1 file)` is the .gitkeep placeholder and nothing else,
+          # which is why the count is in the string rather than a boolean.
+          case "$printed" in
+            *"ui: embedded (1 file)"*)
+              echo "::error::the image embeds only the placeholder: $printed"; exit 1 ;;
+          esac
 
       # A manifest that lists one architecture is an image that ImagePullBackOffs
       # on half the clusters it was promised to — the same failure this workflow
