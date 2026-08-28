@@ -95,6 +95,34 @@ The pipeline also writes a signed build-provenance attestation to the registry,
 so "which commit produced this digest" is answerable with
 `gh attestation verify` rather than by trusting a release note.
 
+### And the chart, as an OCI artifact
+
+```
+oci://ghcr.io/thulasi-ram/charts/oto  --version 0.1.1
+```
+
+`deploy/helm/oto` used to be reachable only by cloning this repository, which
+made every consumer vendor a copy — and a vendored chart silently stops matching
+the image its `appVersion` names. A GitOps consumer cannot read a chart from a
+git path at all: `kustomize`'s `helmCharts` accepts an HTTP Helm repo or an
+`oci://` reference and nothing else, and Argo CD renders with
+`kustomize build --enable-helm`.
+
+The `chart` job runs `needs: image`, so a chart is never published beside an
+image that failed to build — that combination installs cleanly and then
+ImagePullBackOffs every pod. `--version` and `--app-version` are both derived
+from the tag, so the chart version, its `appVersion` and the image tag are the
+same string by construction. It packages, **renders the packaged tarball and
+asserts the image reference before pushing**, pushes, then pulls the published
+artifact back and renders that too. The pre-push assertion is the one that
+matters: `helm package` rewrites `appVersion`, so the tarball is bytes `ci`'s
+chart gate never saw, and finding a wrong image tag after the push means finding
+it once the reference is already public and pinnable.
+
+It deliberately does **not** re-run `deploy/helm/check.sh`. The lint, render and
+kubeconform matrix belongs to `ci`, by the same bargain as the test suite, and
+packaging can change exactly one fact — which image tag the chart resolves to.
+
 ### What it asserts before it finishes
 
 Two checks run against the image that was actually published, pulled back by
@@ -127,6 +155,31 @@ a package under the repository's own owner and cannot change its visibility.
 
 *GitHub → the `oto` package → Package settings → Change visibility.*
 
+### The chart is a second package, and it has to be checked once too
+
+`charts/oto` is its own GHCR package with its own visibility, so the `oto`
+package being public says nothing about it. Two things make it likely to inherit
+this repository's visibility the same way: the repository is public, and helm
+turns `Chart.yaml`'s `sources[0]` into the `org.opencontainers.image.source`
+annotation GHCR links a package to a repository by.
+
+**Likely is not verified, and the failure mode is silent.** The pipeline's own
+pull-back step authenticates, so it cannot tell a public package from a private
+one. Confirm it anonymously after the first chart release:
+
+```bash
+# with no credentials for ghcr.io in this shell
+helm registry logout ghcr.io 2>/dev/null || true
+helm pull oci://ghcr.io/thulasi-ram/charts/oto --version 0.1.1
+```
+
+`unauthorized` means the package needs the one-time flip at *GitHub → the
+`charts/oto` package → Package settings → Change visibility*. It matters more
+here than it does for the image: a Helm consumer can be handed a registry login
+and `imagePullSecrets`, but **`kustomize`'s `helmCharts` has no credential path
+at all**, so an Argo CD repo-server pulling a private chart gets `unauthorized`
+and the `Application` never renders, with nothing useful in the error.
+
 For a genuinely private deployment the answer is `imagePullSecrets`, which the
 chart already projects into all four pod specs.
 
@@ -151,6 +204,11 @@ gh attestation verify oci://ghcr.io/thulasi-ram/oto:0.1.0 --repo thulasi-ram/oto
 
 helm template oto deploy/helm/oto --set secrets.databaseUrl=postgres://… \
   | grep 'image:'   # resolves to appVersion when image.tag is unset
+
+# the chart, from the first release that publishes one — v0.1.1 onward, since
+# v0.1.0 shipped an image and nothing else
+helm pull oci://ghcr.io/thulasi-ram/charts/oto --version 0.1.1
+helm show chart oci://ghcr.io/thulasi-ram/charts/oto --version 0.1.1
 ```
 
 `just release-watch v0.1.0` follows the run and exits non-zero if it failed.

@@ -6,18 +6,38 @@ description: >-
 type: application
 
 # The CHART version. Bump on every change to the templates or the default values.
-version: 0.1.0
+#
+# ⚠️ A RELEASE DOES NOT PUBLISH THIS NUMBER. The `chart` job in
+# .github/workflows/release.yml packages with `--version` derived from the git
+# tag, so this line is what a chart packaged from a working tree carries — and
+# `just release` warns rather than refuses when it disagrees with the tag,
+# because the chart's own version is allowed to move on its own.
+version: 0.1.1
 
 # The oto version this chart deploys by default. `image.tag` falls back to this,
 # so a chart release and an application release move together unless the operator
 # pins otherwise.
-appVersion: "0.1.0"
+#
+# ⛔ IT IS LOAD-BEARING, AND `just release` REFUSES A TAG THAT DISAGREES WITH IT
+# (check 6). `helm install oto deploy/helm/oto` off a checkout resolves its image
+# tag from this line and nothing else, so a stale value is an ImagePullBackOff on
+# a fresh install — the exact failure release.yml exists to end. Bump it in an
+# ordinary commit BEFORE the tag; the release then re-derives it at package time,
+# so the published tarball cannot drift even if this file ever slips through.
+appVersion: "0.1.1"
 
 # oto needs nothing newer than a stock cluster: apps/v1, batch/v1 and
 # networking.k8s.io/v1 Ingress with ingressClassName (1.19+) and pathType.
 kubeVersion: ">=1.23.0-0"
 
 home: https://github.com/thulasi-ram/oto
+
+# ⭐ `sources` IS NOT DECORATION NOW THE CHART SHIPS AS AN OCI ARTIFACT. helm
+# turns `sources[0]` into the `org.opencontainers.image.source` annotation on the
+# pushed manifest, and that annotation is how GHCR links a package to a
+# repository — which is what lets the package inherit this repository's
+# visibility rather than defaulting to private. A private chart package cannot be
+# read by `kustomize`'s helmCharts at all: it carries no credentials.
 sources:
   - https://github.com/thulasi-ram/oto
 

@@ -184,3 +184,140 @@ jobs:
               *) echo "::error::the manifest list is missing $want"; exit 1 ;;
             esac
           done
+
+  # ---------------------------------------------------------------------------
+  # The chart, published as an OCI artifact beside the image it installs.
+  #
+  # ⭐ WHY THIS EXISTS. `deploy/helm/oto` was reachable only by cloning this
+  # repository, so every consumer had to vendor a copy — and a vendored chart is
+  # one that silently stops matching the image its appVersion names. A GitOps
+  # consumer cannot read a chart from a git path at all: `kustomize`'s
+  # `helmCharts` takes an HTTP Helm repo or an `oci://` reference and nothing
+  # else, and Argo CD renders with `kustomize build --enable-helm`. So the chart
+  # needs a name that can be pulled and pinned, or the install story stops at
+  # "clone the repository first".
+  #
+  # ⭐ THE GIT TAG IS THE INPUT HERE TOO. `--version` and `--app-version` are
+  # both derived from the tag, exactly as the image tags above are, so the chart
+  # version, the appVersion and the image tag are the SAME string by
+  # construction. That does NOT make Chart.yaml's committed appVersion
+  # decorative — `just release` check 6 refuses a tag that disagrees with it,
+  # because a chart installed from the git path resolves its image tag from that
+  # file. Re-deriving both here means the PUBLISHED tarball cannot disagree even
+  # if a future gate stops looking.
+  chart:
+    name: chart / package + push (ghcr oci)
+    runs-on: ubuntu-latest
+    # ⛔ NOT PARALLEL WITH THE IMAGE, DELIBERATELY. The chart's appVersion
+    # resolves to the image tag this release publishes, so a chart pushed while
+    # the image build was failing would name an image that does not exist —
+    # `helm install` would succeed and every pod would ImagePullBackOff. Let the
+    # image prove itself first; a chart is cheap to publish afterwards.
+    needs: image
+    permissions:
+      contents: read
+      packages: write # push the chart to GHCR under this repository's owner
+    steps:
+      - uses: actions/checkout@v4
+
+      # ⚠️ THE SAME VERSION AS ci.yml's CHART GATE, INSTALLED THE SAME WAY. Not
+      # tidiness: helm 4 changed what `helm lint` does with a template `fail`
+      # (it logs and exits 0), which is the whole reason deploy/helm/check.sh
+      # asserts through `helm template` instead. Packaging a release under helm
+      # 3 while every other chart gate ran under 4.1.1 would be a third gate
+      # nobody verified, on the one ref that can never be re-cut.
+      - name: install helm
+        run: |
+          HELM_VERSION=v4.1.1
+          curl -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" \
+            | tar -xz -C /tmp linux-amd64/helm
+          sudo install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm
+          helm version
+
+      - id: ver
+        name: derive the version, the owner and the image from the tag
+        run: |
+          # `v0.1.1` -> `0.1.1`. Helm requires SemVer2 WITHOUT a leading `v` for
+          # a chart version, and the image's `type=semver,pattern={{version}}`
+          # tag above drops it the same way — which is what makes the chart
+          # version and the image tag the same string.
+          version='${{ github.ref_name }}'
+          echo "version=${version#v}" >> "$GITHUB_OUTPUT"
+          # ⛔ LOWER-CASED ONCE AND USED FOR BOTH THE PUSH AND THE ASSERTION. An
+          # OCI repository path must be lower case; a GitHub owner need not be.
+          # Lower-casing the push target while asserting against `env.IMAGE_NAME`
+          # raw would be two derivations of one fact that agree only while the
+          # owner happens to be spelled in lower case already.
+          echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+          echo "image=$(echo '${{ env.IMAGE_NAME }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: package
+        run: |
+          mkdir -p dist
+          helm package deploy/helm/oto \
+            --version '${{ steps.ver.outputs.version }}' \
+            --app-version '${{ steps.ver.outputs.version }}' \
+            --destination dist
+
+      # ⭐ THE REWRITTEN CHART IS RENDERED BEFORE IT IS PUSHED, NEVER AFTER.
+      # `helm package` just rewrote version and appVersion, so this tarball is
+      # bytes no gate has seen: ci.yml's chart job ran the whole lint + render +
+      # kubeconform matrix on this commit, but it ran it against the SOURCE tree,
+      # carrying whatever Chart.yaml said at the time. appVersion IS the default
+      # image tag, so the packaged chart is the only place that fact can be
+      # checked — and checking it after `helm push` would mean discovering a
+      # chart that names the wrong image once it was already public and pinnable.
+      #
+      # ⚠️ IT IS NOT A SECOND CHART GATE, and it deliberately does not run
+      # check.sh. The matrix belongs in ci.yml for the reason the ⭐ block on its
+      # `helm` job gives — a chart defect found when a tag is pushed is found
+      # after the commit is immutable and after review said yes. check.sh also
+      # hard-exits without `kubeconform`, which this job has no reason to
+      # install. This step checks the one fact packaging can change.
+      - name: the packaged chart resolves to this release's image
+        run: |
+          helm template oto 'dist/oto-${{ steps.ver.outputs.version }}.tgz' \
+            --set secrets.databaseUrl='postgres://oto:pw@postgres.example:5432/oto' \
+            > packaged.yaml
+          want='${{ env.REGISTRY }}/${{ steps.ver.outputs.image }}:${{ steps.ver.outputs.version }}'
+          echo "want: $want"
+          grep -Fq "$want" packaged.yaml \
+            || { echo "::error::the packaged chart does not resolve to $want"; exit 1; }
+
+      # ⭐ THE SAME TOKEN AND THE SAME OWNER AS THE IMAGE. GHCR accepts the
+      # built-in GITHUB_TOKEN for a package under this repository's own owner and
+      # nowhere else, so the chart lands beside the image by construction rather
+      # than by a hand-written path that can stop matching it.
+      - name: log in to ghcr
+        run: |
+          echo '${{ secrets.GITHUB_TOKEN }}' \
+            | helm registry login '${{ env.REGISTRY }}' \
+                --username '${{ github.actor }}' --password-stdin
+
+      - name: push
+        run: |
+          helm push 'dist/oto-${{ steps.ver.outputs.version }}.tgz' \
+            'oci://${{ env.REGISTRY }}/${{ steps.ver.outputs.owner }}/charts'
+
+      # ⭐ PULL IT BACK AND RENDER WHAT CAME BACK. The steps above prove the
+      # bytes left this runner; only this proves a consumer can get them under
+      # the reference they will pin. It is the chart-shaped counterpart of
+      # pulling the image back by digest.
+      #
+      # ⚠️ IT PULLS AUTHENTICATED, SO IT CANNOT TELL WHETHER THE PACKAGE IS
+      # PUBLIC. That distinction is load-bearing for a GitOps consumer:
+      # `kustomize`'s helmCharts has no credential path whatsoever, so an Argo CD
+      # repo-server pulling a private chart gets `unauthorized` and the
+      # Application never renders. Chart.yaml's `sources[0]` is what helm turns
+      # into the `org.opencontainers.image.source` annotation GHCR links a
+      # package by, so this package should inherit the repository's visibility
+      # the way the image package did on v0.1.0 — and "should" is why
+      # releasing.md says to confirm it with an anonymous pull after the first
+      # push, rather than to trust either expectation.
+      - name: a consumer can pull the published chart and render it
+        run: |
+          ref='oci://${{ env.REGISTRY }}/${{ steps.ver.outputs.owner }}/charts/oto'
+          helm pull "$ref" --version '${{ steps.ver.outputs.version }}' --destination pulled
+          helm template oto 'pulled/oto-${{ steps.ver.outputs.version }}.tgz' \
+            --set secrets.databaseUrl='postgres://oto:pw@postgres.example:5432/oto' \
+            > /dev/null
