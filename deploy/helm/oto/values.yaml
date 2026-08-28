@@ -181,6 +181,17 @@ hooks:
   waves:
     migrate: "1"
     bootstrap: "2"
+    # ⭐ THE WORKLOADS NEED A WAVE TOO, AND LEAVING THEM OUT WAS THE FIRST
+    # VERSION'S BUG. An unannotated resource lands in wave 0, so the api and
+    # worker Deployments would be applied a wave BEFORE the migration they
+    # depend on: the api sits unready against a schema that does not match, and
+    # the worker exits and CrashLoopBackOffs until the Job lands. It self-heals
+    # and it looks like a broken install while it does.
+    #
+    # The same wave as `bootstrap` because neither needs the other — `oto
+    # bootstrap` writes through Postgres and never calls the API, and the API
+    # serves before any org exists. Both need only the migration.
+    workloads: "2"
 
 # -----------------------------------------------------------------------------
 # Migrations — SPEC acceptance criterion 32

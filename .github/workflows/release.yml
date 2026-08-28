@@ -316,8 +316,18 @@ jobs:
       # push, rather than to trust either expectation.
       - name: a consumer can pull the published chart and render it
         run: |
+          # ⛔ `mkdir` FIRST. helm 4's `--destination` does NOT create the
+          # directory, and it prints `Pulled:` and the digest BEFORE it writes —
+          # so a missing directory fails as
+          # `open pulled/oto-<v>.tgz<random>: no such file or directory` two
+          # lines after a message that says it worked. This step failed exactly
+          # that way on v0.1.1, after the chart had already been pushed.
+          mkdir -p pulled
           ref='oci://${{ env.REGISTRY }}/${{ steps.ver.outputs.owner }}/charts/oto'
+          tgz="pulled/oto-${{ steps.ver.outputs.version }}.tgz"
           helm pull "$ref" --version '${{ steps.ver.outputs.version }}' --destination pulled
-          helm template oto 'pulled/oto-${{ steps.ver.outputs.version }}.tgz' \
+          # The name is a convention, not a promise helm makes to this script.
+          [ -f "$tgz" ] || { echo "::error::helm pull wrote no $tgz"; ls -la pulled; exit 1; }
+          helm template oto "$tgz" \
             --set secrets.databaseUrl='postgres://oto:pw@postgres.example:5432/oto' \
             > /dev/null

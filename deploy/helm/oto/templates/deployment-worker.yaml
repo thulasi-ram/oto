@@ -15,9 +15,15 @@ metadata:
   name: {{ include "oto.fullname" . }}-worker
   labels:
     {{- include "oto.labels" (dict "ctx" . "component" "worker") | nindent 4 }}
-  {{- with .Values.commonAnnotations }}
+  {{- $wave := include "oto.workloadAnnotations" . | trim }}
+  {{- if or .Values.commonAnnotations $wave }}
   annotations:
+    {{- with .Values.commonAnnotations }}
     {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- with $wave }}
+    {{- . | nindent 4 }}
+    {{- end }}
   {{- end }}
 spec:
   replicas: {{ .Values.worker.replicaCount }}

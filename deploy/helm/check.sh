@@ -101,6 +101,16 @@ render() {
     return 0
   fi
   rendered="$out"
+  # ⛔ NO WHITESPACE-ONLY LINE IN ANY RENDER, AND IT IS NOT PEDANTRY. A `{{/* */}}`
+  # inside a template `define`, or a helper whose output already begins with a
+  # newline passed through `nindent`, emits a blank indented line straight into an
+  # `annotations:` block. It is valid YAML, kubeconform passes it, and every
+  # operator who reads `helm get manifest` sees it — so nothing else here would
+  # ever have caught it.
+  if printf '%s\n' "$out" | grep -qE '^[[:space:]]+$'; then
+    bad "$name: rendered a whitespace-only line (a helper emitted a stray newline)"
+    printf '%s\n' "$out" | grep -nE '^[[:space:]]+$' | head -3 | sed 's/^/      line /' >&2
+  fi
   local kv
   for kv in "$k8s_floor" "$k8s_head"; do
     local verdict
@@ -359,15 +369,29 @@ lines 'hooks.provider=argocd' -- \
   'absent:argocd.argoproj.io/hook: PreSync' \
   'absent:helm.sh/hook'
 
+# ⛔ AND THE WORKLOADS CARRY A WAVE, WHICH THE FIRST VERSION OF THIS FEATURE
+#    FORGOT. Ordering the two Jobs and leaving the Deployments in wave 0 applies
+#    them a wave BEFORE the migration they depend on. Counted, not merely found:
+#    both Deployments must have one, and `grep -c` over the whole render is how a
+#    single annotation masquerading as two gets caught.
+waves_seen="$(printf '%s\n' "$rendered" | grep -cF 'argocd.argoproj.io/sync-wave: "2"' || true)"
+if [ "$waves_seen" -eq 3 ]; then
+  pass 'hooks.provider=argocd: both Deployments and the bootstrap Job carry wave 2'
+else
+  bad "hooks.provider=argocd: expected 3 objects at wave 2, found $waves_seen"
+fi
+
 # The waves are a value, not a constant, because wave 0 belongs to whatever the
 # consumer put there and one of them will need to move.
 render 'hooks.provider=argocd, moved waves' -- "${bootstrap_on[@]}" \
   --set hooks.provider=argocd \
   --set-string hooks.waves.migrate=4 \
-  --set-string hooks.waves.bootstrap=5
+  --set-string hooks.waves.bootstrap=5 \
+  --set-string hooks.waves.workloads=6
 lines 'hooks.provider=argocd, moved waves' -- \
   'present:argocd.argoproj.io/sync-wave: "4"' \
   'present:argocd.argoproj.io/sync-wave: "5"' \
+  'present:argocd.argoproj.io/sync-wave: "6"' \
   'absent:argocd.argoproj.io/sync-wave: "1"' \
   'absent:argocd.argoproj.io/sync-wave: "2"'
 

@@ -16,11 +16,16 @@ metadata:
   name: {{ include "oto.migrationSecretName" . }}
   labels:
     {{- include "oto.labels" (dict "ctx" . "component" "migrate") | nindent 4 }}
+  {{- $hooks := include "oto.hookAnnotations" (dict "ctx" . "job" "migrate-secret") | trim }}
+  {{- if or .Values.commonAnnotations $hooks }}
   annotations:
     {{- with .Values.commonAnnotations }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
-    {{- include "oto.hookAnnotations" (dict "ctx" . "job" "migrate-secret") | nindent 4 }}
+    {{- with $hooks }}
+    {{- . | nindent 4 }}
+    {{- end }}
+  {{- end }}
 type: Opaque
 stringData:
   {{ .Values.existingSecretKeys.databaseUrl }}: {{ .Values.secrets.databaseUrl | quote }}
@@ -66,11 +71,16 @@ metadata:
   name: {{ include "oto.fullname" . }}-migrate
   labels:
     {{- include "oto.labels" (dict "ctx" . "component" "migrate") | nindent 4 }}
+  {{- $hooks := include "oto.hookAnnotations" (dict "ctx" . "job" "migrate") | trim }}
+  {{- if or .Values.commonAnnotations $hooks }}
   annotations:
     {{- with .Values.commonAnnotations }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
-    {{- include "oto.hookAnnotations" (dict "ctx" . "job" "migrate") | nindent 4 }}
+    {{- with $hooks }}
+    {{- . | nindent 4 }}
+    {{- end }}
+  {{- end }}
 spec:
   backoffLimit: {{ .Values.migration.backoffLimit }}
   activeDeadlineSeconds: {{ .Values.migration.activeDeadlineSeconds }}

@@ -12,7 +12,7 @@ type: application
 # tag, so this line is what a chart packaged from a working tree carries — and
 # `just release` warns rather than refuses when it disagrees with the tag,
 # because the chart's own version is allowed to move on its own.
-version: 0.1.1
+version: 0.1.2
 
 # The oto version this chart deploys by default. `image.tag` falls back to this,
 # so a chart release and an application release move together unless the operator

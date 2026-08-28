@@ -126,6 +126,24 @@ its wave alongside everything else, which is the whole point.
 immutable, so re-applying one with a changed template is rejected outright unless
 the previous object is deleted first. helm and Argo each have their own name for
 that policy and neither reads the other's.
+
+⛔ THE MIGRATION SECRET IS A HOOK UNDER helm AND AN ORDINARY WAVE-0 RESOURCE UNDER
+argocd. Under helm it has to be a hook, because a pre-install hook cannot read a
+resource helm has not applied yet. Under Argo there is no such phase: the migrate
+Job's wave is gated on wave 0 being healthy, so the Secret is simply there.
+Annotating it as a hook would instead have Argo delete it on `hook-succeeded` and
+re-create it every sync, for no gain.
+
+⚠️ SO THAT COPY OF THE DSN OUTLIVES THE SYNC, WHERE THE helm SPELLING DELETES IT.
+Not a new exposure: it renders only when `existingSecret` is unset, and in that
+configuration `secret.yaml` already holds the same URL as an ordinary
+release-tracked object. A GitOps install with an ExternalSecret sets
+`existingSecret` and renders neither.
+
+⛔ NO COMMENTS INSIDE THE `define` BELOW. A `{{/* */}}` in a branch body emits its
+own newlines, and they land in the rendered manifest as blank lines inside an
+`annotations:` block. Valid YAML, passes kubeconform, and visible to every
+operator who reads what this chart produced.
 */}}
 {{- define "oto.hookAnnotations" -}}
 {{- $ctx := .ctx -}}
@@ -147,20 +165,6 @@ helm.sh/hook-delete-policy: before-hook-creation
 {{- end }}
 {{- else if eq $provider "argocd" -}}
 {{- if eq $job "migrate-secret" }}
-{{/*
-⛔ THE MIGRATION SECRET IS NOT A HOOK HERE, AND MUST NOT BE. Under helm it is a
-hook because a pre-install hook cannot read a resource helm has not applied yet.
-Under Argo there is no such phase: an ordinary resource lands in wave 0 and the
-migrate Job's wave is gated on wave 0 being healthy, so the Secret is simply
-there. Annotating it as a hook would instead have Argo delete it on
-`hook-succeeded` and re-create it on every sync, for no gain.
-
-⚠️ SO THIS COPY OF THE DSN OUTLIVES THE SYNC, WHERE THE helm SPELLING DELETES IT.
-That is not a new exposure: it only renders when `existingSecret` is unset, and in
-that configuration `secret.yaml` already holds the same URL as an ordinary
-release-tracked object. A GitOps install with an ExternalSecret sets
-`existingSecret` and renders neither.
-*/}}
 argocd.argoproj.io/sync-wave: "0"
 {{- else if eq $job "migrate" }}
 argocd.argoproj.io/hook: Sync
@@ -172,6 +176,33 @@ argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
 argocd.argoproj.io/sync-wave: {{ $ctx.Values.hooks.waves.bootstrap | quote }}
 {{- end }}
 {{- end -}}
+{{- end -}}
+
+{{/*
+The ordering annotation for the WORKLOADS the migrate Job exists to unblock.
+
+⭐ WITHOUT IT `hooks.provider: argocd` ORDERS THE JOBS AND ABANDONS THE
+DEPLOYMENTS. An unannotated resource lands in wave 0, so the api and worker
+Deployments would be applied a full wave BEFORE the migration they depend on: the
+api pods come up against a schema that does not match and sit unready (which
+/readyz reports honestly), and the worker exits and CrashLoopBackOffs until the
+Job lands. It self-heals in minutes and it looks exactly like a broken install
+while it does — and under helm none of this arises, because there the Deployments
+are ordinary resources and every hook phase precedes them.
+
+⚠️ THE SAME WAVE AS bootstrap BY DEFAULT, AND THAT IS NOT AN OVERSIGHT. Neither
+needs the other: `oto bootstrap` writes rows through Postgres and never calls the
+API, and the API serves before an org exists. Both need only the migration, so
+both belong in the wave after it.
+
+⛔ IT RENDERS NOTHING UNDER helm OR none. A `sync-wave` on a helm-installed
+Deployment is a no-op annotation that implies an ordering helm is not performing,
+and the next person to read it would believe it.
+*/}}
+{{- define "oto.workloadAnnotations" -}}
+{{- if eq .Values.hooks.provider "argocd" }}
+argocd.argoproj.io/sync-wave: {{ .Values.hooks.waves.workloads | quote }}
+{{- end }}
 {{- end -}}
 
 {{/*

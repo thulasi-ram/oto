@@ -38,11 +38,16 @@ metadata:
   name: {{ include "oto.fullname" . }}-bootstrap
   labels:
     {{- include "oto.labels" (dict "ctx" . "component" "bootstrap") | nindent 4 }}
+  {{- $hooks := include "oto.hookAnnotations" (dict "ctx" . "job" "bootstrap") | trim }}
+  {{- if or .Values.commonAnnotations $hooks }}
   annotations:
     {{- with .Values.commonAnnotations }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
-    {{- include "oto.hookAnnotations" (dict "ctx" . "job" "bootstrap") | nindent 4 }}
+    {{- with $hooks }}
+    {{- . | nindent 4 }}
+    {{- end }}
+  {{- end }}
 spec:
   backoffLimit: 0
   ttlSecondsAfterFinished: {{ .Values.bootstrap.ttlSecondsAfterFinished }}
