@@ -71,8 +71,31 @@ steps:
     # An uncached module download plus a full `go build` — there is no layer
     # cache yet (ADR-0018), so every run pays for both.
     timeout: 1800
+
+    # ⛔ THIS IS A REQUEST THE RUNNER HAS TO BE ABLE TO SATISFY, AND ASKING FOR
+    # MORE THAN THE NODE HAS FAILS THE RUN WITHOUT EVER BUILDING ANYTHING. This
+    # asked for 2000 millis against a single 2-vCPU demo node whose system and
+    # control-plane pods already hold 420m, so the scheduler could never place
+    # the pod — `0/1 nodes are available: 1 Insufficient cpu`, on every attempt,
+    # forever. The three runs after the OCI-chart work (94556d6, d9d1601,
+    # dcdb97c) all died that way: `checkout` succeeded, `image` was never
+    # scheduled, and the run dead-lettered as `infra-never-started` with no
+    # detail recorded anywhere. `ghcr.io/thulasi-ram/oto:main` has therefore
+    # never existed.
+    #
+    # ⚠️ AND IT IS A CEILING, NOT ONLY A SCHEDULING HINT. Scarab sets the step
+    # container's LIMITS equal to its requests (Guaranteed QoS), so this number
+    # is also the most CPU the compile can ever use — lowering it makes the build
+    # slower, it does not merely make it schedulable.
+    #
+    # 1000 rather than the 1500 that would also fit today: the demo node is where
+    # Scarab redeploys ITSELF, so a second scarab pod during a rollout, or the
+    # postgres backup CronJob's 50m, is enough to push a 1500m request back into
+    # Pending — and an intermittently unschedulable pipeline is harder to read
+    # than a slow one. `go build` of one static binary at one core, against a
+    # 1800s timeout, has room to spare.
     resources:
-      cpu_millis: 2000
+      cpu_millis: 1000
       memory_mib: 4096
 
 # --- What this pipeline deliberately cannot do -------------------------------
