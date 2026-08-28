@@ -103,6 +103,78 @@ exists before the install, so the hook reads it directly.
 {{- end -}}
 
 {{/*
+The hook annotations for one of the two sequenced Jobs, spelled by whatever is
+applying the manifests.
+
+Called as (dict "ctx" . "job" "migrate"|"bootstrap"|"migrate-secret").
+
+⭐ IT EXISTS BECAUSE `helm.sh/hook` IS NOT A PORTABLE ORDERING PRIMITIVE. helm
+runs a pre-install hook before it applies the release's ordinary resources; Argo
+CD reads the same annotation, maps it onto PreSync, and runs it before the
+release's ordinary resources have been APPLIED AT ALL — so on a first install the
+migrate Job starts before the ExternalSecret that was going to materialise its
+database URL exists, and fails with "secret not found". A sync wave is a
+different primitive: Argo gates a wave on the previous wave being healthy, which
+is the guarantee the Job actually needs.
+
+⛔ AN ARGO HOOK IS `Sync` AND NOT `PreSync`, DELIBERATELY. PreSync is the same
+trap by another name: it runs before wave 0, so nothing a consumer put there —
+their SecretStore, their ExternalSecret — is ready. A `Sync` hook is ordered by
+its wave alongside everything else, which is the whole point.
+
+⚠️ `before-hook-creation` IS NOT OPTIONAL IN EITHER SPELLING. A Job's spec is
+immutable, so re-applying one with a changed template is rejected outright unless
+the previous object is deleted first. helm and Argo each have their own name for
+that policy and neither reads the other's.
+*/}}
+{{- define "oto.hookAnnotations" -}}
+{{- $ctx := .ctx -}}
+{{- $job := .job -}}
+{{- $provider := $ctx.Values.hooks.provider -}}
+{{- if eq $provider "helm" -}}
+{{- if eq $job "migrate-secret" }}
+helm.sh/hook: pre-install,pre-upgrade
+helm.sh/hook-weight: "-10"
+helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+{{- else if eq $job "migrate" }}
+helm.sh/hook: pre-install,pre-upgrade
+helm.sh/hook-weight: "-5"
+helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+{{- else if eq $job "bootstrap" }}
+helm.sh/hook: post-install
+helm.sh/hook-weight: "5"
+helm.sh/hook-delete-policy: before-hook-creation
+{{- end }}
+{{- else if eq $provider "argocd" -}}
+{{- if eq $job "migrate-secret" }}
+{{/*
+⛔ THE MIGRATION SECRET IS NOT A HOOK HERE, AND MUST NOT BE. Under helm it is a
+hook because a pre-install hook cannot read a resource helm has not applied yet.
+Under Argo there is no such phase: an ordinary resource lands in wave 0 and the
+migrate Job's wave is gated on wave 0 being healthy, so the Secret is simply
+there. Annotating it as a hook would instead have Argo delete it on
+`hook-succeeded` and re-create it on every sync, for no gain.
+
+⚠️ SO THIS COPY OF THE DSN OUTLIVES THE SYNC, WHERE THE helm SPELLING DELETES IT.
+That is not a new exposure: it only renders when `existingSecret` is unset, and in
+that configuration `secret.yaml` already holds the same URL as an ordinary
+release-tracked object. A GitOps install with an ExternalSecret sets
+`existingSecret` and renders neither.
+*/}}
+argocd.argoproj.io/sync-wave: "0"
+{{- else if eq $job "migrate" }}
+argocd.argoproj.io/hook: Sync
+argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+argocd.argoproj.io/sync-wave: {{ $ctx.Values.hooks.waves.migrate | quote }}
+{{- else if eq $job "bootstrap" }}
+argocd.argoproj.io/hook: Sync
+argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+argocd.argoproj.io/sync-wave: {{ $ctx.Values.hooks.waves.bootstrap | quote }}
+{{- end }}
+{{- end -}}
+{{- end -}}
+
+{{/*
 `envFrom` for every oto pod: the non-secret ConfigMap, then anything the operator
 added. The container's own `env:` wins over all of it.
 */}}
@@ -172,6 +244,9 @@ with a CrashLoopBackOff twenty seconds later.
 {{- end -}}
 {{- if not (has .Values.config.env (list "dev" "staging" "prod")) -}}
 {{- fail "oto: config.env must be one of dev, staging, prod." -}}
+{{- end -}}
+{{- if not (has .Values.hooks.provider (list "helm" "argocd" "none")) -}}
+{{- fail "oto: hooks.provider must be one of helm, argocd, none. It decides who sequences the migrate and bootstrap Jobs; a value nothing recognises would render both with NO ordering annotation at all, which looks like it worked until a worker boots against an unmigrated database." -}}
 {{- end -}}
 {{- $ingest := div (mul (int .Values.config.db.max_conns) (int .Values.config.db.ingest_share_percent)) 100 -}}
 {{- $ingest = int (max $ingest (int .Values.config.db.ingest_min_conns)) -}}

@@ -151,6 +151,46 @@ objects() {
   diff <(printf '%s\n' "$want") <(printf '%s\n' "$got") | sed 's/^/      /' >&2 || true
 }
 
+# lines <name> -- present:<text>... absent:<text>...
+#
+# Asserts over the TEXT of the last render, for facts that are not object sets:
+# an annotation, a flag in an argv. `objects` cannot see either — both are
+# invisible to a check phrased in kinds and filenames.
+#
+# ⚠️ `absent:` IS HALF THE POINT. Two spellings of the same ordering (a helm hook
+# and an Argo sync wave) must never appear together: an object carrying both is
+# sequenced twice, and which one wins depends on which tool applied it.
+lines() {
+  local name="$1"
+  shift 2 # the name and the literal `--`
+  [ -n "$rendered" ] || return 0
+  local spec kind text ok=1
+  for spec in "$@"; do
+    kind="${spec%%:*}"
+    text="${spec#*:}"
+    case "$kind" in
+      present)
+        printf '%s\n' "$rendered" | grep -qF -- "$text" || {
+          bad "$name: expected to find '$text' and did not"
+          ok=0
+        }
+        ;;
+      absent)
+        if printf '%s\n' "$rendered" | grep -qF -- "$text"; then
+          bad "$name: '$text' is still rendered and must not be"
+          ok=0
+        fi
+        ;;
+      *)
+        bad "$name: '$kind' is not present: or absent:"
+        ok=0
+        ;;
+    esac
+  done
+  [ "$ok" -eq 1 ] && pass "$name: $# line assertion(s)"
+  return 0
+}
+
 # ------------------------------------------------------------- guard rails
 
 # guard <expected message fragment> -- <helm args...>
@@ -264,6 +304,86 @@ objects 'slack http' -- \
   job-migrate.yaml:Job \
   pdb.yaml:PodDisruptionBudget
 
+# 5. `hooks.provider`, all three of them, with both Jobs rendering.
+#
+# ⭐ THE ORDERING ANNOTATIONS ARE THE ONLY THING THAT CHANGES, AND THE OBJECT SET
+# IS THE PROOF. A provider that added or dropped an object would mean the choice
+# was doing something other than deciding who sequences the two Jobs — which is
+# the entire contract of the value.
+#
+# ⛔ EACH SPELLING ASSERTS THE OTHER'S ABSENCE. An object carrying both a
+# `helm.sh/hook` and an `argocd.argoproj.io/hook` is sequenced twice, by whichever
+# tool happens to read it, and the failure surfaces as a Job that ran at the wrong
+# moment rather than as anything a renderer would complain about.
+bootstrap_on=(
+  --set-string secrets.databaseUrl="$dsn"
+  --set bootstrap.enabled=true
+  --set bootstrap.orgSlug=acme
+  --set bootstrap.email=a@b.c
+  --set-string secrets.bootstrapPassword=hunter2
+)
+
+hook_objects=(
+  configmap.yaml:ConfigMap
+  secret.yaml:Secret
+  service.yaml:Service
+  serviceaccount.yaml:ServiceAccount
+  deployment-api.yaml:Deployment
+  deployment-worker.yaml:Deployment
+  job-migrate.yaml:Secret
+  job-migrate.yaml:Job
+  job-bootstrap.yaml:Job
+  pdb.yaml:PodDisruptionBudget
+)
+
+render 'hooks.provider=helm' -- "${bootstrap_on[@]}" --set hooks.provider=helm
+objects 'hooks.provider=helm' -- "${hook_objects[@]}"
+lines 'hooks.provider=helm' -- \
+  'present:helm.sh/hook: pre-install,pre-upgrade' \
+  'present:helm.sh/hook: post-install' \
+  'present:helm.sh/hook-weight: "-10"' \
+  'present:helm.sh/hook-weight: "-5"' \
+  'present:helm.sh/hook-weight: "5"' \
+  'absent:argocd.argoproj.io'
+
+# ⚠️ `hook: Sync` AND NOT `PreSync`. PreSync is helm's trap in Argo's spelling:
+# it runs before wave 0, so a consumer's ExternalSecret has not materialised the
+# Secret the migrate Job is about to read.
+render 'hooks.provider=argocd' -- "${bootstrap_on[@]}" --set hooks.provider=argocd
+objects 'hooks.provider=argocd' -- "${hook_objects[@]}"
+lines 'hooks.provider=argocd' -- \
+  'present:argocd.argoproj.io/hook: Sync' \
+  'present:argocd.argoproj.io/hook-delete-policy: BeforeHookCreation' \
+  'present:argocd.argoproj.io/sync-wave: "1"' \
+  'present:argocd.argoproj.io/sync-wave: "2"' \
+  'absent:argocd.argoproj.io/hook: PreSync' \
+  'absent:helm.sh/hook'
+
+# The waves are a value, not a constant, because wave 0 belongs to whatever the
+# consumer put there and one of them will need to move.
+render 'hooks.provider=argocd, moved waves' -- "${bootstrap_on[@]}" \
+  --set hooks.provider=argocd \
+  --set-string hooks.waves.migrate=4 \
+  --set-string hooks.waves.bootstrap=5
+lines 'hooks.provider=argocd, moved waves' -- \
+  'present:argocd.argoproj.io/sync-wave: "4"' \
+  'present:argocd.argoproj.io/sync-wave: "5"' \
+  'absent:argocd.argoproj.io/sync-wave: "1"' \
+  'absent:argocd.argoproj.io/sync-wave: "2"'
+
+render 'hooks.provider=none' -- "${bootstrap_on[@]}" --set hooks.provider=none
+objects 'hooks.provider=none' -- "${hook_objects[@]}"
+lines 'hooks.provider=none' -- \
+  'absent:helm.sh/hook' \
+  'absent:argocd.argoproj.io'
+
+# ⛔ AND THE FLAG THAT MAKES A RE-RUN AN EXIT 0. `oto bootstrap` refuses when the
+# deployment already has an org, and a refusal is a non-zero exit — so a hook that
+# re-runs (every Argo sync) reports a failure for doing exactly what it should.
+# The runtime image is distroless and has no shell, so no `|| true` was ever
+# available: the Job has to ask the binary for the behaviour.
+lines 'bootstrap tolerates a re-run' -- 'present:- --if-needed'
+
 echo '==> guard rails (_helpers.tpl "oto.validateValues")'
 
 # 1. No credentials at all — which is also what the chart's own defaults are,
@@ -316,6 +436,14 @@ guard 'bootstrap.enabled is true but no password is available' -- \
   --set bootstrap.enabled=true \
   --set bootstrap.orgSlug=acme \
   --set bootstrap.email=a@b.c
+
+# 9. A hooks.provider nothing recognises. It has to REFUSE rather than render
+#    both Jobs with no ordering annotation at all, which is the failure that
+#    looks like it worked until a worker boots against an unmigrated database.
+#    `argo` is the plausible typo for `argocd`.
+guard 'hooks.provider must be one of helm, argocd, none' -- \
+  --set-string secrets.databaseUrl="$dsn" \
+  --set hooks.provider=argo
 
 echo
 if [ "$fails" -ne 0 ]; then

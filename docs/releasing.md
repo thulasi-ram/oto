@@ -122,6 +122,13 @@ It deliberately does **not** re-run `deploy/helm/check.sh`. The lint, render and
 kubeconform matrix belongs to `ci`, by the same bargain as the test suite, and
 packaging can change exactly one fact — which image tag the chart resolves to.
 
+A consumer applying the chart through a GitOps controller rather than `helm
+install` also wants `hooks.provider: argocd`, because `helm.sh/hook` is not a
+portable ordering primitive: Argo CD maps `pre-install` onto PreSync, which runs
+before wave 0 exists, so the migrate Job starts before the ExternalSecret that
+was going to materialise its database URL. See the `hooks` block in
+`values.yaml`.
+
 ### What it asserts before it finishes
 
 Two checks run against the image that was actually published, pulled back by

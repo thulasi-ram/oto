@@ -141,6 +141,48 @@ secrets:
 # signing secret are process-wide, and only those two are process configuration.
 
 # -----------------------------------------------------------------------------
+# Who sequences the two Jobs
+#
+# ⭐ THE MIGRATE AND BOOTSTRAP JOBS HAVE TO RUN IN AN ORDER, AND ONLY THE THING
+# APPLYING THE MANIFESTS CAN ENFORCE ONE. Under `helm install` that is helm's own
+# hook phases. Under a GitOps controller it is not: Argo CD reads
+# `helm.sh/hook: pre-install` and maps it onto PreSync, which runs before the
+# release's ordinary resources are applied — including, on a first install, the
+# ExternalSecret that was going to materialise the database URL. The Job fails
+# with "secret not found", and no amount of retrying fixes it, because the object
+# it is waiting for has not been created yet.
+#
+# ⛔ SO THE ANNOTATIONS ARE A VALUE AND NOT A CONSTANT. A consumer patching
+# rendered output to change them is a consumer whose patch silently stops
+# matching on the next chart version.
+# -----------------------------------------------------------------------------
+
+hooks:
+  # `helm` | `argocd` | `none`
+  #
+  # helm    — helm's own hook phases. Correct for `helm install`/`helm upgrade`,
+  #           and the default because that is SPEC acceptance criterion 31's
+  #           install path.
+  # argocd  — Argo CD Sync hooks on ascending sync waves. A wave is gated on the
+  #           health of the previous one, so an ExternalSecret at wave 0 is
+  #           actually READY before the migrate Job at wave 1 starts — which is
+  #           the ordering helm's phases cannot express.
+  # none    — no hook annotations at all. Both Jobs become ordinary resources,
+  #           applied with everything else in no particular order. For a consumer
+  #           who sequences them by some other means, or runs them out of band.
+  provider: helm
+  # The sync waves used when provider is `argocd`, as strings because that is
+  # what the annotation carries.
+  #
+  # ⚠️ WAVE 0 IS LEFT FREE ON PURPOSE. It is where an unannotated resource lands
+  # by default, so it is where a consumer's ExternalSecret, its SecretStore and
+  # the rest of their own prerequisites sit. Migrating at wave 1 means "after all
+  # of that is healthy".
+  waves:
+    migrate: "1"
+    bootstrap: "2"
+
+# -----------------------------------------------------------------------------
 # Migrations — SPEC acceptance criterion 32
 # -----------------------------------------------------------------------------
 
@@ -180,9 +222,14 @@ migration:
 # ⭐ A MIGRATED DATABASE HAS NO CREDENTIAL THAT CAN REACH IT. v1 has no
 # org-creation API and no signup, so `oto bootstrap` is how a fresh install
 # becomes usable: it creates the first org, the first user and the first API
-# token. It refuses to run if the deployment already has an org, so re-running it
-# on an upgrade is safe and is a no-op — which is why it is a post-install hook
-# only, not post-upgrade.
+# token.
+#
+# ⚠️ RE-RUNNING IT IS A NO-OP IN THE DATABASE AND THE JOB PASSES `--if-needed` SO
+# THAT IT IS ALSO AN EXIT 0. Those are two different claims and an earlier version
+# of this comment made only the first: `oto bootstrap` refuses when an org already
+# exists, and a refusal is a non-zero exit, so a hook that re-runs reported a
+# failure for doing exactly what it should. helm's post-install phase never
+# re-runs and hid it; Argo CD re-runs on every sync and did not.
 #
 # ⛔ IT PRINTS THE API TOKEN ONCE, TO THE JOB'S STDOUT, AND NEVER TO THE LOGGER.
 # Read it with `kubectl logs job/<release>-bootstrap` and store it; when the Job

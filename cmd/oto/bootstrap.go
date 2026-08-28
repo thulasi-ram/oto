@@ -39,12 +39,23 @@ func bootstrapCommand(ctx context.Context, dsn string, args []string) error {
 		email       = fs.String("email", "", "first user's email address (required)")
 		displayName = fs.String("name", "", "first user's display name (defaults to the email)")
 		tokenName   = fs.String("token-name", "bootstrap", "label for the API token this mints")
+		// ⭐ FOR A HOOK THAT RE-RUNS, AND ONLY FOR THAT. A GitOps controller has
+		// no notion of "only on install": Argo CD maps helm's post-install hook
+		// onto PostSync and runs it on EVERY sync, so the ordinary refusal makes
+		// the second sync — and every sync after it — report a failed hook for
+		// doing precisely what it should. The default stays strict, because at a
+		// terminal the refusal is the whole point: a silent no-op is misread as
+		// success, and the alternative to refusing is resetting an existing
+		// account's password, which is a takeover primitive.
+		ifNeeded = fs.Bool("if-needed", false,
+			"exit 0 instead of refusing when the deployment already has an org (for a hook that re-runs)")
 	)
 	fs.Usage = func() {
 		fmt.Fprint(os.Stderr, `usage: oto bootstrap --org-slug SLUG --email ADDRESS [flags]
 
 Creates the first org, its first user and its first API token, and prints the
-token ONCE. Refuses to run if this deployment already has an org.
+token ONCE. Refuses to run if this deployment already has an org, unless
+--if-needed is given, which makes that case an exit 0 for a hook that re-runs.
 
 The password is read from OTO_BOOTSTRAP_PASSWORD, never from a flag: a flag
 value is visible in shell history and in `+"`ps`"+`.
@@ -77,6 +88,13 @@ flags:
 		TokenName:   *tokenName,
 	}, time.Now())
 	if err != nil {
+		// ⛔ THIS ONE ERROR, AND NOTHING ELSE. A bad password, an unreachable
+		// database or a malformed slug still fails — `--if-needed` says "an org
+		// already existing is not a failure", not "nothing here can fail".
+		if *ifNeeded && errors.Is(err, app.ErrAlreadyBootstrapped) {
+			fmt.Println("this deployment already has an org; bootstrap did nothing")
+			return nil
+		}
 		return err
 	}
 

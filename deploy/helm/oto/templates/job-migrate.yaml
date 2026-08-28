@@ -20,9 +20,7 @@ metadata:
     {{- with .Values.commonAnnotations }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
-    helm.sh/hook: pre-install,pre-upgrade
-    helm.sh/hook-weight: "-10"
-    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+    {{- include "oto.hookAnnotations" (dict "ctx" . "job" "migrate-secret") | nindent 4 }}
 type: Opaque
 stringData:
   {{ .Values.existingSecretKeys.databaseUrl }}: {{ .Values.secrets.databaseUrl | quote }}
@@ -44,11 +42,17 @@ boot. A hand-written copy of River's DDL would drift from the driver on its next
 release, and the queue's claim query is the one piece of SQL in this system where
 a subtle divergence loses an alert rather than failing to compile.
 
-⛔ HOOK WEIGHTS. -10 the Secret, -5 this Job, so the Job's credentials exist
-before it starts and both land before every ordinary resource in the release. The
-API and worker Deployments are ordinary resources, so they are only created once
-this Job has succeeded — which is what stops a fresh worker from booting against
-a database with no river_job table.
+⛔ HOOK WEIGHTS, UNDER `hooks.provider: helm`. -10 the Secret, -5 this Job, so
+the Job's credentials exist before it starts and both land before every ordinary
+resource in the release. The API and worker Deployments are ordinary resources, so
+they are only created once this Job has succeeded — which is what stops a fresh
+worker from booting against a database with no river_job table.
+
+⚠️ UNDER `hooks.provider: argocd` THE ORDERING PRIMITIVE IS A SYNC WAVE INSTEAD,
+and it is not the same annotation spelled differently. Argo maps helm's
+`pre-install` onto PreSync, which runs before wave 0 has been applied at all — so
+on a first install this Job would start before a consumer's ExternalSecret
+existed and fail with "secret not found". See `oto.hookAnnotations`.
 
 ⛔ DELETE POLICY. `before-hook-creation` clears the previous run's Job so an
 upgrade is not rejected by an immutable Job spec; `hook-succeeded` removes it
@@ -66,9 +70,7 @@ metadata:
     {{- with .Values.commonAnnotations }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
-    helm.sh/hook: pre-install,pre-upgrade
-    helm.sh/hook-weight: "-5"
-    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+    {{- include "oto.hookAnnotations" (dict "ctx" . "job" "migrate") | nindent 4 }}
 spec:
   backoffLimit: {{ .Values.migration.backoffLimit }}
   activeDeadlineSeconds: {{ .Values.migration.activeDeadlineSeconds }}

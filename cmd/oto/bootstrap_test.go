@@ -175,6 +175,68 @@ func TestBootstrapCreatesAWorkingInstallAndThenRefusesToRunAgain(t *testing.T) {
 	require.NoError(t, err, "the refused run disturbed the live credential")
 }
 
+// ⭐ TestBootstrapIfNeededIsIdempotentWithoutTouchingTheExistingOrg.
+//
+// `--if-needed` exists for a hook that re-runs. Argo CD maps helm's post-install
+// hook onto PostSync and runs it on every sync, so the ordinary refusal — exit
+// non-zero — makes every sync after the first report a failed hook for doing
+// exactly what it should. The chart's Job passes this flag for that reason.
+//
+// ⛔ THE FLAG CHANGES THE EXIT CODE AND NOTHING ELSE. What must NOT change is
+// everything the refusal was protecting: no second org, no password reset on the
+// existing account, and no credential printed to a log somebody is now shipping.
+func TestBootstrapIfNeededIsIdempotentWithoutTouchingTheExistingOrg(t *testing.T) {
+	h := harness.New(t)
+	t.Setenv("OTO_BOOTSTRAP_PASSWORD", bootstrapPassword)
+
+	out, err := capture(t, func() error {
+		return bootstrapCommand(h.Ctx, h.DSN, []string{
+			"--org-slug", "acme", "--email", "operator@example.test", "--if-needed",
+		})
+	})
+	require.NoError(t, err)
+	require.Contains(t, out, "oto_pat_", "the first run must still print the token")
+
+	var hashBefore string
+	require.NoError(t, h.Pool.QueryRow(h.Ctx,
+		`SELECT password_hash FROM users WHERE email = 'operator@example.test'`).Scan(&hashBefore))
+
+	// The re-run: a different org, a different address, a different password —
+	// the shape a re-synced hook would arrive in if any of the values had been
+	// edited between syncs.
+	t.Setenv("OTO_BOOTSTRAP_PASSWORD", "a-completely-different-password")
+	out, err = capture(t, func() error {
+		return bootstrapCommand(h.Ctx, h.DSN, []string{
+			"--org-slug", "attacker", "--email", "attacker@example.test", "--if-needed",
+		})
+	})
+	require.NoError(t, err, "--if-needed still exited non-zero; every re-sync reports a failed hook")
+	require.Contains(t, out, "already has an org", "an exit 0 that says nothing is indistinguishable from having run")
+	require.NotContains(t, out, "oto_pat_", "the no-op run printed a credential")
+
+	orgs, users, tokens := counts(t, h)
+	require.Equal(t, 1, orgs, "the no-op run created an org")
+	require.Equal(t, 1, users, "the no-op run created a user")
+	require.Equal(t, 1, tokens, "the no-op run minted a token")
+
+	var hashAfter string
+	require.NoError(t, h.Pool.QueryRow(h.Ctx,
+		`SELECT password_hash FROM users WHERE email = 'operator@example.test'`).Scan(&hashAfter))
+	require.Equal(t, hashBefore, hashAfter,
+		"--if-needed reset the first user's password, which is a takeover primitive")
+
+	// ⛔ AND IT IS NOT A BLANKET "NOTHING FAILS". The flag forgives one error;
+	// a missing password is still a refusal.
+	t.Setenv("OTO_BOOTSTRAP_PASSWORD", "")
+	_, err = capture(t, func() error {
+		return bootstrapCommand(h.Ctx, h.DSN, []string{
+			"--org-slug", "acme", "--email", "operator@example.test", "--if-needed",
+		})
+	})
+	require.Error(t, err, "--if-needed swallowed an unrelated failure")
+	require.Contains(t, err.Error(), "OTO_BOOTSTRAP_PASSWORD")
+}
+
 // ⛔ TestBootstrapRefusesWithoutThePasswordEnvironmentVariable.
 //
 // The password is read from OTO_BOOTSTRAP_PASSWORD and not from a flag, because a

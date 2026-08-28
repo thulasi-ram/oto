@@ -11,9 +11,18 @@ API token (cmd/oto/bootstrap.go).
 the same authority: creating the first org over unauthenticated HTTP would be
 account takeover with a friendly name.
 
-⛔ POST-INSTALL ONLY, NEVER POST-UPGRADE. It refuses to run when the deployment
-already has an org, so on an upgrade it would fail the release for doing exactly
-what it should.
+⛔ POST-INSTALL ONLY UNDER helm, NEVER POST-UPGRADE — and that is not enough on
+its own. `oto bootstrap` exits non-zero when the deployment already has an org,
+which is right at a terminal and wrong for a hook that re-runs. helm's
+post-install phase never re-runs, so the mismatch stays invisible there; a GitOps
+controller has no such phase, and Argo CD re-runs whatever it mapped the hook onto
+on EVERY sync. So the Job passes `--if-needed`, which turns that one error into an
+exit 0 and leaves every other failure a failure (cmd/oto/bootstrap.go).
+
+Without it, `hooks.provider: argocd` reports a failed hook on the second sync and
+on every sync after it, for doing exactly what it should — and the values.yaml
+claim that re-running is "safe and a no-op" is true of the database and false of
+the exit code.
 
 ⛔ THE TOKEN IS PRINTED ONCE, TO STDOUT, AND NEVER TO THE LOGGER — the logger is
 structured, shipped and retained, and a bearer token in it is a bearer token in
@@ -33,9 +42,7 @@ metadata:
     {{- with .Values.commonAnnotations }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
-    helm.sh/hook: post-install
-    helm.sh/hook-weight: "5"
-    helm.sh/hook-delete-policy: before-hook-creation
+    {{- include "oto.hookAnnotations" (dict "ctx" . "job" "bootstrap") | nindent 4 }}
 spec:
   backoffLimit: 0
   ttlSecondsAfterFinished: {{ .Values.bootstrap.ttlSecondsAfterFinished }}
@@ -68,6 +75,18 @@ spec:
             - --name={{ . }}
             {{- end }}
             - --token-name={{ .Values.bootstrap.tokenName }}
+            # ⛔ ALWAYS, AND IT IS NOT A VALUE. A Job in a chart is applied by
+            # something that may apply it again; there is no reading of "the
+            # deployment already has an org" that should fail a sync. The strict
+            # refusal stays the default of `oto bootstrap` itself, where a person
+            # is watching and a silent no-op would be misread as success.
+            #
+            # ⛔ THE CHART CANNOT DO THIS ITSELF, WHICH IS WHY THE FLAG EXISTS.
+            # The runtime image is distroless/static — there is no shell in it, so
+            # there is no `|| true`, no wrapper script and no exit-code test
+            # available to a container spec. Tolerating this had to be the
+            # binary's own behaviour.
+            - --if-needed
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           # ⛔ THE PASSWORD ARRIVES AS OTO_BOOTSTRAP_PASSWORD AND NOT AS A FLAG.
