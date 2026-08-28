@@ -37,3 +37,8 @@ deploy/alertmanager/local/
 # --- Tooling caches ---
 .golangci-cache/
 .tmp/
+# A locally-run scarab-server writes its object store INSIDE .scarab/
+# (SCARAB_OBJECT_DIR defaults to ./.scarab/objects). Ignore that path and
+# only that path: .scarab/build.yaml beside it is tracked source, and a
+# blanket /.scarab rule would silently swallow it.
+/.scarab/objects/

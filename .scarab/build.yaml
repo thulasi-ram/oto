@@ -1,0 +1,94 @@
+# The Scarab counterpart of .github/workflows/release.yml's `image` job: build
+# the oto image and push it to GHCR. Nothing else — `ci` on GitHub Actions still
+# owns lint/vet/test, and this pipeline deliberately re-answers none of it.
+#
+# ⭐ THE IMAGE REFERENCE IS A LITERAL, AND IT HAS TO BE. Scarab resolves
+# `${{ … }}` on exactly three step surfaces — `image:`, `command:` and `env:`
+# values (scarab-pipeline `interpolatable_strings`, scheduler `interpolate_spec`).
+# A build step's `build.image:` is NOT one of them: it is copied verbatim from
+# this file into the BuildKit `--output type=image,name=…` argument, so
+# `ghcr.io/thulasi-ram/oto:${{ event.sha }}` would push a tag with braces in it
+# rather than a commit. Every tag this pipeline can publish is therefore one
+# somebody typed here, which is why `main` is the only one and why a `v*.*.*`
+# release still belongs to release.yml (see "what this cannot do" below).
+#
+# ⚠️ THE PUBLISHED IMAGE ANSWERS `oto dev`. Scarab's `BuildSpec` carries
+# `context`, `dockerfile`, `image` and `push` and nothing else — there is no
+# build-arg surface — so the Dockerfile's VERSION/COMMIT/BUILD_DATE ARGs keep
+# their defaults and GET /api/v1/version cannot say which build it is. That is
+# survivable for a moving `main` tag, whose whole promise is "the tip", and it is
+# exactly why a release must not be cut from here.
+
+on:
+  # ⛔ NOT every push. `main` only. A build step's tag is a literal, so a push on
+  # any other branch would overwrite `:main` with something that is not main.
+  push:
+    when: "event.branch == 'main'"
+  # Re-publish the tip on demand — a GHCR outage, a registry credential that has
+  # only just been granted, a first run after wiring the repo up.
+  manual: {}
+
+steps:
+  # Zero configuration by design (ADR-0045): the repo, ref, resolved SHA and the
+  # short-TTL checkout credential all come from the run's trigger context.
+  - id: checkout
+    clone: {}
+
+  - id: image
+    needs: [checkout]
+
+    # ⭐ NO REGISTRY CREDENTIAL IS AUTHORED HERE, AND NONE MAY BE. A build step
+    # resolves its push credential at launch, in this order (ADR-0018 amendment):
+    # a scoped `REGISTRY_AUTH` secret (dockerconfigjson, repo scope then org),
+    # else one the GitHub adapter derives for ghcr.io — an installation token
+    # minted with `packages: write`, handed to BuildKit as a mounted
+    # dockerconfigjson and never as an environment variable.
+    #
+    # The derived path is best-effort and fails SILENTLY to anonymous: an App
+    # without the packages permission yields no credential, the build still runs,
+    # and the push is what fails, at the registry, with an auth error. So if this
+    # step builds happily and then dies on push, the fix is the App's `packages`
+    # permission (or a `REGISTRY_AUTH` secret at repo scope), not this file.
+    build:
+      # Workspace-relative. The whole tree: the Dockerfile's `COPY . .` needs
+      # go.mod, go.sum, cmd/ and internal/, and .dockerignore prunes the rest.
+      context: .
+      dockerfile: Dockerfile
+      # The namespace is the repository's own owner, which is the one namespace
+      # the forge-derived GHCR credential is minted for — `registry_credential`
+      # only attaches when the image reference starts with `ghcr.io/`, and the
+      # installation token is scoped to this repository.
+      image: ghcr.io/thulasi-ram/oto:main
+      push: true
+
+    # ⚠️ SINGLE-ARCHITECTURE, WHATEVER THE BUILD NODE IS. Scarab compiles a build
+    # step to one `buildctl build` with no `--opt platform=`, so there is no
+    # multi-arch manifest list here the way release.yml produces one. The
+    # Dockerfile still cross-compiles correctly (CGO is off and GOARCH comes from
+    # $TARGETARCH), it is simply only ever asked for one target. An arm64 node
+    # pool must keep pulling a release tag, not `:main`.
+
+    # An uncached module download plus a full `go build` — there is no layer
+    # cache yet (ADR-0018), so every run pays for both.
+    timeout: 1800
+    resources:
+      cpu_millis: 2000
+      memory_mib: 4096
+
+# --- What this pipeline deliberately cannot do -------------------------------
+#
+# `.github/workflows/release.yml` stays the release path, and these are the four
+# reasons, none of which a differently-written YAML file would fix:
+#
+#   1. Version tags. `{{version}}`, `{{major}}.{{minor}}`, the `v`-prefixed alias
+#      and the long SHA are all derived from the git tag; `build.image` is a
+#      literal, so none of them can be computed here.
+#   2. The linker stamps. No build-arg surface, so no VERSION/COMMIT/BUILD_DATE,
+#      so no image that knows which build it is — and no way to assert it does.
+#   3. linux/arm64. One `buildctl` invocation, one platform, no manifest list.
+#   4. The provenance attestation. `attest-build-provenance` is a GitHub OIDC
+#      action; Scarab's own supply-chain story (ADR-0015 keyless cosign) is not
+#      wired to the build step yet.
+#
+# What it does do, every time main moves: prove the Dockerfile still builds and
+# leave a pullable `:main` at the tip.
