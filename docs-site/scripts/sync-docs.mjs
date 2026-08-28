@@ -151,6 +151,43 @@ if (existsSync(ASSET_SRC)) {
 	cpSync(ASSET_SRC, ASSET_OUT, { recursive: true });
 }
 
+// The decorative ink (§M.9) that custom.css spends on headings and the splash
+// hero. The art lives in web/public/motifs/ and is documented there; this is a
+// mirror, gitignored exactly like public/assets/ above, so the two sites cannot
+// drift into carrying different drawings of the same motif.
+//
+// ⛔ IT LANDS IN src/assets/, NOT public/, AND THAT IS THE POINT. custom.css
+// reaches these through a RELATIVE url(), so Vite resolves and rewrites them at
+// build time and the site's `base` is applied by the same machinery that applies
+// it to every other bundled asset. An absolute url("/motifs/…") out of public/
+// would need the base spelled by hand, and a mask that 404s does not present as
+// a broken image — it presents as decoration that silently never appears, or as a
+// flat opaque block of tint where the mask should have been.
+//
+// ⚠️ A RELATIVE REFERENCE TO A MISSING FILE IS NOT A BUILD FAILURE. That was the
+// assumption this comment shipped with and it is wrong: Vite warns (`didn't
+// resolve at build time, it will remain unchanged to be resolved at runtime`) and
+// writes the path through untouched, so the build goes green and the ink 404s.
+// Two things cover that gap, and both were checked by breaking them on purpose:
+// the `else` below refuses to run at all when the source is gone, and
+// check-links.mjs now walks every url() in the built CSS. Relative is still the
+// right call — it is what makes `base` automatic — but it is not self-policing.
+const MOTIF_SRC = join(REPO_ROOT, "web", "public", "motifs");
+const MOTIF_OUT = join(import.meta.dirname, "..", "src", "assets", "motifs");
+if (existsSync(MOTIF_SRC)) {
+	rmSync(MOTIF_OUT, { recursive: true, force: true });
+	cpSync(MOTIF_SRC, MOTIF_OUT, { recursive: true });
+} else {
+	// Hard stop, not a warning. A missing mirror does NOT fail the Astro build:
+	// Vite reports `didn't resolve at build time, it will remain unchanged to be
+	// resolved at runtime` and emits the path verbatim, so the site builds green
+	// and the ink silently 404s. Refusing to continue here is what turns that
+	// into something a person finds out about.
+	console.error("check-motifs: web/public/motifs/ is not on disk — nothing to mirror into src/assets/motifs/.");
+	console.error("custom.css masks would build green and 404 at runtime, so this is a hard stop.");
+	process.exit(1);
+}
+
 // Name what is about to be destroyed. Anything in an owned directory that this
 // run would not write back has no source under docs/ and is not coming back —
 // so say which file, by name, rather than trusting a comment to stay accurate.

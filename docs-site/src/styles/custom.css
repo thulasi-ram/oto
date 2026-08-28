@@ -1,10 +1,376 @@
 /*
+ * oto's brand, applied to the docs site.
+ *
+ * ⛔ THIS FILE IS UNLAYERED AND starlight-theme-black IS INSIDE `@layer black`,
+ * WHICH IS THE ONLY REASON ANY OF THIS WINS WITHOUT `!important`. Unlayered
+ * declarations beat layered ones at equal specificity, regardless of order. If a
+ * future edit wraps this file in a layer, every override below silently loses and
+ * the site goes back to looking like the stock theme.
+ *
+ * The palette is DESIGN.md's — Washi & Ink (light) and Konshi Sutra (dark), with
+ * the kincha/kindei gold accent. It is NOT web/src/design/tokens.css. Those are
+ * two deliberately different systems and ADR 0030 is the argument: the product's
+ * Tier A accent is a beni crimson chosen to sit clear of the six Tier B state
+ * hues, and gold was rejected there precisely because it lands in `acked`'s hue
+ * lane. That reasoning does not apply to a documentation site, which has no state
+ * colours to collide with — so gold stays where the ADR parks it, on "the
+ * marketing site's hero, wordmark, and spotlight glow". Copying the product's
+ * beni here would import a constraint this surface does not have.
+ * ------------------------------------------------------------------------- */
+
+/* ---------------------------------------------------------------------------
+ * 1. The palette.
+ *
+ * The theme derives everything from a handful of primitives: `--background`,
+ * `--foreground`, `--gray-1…7`, and the accent/semantic ramps. Every component
+ * rule it ships reads those rather than hardcoding a colour, so repainting the
+ * primitives repaints the site — cards, asides, the search box, code blocks and
+ * the sidebar all follow without being named here. That is why this section is
+ * short and why it should stay short: a component-by-component override list is
+ * the thing this avoids.
+ *
+ * The gray ramp runs 1 → 7 from nearest-the-text to nearest-the-background in
+ * BOTH themes (the theme flips the direction, not the roles), so the washi and
+ * konshi ramps below are ordered to match rather than mirrored.
+ * ------------------------------------------------------------------------- */
+
+:root[data-theme="light"] {
+	/* Washi & Ink — sumi ink on cream washi paper. */
+	--background: #f3ede2; /* canvas */
+	--foreground: #2b2825; /* ink */
+	/* ⛔ THE RAMP IS MAPPED BY WHAT THE THEME DOES WITH EACH STEP, NOT BY WHICH
+	   DESIGN.md SWATCH SHARES ITS NAME. `--gray-3` and `--gray-4` become
+	   `--muted-foreground`, which paints the table-of-contents, card body copy,
+	   aside content and step text — body-weight TEXT, owed 4.5:1. Taking
+	   DESIGN.md's `muted` (#978f7e) for `--gray-4` because both are called muted
+	   is how this file first shipped, and it put the TOC at 2.75:1, down from the
+	   stock ramp's 4.5:1. DESIGN.md's `body` (#7d7565) does not clear it either
+	   (3.9:1 on this canvas) — that palette is drawn for headlines and short
+	   marketing copy on a page with no sidebar, and a documentation site asks
+	   more of the same swatch. The text steps below come from the PRODUCT's
+	   washi neutrals, which are measured for exactly this job.
+	   Every step that carries text, measured against --background #f3ede2:
+	     gray-1 #2b2825 → 12.6:1 ✓    gray-3 #5c5347 →  6.4:1 ✓
+	     gray-2 #4a443c →  8.3:1 ✓    gray-4 #675d4e →  5.5:1 ✓
+	   gray-5/6/7 are chrome — pill grounds, hairlines, card fills — and carry no
+	   glyphs, so they stay DESIGN.md's. */
+	--gray-1: #2b2825; /* ink */
+	--gray-2: #4a443c;
+	--gray-3: #5c5347;
+	--gray-4: #675d4e; /* --muted-foreground in light */
+	--gray-5: #b3a996; /* muted-soft — pill grounds, non-text */
+	--gray-6: #ded3c0; /* hairline */
+	--gray-7: #f8f4ec; /* surface-card */
+
+	/* Kincha gold. Scarce by construction: it carries the accent and nothing
+	   else, exactly as DESIGN.md rations it. */
+	--brand: #b8935a; /* primary */
+	--brand-active: #97753f; /* primary-active */
+	--brand-glow: #d9b876; /* primary-glow */
+	--on-brand: #2b2825; /* on-primary — ink, never white */
+
+	/* ⛔ THE ONLY GOLD THAT MAY BE TEXT, AND THE ONLY INVENTED VALUE IN THIS
+	   FILE. Kincha is a mid-tone: #b8935a on washi is 2.5:1 and #97753f is
+	   3.7:1, both short of the 4.5:1 normal text owes. That is not an oversight
+	   in DESIGN.md — every job it gives gold is a NON-text one (primary CTAs,
+	   wordmark, spotlight glow), and the CTA works precisely because gold is the
+	   background there and `on-primary` ink is the text. So a docs site, which
+	   does want a coloured link and a coloured current-page row, needs a step
+	   the marketing palette never had to define. This is kincha carried down to
+	   a kuchiba depth, and it exists so that no rule below is tempted to reach
+	   for `--brand` on a light ground.
+	     #7d5f2e on --background #f3ede2 → 5.1:1 ✓
+	     #7d5f2e on --gray-7    #f8f4ec → 5.4:1 ✓  (cards, sidebar row)
+	   Dark needs no invention: DESIGN.md's own primary-active clears easily. */
+	--brand-text: #7d5f2e;
+
+	--sakura: #cf7e97; /* sakura-deep */
+	--kumo-line: #a89f8a;
+
+	/* Decorative ink, §M.9's weight: 6% of the ink colour. */
+	--wash: color-mix(in oklab, var(--foreground) 6%, transparent);
+}
+
+:root[data-theme="dark"] {
+	/* Konshi Sutra — indigo manuscript paper written on in gold and silver. */
+	--background: #1b2333; /* canvas */
+	--foreground: #efece3; /* ink */
+	/* Same mapping rule as light. Konshi is more forgiving — the gold and the
+	   greys are both the light end here — and DESIGN.md's own steps clear it.
+	   Measured against --background #1b2333:
+	     gray-1 #efece3 → 13.3:1 ✓    gray-3 #a0a6b0 →  6.5:1 ✓
+	     gray-2 #b8bcc2 →  8.6:1 ✓    gray-4 #8992a1 →  5.1:1 ✓ */
+	--gray-1: #efece3; /* ink */
+	--gray-2: #b8bcc2; /* body */
+	--gray-3: #a0a6b0; /* --muted-foreground in dark */
+	--gray-4: #8992a1; /* muted */
+	--gray-5: #5f6878; /* muted-soft — pill grounds, non-text */
+	--gray-6: #2c3750; /* hairline */
+	--gray-7: #232d40; /* surface-card */
+
+	/* Kindei gold. */
+	--brand: #c9a668; /* primary */
+	--brand-active: #e0bd82; /* primary-active */
+	--brand-glow: #e6cf9a; /* primary-glow */
+	--on-brand: #1b2333; /* on-primary */
+
+	/* On konshi indigo the gold is the light end of the pair, so the text step is
+	   DESIGN.md's primary-active unchanged — no new value needed.
+	     #e0bd82 on --background #1b2333 → 9.0:1 ✓
+	     #e0bd82 on --gray-7    #232d40 → 7.8:1 ✓  (cards, sidebar row) */
+	--brand-text: #e0bd82;
+
+	--sakura: #e6a2b7;
+	--kumo-line: #586a86;
+
+	--wash: color-mix(in oklab, var(--foreground) 6%, transparent);
+}
+
+/* ---------------------------------------------------------------------------
+ * 2. Where the gold is spent.
+ *
+ * The stock theme's "accent" is a neutral — it maps `--sl-color-text-accent` and
+ * `--primary` to `--foreground`, so the site has no brand colour at all. These
+ * are the places that become gold, and the list is deliberately closed: current
+ * nav item, links, focus ring, primary button, selection, heading rule. Adding a
+ * sixth is how a scarce accent stops being scarce.
+ *
+ * ⛔ THE SPLIT BETWEEN `--brand` AND `--brand-text` IS THE RULE THIS SECTION
+ * EXISTS TO HOLD, AND IT IS NOT A STYLISTIC PREFERENCE.
+ *   `--brand`      may only be a BACKGROUND, a border, a rule, or a mask tint —
+ *                  anywhere the gold is the ground and ink sits on it, or where
+ *                  nothing sits on it at all.
+ *   `--brand-text` is the only one that may colour glyphs.
+ * Reaching for `--brand` on text is a 2.5:1 pair in light and it is the exact
+ * mistake this file shipped with for one revision: the sidebar's current row
+ * went gold-on-slate at 2.44:1, DOWN from the 4.6:1 the stock neutral had. A
+ * brand repaint that quietly lowers contrast is a regression wearing the costume
+ * of a design improvement.
+ *
+ * ⚠️ AND NOTHING GATES IT HERE. The product has contrast.test.ts recomputing
+ * every §M.4/§M.5 pair; this directory has no test at all — `just docs-check`
+ * builds and checks links, and `just lint-vocabulary` does not read this tree.
+ * The measured ratios in section 1 are therefore load-bearing COMMENTS, which is
+ * the weakest form of enforcement there is. Re-measure by hand when you touch a
+ * value, because nothing else will.
+ * ------------------------------------------------------------------------- */
+
+:root {
+	/* Text, so `--brand-text`. Starlight core paints the current table-of-contents
+	   entry and several inline accents straight from this one. */
+	--sl-color-text-accent: var(--brand-text);
+	--sl-color-accent: var(--brand);
+	--sl-color-accent-high: var(--brand-text);
+
+	/* Background with ink on top — this is gold's own job, and the pairing is
+	   DESIGN.md's: `on-primary` is ink, "not white". Ink on kincha is 5.2:1 and
+	   konshi on kindei is 7.0:1. */
+	--primary: var(--brand);
+	--primary-foreground: var(--on-brand);
+	--ring: var(--brand);
+
+	--selection: var(--brand);
+	--selection-foreground: var(--on-brand);
+}
+
+/* Body copy links pick up gold on the underline and gold on hover. The theme
+   underlines them in `--muted-foreground` and leaves the text at `--foreground`;
+   keeping the text colour is right (a page of gold links is a page of noise) and
+   moving the underline is what makes them read as oto's.
+
+   The underline is decoration, so it may use `--brand` at 55%; the hover, which
+   recolours the glyphs, may not. */
+.sl-markdown-content a:not([class]) {
+	text-decoration-color: color-mix(in oklab, var(--brand) 55%, transparent);
+}
+
+.sl-markdown-content a:not([class]):hover {
+	color: var(--brand-text);
+	text-decoration-color: var(--brand-text);
+}
+
+/* The current page in the sidebar: gold glyphs and a gold rule down the inside
+   edge. The rule is `--brand`, which it may be — it is a rule, not text.
+   The stock pill is dropped rather than recoloured, and that is a legibility
+   decision rather than a taste one. Its background is `--accent`, a mid slate in
+   dark and a near-white in light, and gold glyphs on that slate is the 2.44:1
+   pair section 2's header describes. Washing the pill in gold instead was the
+   first attempt and it is worse than it looks: a `color-mix(… , transparent)`
+   ground cannot be read off the page with any confidence — Chrome serialises it
+   as `oklab(… / .14)`, so the row's real contrast becomes something you compute
+   rather than something you can check. Sitting the text on the sidebar's own
+   background, which is `--background` unchanged, is the version whose ratio is
+   the one already measured in section 1.
+
+   `box-shadow` rather than `border-inline-start` so the row does not shift by
+   2px when it becomes current. */
+.sidebar-content a[aria-current="page"] {
+	color: var(--brand-text);
+	background-color: transparent;
+	box-shadow: inset 2px 0 0 var(--brand);
+}
+
+/* The splash page's primary action. `.primary` already reads `--primary`, so it
+   is gold by the block above; this is the hover, which mixes toward the
+   background and would otherwise dull the gold rather than lift it. */
+.sl-link-button.primary:hover {
+	background-color: var(--brand-active);
+	color: var(--on-brand);
+}
+
+/* Card icons. The stock theme rotates orange/purple/green/red across four cards,
+   which against washi paper reads as a toybox — and on a site whose product
+   reserves saturated colour for alert state, a decorative rainbow is the exact
+   wrong signal. The rotation is kept (it still tells six cards apart) but spent
+   in brand tints: gold, sakura, kumo. */
+.sl-markdown-content .card:nth-child(4n + 1) {
+	--card-icon-background: color-mix(in oklab, var(--brand) 22%, var(--secondary));
+}
+.sl-markdown-content .card:nth-child(4n + 2) {
+	--card-icon-background: color-mix(in oklab, var(--sakura) 20%, var(--secondary));
+}
+.sl-markdown-content .card:nth-child(4n + 3) {
+	--card-icon-background: color-mix(in oklab, var(--kumo-line) 22%, var(--secondary));
+}
+.sl-markdown-content .card:nth-child(4n + 4) {
+	--card-icon-background: color-mix(in oklab, var(--brand-glow) 22%, var(--secondary));
+}
+
+/* ---------------------------------------------------------------------------
+ * 3. Decorative ink — the motifs, as masks.
+ *
+ * Ported from web/src/index.css's `oto-ink` utility, and the three rules in
+ * web/public/motifs/README.md apply here verbatim because they are properties of
+ * the ART, not of the product:
+ *
+ *   • Every file carries `preserveAspectRatio="none"`. Stretching to the mask box
+ *     is intended; without it the art letterboxes and the mask goes TRANSPARENT
+ *     at the edges, which presents as the decoration having vanished.
+ *   • The art is opaque black on transparent and `mask-mode` reads ALPHA from it.
+ *     The colour comes from `background-color` at the call site, never the file,
+ *     which is how one asset is correct in both themes.
+ *   • `swipe.svg` and `rule.svg` are two assets for two boxes. Only `rule.svg` is
+ *     used here; do not stretch it to heading height, it reads as a wave.
+ *
+ * ⛔ `forced-colors` IS NOT OPTIONAL AND IS NOT A NICETY. The OS replaces the
+ * tint with a system colour at FULL strength, so a 6% wash becomes an opaque slab
+ * over the content under it. Decorative ink is exempt from WCAG 1.4.3/1.4.11 only
+ * for as long as it is genuinely decorative, so it leaves the page entirely.
+ *
+ * These are pseudo-elements, which is how they stay out of the accessibility
+ * tree — there is no DOM node to label, so there is nothing to mislabel. In the
+ * product that job belongs to Ink.tsx's `aria-hidden`; here the absence of an
+ * element does it, and that is the only reason no ARIA appears below.
+ *
+ * `sakura.svg` is deliberately NOT used. It is one fallen petal and it is bound
+ * to the `expired` empty state "and nowhere else" — it means transience, and
+ * spending it as decoration on a docs page spends a word the product still needs.
+ * ------------------------------------------------------------------------- */
+
+.page-title-header h1,
+.sl-markdown-content h2,
+.hero {
+	position: relative;
+}
+
+.page-title-header h1::after,
+.sl-markdown-content h2::after,
+.hero::before {
+	content: "";
+	position: absolute;
+	pointer-events: none;
+	user-select: none;
+	background-color: var(--wash);
+	mask-repeat: no-repeat;
+	mask-size: 100% 100%;
+	mask-position: center;
+	-webkit-mask-repeat: no-repeat;
+	-webkit-mask-size: 100% 100%;
+	-webkit-mask-position: center;
+}
+
+@media (forced-colors: active) {
+	.page-title-header h1::after,
+	.sl-markdown-content h2::after,
+	.hero::before {
+		display: none;
+	}
+}
+
+/* A tapered brush pass under the page title — the motif's documented home is
+   "under a page heading", which is what an h1 is.
+
+   ⛔ `.page-title-header h1`, NOT `.sl-markdown-content …level-h1`. Starlight
+   renders a content page's title from its frontmatter in a `.page-title-header`
+   OUTSIDE the markdown container, so the h1 is the one heading on the page that
+   `.sl-markdown-content` does not contain and the one that gets no
+   `.sl-heading-wrapper`. Scoping this the way the h2 rule below is scoped
+   produces a selector that matches nothing — and a decoration that matches
+   nothing looks identical to one that was never added. */
+.page-title-header h1::after {
+	inset-inline-start: 0;
+	bottom: calc(var(--spacing) * -2);
+	width: min(14rem, 60%);
+	height: 6px;
+	background-color: color-mix(in oklab, var(--brand) 42%, transparent);
+	mask-image: url("../assets/motifs/rule.svg");
+	-webkit-mask-image: url("../assets/motifs/rule.svg");
+}
+
+/* Kumo — the trailing mist band — marks a section divider, which is DESIGN.md's
+   assignment for the cloud linework. It sits in the gutter left of the h2 on wide
+   viewports only: inside the text column it would sit under the heading itself,
+   and a 6% wash behind type is how a measured contrast pair quietly stops
+   holding. Below that width there is no gutter, so there is no motif. */
+.sl-markdown-content h2::after {
+	display: none;
+}
+
+@media (min-width: 87.5rem) {
+	.sl-markdown-content h2::after {
+		display: block;
+		inset-inline-start: calc(var(--spacing) * -22);
+		top: calc(var(--spacing) * 7);
+		width: calc(var(--spacing) * 18);
+		height: calc(var(--spacing) * 7);
+		mask-image: url("../assets/motifs/kumo.svg");
+		-webkit-mask-image: url("../assets/motifs/kumo.svg");
+	}
+}
+
+/* The ensō lockup behind the splash hero, bleeding off the corner — the same
+   move it makes behind the login form, and the "spotlight glow" slot DESIGN.md
+   reserves for gold. Sized in `vmin` so it scales with the viewport instead of
+   with the text, and pinned under the content by `z-index`. */
+.hero::before {
+	inset-inline-end: -6vmin;
+	top: -10vmin;
+	width: min(46vmin, 30rem);
+	height: min(46vmin, 30rem);
+	z-index: 0;
+	background-color: color-mix(in oklab, var(--brand) 14%, transparent);
+	mask-image: url("../assets/motifs/enso.svg");
+	-webkit-mask-image: url("../assets/motifs/enso.svg");
+}
+
+/* The hero's own content has to sit above the ink. Starlight gives the copy and
+   the image no stacking context of their own, so without this the wash paints
+   over the tagline rather than behind it. */
+.hero > * {
+	position: relative;
+	z-index: 1;
+}
+
+/* ---------------------------------------------------------------------------
+ * 4. Upstream bug fixes. Not brand work — kept from before this file carried
+ * any, and unrelated to everything above.
+ *
  * starlight-theme-black's sidebar rows (.entry-title group headings and
  * .entry-link items) use a fixed single-line `height`. Once a label is long
  * enough to wrap, the box doesn't grow to fit it, so the wrapped line
  * overlaps the row below instead of pushing it down. Switch to `min-height`
  * so the row grows with wrapped content, and let long words actually break.
- */
+ * ------------------------------------------------------------------------- */
 .sidebar-content .entry-title {
 	height: auto;
 	min-height: calc(var(--spacing) * 8);

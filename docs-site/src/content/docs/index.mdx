@@ -24,7 +24,12 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 
 ## Where to start
 
-<CardGrid stagger>
+{/* ⛔ NOT `stagger`. That prop translateY()s every second card down by 5rem, so
+    Introduction and Architecture — the first row, and the two a reader looks at
+    first — sit at different heights with no relationship to justify the offset.
+    It is a decorative treatment for a short teaser grid, and this is a six-item
+    index of where to start. Flush rows are the point here. */}
+<CardGrid>
 	<Card title="Introduction" icon="rocket">
 		What oto is, what it is not, and how to run the whole stack locally.
 	</Card>

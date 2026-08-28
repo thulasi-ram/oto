@@ -3,7 +3,7 @@ import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import starlightThemeBlack from 'starlight-theme-black';
 
-import { base, site } from './site.config.mjs';
+import { base, site, withBase } from './site.config.mjs';
 
 // https://astro.build/config
 export default defineConfig({
@@ -19,6 +19,56 @@ export default defineConfig({
 			title: 'oto',
 			description: 'The alert history layer your Prometheus stack does not have.',
 			social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/thulasi-ram/oto' }],
+			// The icon mark, in kincha gold on washi and kindei gold on konshi.
+			//
+			// ⛔ TWO FILES BECAUSE AN `<img>` CANNOT INHERIT THE THEME. Starlight
+			// renders the logo as `<img src>`, and an SVG loaded that way is an
+			// isolated document: `currentColor` resolves against the file's own
+			// root, not the page, so a single mono asset cannot follow the theme
+			// the way the wordmark in assets/logo/ does when it is inlined. The
+			// gold is therefore baked in, one file per theme, and Starlight swaps
+			// them. `replacesTitle` is deliberately off — the mark is a starburst
+			// with no letterforms in it, so dropping the word "oto" would leave
+			// the header unnamed.
+			logo: {
+				light: './src/assets/oto-mark-light.svg',
+				dark: './src/assets/oto-mark-dark.svg',
+			},
+			// `favicon` takes exactly one file, and Starlight base-prefixes that
+			// one. It points at the SVG, which is the one icon that can follow the
+			// browser's theme (it carries a prefers-color-scheme swap from kincha
+			// to kindei inside the file). Everything a browser needs that an SVG
+			// icon does not cover goes in `head` below.
+			favicon: '/favicon.svg',
+			// ⛔ EVERY href HERE IS BASE-PREFIXED BY HAND, AND THAT IS NOT
+			// OPTIONAL. Starlight emits `head` entries verbatim — exactly like a
+			// hero action's `link` and an href in Markdown — so an absolute path
+			// written plainly resolves against the domain root and misses the
+			// site. It fails quietly, too: a browser that cannot find an icon
+			// shows its generic one rather than reporting anything.
+			//
+			// The PNGs are the fallback for anything that will not take an SVG
+			// icon, and apple-touch-icon is the iOS home screen, which ignores
+			// `rel="icon"` entirely. All three are generated from the same mark by
+			// scripts/gen-favicons.mjs and committed; that script's header says
+			// why they are not built.
+			head: [
+				{
+					tag: 'link',
+					attrs: { rel: 'icon', type: 'image/png', sizes: '32x32', href: withBase('/favicon-32.png') },
+				},
+				{
+					tag: 'link',
+					attrs: { rel: 'icon', type: 'image/png', sizes: '192x192', href: withBase('/favicon-192.png') },
+				},
+				{
+					tag: 'link',
+					attrs: { rel: 'apple-touch-icon', sizes: '180x180', href: withBase('/apple-touch-icon.png') },
+				},
+				// The tab-strip and address-bar tint browsers that support it use.
+				// Kincha, matching the mark rather than the page ground.
+				{ tag: 'meta', attrs: { name: 'theme-color', content: '#b8935a' } },
+			],
 			plugins: [starlightThemeBlack({})],
 			customCss: ['./src/styles/custom.css'],
 			// Overview is hand-ordered: a reader arrives knowing nothing, so the
