@@ -142,6 +142,14 @@ digest:
   question `GET /api/v1/version` exists to answer unanswerable.
 - **The manifest lists both architectures.** A single-architecture manifest is an
   ImagePullBackOff on half the clusters it was promised to.
+- **It carries the web UI.** `oto version` reports `ui: embedded (N files)`, and a
+  release refuses an image that says `ui: absent` — or `embedded (1 file)`, which
+  is the `web/dist/.gitkeep` placeholder and not a UI. This exists because 0.1.0
+  through 0.1.2 shipped no UI at all: `web/dist` is a build output that is not
+  committed, nothing embedded it, and `/` answered `404 page not found` for three
+  releases while README told operators to create a source in the UI. The
+  Dockerfile's node stage is the only thing preventing that, and a build stage is
+  exactly what a refactor drops with every test still green.
 
 ## Package visibility
 
@@ -198,6 +206,13 @@ What `v0.1.0` actually published, as the shape to expect:
 ghcr.io/thulasi-ram/oto  0.1.0  0.1  v0.1.0  sha-267d5e12…  (linux/amd64, linux/arm64)
 oto v0.1.0 (commit 267d5e12c87f4d12eee8deaac8f73d2d7db84619, built 2026-08-26T10:40:39.670Z, go1.26.7)
 helm template … → image: ghcr.io/thulasi-ram/oto:0.1.0
+```
+
+The version string gained a fifth field when the UI started shipping inside the
+binary, so from v0.1.3 onward expect:
+
+```
+oto v0.1.3 (commit …, built …, go1.26.7, ui: embedded (82 files))
 ```
 
 That last line is the whole point of the appVersion check: the chart's default,
