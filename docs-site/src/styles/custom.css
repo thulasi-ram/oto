@@ -189,25 +189,30 @@
 	text-decoration-color: var(--brand-text);
 }
 
-/* The current page in the sidebar: gold glyphs and a gold rule down the inside
-   edge. The rule is `--brand`, which it may be — it is a rule, not text.
-   The stock pill is dropped rather than recoloured, and that is a legibility
-   decision rather than a taste one. Its background is `--accent`, a mid slate in
-   dark and a near-white in light, and gold glyphs on that slate is the 2.44:1
-   pair section 2's header describes. Washing the pill in gold instead was the
-   first attempt and it is worse than it looks: a `color-mix(… , transparent)`
-   ground cannot be read off the page with any confidence — Chrome serialises it
-   as `oklab(… / .14)`, so the row's real contrast becomes something you compute
-   rather than something you can check. Sitting the text on the sidebar's own
-   background, which is `--background` unchanged, is the version whose ratio is
-   the one already measured in section 1.
+/* The current page in the sidebar, marked by WEIGHT AND TONE ONLY — no pill, no
+   rule down the edge. Both were tried and both are gone:
 
-   `box-shadow` rather than `border-inline-start` so the row does not shift by
-   2px when it becomes current. */
+     • the stock pill is `--accent`, a mid slate in dark and a near-white in
+       light, and gold glyphs on that slate measure 2.44:1 — DOWN from the 4.6:1
+       the stock neutral had. Washing the pill in gold instead is no better,
+       because a `color-mix(… , transparent)` ground cannot be read off the page
+       with confidence: Chrome serialises it as `oklab(… / .14)`, so the row's
+       real contrast becomes something you compute rather than check.
+     • an inset gold rule replaced it and read as a stray tick in the margin.
+
+   What is left is the honest signal for "you are here" in a list of links:
+   heavier, and a full step darker in light (brighter in dark — `--brand-text`
+   is the theme-appropriate end of the gold either way). The text sits on the
+   sidebar's own `--background`, unchanged, so the ratio measured in section 1
+   is the ratio on screen: 5.08:1 light, 9.0:1 dark, and 600 weight on top.
+
+   Weight is why the two `min-height` fixes in section 4 matter here: bolding a
+   label can push it into a second line, and a fixed-height row would overlap
+   the one below it. */
 .sidebar-content a[aria-current="page"] {
 	color: var(--brand-text);
 	background-color: transparent;
-	box-shadow: inset 2px 0 0 var(--brand);
+	font-weight: 600;
 }
 
 /* The splash page's primary action. `.primary` already reads `--primary`, so it
@@ -218,22 +223,41 @@
 	color: var(--on-brand);
 }
 
-/* Card icons. The stock theme rotates orange/purple/green/red across four cards,
-   which against washi paper reads as a toybox — and on a site whose product
-   reserves saturated colour for alert state, a decorative rainbow is the exact
-   wrong signal. The rotation is kept (it still tells six cards apart) but spent
-   in brand tints: gold, sakura, kumo. */
-.sl-markdown-content .card:nth-child(4n + 1) {
-	--card-icon-background: color-mix(in oklab, var(--brand) 22%, var(--secondary));
+/* The index cards on the splash page.
+ *
+ * The stock theme rotates orange/purple/green/red icon chips across four cards,
+ * which against washi paper reads as a toybox — and on a site whose product
+ * reserves saturated colour for alert state, a decorative rainbow is the exact
+ * wrong signal. That rotation was rebalanced into brand tints and is now simply
+ * gone: those rules keyed off `.card`'s `--card-icon-background`, and the splash
+ * page has moved to `LinkCard`, which has no icon at all (see index.mdx for why
+ * clickability won that trade). Leaving them would be dead CSS aimed at a
+ * component this site no longer renders.
+ *
+ * What a LinkCard has instead is a title and an arrow, so that is what carries
+ * the brand: the arrow is gold at rest rather than only on hover, because it is
+ * the only thing on the tile that says "this is a link". It is an icon, not
+ * text, so it may use `--brand` directly. */
+.sl-markdown-content .sl-link-card .icon {
+	color: var(--brand);
 }
-.sl-markdown-content .card:nth-child(4n + 2) {
-	--card-icon-background: color-mix(in oklab, var(--sakura) 20%, var(--secondary));
+
+.sl-markdown-content .sl-link-card:hover .icon {
+	color: var(--brand-text);
 }
-.sl-markdown-content .card:nth-child(4n + 3) {
-	--card-icon-background: color-mix(in oklab, var(--kumo-line) 22%, var(--secondary));
+
+.sl-markdown-content .sl-link-card:hover .title {
+	color: var(--brand-text);
 }
-.sl-markdown-content .card:nth-child(4n + 4) {
-	--card-icon-background: color-mix(in oklab, var(--brand-glow) 22%, var(--secondary));
+
+/* A gold hairline on hover, so the tile has an edge that responds. The theme
+   ships these borderless and changes only the fill. */
+.sl-markdown-content .sl-link-card {
+	border: 1px solid transparent;
+}
+
+.sl-markdown-content .sl-link-card:hover {
+	border-color: color-mix(in oklab, var(--brand) 45%, transparent);
 }
 
 /* ---------------------------------------------------------------------------
