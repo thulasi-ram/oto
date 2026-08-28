@@ -24,7 +24,7 @@ version: 0.1.2
 # a fresh install — the exact failure release.yml exists to end. Bump it in an
 # ordinary commit BEFORE the tag; the release then re-derives it at package time,
 # so the published tarball cannot drift even if this file ever slips through.
-appVersion: "0.1.1"
+appVersion: "0.1.2"
 
 # oto needs nothing newer than a stock cluster: apps/v1, batch/v1 and
 # networking.k8s.io/v1 Ingress with ingressClassName (1.19+) and pathType.
