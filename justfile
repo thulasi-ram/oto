@@ -84,6 +84,21 @@ demo password=env_var_or_default("OTO_BOOTSTRAP_PASSWORD", "oto-demo-password"):
       And to bring it up:        just up      → ui http://localhost:5173
     EOF
 
+# Set a new password for an existing user and revoke every session of theirs.
+# Usage: just reset-password acme ops@acme.example 'a long passphrase'
+#
+# ⭐ THE ONLY RECOVERY FOR A LOCKED-OUT USER SHORT OF `just reset`. v1 has no
+# self-service "forgot password" flow (SPEC has no route for it, deliberately —
+# see `oto reset-password`'s own header), so until this existed the documented
+# answer to a lost password was destroying the whole database.
+#
+# ⛔ THERE IS NO CONFIRMATION AND NO UNDO. The old password stops working and
+# every signed-in browser for this user is signed out the moment it returns.
+[group('db')]
+reset-password org_slug email password:
+    OTO_RESET_PASSWORD='{{password}}' go run ./cmd/oto reset-password \
+      --org-slug {{org_slug}} --email {{email}}
+
 # Start Postgres, Alertmanager and Prometheus, blocking until all are healthy.
 #
 # Prometheus is named explicitly like the other two rather than left to a bare

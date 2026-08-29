@@ -27,6 +27,10 @@
 //	               THE INSTALL PATH: v1 has no org-creation API and no signup, so
 //	               a migrated database has no credential that can reach it until
 //	               this has run. It is not an HTTP route and must never become one.
+//	oto reset-password  set a new password for an existing user and revoke every
+//	               session of theirs, then exit. THE ONLY RECOVERY FOR A LOCKED-OUT
+//	               USER: v1 has no self-service reset. Like `bootstrap` it is not
+//	               an HTTP route and must never become one.
 //	oto version    print the version and exit
 //
 // `api` and `worker` exist so a deployment can scale the two independently — a
@@ -129,6 +133,9 @@ func run() error {
 		// It takes flag.Args()[1:] rather than the global flag set: `-config` is
 		// oto's and everything after the subcommand is the command's own.
 		return bootstrapCommand(ctx, cfg.DB.URL, flag.Args()[1:])
+	}
+	if flag.Arg(0) == "reset-password" {
+		return resetPasswordCommand(ctx, cfg.DB.URL, flag.Args()[1:])
 	}
 	if flag.Arg(0) == "demo-seed" {
 		// It takes the WHOLE Config rather than just the DSN, unlike `bootstrap`,
@@ -236,6 +243,8 @@ func modeOf(arg string) (mode, error) {
 		return mode{name: "migrate"}, nil
 	case "bootstrap":
 		return mode{name: "bootstrap"}, nil
+	case "reset-password":
+		return mode{name: "reset-password"}, nil
 	case "demo-seed":
 		return mode{name: "demo-seed"}, nil
 	case "replay":
@@ -250,7 +259,7 @@ func modeOf(arg string) (mode, error) {
 		return mode{}, nil
 	default:
 		return mode{}, fmt.Errorf(
-			"unknown subcommand %q; try: serve | api | worker | migrate | replay | bootstrap | demo-seed | version",
+			"unknown subcommand %q; try: serve | api | worker | migrate | replay | bootstrap | reset-password | demo-seed | version",
 			arg)
 	}
 }
