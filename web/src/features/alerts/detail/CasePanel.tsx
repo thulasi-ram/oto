@@ -116,13 +116,29 @@ export const CasePanel: Component<CasePanelProps> = (props) => (
                     One left edge, one meaning. The state is the chip's. */}
                 <div class="min-w-0 flex-1">
                   <div class="flex flex-wrap items-center gap-x-sm gap-y-2xs">
+                    {/* ⭐ THE LINK CARRIES `number`, NOT `seq` (migration 00081),
+                        AND THIS PANEL IS THE PLACE THAT ARGUMENT IS EASIEST TO GET
+                        WRONG. Every row here belongs to one alert, so `seq`
+                        genuinely does count 1, 2, 3 down the column — it reads
+                        fine, and it would still be the wrong label on a link. A
+                        reader who clicks through lands on a page headed `#412` and
+                        a case list where the same row is `#412`; a link that said
+                        `#3` would be the only place in the product where a case is
+                        addressed by a number that names something else. The
+                        ordinal is not lost — it is the `firing #n` beside it. */}
                     <A
                       href={`/cases/${ac.id}`}
                       class="font-mono text-body font-medium text-ink underline decoration-line-strong underline-offset-2 hover:text-ink-muted"
                       title="Open this case — where it is acknowledged, and what happened during it."
                     >
-                      #{ac.seq}
+                      #{ac.number}
                     </A>
+                    <span
+                      class="font-mono text-meta text-ink-subtle"
+                      title="Which firing of this alert this is. This panel lists them in order, so the column counts 1, 2, 3 down the alert's whole history."
+                    >
+                      firing #{ac.seq}
+                    </span>
                     {/* No `resolveReason` here on purpose: the meta line below
                         already says "ended because oto stopped hearing about it"
                         in full, and a chip repeating it as "timed out" would be

@@ -76,15 +76,22 @@ func TestTheStateFacetStillReachesThePartialAckIndex(t *testing.T) {
 	// sequence means: 1..n-1 have closed, n is running. Two thirds of the open
 	// ones are unacked, so `ack_state` is doing real work inside the index rather
 	// than matching everything it can see.
+	// ⭐ `number` (00081) IS COMPUTED HERE RATHER THAN ALLOCATED, and this is the
+	// one shape where that is right. `a * $3 + s` is unique across the whole seed by
+	// construction, this org opens no further case, and routing twenty thousand rows
+	// through a single counter row would serialise the seed for no property the test
+	// asserts. A test that DOES open a case afterwards must allocate — see
+	// `harness.Case`.
 	h.Exec(`
 		INSERT INTO alert_cases
-		  (id, org_id, alert_id, seq, state, resolve_reason, ack_state,
+		  (id, org_id, alert_id, seq, number, state, resolve_reason, ack_state,
 		   acked_at, acked_by_label,
 		   started_at, ended_at, last_observed_at, source_starts_at)
 		SELECT gen_random_uuid(),
 		       $1,
 		       ($2::uuid[])[a + 1],
 		       s,
+		       a * $3 + s,
 		       CASE WHEN s = $3 THEN 'open' ELSE 'closed' END,
 		       CASE WHEN s = $3 THEN NULL ELSE 'upstream' END,
 		       CASE WHEN s = $3 AND a % 3 = 0 THEN 'acked' ELSE 'unacked' END,
@@ -174,9 +181,9 @@ func TestTheClosedPageFallsToTheFullIndexOnPurpose(t *testing.T) {
 	}
 	h.Exec(`
 		INSERT INTO alert_cases
-		  (id, org_id, alert_id, seq, state, resolve_reason,
+		  (id, org_id, alert_id, seq, number, state, resolve_reason,
 		   started_at, ended_at, last_observed_at, source_starts_at)
-		SELECT gen_random_uuid(), $1, ($2::uuid[])[a + 1], s,
+		SELECT gen_random_uuid(), $1, ($2::uuid[])[a + 1], s, a * $3 + s,
 		       CASE WHEN s = $3 THEN 'open' ELSE 'closed' END,
 		       CASE WHEN s = $3 THEN NULL ELSE 'upstream' END,
 		       $4::timestamptz + ((a * $3 + s) * interval '1 second'),

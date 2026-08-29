@@ -306,10 +306,17 @@ func seedQuietCase(
 	t.Helper()
 
 	caseID := id.New()
-	h.Exec(`INSERT INTO alert_cases
-	          (id, org_id, alert_id, seq, state, started_at,
+	h.Exec(`WITH allocated AS (
+	          INSERT INTO org_case_numbers (org_id, next_number) VALUES ($2, 2)
+	          ON CONFLICT (org_id) DO UPDATE
+	                  SET next_number = org_case_numbers.next_number + 1
+	            RETURNING next_number - 1 AS number
+	        )
+	        INSERT INTO alert_cases
+	          (id, org_id, alert_id, seq, number, state, started_at,
 	           last_observed_at, source_starts_at, ack_state)
-	        VALUES ($1, $2, $3, 1, 'open', $4, $4, $4, 'unacked')`,
+	        SELECT $1, $2, $3, 1, (SELECT number FROM allocated),
+	               'open', $4, $4, $4, 'unacked'`,
 		caseID, fx.scope.OrgID(), alertID, startedAt)
 	return caseID
 }

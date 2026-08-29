@@ -249,6 +249,11 @@ export const CaseDTOSchema = v.looseObject({
     v.integer(),
     v.minValue(1),
   ),
+  "number": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+  ),
   "state": CaseStateSchema,
   "suppression_reason": v.exactOptional(SuppressionReasonSchema),
   "suppressed_by": v.exactOptional(v.looseObject({

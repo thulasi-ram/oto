@@ -3109,10 +3109,30 @@ export interface components {
             alert_id: components["schemas"]["Uuid"];
             /**
              * Format: int32
-             * @description Episode number within the Alert, starting at 1.
+             * @description Episode number **within the Alert**, starting at 1. An alert that has fired three times
+             *     has cases 1, 2 and 3; a different alert's first firing is also 1. This is the firing
+             *     ordinal and not the case's name — see `number`.
              * @example 3
              */
             seq: number;
+            /**
+             * Format: int64
+             * @description The case's name **within its organisation**: 1-based, monotonic, and the value a human
+             *     quotes. Allocated by the database when the case is opened.
+             *
+             *     It is not `seq`. Forty alerts that have each fired once produce forty cases with forty
+             *     different `number`s and forty `seq` of 1, which is why the case list leads its rows with
+             *     this and states `seq` only where the firing ordinal is the question being asked.
+             *
+             *     **Per-organisation, never global.** A sequence shared across tenants would let one
+             *     organisation infer another's volume from the gaps in its own numbering. Every
+             *     organisation counts from 1.
+             *
+             *     **Unique and ordered, but not gapless.** A transaction that allocates and then rolls
+             *     back has spent its number. Subtracting two of these does not count anything.
+             * @example 412
+             */
+            number: number;
             state: components["schemas"]["CaseState"];
             suppression_reason?: components["schemas"]["SuppressionReason"];
             /**

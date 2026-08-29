@@ -80,7 +80,7 @@ Permanently out of scope, with hand-offs: SPEC §I.1.1.
 | Term | Means |
 |---|---|
 | **Alert** | The **identity of a label set** within `(org, cluster)`. Created on first sight, survives resolution forever. oto's answer to Sentry's *Issue*. |
-| **AlertCase** | One **contiguous firing episode** of an Alert, `(alert_id, seq)`. What you ack; whose FIRING DURATION is measured. Never "MTTR" — banned (§A.1). **Strictly terminal**: `open → closed`, once. A re-fire opens the next `seq`, never revives this one (ADR 0040). |
+| **AlertCase** | One **contiguous firing episode** of an Alert, `(alert_id, seq)`. What you ack; whose FIRING DURATION is measured. Never "MTTR" — banned (§A.1). **Strictly terminal**: `open → closed`, once. A re-fire opens the next `seq`, never revives this one (ADR 0040). **Two numbers, and they are not interchangeable**: `seq` is the firing ordinal within ONE alert, `number` is the case's name within the ORG — unique, monotonic, what a human quotes, and what `/cases` leads each row with (migration 00081). Forty alerts that have each fired once carry forty `number`s and forty `seq` of 1. |
 | **AlertEvent** | One **immutable thing that happened at one instant**. The timeline. Append-only. |
 | **RuleSnapshot** | A content-addressed capture of a Prometheus alerting rule at a point in time. The differentiator. |
 | **AlertSource** | One configured Alertmanager (+ optional Prometheus). HA replicas share a Cluster. |

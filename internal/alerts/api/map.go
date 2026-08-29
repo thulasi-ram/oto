@@ -68,6 +68,7 @@ func caseDTO(o domain.Case, now time.Time) CaseDTO {
 		ID:             o.ID(),
 		AlertID:        o.AlertID(),
 		Seq:            int32(o.Seq()),
+		Number:         o.Number(),
 		State:          o.State().String(),
 		AckState:       o.AckState().String(),
 		AckedByLabel:   strPtr(o.AckedByLabel()),

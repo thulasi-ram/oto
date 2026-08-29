@@ -88,13 +88,18 @@ func TestTheRollupReachesBothTablesByIndex(t *testing.T) {
 	// it would be refused outright by `case_state_ck`.
 	const rows = 20000
 	base := harness.Epoch
+	// `number` (00081) is `i`, which is unique across the seed by construction. The
+	// counter in `org_case_numbers` is deliberately left untouched: nothing here
+	// opens a further case, and twenty thousand allocations through one row would
+	// serialise a seed whose only job is to give the planner statistics.
 	h.Exec(`
 		INSERT INTO alert_cases
-		  (id, org_id, alert_id, seq, state, resolve_reason,
+		  (id, org_id, alert_id, seq, number, state, resolve_reason,
 		   started_at, ended_at, last_observed_at, source_starts_at)
 		SELECT gen_random_uuid(),
 		       $1,
 		       ($2::uuid[])[(i % $3) + 1],
+		       i,
 		       i,
 		       'closed',
 		       'upstream',

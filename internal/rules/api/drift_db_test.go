@@ -145,10 +145,16 @@ func (r *driftRig) open(t *testing.T, a harness.Alert, seq int) uuid.UUID {
 
 	caseID := id.New()
 	now := r.h.Now()
-	r.h.Exec(`INSERT INTO alert_cases
-	            (id, org_id, alert_id, seq, state, started_at, last_observed_at,
+	r.h.Exec(`WITH allocated AS (
+	            INSERT INTO org_case_numbers (org_id, next_number) VALUES ($2, 2)
+	            ON CONFLICT (org_id) DO UPDATE
+	                    SET next_number = org_case_numbers.next_number + 1
+	              RETURNING next_number - 1 AS number
+	          )
+	          INSERT INTO alert_cases
+	            (id, org_id, alert_id, seq, number, state, started_at, last_observed_at,
 	             source_starts_at, source_updated_at)
-	          VALUES ($1, $2, $3, $4, 'open', $5, $5, $5, $5)`,
+	          SELECT $1, $2, $3, $4, (SELECT number FROM allocated), 'open', $5, $5, $5, $5`,
 		caseID, a.OrgID, a.ID, seq, now)
 	r.h.Exec(`UPDATE alerts SET current_case_id = $1, total_cases = $2, last_seen_at = $3
 	           WHERE id = $4`, caseID, seq, now, a.ID)

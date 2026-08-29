@@ -43,6 +43,18 @@ type Case struct {
 	// this field went, which is why every rehydrated Case had been answering
 	// `uuid.Nil` in the meantime.
 	seq int
+	// number is `alert_cases.number`: the case's NAME within its org — 1-based,
+	// monotonic, and the thing a human quotes. It is not `seq`, which is the
+	// firing ordinal within one Alert; forty alerts that have each fired once
+	// carry forty different numbers and forty `seq` of 1.
+	//
+	// ⛔ THE MACHINE NEVER INVENTS IT, exactly as it never invents `stateVersion`.
+	// The value is allocated by the INSERT, from `org_case_numbers`, and comes
+	// back on the same statement — so a Case built by `OpenNewCase` and not yet
+	// written answers 0 here, and the persisted one the repository returns
+	// answers the real name. A number chosen in Go would be a guess about a
+	// counter another transaction may already have moved.
+	number int64
 
 	state             CaseState
 	suppressionReason SuppressionReason
@@ -125,6 +137,9 @@ type CaseParams struct {
 	AlertID uuid.UUID
 	// Seq is the 1-based episode number within the Alert.
 	Seq int
+	// Number is `alert_cases.number` as READ. Zero on a Case that has not been
+	// written yet: the INSERT allocates it. See the field on Case.
+	Number int64
 
 	State             CaseState
 	SuppressionReason SuppressionReason
@@ -208,6 +223,7 @@ func NewCase(p CaseParams) (Case, error) {
 		orgID:             p.OrgID,
 		alertID:           p.AlertID,
 		seq:               p.Seq,
+		number:            p.Number,
 		state:             p.State,
 		suppressionReason: p.SuppressionReason,
 		suppressedBy:      p.SuppressedBy,
@@ -366,6 +382,10 @@ func (o Case) AlertID() uuid.UUID { return o.alertID }
 
 // Seq is the 1-based episode number within the Alert.
 func (o Case) Seq() int { return o.seq }
+
+// Number is the case's name within its org: 1-based, monotonic, allocated by the
+// INSERT. Zero on a Case the repository has not written yet.
+func (o Case) Number() int64 { return o.number }
 
 // State is the case's OWN state: open while the episode runs, closed once it has
 // ended. These are the only two values `alert_cases.state` may hold (ADR 0040).

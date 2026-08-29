@@ -139,6 +139,7 @@ type CaseDTO struct {
 	ID                uuid.UUID        `json:"id"`
 	AlertID           uuid.UUID        `json:"alert_id"`
 	Seq               int32            `json:"seq"`
+	Number            int64            `json:"number"`
 	State             string           `json:"state"`
 	SuppressionReason *string          `json:"suppression_reason"`
 	SuppressedBy      *SuppressedByDTO `json:"suppressed_by,omitempty"`

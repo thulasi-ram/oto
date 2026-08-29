@@ -8,8 +8,17 @@
  *
  * ⛔ AND A CASE IS TERMINAL. Nothing here renders a reopen count, because there
  * is nothing to count: an ended case is ended, and a re-fire opens the NEXT one
- * at the next `seq`, unacknowledged. `#seq` on the row is the whole of that
- * story now.
+ * at the next `seq`, unacknowledged. The `firing #n` on the row is the whole of
+ * that story now.
+ *
+ * ⭐⭐ THE ROW LEADS WITH `number`, NOT WITH `seq` (migration 00081). They are two
+ * different facts and the lead column belongs to the one that names the row.
+ * `number` counts every case in the ORG — unique, monotonic, the value somebody
+ * reads out loud; `seq` counts firings within ONE alert, so a queue of forty
+ * cases from forty alerts that have each fired once renders forty rows of `#1`.
+ * That was the whole complaint, and it was not a broken counter: it was the
+ * right number in the wrong column. `seq` now appears in the meta line, and only
+ * above 1, where it is telling somebody something they cannot already see.
  *
  * ⛔ A CASE NEVER SPANS TWO ALERTS. It is one firing episode of ONE alert, and
  * it is not a correlation and not an incident: oto records signals.
@@ -899,17 +908,26 @@ const CaseRow = (props: {
           href={`/cases/${c().id}`}
           class="flex min-w-0 flex-1 items-start gap-3"
         >
-          {/* The firing number is the fastest thing to scan a case list by —
-              faster than the alertname or its labels — so it leads every row,
-              folded or not, in its own column ahead of the severity glyph. */}
+          {/* ⭐⭐ THE LEAD COLUMN IS THE CASE'S NAME, AND IT USED TO BE ITS FIRING
+              ORDINAL. `seq` counts firings WITHIN one alert, so a queue of forty
+              cases belonging to forty alerts that have each fired once rendered
+              forty rows reading `#1` — a counter that looks broken, in the one
+              position every reader takes for the row's identifier. `number` is
+              the per-org name (migration 00081): monotonic, unique, and the
+              string somebody quotes out loud.
+
+              ⛔ `seq` IS NOT DELETED, IT MOVED to the meta line below and only
+              appears where it says something — see the `firing #n` there. Two
+              numbers in one column would be the original defect with an extra
+              digit. */}
           <span
             class={cn(
-              "mt-0.5 w-9 shrink-0 text-right font-mono text-title font-semibold tabular-nums",
+              "mt-0.5 w-14 shrink-0 text-right font-mono text-title font-semibold tabular-nums",
               open() ? "text-ink" : "text-ink-muted",
             )}
-            title="Which firing of this alert this is, counted since oto first saw the identity. A re-fire opens the next one rather than reopening this one."
+            title="This case's number. It counts every case in this organisation, so it is unique here and is what to quote when referring to this firing."
           >
-            #{c().seq}
+            #{c().number}
           </span>
           <SeverityMark severity={c().alert.severity} class="mt-0.5" />
 
@@ -948,6 +966,20 @@ const CaseRow = (props: {
                 <Elapsed from={c().started_at} to={c().ended_at ?? null} />{" "}
                 firing
               </span>
+              {/* ⭐ THE FIRING ORDINAL, AND ONLY WHERE IT SAYS SOMETHING. `seq` 1
+                  is "this alert has fired once", which the row already implies by
+                  having nothing folded under it — printing `firing #1` on every
+                  first firing is the same wall of ones this column was moved out
+                  of the lead position to escape. Above 1 it is real news: this
+                  identity has fired before, and this is which time. */}
+              <Show when={c().seq > 1}>
+                <span
+                  class="font-mono"
+                  title="Which firing of this alert this is, counted since oto first saw the identity. A re-fire opens the next one rather than reopening this one."
+                >
+                  firing #{c().seq}
+                </span>
+              </Show>
               {/* The identity's own labels belong to the row that names it. An
                   earlier firing shares them by construction, so repeating
                   `namespace`/`cluster` under a fold is the same string five

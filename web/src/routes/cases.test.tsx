@@ -238,19 +238,83 @@ describe("the alert's own state", () => {
 });
 
 /* -------------------------------------------------------------------------- */
+/* What names a row                                                           */
+/* -------------------------------------------------------------------------- */
+
+describe("the row's lead number", () => {
+  /**
+   * ⭐⭐ THE DEFECT THIS EXISTS FOR, IN THE ONE SHAPE THAT SHOWS IT. Most alerts
+   * fire once. A queue of them therefore has `seq` 1 on every row, and while the
+   * lead column held `seq` the screen rendered a column of identical `#1`s where
+   * every reader looks for the row's identifier — which reads as a broken counter
+   * rather than as the true statement it was.
+   *
+   * The fixture is four DIFFERENT alerts, each on its FIRST firing, which is the
+   * ordinary state of a healthy estate and the exact input the old column failed
+   * on. Four distinct numbers must appear, and `#1` must appear nowhere.
+   */
+  it("⛔ four first firings are four numbers, not four `#1`s", async () => {
+    mount(
+      "",
+      [601, 602, 603, 604].map((n, i) =>
+        caseListItem({
+          id: `c-${n}`,
+          seq: 1,
+          number: n,
+          alert: alertRef({ id: `alert-${i}`, alertname: `FirstFiring${i}` }),
+        }),
+      ),
+    );
+
+    await until(() => expect(screen.getByText("FirstFiring0")).toBeTruthy());
+    for (const n of [601, 602, 603, 604]) {
+      expect(screen.getByText(`#${n}`)).toBeTruthy();
+    }
+    expect(
+      screen.queryByText("#1"),
+      "a first firing prints no ordinal at all: `firing #1` on every row of a " +
+        "healthy queue is the wall of ones this column was moved to escape",
+    ).toBeNull();
+    expect(screen.queryByText("firing #1")).toBeNull();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 /* Folding the loaded rows by identity                                        */
 /* -------------------------------------------------------------------------- */
 
-/** Two firings of one alert plus one of another, newest first as the API serves. */
+/**
+ * Two firings of one alert plus one of another, newest first as the API serves.
+ *
+ * ⛔ `number` AND `seq` DISAGREE ON EVERY ROW, AND THE FIXTURE IS BUILT THAT WAY
+ * ON PURPOSE. They are two different facts — the case's name across the org, and
+ * which firing of its alert it is — and every assertion below would pass against
+ * a screen that rendered the wrong one if the fixture let them coincide. `#903`
+ * is a case name; `#9` is a firing ordinal; nothing may render one where the
+ * other belongs.
+ */
 function threeFirings() {
   const disk = alertRef({ id: "alert-disk", alertname: "DiskFillingUp" });
   const errors = alertRef({ id: "alert-errors", alertname: "HighErrorRate" });
   return [
-    caseListItem({ id: "c-3", seq: 9, alert: disk, started_at: "2026-08-09T12:00:00.000Z" }),
-    caseListItem({ id: "c-2", seq: 4, alert: errors, started_at: "2026-08-09T11:00:00.000Z" }),
+    caseListItem({
+      id: "c-3",
+      seq: 9,
+      number: 903,
+      alert: disk,
+      started_at: "2026-08-09T12:00:00.000Z",
+    }),
+    caseListItem({
+      id: "c-2",
+      seq: 4,
+      number: 902,
+      alert: errors,
+      started_at: "2026-08-09T11:00:00.000Z",
+    }),
     caseListItem({
       id: "c-1",
       seq: 8,
+      number: 901,
       alert: disk,
       state: "closed",
       ended_at: "2026-08-09T10:30:00.000Z",
@@ -275,26 +339,32 @@ describe("grouping by alert", () => {
   it("carries the newest firing as the row and folds the earlier ones away", async () => {
     mount("?group=alert&state=open,closed", threeFirings());
 
-    // One row per identity, and it is the LATEST firing that names it: `#9`,
-    // not the `#8` that ended earlier the same morning.
+    // One row per identity, and it is the LATEST firing that names it: case
+    // `#903`, not the `#901` that ended earlier the same morning.
     //
-    // ⛔ THE NUMBER IS ITS OWN COLUMN, WHICH IS WHY THESE ARE BARE `#n`. The seq
-    // used to sit in the row's title line, so it read as one run of text with
-    // the elapsed time — `firing #8` — and that is what this test used to match
-    // on. `CaseRow` leads with it in a `w-9` monospace column now, ahead of the
-    // severity mark, because scanning a case list by firing number is faster
-    // than scanning it by alertname. Matching the old string here passed
-    // vacuously on the collapsed assertion and failed on the expanded one.
+    // ⛔ THE BARE `#n` IS THE CASE NUMBER AND NOT THE SEQ (migration 00081). The
+    // lead column used to hold `seq`, which meant a queue of alerts that had each
+    // fired once rendered a stack of `#1` — the right number in the column every
+    // reader takes for the row's identifier. It holds `number` now. These are
+    // spelled as the fixture's `number` values rather than its `seq` values for
+    // exactly that reason: matching `#9` here would pass against the screen this
+    // change replaced.
     await until(() => expect(screen.getByText("DiskFillingUp")).toBeTruthy());
-    expect(screen.getByText("#9")).toBeTruthy();
-    expect(screen.queryByText("#8")).toBeNull();
+    expect(screen.getByText("#903")).toBeTruthy();
+    expect(screen.queryByText("#901")).toBeNull();
+
+    // ⭐ AND THE FIRING ORDINAL SURVIVED THE MOVE. `seq` was not deleted, it went
+    // to the meta line — spelled `firing #9`, so that it can never be mistaken
+    // for the case's name two columns to the left.
+    expect(screen.getByText("firing #9")).toBeTruthy();
 
     // The earlier one is behind a closed handle that counts it.
     const handle = screen.getByRole("button", { name: /1 earlier firing loaded/ });
     expect(handle).toHaveAttribute("aria-expanded", "false");
 
     fireEvent.click(handle);
-    await until(() => expect(screen.getByText("#8")).toBeTruthy());
+    await until(() => expect(screen.getByText("#901")).toBeTruthy());
+    expect(screen.getByText("firing #8")).toBeTruthy();
   });
 
   it("leaves an alert with one loaded firing without a handle at all", async () => {

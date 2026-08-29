@@ -140,9 +140,24 @@ export default function CaseDetailRoute() {
                           screen claiming a case can be suppressed. */}
                       <CaseStateChip state={c().state} resolveReason={c().resolve_reason} />
                       <AckChip ackState={c().ack_state} />
-                      <Chip title="Which firing of this alert this is, counted since oto first saw the identity. A re-fire opens the next one rather than reopening this one.">
-                        firing #{c().seq}
+                      {/* ⭐ THE CASE'S NAME, IN MONO, BECAUSE IT IS A STRING TO BE
+                          QUOTED. `number` is unique across the org (migration
+                          00081), so this is what somebody types into a search box
+                          or reads out on a call — the one value on this header
+                          that identifies the page rather than describing it. */}
+                      <Chip mono title="This case's number. It counts every case in this organisation, so it is unique here and is what to quote when referring to this firing.">
+                        #{c().number}
                       </Chip>
+                      {/* ⛔ AND `seq` ONLY ABOVE 1. On a first firing it says "this
+                          alert has fired once", which the alert's own panel below
+                          already states as `total_cases`. Above 1 it is the fact
+                          the number cannot carry: this identity has fired before,
+                          and this is which time. */}
+                      <Show when={c().seq > 1}>
+                        <Chip title="Which firing of this alert this is, counted since oto first saw the identity. A re-fire opens the next one rather than reopening this one.">
+                          firing #{c().seq}
+                        </Chip>
+                      </Show>
                     </div>
 
                     <p class="mt-1 text-meta text-ink-subtle">

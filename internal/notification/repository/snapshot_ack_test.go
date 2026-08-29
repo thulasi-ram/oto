@@ -381,11 +381,21 @@ func seedCase(
 		r := "upstream"
 		resolveReason = &r
 	}
-	h.Exec(`INSERT INTO alert_cases
-	          (id, org_id, alert_id, seq, state, started_at, ended_at,
+	// `number` (00081) is allocated from the org's counter rather than written as
+	// a literal: this helper seeds several episodes into ONE org, and a constant
+	// would collide on `case_number_uniq` at the second call.
+	h.Exec(`WITH allocated AS (
+	          INSERT INTO org_case_numbers (org_id, next_number) VALUES ($2, 2)
+	          ON CONFLICT (org_id) DO UPDATE
+	                  SET next_number = org_case_numbers.next_number + 1
+	            RETURNING next_number - 1 AS number
+	        )
+	        INSERT INTO alert_cases
+	          (id, org_id, alert_id, seq, number, state, started_at, ended_at,
 	           last_observed_at, source_starts_at, resolve_reason,
 	           ack_state, acked_at, acked_by_label)
-	        VALUES ($1, $2, $3, $4, $5, $6, $7, $6, $6, $8, $9, $10, $11)`,
+	        SELECT $1, $2, $3, $4, (SELECT number FROM allocated),
+	               $5, $6, $7, $6, $6, $8, $9, $10, $11`,
 		caseID, fx.scope.OrgID(), alertID, seq, s.state,
 		s.startedAt, s.endedAt, resolveReason, s.ackState, s.ackedAt, s.ackedByLabel)
 	return caseID

@@ -26,6 +26,10 @@ type caseRow struct {
 	// thing. The table it pointed at is dropped, so the membership is not re-derived
 	// from somewhere else; there is nothing left to be a member OF.
 	seq int32
+	// `alert_cases.number` (migration 00081): the case's NAME within its org. It is
+	// allocated by the INSERT and read on every other statement, which is why it
+	// sits beside `seq` here and nowhere near the domain's constructor arguments.
+	number int64
 
 	state             string
 	suppressionReason *string
@@ -62,9 +66,10 @@ type caseRow struct {
 // IS WHY IT COULD LEAVE SAFELY. `caseColumnList`, `scanDest` and every `RETURNING`
 // share one ordering, so a column is removed in two places rather than in every
 // statement that reads a Case — which is the mistake that compiles and then scans
-// `seq` into `state`. 26 columns now, not 27.
+// `seq` into `state`. 27 columns now: 00081's `number` joined the list the same way,
+// in the same three places, and in the same position in all three.
 var caseColumnList = []string{
-	"id", "org_id", "alert_id", "seq", "state", "suppression_reason", "suppressed_by",
+	"id", "org_id", "alert_id", "seq", "number", "state", "suppression_reason", "suppressed_by",
 	"started_at", "ended_at", "last_observed_at", "source_starts_at", "source_ends_at",
 	"source_updated_at", "resolve_reason",
 	"resolve_pending_at", "resolve_pending_end_at", "state_version",
@@ -76,7 +81,7 @@ var caseColumns = strings.Join(caseColumnList, ", ")
 
 func (r *caseRow) scanDest() []any {
 	return []any{
-		&r.id, &r.orgID, &r.alertID, &r.seq, &r.state, &r.suppressionReason,
+		&r.id, &r.orgID, &r.alertID, &r.seq, &r.number, &r.state, &r.suppressionReason,
 		&r.suppressedBy, &r.startedAt, &r.endedAt, &r.lastObservedAt, &r.sourceStartsAt,
 		&r.sourceEndsAt, &r.sourceUpdatedAt, &r.resolveReason,
 		&r.resolvePendingAt, &r.resolvePendingEndAt,
@@ -138,6 +143,7 @@ func (r *caseRow) toDomain() (domain.Case, error) {
 		// the right end state and it is not in this package; recorded here so the zero
 		// is read as "the entity is gone" rather than as a rehydration bug.
 		Seq:               int(r.seq),
+		Number:            r.number,
 		State:             state,
 		SuppressionReason: sup,
 		SuppressedBy:      suppressedBy,
@@ -195,8 +201,8 @@ func (r *CaseRepository) db(ctx context.Context) db.Querier { return db.FromCont
 // remaining values slide left by one, so `seq` is written into `state`, `started_at`
 // into `seq`, and Postgres reports a type error at best and a CHECK violation at
 // worst — but if the shifted types HAD lined up it would have written a wrong row and
-// said nothing. The column count and the value count are 14 and 14; they are PREPAREd
-// against a migrated container rather than counted by eye.
+// said nothing. The column count and the value count are 15 and 15 since 00081 added
+// `number`; they are PREPAREd against a migrated container rather than counted by eye.
 //
 // The trailing placeholders are renumbered because `$4` is gone: what were `$5`…`$11`
 // are now `$4`…`$10`, and `OpenCase` drops `in.GroupID` from its argument list. A
@@ -207,12 +213,36 @@ func (r *CaseRepository) db(ctx context.Context) db.Querier { return db.FromCont
 // alert_cases.org_id is denormalised, so writing a scope's org_id beside
 // another org's alert_id would create a row that every org-scoped read agrees is
 // ours — which is the shape a cross-tenant leak takes.
+//
+// ⭐ THE NUMBER IS ALLOCATED HERE AND NOWHERE ELSE (migration 00081). `allocated`
+// is a data-modifying CTE that bumps the org's counter and hands back the value
+// it just consumed, so the name and the row it names are minted by ONE statement
+// in ONE transaction: there is no window in which a case exists without a number,
+// and no second round trip in which two ingest batches could read the same one.
+// `next_number - 1` is what was consumed, because the UPSERT returns the row as
+// it stands AFTER the increment.
+//
+// ⚠️ THE CTE RUNS EVEN WHEN THE ALERT LOOKUP MATCHES NOTHING, because a
+// data-modifying CTE is not conditional on the outer query consuming its rows.
+// A cross-tenant alert_id therefore spends a number and inserts nothing. That is
+// deliberate rather than tolerated: the alternative is allocating in a second
+// statement, which trades one wasted name for a race, and `number` is a name and
+// not a count — the migration's header says so, and nothing may compute a total
+// from two of them.
 var openCaseSQL = `
+WITH allocated AS (
+  INSERT INTO org_case_numbers (org_id, next_number)
+       VALUES ($2, 2)
+  ON CONFLICT (org_id) DO UPDATE
+          SET next_number = org_case_numbers.next_number + 1
+    RETURNING next_number - 1 AS number
+)
 INSERT INTO alert_cases (
-    id, org_id, alert_id, seq, state, started_at, ended_at, last_observed_at,
+    id, org_id, alert_id, seq, number, state, started_at, ended_at, last_observed_at,
     source_starts_at, source_ends_at, source_updated_at, value, observed_skew_ms,
     ack_state)
-SELECT $1, a.org_id, a.id, $4, 'open', $5, NULL, $5, $6, $7, $8, $9, $10, 'unacked'
+SELECT $1, a.org_id, a.id, $4, (SELECT number FROM allocated),
+       'open', $5, NULL, $5, $6, $7, $8, $9, $10, 'unacked'
   FROM alerts a
  WHERE a.org_id = $2 AND a.id = $3
 RETURNING ` + caseColumns

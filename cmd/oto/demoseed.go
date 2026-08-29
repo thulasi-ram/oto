@@ -684,14 +684,26 @@ func (s *demoSeeder) writeCase(ctx context.Context, alertID uuid.UUID, c caseRow
 			"silencedBy": c.spec.silencedBy, "inhibitedBy": nil, "mutedBy": nil,
 		})
 	}
+	// The seeded case takes its `number` from the same counter the ingest path
+	// allocates from (migration 00081), rather than from a literal. A demo
+	// database whose case numbers were invented here would disagree with
+	// `org_case_numbers` the moment a real observation arrived, and the next
+	// case opened would collide on `case_number_uniq`.
 	return s.exec(ctx, `
-INSERT INTO alert_cases (id, org_id, alert_id, seq, state, suppression_reason, suppressed_by,
+WITH allocated AS (
+  INSERT INTO org_case_numbers (org_id, next_number)
+       VALUES ($2, 2)
+  ON CONFLICT (org_id) DO UPDATE
+          SET next_number = org_case_numbers.next_number + 1
+    RETURNING next_number - 1 AS number
+)
+INSERT INTO alert_cases (id, org_id, alert_id, seq, number, state, suppression_reason, suppressed_by,
                          started_at, ended_at, last_observed_at, source_starts_at,
                          source_ends_at, source_updated_at, resolve_reason, ack_state,
                          acked_by, acked_by_label, acked_at, ack_note, rule_snapshot_id,
                          value, state_version, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-        $19, $20, $21, $22, $23, $24)`,
+SELECT $1, $2, $3, $4, (SELECT number FROM allocated), $5, $6, $7, $8, $9, $10, $11, $12, $13,
+       $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24`,
 		c.id, s.orgID, alertID, c.seq, state, suppression, suppressedBy,
 		c.startedAt, c.endedAt, lastObserved, c.startedAt, c.endedAt, lastObserved,
 		resolve, ackState, ackBy, ackLabel, c.ackedAt, ackNote, c.snapshotID,

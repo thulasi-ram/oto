@@ -38,6 +38,10 @@ export function alertCase(patch: Partial<Case> = {}): Case {
     id: "0f8fad5b-d9cb-469f-a165-70867728950e",
     alert_id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d38ae",
     seq: 3,
+    // ⭐ DIFFERENT FROM `seq`, DELIBERATELY. `seq` 3 is the third firing of this
+    // alert; `number` 412 is the case's name across the whole org. A fixture that
+    // set them equal would pass against a screen that rendered either one.
+    number: 412,
     state: "open",
     ack_state: "unacked",
     started_at: T0,

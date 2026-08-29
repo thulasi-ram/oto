@@ -259,9 +259,15 @@ func seedFanOut(t *testing.T, e *env) fanOut {
 	// ⛔ AN `alert_groups` GENERATION WAS SEEDED HERE AND IS DELETED (git-bug
 	// `7570090`). The episode below is the conversation; there is no generation to
 	// open and no membership to record.
-	exec(`INSERT INTO alert_cases (id, org_id, alert_id, seq, state,
+	exec(`WITH allocated AS (
+	        INSERT INTO org_case_numbers (org_id, next_number) VALUES ($2, 2)
+	        ON CONFLICT (org_id) DO UPDATE
+	                SET next_number = org_case_numbers.next_number + 1
+	          RETURNING next_number - 1 AS number
+	      )
+	      INSERT INTO alert_cases (id, org_id, alert_id, seq, number, state,
 	         started_at, last_observed_at, source_starts_at)
-	      VALUES ($1,$2,$3,1,'open',$4,$4,$4)`,
+	      SELECT $1,$2,$3,1,(SELECT number FROM allocated),'open',$4,$4,$4`,
 		out.caseID, orgID, out.alertID, now)
 
 	exec(`UPDATE alerts SET current_case_id = $2 WHERE id = $1`,
@@ -384,9 +390,16 @@ func seedFanOut(t *testing.T, e *env) fanOut {
 	      VALUES ($1,$2,$3,'ak_abcdefghijklmnopqrstuv0123','9a8b7c6d5e4f3021','Unrelated',
 	         'warning','prod','{"alertname":"Unrelated"}'::jsonb,'firing',$4,$4,$4,1)`,
 		decoyAlert, orgID, clusterID, now)
-	exec(`INSERT INTO alert_cases (id, org_id, alert_id, seq, state,
+	exec(`WITH allocated AS (
+	        INSERT INTO org_case_numbers (org_id, next_number) VALUES ($2, 2)
+	        ON CONFLICT (org_id) DO UPDATE
+	                SET next_number = org_case_numbers.next_number + 1
+	          RETURNING next_number - 1 AS number
+	      )
+	      INSERT INTO alert_cases (id, org_id, alert_id, seq, number, state,
 	         started_at, last_observed_at, source_starts_at)
-	      VALUES ($1,$2,$3,1,'open',$4,$4,$4)`, decoyCase, orgID, decoyAlert, now)
+	      SELECT $1,$2,$3,1,(SELECT number FROM allocated),'open',$4,$4,$4`,
+		decoyCase, orgID, decoyAlert, now)
 	exec(`UPDATE alerts SET current_case_id = $2 WHERE id = $1`, decoyAlert, decoyCase)
 	exec(`INSERT INTO notifications (id, org_id, subject_kind, subject_id, case_id, conversation_kind, conversation_id, reason,
 	         state_version, idempotency_key, status, created_at, updated_at)

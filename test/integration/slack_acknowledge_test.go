@@ -698,9 +698,19 @@ func seedSlackWorld(t *testing.T, e *env) slackWorld {
 		// ⛔ AN `alert_groups` GENERATION WAS SEEDED HERE AND IS DELETED (git-bug
 		// `7570090`). The open Case below is what the card is about and what its
 		// button carries; there is no generation to open and no membership to record.
-		exec(`INSERT INTO alert_cases (id, org_id, alert_id, seq, state,
+		// `number` comes off the org's counter (00081), never a literal: the case
+		// this seeds shares an org with every case the code under test opens, and
+		// two of them naming 1 collide on `case_number_uniq`.
+		exec(`WITH allocated AS (
+		        INSERT INTO org_case_numbers (org_id, next_number) VALUES ($2, 2)
+		        ON CONFLICT (org_id) DO UPDATE
+		                SET next_number = org_case_numbers.next_number + 1
+		          RETURNING next_number - 1 AS number
+		      )
+		      INSERT INTO alert_cases (id, org_id, alert_id, seq, number, state,
 		         started_at, last_observed_at, source_starts_at)
-		      VALUES ($1,$2,$3,1,'open',$4,$4,$4)`, caseID, orgID, alertID, now)
+		      SELECT $1,$2,$3,1,(SELECT number FROM allocated),'open',$4,$4,$4`,
+			caseID, orgID, alertID, now)
 
 		exec(`UPDATE alerts SET current_case_id = $2 WHERE id = $1`, alertID, caseID)
 

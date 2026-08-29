@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 80 {
-		t.Fatalf("latest migration is %d, want 80 — this test pins the number so that a "+
+	if latest != 81 {
+		t.Fatalf("latest migration is %d, want 81 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1629,6 +1629,60 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// accepts a kind the release below it cannot interpret. No column reading can
 	// see that, and it is the half most likely to be forgotten because nothing
 	// references it.
+	// ⭐ 00081 GIVES A CASE A NAME OF ITS OWN, and its Down has to take back three
+	// coupled things: the counter table, the column, and the two constraints that
+	// make the column a name rather than an integer. A Down that dropped the column
+	// and left `org_case_numbers` behind leaves a release below it carrying a table
+	// no code writes and whose rows would be wrong the moment the Up ran again.
+	//
+	// ⛔ THE UNIQUENESS IS READ AS ITS DEFINITION, NOT AS A COUNT, and that is the
+	// whole tenancy claim of the migration. `UNIQUE (org_id, number)` means every
+	// org counts from 1; `UNIQUE (number)` would mean one sequence shared across
+	// tenants, and an org reading a jump of 900 in its own numbering has learnt how
+	// busy its neighbour was. Both spellings satisfy "the constraint exists", both
+	// satisfy "the column is unique", and only one of them is the migration that was
+	// reviewed — so the columns are read off `pg_get_constraintdef`.
+	if n := countTables("org_case_numbers"); n != 1 {
+		t.Fatalf("org_case_numbers is absent at migration 81 (found %d); it is where a case's "+
+			"number is allocated from, and without it the case-open path's CTE has nothing to "+
+			"increment", n)
+	}
+	if n := countColumns("alert_cases", "number"); n != 1 {
+		t.Fatalf("alert_cases.number is absent at migration 81 (found %d); it is the name "+
+			"/cases leads every row with", n)
+	}
+	if def := constraintDef("case_number_uniq", "alert_cases"); !strings.Contains(def, "org_id") {
+		t.Fatalf("case_number_uniq is %q at migration 81 — it must be UNIQUE (org_id, number). "+
+			"A uniqueness over `number` alone is one sequence shared by every tenant, which "+
+			"lets an org infer its neighbour's volume from the gaps in its own numbering", def)
+	}
+	// NOT NULL is asserted by writing, not by reading `is_nullable`: the column was
+	// added nullable, backfilled and then constrained, and a migration that skipped
+	// the third step reads as "column exists" everywhere except here.
+	if _, err := env.pool.Exec(env.ctx,
+		`INSERT INTO alert_cases (id, org_id, alert_id, seq, state, started_at,
+		                          last_observed_at, source_starts_at)
+		 VALUES ($1, $2, $3, 1, 'open', now(), now(), now())`,
+		id.New(), id.New(), id.New()); err == nil {
+		t.Fatal("alert_cases accepted a row with no number at migration 81; the column is " +
+			"NOT NULL precisely because there is no DEFAULT that could invent one — the value " +
+			"depends on the org of the row being inserted")
+	}
+
+	down(81)
+
+	if n := countTables("org_case_numbers"); n != 0 {
+		t.Fatalf("org_case_numbers survived 00081's Down (found %d); a counter left behind by "+
+			"a rollback is a table the release below it neither writes nor maintains", n)
+	}
+	if n := countColumns("alert_cases", "number"); n != 0 {
+		t.Fatalf("alert_cases.number survived 00081's Down (found %d)", n)
+	}
+	if n := countConstraints("case_number_uniq", "case_number_ck"); n != 0 {
+		t.Fatalf("%d of 00081's constraints survived its Down; DROP COLUMN takes its own "+
+			"constraints with it, so a non-zero here means the Down dropped something else", n)
+	}
+
 	// ⛔ 00080 IS ONE COMMENT AND NOTHING ELSE, which makes it the shape 00043 and
 	// 00050 already are: the prose IS the migration, so a Down that is a copy of its
 	// Up passes every structural reading. 00053's `COMMENT ON INDEX case_ack_idx`

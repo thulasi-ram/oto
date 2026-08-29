@@ -596,10 +596,16 @@ func fxOpenCase(t *testing.T, now time.Time) domain.Case {
 
 	value := 12.4
 	o, err := domain.NewCase(domain.CaseParams{
-		ID:              fxCase,
-		OrgID:           apitest.OrgID,
-		AlertID:         fxAlertID,
-		Seq:             3,
+		ID:      fxCase,
+		OrgID:   apitest.OrgID,
+		AlertID: fxAlertID,
+		Seq:     3,
+		// ⭐ `Number` AND `Seq` ARE DIFFERENT NUMBERS AND THE FIXTURE SPELLS THEM
+		// DIFFERENTLY ON PURPOSE (migration 00081). `Seq` 3 says this is the third
+		// firing of THIS alert; `Number` 412 is its name across the whole org. A
+		// fixture that set them equal would pass against a mapper that copied one
+		// into the other, which is the one mistake worth catching here.
+		Number:          412,
 		State:           domain.CaseOpen,
 		StartedAt:       now.Add(-2 * time.Hour),
 		LastObservedAt:  now.Add(-1 * time.Minute),
@@ -631,6 +637,7 @@ func fxEndedCase(t *testing.T, now time.Time) domain.Case {
 		OrgID:          apitest.OrgID,
 		AlertID:        fxAlertID,
 		Seq:            2,
+		Number:         411,
 		State:          domain.CaseClosed,
 		StartedAt:      now.Add(-30 * time.Hour),
 		EndedAt:        now.Add(-28 * time.Hour),
@@ -657,6 +664,7 @@ func fxSuppressedCase(t *testing.T, now time.Time) domain.Case {
 		OrgID:   apitest.OrgID,
 		AlertID: fxAlertID,
 		Seq:     1,
+		Number:  410,
 		// ⭐ SUPPRESSED IS NOT A STORED STATE (ADR 0040): it is an OPEN episode with a
 		// suppression reason, and `AlertState` is what reads the pair back as
 		// `suppressed`. The fixture has to be built the way the column is written or

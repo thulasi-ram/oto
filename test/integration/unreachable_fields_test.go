@@ -281,17 +281,30 @@ func seedSuppressed(t *testing.T, e *env) suppressedSeed {
 	// ⛔ STALE WITNESSES ON A FIRING ROW. This is what every case written
 	// before the persistence path learned to clear the column looks like, and
 	// the read path must refuse to report them.
-	exec(`INSERT INTO alert_cases (id, org_id, alert_id, seq, state, suppressed_by,
+	exec(`WITH allocated AS (
+	        INSERT INTO org_case_numbers (org_id, next_number) VALUES ($2, 2)
+	        ON CONFLICT (org_id) DO UPDATE
+	                SET next_number = org_case_numbers.next_number + 1
+	          RETURNING next_number - 1 AS number
+	      )
+	      INSERT INTO alert_cases (id, org_id, alert_id, seq, number, state, suppressed_by,
 	         started_at, last_observed_at, source_starts_at)
-	      VALUES ($1,$2,$3,1,'open','{"silencedBy":["stale-sil"],"inhibitedBy":[],"mutedBy":[]}'::jsonb,
-	         $4,$4,$4)`,
+	      SELECT $1,$2,$3,1,(SELECT number FROM allocated),'open',
+	         '{"silencedBy":["stale-sil"],"inhibitedBy":[],"mutedBy":[]}'::jsonb,
+	         $4,$4,$4`,
 		out.firingCase, orgID, out.alertID, now)
 
-	exec(`INSERT INTO alert_cases (id, org_id, alert_id, seq, state, suppression_reason,
+	exec(`WITH allocated AS (
+	        INSERT INTO org_case_numbers (org_id, next_number) VALUES ($2, 2)
+	        ON CONFLICT (org_id) DO UPDATE
+	                SET next_number = org_case_numbers.next_number + 1
+	          RETURNING next_number - 1 AS number
+	      )
+	      INSERT INTO alert_cases (id, org_id, alert_id, seq, number, state, suppression_reason,
 	         suppressed_by, suppress_count, started_at, last_observed_at, source_starts_at)
-	      VALUES ($1,$2,$3,1,'open','silence',
+	      SELECT $1,$2,$3,1,(SELECT number FROM allocated),'open','silence',
 	         '{"silencedBy":["b3d1f0aa-sil"],"inhibitedBy":["f00dcafe"],"mutedBy":[]}'::jsonb,
-	         1,$4,$4,$4)`,
+	         1,$4,$4,$4`,
 		out.suppressedCase, orgID, silencedAlert, now)
 
 	exec(`UPDATE alerts SET current_case_id = $2 WHERE id = $1`,
