@@ -306,11 +306,25 @@ const PreviewHeader: Component = () => (
  * `gap-xl p-lg` inside it — because that markup belongs to a route and there is
  * no component to import. Everything inside it is the shipping section.
  */
-const Band: ParentComponent<{ readonly title: string; readonly id: string }> = (props) => (
+/**
+ * ⛔ `title` IS OPTIONAL, AND A SECTION THAT NAMES ITSELF MUST NOT BE GIVEN ONE.
+ * This sticky bar is the PREVIEW's own index — it labels which section you have
+ * scrolled to, on a page that stacks four of them — and it was written when none
+ * of the sections carried a heading of its own. `PoliciesSection` now opens with
+ * a `PageHeading`, so a band reading "Notification policies" above a heading
+ * reading "Notification policies" is the screen saying its own name twice, three
+ * millimetres apart, in two different typefaces. The brush-stroke heading is the
+ * real one; this bar withdraws for any section that has one.
+ */
+const Band: ParentComponent<{ readonly title?: string; readonly id: string }> = (props) => (
   <section id={props.id} class="border-b border-line-strong">
-    <div class="sticky top-12 z-20 border-b border-line bg-sunken px-lg py-sm">
-      <h2 class="text-title font-semibold tracking-tight text-ink">{props.title}</h2>
-    </div>
+    <Show when={props.title}>
+      {(title) => (
+        <div class="sticky top-12 z-20 border-b border-line bg-sunken px-lg py-sm">
+          <h2 class="text-title font-semibold tracking-tight text-ink">{title()}</h2>
+        </div>
+      )}
+    </Show>
     <div class="flex w-full max-w-3xl flex-col gap-xl p-lg">{props.children}</div>
   </section>
 );
@@ -354,7 +368,8 @@ const ProtoSettingsPreview: Component = () => {
           </Band>
         </Show>
         <Show when={shows("policies")}>
-          <Band id="policies" title="Notification policies">
+          {/* No title: `PoliciesSection` opens with its own `PageHeading`. */}
+          <Band id="policies">
             <PoliciesSection />
           </Band>
         </Show>

@@ -111,7 +111,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "~/components/ui/Select";
-import { Chip, Panel, PanelHeader, PanelTitle } from "~/components/ui/surfaces";
+import { Chip, PageHeading, Panel } from "~/components/ui/surfaces";
 import { ErrorBanner, ErrorState, LoadingLine, PageEmptyState } from "~/components/ui/states";
 import {
   TextField,
@@ -150,9 +150,12 @@ import {
   HELP,
   LABEL,
   LEGEND,
-  PANEL_HEADER,
-  ROW,
+  ADD_FULL,
+  CARD_LIST,
+  PANEL_BODY,
   SECTION,
+  SECTION_HEAD,
+  SECTION_LEDE,
 } from "~/features/settings/rhythm";
 
 /**
@@ -667,39 +670,61 @@ export const PoliciesSection: Component = () => {
 
   return (
     <div class={SECTION}>
-      <Panel>
-        <PanelHeader class={PANEL_HEADER}>
-          <PanelTitle>Notification policies</PanelTitle>
-          <Button size="sm" variant="default" onClick={() => setCreating(true)}>
-            Add a policy
-          </Button>
-        </PanelHeader>
+      {/* ⭐ THE HEADING WEARS NO BORDER. It used to be a `PanelTitle` inside a
+          `PanelHeader`, which put a box around the section's own name and made
+          every policy under it a band in one long frame. A heading is page
+          furniture; the border belongs on the policies, where it separates one
+          rule from the next. */}
+      <header class={SECTION_HEAD}>
+        <PageHeading brush="swipe">Notification policies</PageHeading>
+        <p class={SECTION_LEDE}>
+          A policy decides who hears about a fact and who does not. With no policy at all every
+          notification is recorded as suppressed with reason{" "}
+          <code class="font-mono">no_policy</code> — oto keeps the whole history and tells nobody,
+          which is a choice worth making on purpose rather than by omission.
+        </p>
+      </header>
 
-        <Switch>
-          <Match when={policies.isPending}>
-            <LoadingLine />
-          </Match>
-          <Match when={policies.isError}>
-            <ErrorState error={policies.error} onRetry={() => void policies.refetch()} />
-          </Match>
-          <Match when={(policies.data?.data.length ?? 0) === 0}>
-            <PageEmptyState
-              motif="kumo"
-              title="No policies."
-              body="With no policy, every notification is recorded as suppressed with reason `no_policy`. oto keeps a complete history and tells nobody — which is a choice worth making deliberately."
-            />
-          </Match>
-          <Match when={true}>
-            <ul>
-              <For each={policies.data?.data ?? []}>
-                {(p) => (
-                  <PolicyRow policy={p} channels={byId()} onEdit={() => setEditing(p)} />
-                )}
-              </For>
-            </ul>
-          </Match>
-        </Switch>
-      </Panel>
+      <Switch>
+        <Match when={policies.isPending}>
+          <LoadingLine />
+        </Match>
+        <Match when={policies.isError}>
+          <ErrorState error={policies.error} onRetry={() => void policies.refetch()} />
+        </Match>
+        <Match when={(policies.data?.data.length ?? 0) === 0}>
+          {/* ⛔ THE EMPTY STATE CARRIES NO ACTION OF ITS OWN, because the add
+              control below is on screen at the same time. Two buttons saying
+              "Add a policy" a hundred pixels apart is one button too many, and
+              the one inside the empty state would move when the list filled. */}
+          <PageEmptyState
+            motif="kumo"
+            title="No policies."
+            body="Nothing is being told to anybody yet. Every notification oto would have sent is on the record under Activity, marked `no_policy`."
+          />
+        </Match>
+        <Match when={true}>
+          {/* ⭐ ONE CARD PER POLICY. A policy is a rule with six or seven facts
+              stacked under it — when, tell, about, at, at most, once it has
+              happened, and one summary every — and a hairline between two of
+              those stacks is not enough to say where one stops. */}
+          <ul class={CARD_LIST}>
+            <For each={policies.data?.data ?? []}>
+              {(p) => (
+                <PolicyRow policy={p} channels={byId()} onEdit={() => setEditing(p)} />
+              )}
+            </For>
+          </ul>
+        </Match>
+      </Switch>
+
+      {/* Below the list on purpose — see `ADD_FULL`. It is rendered through
+          every state including the error one: a failed READ says nothing about
+          whether a WRITE would work, and a screen that hid its only action
+          behind a fetch failure would strand an operator on a retry button. */}
+      <Button variant="outline" class={ADD_FULL} onClick={() => setCreating(true)}>
+        + Add a policy
+      </Button>
 
       <PolicyDialog
         open={creating() || editing() !== null}
@@ -730,94 +755,100 @@ const PolicyRow: Component<{
   }));
 
   return (
-    <li class={cn(ROW, "flex flex-col gap-sm", p().enabled ? "" : "opacity-60")}>
-      <div class="flex min-h-8 flex-wrap items-center gap-sm">
-        <span class="text-item font-medium text-ink">{p().name}</span>
-        <Chip title="Lower is evaluated first.">priority {p().priority}</Chip>
-        <Show when={!p().enabled}>
-          <Chip>disabled</Chip>
-        </Show>
-        <div class="ml-auto flex items-center gap-sm">
-          <Button size="sm" variant="secondary" onClick={props.onEdit}>
-            Edit
-          </Button>
-          <Button size="sm" variant="destructive" busy={remove.isPending} onClick={() => remove.mutate()}>
-            Remove
-          </Button>
+    <li>
+      {/* ⛔ THE CARD IS THE `<Panel>` AND THE `<li>` IS BARE. A border on the list
+          item and a border on a panel inside it would draw the same rectangle
+          twice, one pixel apart, which is exactly what stacking the two produces
+          — so the list contributes the gap and the panel contributes the box. */}
+      <Panel class={cn(PANEL_BODY, "flex flex-col gap-sm", p().enabled ? "" : "opacity-60")}>
+        <div class="flex min-h-8 flex-wrap items-center gap-sm">
+          <span class="text-item font-medium text-ink">{p().name}</span>
+          <Chip title="Lower is evaluated first.">priority {p().priority}</Chip>
+          <Show when={!p().enabled}>
+            <Chip>disabled</Chip>
+          </Show>
+          <div class="ml-auto flex items-center gap-sm">
+            <Button size="sm" variant="secondary" onClick={props.onEdit}>
+              Edit
+            </Button>
+            <Button size="sm" variant="destructive" busy={remove.isPending} onClick={() => remove.mutate()}>
+              Remove
+            </Button>
+          </div>
         </div>
-      </div>
 
-      <div class="flex flex-col gap-2xs text-meta text-ink-muted">
-        <p>
-          <span class="text-ink-subtle">when</span>{" "}
-          <code class="font-mono text-ink">
-            {p().matchers.length === 0
-              ? "anything"
-              : formatMatchers(
-                  p().matchers.map((m) => ({ name: m.name, op: m.op, value: m.value })),
-                )}
-          </code>
-        </p>
-        <p>
-          <span class="text-ink-subtle">tell</span>{" "}
-          {p().channel_ids.length === 0
-            ? "nobody"
-            : p()
-                .channel_ids.map((id) => props.channels.get(id)?.name ?? "a removed channel")
-                .join(", ")}
-        </p>
-        <p>
-          <span class="text-ink-subtle">about</span>{" "}
-          {p().reasons.map((r) => REASON_LABEL[r] ?? r).join(", ")}
-        </p>
-        {/* The binding, on its own line and only when it narrows something. An
-            empty binding is every altitude, and a row that said "at every
-            altitude" on every policy would be a word the eye learns to skip.
-            Inline after the facts it read as one run-on clause — "about started
-            firing, all resolved at one firing". */}
-        <Show when={p().subject_kinds.length > 0}>
+        <div class="flex flex-col gap-2xs text-meta text-ink-muted">
           <p>
-            <span class="text-ink-subtle">at</span>{" "}
-            {p()
-              .subject_kinds.map((k) => SUBJECT_LABEL[k] ?? k)
-              .join(", ")}
+            <span class="text-ink-subtle">when</span>{" "}
+            <code class="font-mono text-ink">
+              {p().matchers.length === 0
+                ? "anything"
+                : formatMatchers(
+                    p().matchers.map((m) => ({ name: m.name, op: m.op, value: m.value })),
+                  )}
+            </code>
           </p>
-        </Show>
-        <Show when={p().throttle}>
-          {(t) => (
-            <p title="A throttled notification is recorded as suppressed with a reason, never silently dropped.">
-              <span class="text-ink-subtle">at most</span> {t().max} per{" "}
-              {duration(t().window_seconds)}
+          <p>
+            <span class="text-ink-subtle">tell</span>{" "}
+            {p().channel_ids.length === 0
+              ? "nobody"
+              : p()
+                  .channel_ids.map((id) => props.channels.get(id)?.name ?? "a removed channel")
+                  .join(", ")}
+          </p>
+          <p>
+            <span class="text-ink-subtle">about</span>{" "}
+            {p().reasons.map((r) => REASON_LABEL[r] ?? r).join(", ")}
+          </p>
+          {/* The binding, on its own line and only when it narrows something. An
+              empty binding is every altitude, and a row that said "at every
+              altitude" on every policy would be a word the eye learns to skip.
+              Inline after the facts it read as one run-on clause — "about started
+              firing, all resolved at one firing". */}
+          <Show when={p().subject_kinds.length > 0}>
+            <p>
+              <span class="text-ink-subtle">at</span>{" "}
+              {p()
+                .subject_kinds.map((k) => SUBJECT_LABEL[k] ?? k)
+                .join(", ")}
             </p>
-          )}
-        </Show>
-        {/* ⚠️ THE PAIR IS READ OFF `count_min`, WHICH THE SERVER GUARANTEES COMES
-            WITH ITS WINDOW (`policies_count_pair_ck`). A row that rendered each
-            half independently would print "once it has happened 5 times in —" for
-            a shape the database cannot hold. */}
-        <Show when={p().count_min}>
-          {(min) => (
-            <p title="Below the threshold a notification is recorded as suppressed with reason `below_threshold`, never silently dropped.">
-              <span class="text-ink-subtle">once it has happened</span> {min()} times in{" "}
-              {duration(p().count_window_seconds)}
-            </p>
-          )}
-        </Show>
-        <Show when={p().digest_window_seconds}>
-          {(window) => (
-            <p title="One message per window, in addition to whatever else this policy routes.">
-              <span class="text-ink-subtle">and one summary every</span> {duration(window())}
-              <Show when={p().digest_floor}>
-                {(floor) => <> if at least {floor()} firings opened</>}
-              </Show>
-            </p>
-          )}
-        </Show>
-      </div>
+          </Show>
+          <Show when={p().throttle}>
+            {(t) => (
+              <p title="A throttled notification is recorded as suppressed with a reason, never silently dropped.">
+                <span class="text-ink-subtle">at most</span> {t().max} per{" "}
+                {duration(t().window_seconds)}
+              </p>
+            )}
+          </Show>
+          {/* ⚠️ THE PAIR IS READ OFF `count_min`, WHICH THE SERVER GUARANTEES COMES
+              WITH ITS WINDOW (`policies_count_pair_ck`). A row that rendered each
+              half independently would print "once it has happened 5 times in —" for
+              a shape the database cannot hold. */}
+          <Show when={p().count_min}>
+            {(min) => (
+              <p title="Below the threshold a notification is recorded as suppressed with reason `below_threshold`, never silently dropped.">
+                <span class="text-ink-subtle">once it has happened</span> {min()} times in{" "}
+                {duration(p().count_window_seconds)}
+              </p>
+            )}
+          </Show>
+          <Show when={p().digest_window_seconds}>
+            {(window) => (
+              <p title="One message per window, in addition to whatever else this policy routes.">
+                <span class="text-ink-subtle">and one summary every</span> {duration(window())}
+                <Show when={p().digest_floor}>
+                  {(floor) => <> if at least {floor()} firings opened</>}
+                </Show>
+              </p>
+            )}
+          </Show>
+        </div>
 
-      <Show when={remove.error !== null}>
-        <ErrorBanner error={remove.error} />
-      </Show>
+        <Show when={remove.error !== null}>
+          <ErrorBanner error={remove.error} />
+        </Show>
+      </Panel>
     </li>
   );
 };

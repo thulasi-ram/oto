@@ -64,7 +64,7 @@ import {
   ModalHeader,
   ModalTitle,
 } from "~/components/ui/Modal";
-import { Chip, Panel, PanelHeader, PanelTitle, SECTION_LABEL } from "~/components/ui/surfaces";
+import { Chip, PageHeading, Panel, SECTION_LABEL } from "~/components/ui/surfaces";
 import { ErrorBanner, ErrorState, LoadingLine, PageEmptyState } from "~/components/ui/states";
 import {
   TextField,
@@ -84,9 +84,12 @@ import {
   FORM,
   HELP,
   LABEL,
-  PANEL_HEADER,
-  ROW,
+  ADD_FULL,
+  CARD_LIST,
+  PANEL_BODY,
   SECTION,
+  SECTION_HEAD,
+  SECTION_LEDE,
 } from "~/features/settings/rhythm";
 
 /** The formats, READ from the contract's own enum rather than restated here. */
@@ -183,43 +186,56 @@ export const TemplatesSection: Component = () => {
 
   return (
     <div class={SECTION}>
-      <Panel>
-        <PanelHeader class={PANEL_HEADER}>
-          <PanelTitle>Message templates</PanelTitle>
-          <Button size="sm" variant="default" onClick={() => setCreating(true)}>
-            Write a template
-          </Button>
-        </PanelHeader>
-
-        <p class={HELP}>
+      {/* ⛔⛔ THIS SENTENCE USED TO SIT ON THE PANEL'S LEFT BORDER, and that is the
+          defect that took the card off the header. It was a `<p class={HELP}>`
+          placed directly inside `<Panel>` — but `HELP` is a typography recipe and
+          carries no inset, and the panel's only padded children were its header
+          and its rows, so the one paragraph between them had nothing holding it
+          off the edge. Adding `px-lg` would have hidden it; the real answer is
+          that a section's own explanation is not panel content at all. It is a
+          lede under a heading, and out here it owes no border a margin. */}
+      <header class={SECTION_HEAD}>
+        <PageHeading brush="swipe">Message templates</PageHeading>
+        <p class={SECTION_LEDE}>
           A template is the whole message oto sends. A notification policy picks which one its
           alerts use — templates carry no matchers of their own, because the policy already has
           them.
         </p>
+      </header>
 
-        <Switch>
-          <Match when={templates.isPending}>
-            <LoadingLine />
-          </Match>
-          <Match when={templates.isError}>
-            <ErrorState error={templates.error} onRetry={() => void templates.refetch()} />
-          </Match>
-          <Match when={rows().length === 0}>
-            <PageEmptyState
-              motif="kumo"
-              title="Every alert reads in oto's own voice"
-              body="Write a template to say it differently. You will see it spelled for every channel kind as you type."
-            />
-          </Match>
-          <Match when={rows().length > 0}>
-            <ul class="divide-y divide-border">
-              <For each={rows()}>
-                {(t) => <TemplateRow template={t} onEdit={() => setEditing(t)} />}
-              </For>
-            </ul>
-          </Match>
-        </Switch>
-      </Panel>
+      <Switch>
+        <Match when={templates.isPending}>
+          <LoadingLine />
+        </Match>
+        <Match when={templates.isError}>
+          <ErrorState error={templates.error} onRetry={() => void templates.refetch()} />
+        </Match>
+        <Match when={rows().length === 0}>
+          {/* No action inside the empty state: the full-width control below is
+              already on screen, and it is where the button stays once the list
+              has something in it. */}
+          <PageEmptyState
+            motif="kumo"
+            title="Every alert reads in oto's own voice"
+            body="Write a template to say it differently. You will see it spelled for every channel kind as you type."
+          />
+        </Match>
+        <Match when={rows().length > 0}>
+          {/* ⛔ `divide-y` IS GONE WITH THE PANEL THAT MADE IT MEAN SOMETHING. A
+              hairline between two rows only separates them while they share one
+              box; between two cards it would be a third line beside the two
+              borders already there. */}
+          <ul class={CARD_LIST}>
+            <For each={rows()}>
+              {(t) => <TemplateRow template={t} onEdit={() => setEditing(t)} />}
+            </For>
+          </ul>
+        </Match>
+      </Switch>
+
+      <Button variant="outline" class={ADD_FULL} onClick={() => setCreating(true)}>
+        + Write a template
+      </Button>
 
       <Show when={creating()}>
         <TemplateDialog onClose={() => setCreating(false)} />
@@ -235,16 +251,23 @@ const TemplateRow: Component<{
   template: NotificationTemplate;
   onEdit: () => void;
 }> = (props) => (
-  <li class={ROW}>
-    <button type="button" class="flex-1 text-left" onClick={props.onEdit}>
-      <span class="font-medium">{props.template.name}</span>
-      <span class={cn(HELP, "block")}>
-        {props.template.provider} · {props.template.format} · v{props.template.version}
-      </span>
-    </button>
-    <Show when={!props.template.enabled}>
-      <Chip>off</Chip>
-    </Show>
+  <li>
+    {/* ⛔ THE WHOLE CARD IS NOT THE BUTTON, only the name and its meta line are.
+        A card carries a chip beside the button, and a `<button>` wrapping a
+        sibling chip is a control whose accessible name reads "house voice slack ·
+        card · v3 off" — the disabled marker becoming part of the label of the
+        thing that opens the editor. */}
+    <Panel class={cn(PANEL_BODY, "flex items-center gap-sm")}>
+      <button type="button" class="min-w-0 flex-1 text-left" onClick={props.onEdit}>
+        <span class="font-medium">{props.template.name}</span>
+        <span class={cn(HELP, "block")}>
+          {props.template.provider} · {props.template.format} · v{props.template.version}
+        </span>
+      </button>
+      <Show when={!props.template.enabled}>
+        <Chip>off</Chip>
+      </Show>
+    </Panel>
   </li>
 );
 
