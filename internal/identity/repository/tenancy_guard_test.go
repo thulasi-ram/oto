@@ -103,6 +103,13 @@ var notARequestResolver = map[string]string{
 	"notification/repository.orgOfDeliverySQL": "job-payload scope for the delivery workers: the org comes from the delivery row",
 	"sources/repository.resolveSourceOrgSQL":   "job-payload scope for the source workers: the org comes from the source row",
 
+	"app.selectLiveOrgIDBySlugSQL": "operator scope for `oto reset-password`, the same category as " +
+		"`ingestion/repository.locateBatchSQL` above: an operator running the CLI has a shell on the " +
+		"host and the database credentials — the same authority that could write the row by hand — " +
+		"and nothing external chooses the slug it looks up. There is no inbound credential to turn " +
+		"into a tenancy, so a soft-deleted org's slug simply finding no row (the WHERE clause, not a " +
+		"join) is the whole exclusion this needs",
+
 	"app.liveOrgSQL": "job-payload scope for the per-tenant periodics (`case.reap`, `notify.digest`, " +
 		"`notify.digest.reconcile`, `retention.prune`'s drill sweep, `stats.rollup`). The list named " +
 		"`group.close` and `flap.score` until both kinds were deleted (git-bug `7570090` and the flap " +
