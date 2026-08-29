@@ -64,6 +64,23 @@ func TestSSEWriterSendsTheDeclaredHeaders(t *testing.T) {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 
+	// ⛔ DRAIN THE STREAM BEFORE THE CONNECTION CLOSES, EVEN THOUGH THIS TEST
+	// ASSERTS ONLY ON HEADERS. Without it the test read its headers and returned,
+	// the deferred Close tore the connection down, and the handler — still inside
+	// EventSeq — got `write: broken pipe` and called t.Errorf. A client
+	// disconnecting mid-stream is NORMAL for SSE and the handler is right not to
+	// care; it was the test that turned it into a failure, intermittently, on
+	// whichever side won the race. It went red exactly once in ci, on a commit
+	// that touched nothing here, and would have blocked a release had the next
+	// commit not produced a fresh run.
+	//
+	// The other two tests in this file never flaked because they io.ReadAll the
+	// body — reading to EOF is what waits for the handler to finish writing. This
+	// makes that implicit synchronisation explicit and shared.
+	if _, err := io.ReadAll(resp.Body); err != nil {
+		t.Fatalf("draining the stream: %v", err)
+	}
+
 	want := map[string]string{
 		"Content-Type":      httpx.ContentTypeEventStream,
 		"Cache-Control":     "no-cache, no-transform",

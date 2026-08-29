@@ -187,6 +187,18 @@ jobs:
               echo "::error::the image embeds only the placeholder: $printed"; exit 1 ;;
           esac
 
+      # ⭐ AND WHAT IT ACTUALLY SERVES, WHICH IS A DIFFERENT QUESTION FROM WHAT IT
+      # CONTAINS. `ui: embedded` above proves bytes are inside the binary; this
+      # boots the published image and fetches `/`, so an embed that is present and
+      # unrouted, or a fallback that is present and over-greedy, fails here. No
+      # Postgres: `oto api` serves without a reachable database, which is what
+      # makes this affordable. The table and the reasoning live in the script, so
+      # that `just probe-image` and this job cannot become two different gates.
+      - name: the published image serves the UI and refuses the API namespace
+        run: |
+          bash .github/scripts/probe-image.sh \
+            '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}'
+
       # A manifest that lists one architecture is an image that ImagePullBackOffs
       # on half the clusters it was promised to — the same failure this workflow
       # was written to end, one layer down.

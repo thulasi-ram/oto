@@ -145,6 +145,15 @@ jobs:
             *) echo "::error::the image carries no web UI: $printed"; exit 1 ;;
           esac
 
+      # The same probe release.yml runs, against the same kind of artifact. A
+      # moving tag is where a broken UI would be noticed LAST — nobody pins it, so
+      # nobody reports it — which is an argument for asserting here rather than
+      # against it.
+      - name: the published image serves the UI and refuses the API namespace
+        run: |
+          bash .github/scripts/probe-image.sh \
+            '${{ env.REGISTRY }}/${{ steps.ref.outputs.image }}@${{ steps.build.outputs.digest }}'
+
       - name: the manifest lists both architectures
         run: |
           ref='${{ env.REGISTRY }}/${{ steps.ref.outputs.image }}@${{ steps.build.outputs.digest }}'

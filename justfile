@@ -443,6 +443,21 @@ lint-reachability:
 # versions CI installs. Neither is optional — a check that skips when its checker
 # is absent reports success, which is worse than no check — so check.sh exits
 # non-zero and names `just setup` rather than passing.
+# Probe a PUBLISHED image: does it actually serve the UI, and still refuse /api?
+#
+# ⭐ IT ASKS THE ARTIFACT, NOT THE TREE, which is the gap every other gate here
+# leaves. 0.1.0 through 0.1.2 shipped no web UI at all and every gate stayed green
+# for three releases, because they all asked about source. The release workflows
+# run this same script on the image they just pushed.
+#
+#     just probe-image ghcr.io/thulasi-ram/oto:0.1.3
+#
+# Needs docker and the image pullable. No Postgres: `oto api` serves `/` and
+# `/healthz` without a reachable database.
+[group('check')]
+probe-image ref:
+    bash .github/scripts/probe-image.sh {{ref}}
+
 [group('check')]
 helm-check:
     bash deploy/helm/check.sh
