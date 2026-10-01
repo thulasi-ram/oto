@@ -158,3 +158,93 @@ func TestAFollowedURLThatHitsIsNotSecondGuessed(t *testing.T) {
 		t.Errorf("url=%q, want the followed %s", m.PrometheusURL, followedRoot)
 	}
 }
+
+// otherRule is a server that ignored rule_name[] and answered with a rule that is
+// not the one asked for.
+const otherRule = `{"status":"success","data":{"groups":[{"name":"disk","file":"/etc/vmalert/disk.yml","interval":30,
+	"rules":[{"type":"alerting","name":"DiskFull","query":"disk_free < 0.1","duration":60}]}]}}`
+
+// TestAFollowedAnswerWithoutTheRuleIsAMiss: a non-empty answer is not a hit until
+// the named rule is in it. A followed server that ignores the filter and answers
+// with other rules would otherwise stop the lookup short of the configured one.
+func TestAFollowedAnswerWithoutTheRuleIsAMiss(t *testing.T) {
+	var followed, configured ruleServer
+	followedRoot := followed.start(t, map[string]string{prometheus.PathRules: otherRule})
+	configuredRoot := configured.start(t, map[string]string{prometheus.PathRules: vmalertRule})
+
+	src := domain.Source{ID: uuid.New(), PrometheusURL: configuredRoot}
+	m, f := resolveAgainst(t, src, RuleQuery{
+		Labels:             map[string]string{"alertname": "InstanceDown", "severity": "page"},
+		GeneratorURL:       followedRoot + "/graph?g0.expr=up+%3D%3D+0&g0.tab=1",
+		FollowGeneratorURL: true,
+	})
+
+	if len(f.overrides) != 2 || f.overrides[0] != followedRoot || f.overrides[1] != "" {
+		t.Fatalf("overrides = %q, want the followed root and then the configured URL", f.overrides)
+	}
+	if m.PrometheusURL != configuredRoot || m.ForSeconds != 300 {
+		t.Errorf("url=%q for=%v; want InstanceDown from the configured %s", m.PrometheusURL, m.ForSeconds, configuredRoot)
+	}
+}
+
+func TestHoldsRulesNamesTheRule(t *testing.T) {
+	groups := []domain.RuleGroup{{Rules: []domain.AlertingRule{{Name: "DiskFull"}}}}
+	if holdsRules(groups, "InstanceDown") {
+		t.Error("a group holding only DiskFull held InstanceDown")
+	}
+	if !holdsRules(groups, "DiskFull") {
+		t.Error("a group holding DiskFull did not hold it")
+	}
+	if !holdsRules(groups, "") {
+		t.Error("with no name, any rule is a hit")
+	}
+	if holdsRules([]domain.RuleGroup{{Name: "empty"}}, "") {
+		t.Error("a group with no rules is a miss, whatever the group count")
+	}
+}
+
+// TestAVmalertRootAsksTheConfiguredURLFirst: the root is what vmalert says about
+// itself, the configured prometheus_url is what the operator gave oto — so with
+// one configured, the root is only the fallback.
+func TestAVmalertRootAsksTheConfiguredURLFirst(t *testing.T) {
+	var root, configured ruleServer
+	vmalertRoot := root.start(t, map[string]string{prometheus.PathRules: vmalertRule})
+	configuredRoot := configured.start(t, map[string]string{prometheus.PathRules: vmalertRule})
+	link := vmalertRoot + "/vmalert/alert?group_id=1036955090143761274&alert_id=1074584496268461589"
+
+	src := domain.Source{ID: uuid.New(), PrometheusURL: configuredRoot}
+	m, f := resolveAgainst(t, src, RuleQuery{
+		Labels:             map[string]string{"alertname": "InstanceDown", "severity": "page"},
+		GeneratorURL:       link,
+		FollowGeneratorURL: true,
+	})
+
+	if len(f.overrides) != 1 || f.overrides[0] != "" || root.asked(prometheus.PathRules) {
+		t.Fatalf("overrides = %q; the configured URL held the rule, so the vmalert root must not be asked", f.overrides)
+	}
+	if m.PrometheusURL != configuredRoot {
+		t.Errorf("url=%q, want the configured %s", m.PrometheusURL, configuredRoot)
+	}
+}
+
+// TestAVmalertRootIsTheFallbackWhenTheConfiguredURLMisses: the root is still
+// followed, after the configured URL answered without the rule.
+func TestAVmalertRootIsTheFallbackWhenTheConfiguredURLMisses(t *testing.T) {
+	var root, configured ruleServer
+	vmalertRoot := root.start(t, map[string]string{prometheus.PathRules: vmalertRule})
+	configuredRoot := configured.start(t, map[string]string{prometheus.PathRules: vmEmptyRules})
+
+	src := domain.Source{ID: uuid.New(), PrometheusURL: configuredRoot}
+	m, f := resolveAgainst(t, src, RuleQuery{
+		Labels:             map[string]string{"alertname": "InstanceDown", "severity": "page"},
+		GeneratorURL:       vmalertRoot + "/vmalert/alert?group_id=1&alert_id=2",
+		FollowGeneratorURL: true,
+	})
+
+	if len(f.overrides) != 2 || f.overrides[0] != "" || f.overrides[1] != vmalertRoot {
+		t.Fatalf("overrides = %q, want the configured URL and then the vmalert root", f.overrides)
+	}
+	if m.PrometheusURL != vmalertRoot || m.ForSeconds != 300 {
+		t.Errorf("url=%q for=%v; want the rule from the vmalert root %s", m.PrometheusURL, m.ForSeconds, vmalertRoot)
+	}
+}

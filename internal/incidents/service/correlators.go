@@ -219,6 +219,20 @@ func (c *Correlators) Correlate(ctx context.Context, scope db.TenantScope, caseI
 		if err != nil {
 			return err
 		}
+		// ⚠️ LOCK THE CANDIDATE, THEN READ IT AGAIN. The read above ran unlocked, and
+		// whether it may join turns on its open count and when it went quiet — both
+		// moved by a human's remove or a Case closing, which the Correlator's lock does
+		// not serialise. Under the Incident's lock nothing can move them, so the second
+		// read is the one Joins decides on; if it no longer joins, this Case draws.
+		// Case → Correlator → Incident, the order every path takes.
+		if found {
+			if err := c.inc.incidents.Lock(ctx, scope, []uuid.UUID{latest.ID}); err != nil {
+				return err
+			}
+			if latest, found, err = c.store.LatestDrawn(ctx, scope, k.ID); err != nil {
+				return err
+			}
+		}
 		if found && k.Joins(latest, cs.StartedAt) {
 			if err := c.join(ctx, scope, k, latest.Ref, cs.CaseRef, at); err != nil {
 				return err

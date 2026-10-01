@@ -433,6 +433,36 @@ func TestAnotherOrgsCasesAndIncidentsAreNotFound(t *testing.T) {
 	assert.Equal(t, "incident_not_found", errs.CodeOf(err))
 }
 
+// ------------------------------------------------------------------ drills
+
+// TestADrillsSyntheticCaseIsNeverDrawnOrAdded is the human half of the rule the
+// Correlator already keeps (`correlationCaseSQL`): a delivery drill's Case would
+// otherwise reach the org's incident tool through a human's draw, and the drill's
+// disposal would leave the Incident with a member that no longer exists.
+func TestADrillsSyntheticCaseIsNeverDrawnOrAdded(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := context.Background()
+
+	drill := r.openCase("OtoDeliveryDrill")
+	r.h.Exec(`UPDATE alerts SET synthetic = true
+	           WHERE id = (SELECT alert_id FROM alert_cases WHERE id = $1)`, drill)
+	free := r.openCase("HighErrorRate")
+
+	_, err := r.svc.Draw(ctx, r.scope, []uuid.UUID{free, drill}, r.alice)
+	require.Error(t, err)
+	assert.Equal(t, "case_synthetic", errs.CodeOf(err))
+	list, _, err := r.svc.List(ctx, r.scope, db.Keyset{Limit: 10})
+	require.NoError(t, err)
+	assert.Empty(t, list, "a draw naming a drill's Case is refused whole")
+
+	in, err := r.svc.Draw(ctx, r.scope, []uuid.UUID{free}, r.alice)
+	require.NoError(t, err)
+	_, err = r.svc.Add(ctx, r.scope, in.Number, drill, r.alice)
+	assert.Equal(t, "case_synthetic", errs.CodeOf(err))
+	assert.Equal(t, []uuid.UUID{free}, current(r.get(in.Number)))
+}
+
 // ------------------------------------------------------ declared outbound
 
 // TestEveryIncidentFactIsDeclaredAndTheStateEdgesFollowMembership is ADR 0052 §5's
@@ -524,4 +554,52 @@ func TestACaseClosingQuietsItsIncidentOnce(t *testing.T) {
 	r.closeCase(stray)
 	require.NoError(t, r.svc.CasesEnded(ctx, r.scope, []uuid.UUID{stray}))
 	assert.Len(t, r.announce.facts, 2)
+}
+
+// TestAVerbWaitsForACaseClosingBeneathIt is the Case lock `casesSQL` takes. A close
+// that has not committed holds the Case's row; an add that read past it would count
+// the Case open, declare `active_again` on a quiet Incident, and leave it reading
+// quiet with no `quiet` to follow — the close's CasesEnded ran before the Case was
+// a member. Sharing the lock queues the add behind the close, so it counts the
+// Case closed and declares no edge at all.
+func TestAVerbWaitsForACaseClosingBeneathIt(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := context.Background()
+
+	ended := r.openCase("DiskFull")
+	r.closeCase(ended)
+	quiet, err := r.svc.Draw(ctx, r.scope, []uuid.UUID{ended}, r.alice)
+	require.NoError(t, err)
+	require.Equal(t, domain.StateQuiet, quiet.State())
+
+	closing := r.openCase("HighErrorRate")
+	closer, err := r.h.Pool.Begin(ctx)
+	require.NoError(t, err)
+	defer func() { _ = closer.Rollback(ctx) }()
+	var closerPID int
+	require.NoError(t, closer.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&closerPID))
+	_, err = closer.Exec(ctx, `UPDATE alert_cases
+	                              SET state = 'closed', ended_at = $2, resolve_reason = 'upstream'
+	                            WHERE id = $1`, closing, r.h.Now().Add(time.Minute))
+	require.NoError(t, err)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := r.svc.Add(ctx, r.scope, quiet.Number, closing, r.alice)
+		done <- err
+	}()
+	require.Eventually(t, func() bool {
+		var waiting int
+		err := r.h.Pool.QueryRow(ctx,
+			`SELECT count(*) FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))`,
+			closerPID).Scan(&waiting)
+		return err == nil && waiting > 0
+	}, 10*time.Second, 10*time.Millisecond, "the add must wait on the closing Case's row")
+	require.NoError(t, closer.Commit(ctx))
+
+	require.NoError(t, <-done)
+	assert.Equal(t, []domain.Fact{domain.FactDrawn, domain.FactCaseAdded}, r.announce.of(quiet.ID),
+		"the Case was closed by the time it joined: the Incident never went active")
+	assert.Equal(t, domain.StateQuiet, r.get(quiet.Number).State())
 }

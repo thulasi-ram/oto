@@ -200,7 +200,7 @@ var signalQualified = regexp.MustCompile(`(?i)\b(alerts|alert_cases|notification
 var ddlHead = regexp.MustCompile(`(?i)\b(?:CREATE\s+(?:UNLOGGED\s+)?TABLE(?:\s+IF\s+NOT\s+EXISTS)?` +
 	`|ALTER\s+TABLE(?:\s+IF\s+EXISTS)?(?:\s+ONLY)?` +
 	`|CREATE\s+(?:UNIQUE\s+)?INDEX(?:\s+CONCURRENTLY)?(?:\s+IF\s+NOT\s+EXISTS)?(?:\s+\w+)?\s+ON(?:\s+ONLY)?)` +
-	`\s+(?:\w+\.)?"?(\w+)"?`)
+	`\s+(?:"?\w+"?\.)?"?(\w+)"?`)
 
 // onSignalRow reports whether the match at `at` would put the column on a
 // signal row: qualified by a signal table, or inside a DDL statement whose

@@ -143,6 +143,23 @@ func TestAQuietIncidentIsNotDrawnAsResolved(t *testing.T) {
 	if !strings.Contains(topLevelText(t, msg.Payload), "is quiet") {
 		t.Errorf("the push text does not say quiet: %q", topLevelText(t, msg.Payload))
 	}
+	// The head says quiet with the neutral circle, never the resolved tick — and a
+	// closed member Case keeps its tick, because that Case did close.
+	const quietMark, resolvedMark = ":white_circle: *Quiet*", ":white_check_mark: *Quiet*"
+	card := string(msg.Payload)
+	if !strings.Contains(card, quietMark) || strings.Contains(card, resolvedMark) {
+		t.Errorf("the quiet head is not drawn with the neutral circle:\n%s", card)
+	}
+	if !strings.Contains(card, ":white_check_mark: ") {
+		t.Errorf("the closed member Case lost its resolved tick:\n%s", card)
+	}
+
+	reply := *v
+	reply.Reason = "quiet"
+	body := string(renderView(t, &reply, domain.ModeThreadReply).Payload)
+	if !strings.Contains(body, quietMark) || strings.Contains(body, resolvedMark) {
+		t.Errorf("the quiet fact in the thread is not drawn with the neutral circle:\n%s", body)
+	}
 }
 
 // TestAnIncidentIsDrawnAsWhatTheModeAndTheThreadSay — a root mode is the card, a

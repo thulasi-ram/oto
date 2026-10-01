@@ -475,12 +475,23 @@ func (r *IncidentRepository) Ref(ctx context.Context, s db.TenantScope, number i
 	return ref, nil
 }
 
+// ⭐ FOR SHARE OF c IS THE FIRST LOCK EVERY MEMBERSHIP VERB TAKES. Draw, add,
+// remove and move all resolve their Cases here BEFORE any Incident row lock, so the
+// order is always Case → Incident and two verbs over the same Case cannot each hold
+// what the other waits for. A share lock, because the readers here only need the
+// Case to hold still; `Correlate` takes the same one in `correlationCaseSQL`. Ordered
+// by id for the same reason `lockSQL` is.
 const casesSQL = `
-SELECT id, number, alert_id FROM alert_cases
- WHERE org_id = $1 AND id = ANY($2::uuid[])`
+SELECT c.id, c.number, c.alert_id, a.synthetic
+  FROM alert_cases c
+  JOIN alerts a ON a.id = c.alert_id
+ WHERE c.org_id = $1 AND c.id = ANY($2::uuid[])
+ ORDER BY c.id
+ FOR SHARE OF c`
 
-// Cases resolves Case ids inside the org. An id the org does not have is simply
-// absent from the answer; the service decides what that means.
+// Cases resolves Case ids inside the org, share-locking each for the rest of the
+// caller's transaction. An id the org does not have is simply absent from the
+// answer; the service decides what that means.
 func (r *IncidentRepository) Cases(
 	ctx context.Context, s db.TenantScope, ids []uuid.UUID,
 ) (map[uuid.UUID]domain.CaseRef, error) {
@@ -495,7 +506,7 @@ func (r *IncidentRepository) Cases(
 	out := make(map[uuid.UUID]domain.CaseRef, len(ids))
 	for rows.Next() {
 		var c domain.CaseRef
-		if err := rows.Scan(&c.ID, &c.Number, &c.AlertID); err != nil {
+		if err := rows.Scan(&c.ID, &c.Number, &c.AlertID, &c.Synthetic); err != nil {
 			return nil, mapErr(err, "resolve cases")
 		}
 		out[c.ID] = c
