@@ -1,0 +1,21 @@
+{
+  "text": ":jigsaw: A case joined Incident #12; it now has 2 cases, 1 open.",
+  "unfurl_links": false,
+  "unfurl_media": false,
+  "attachments": [
+    {
+      "color": "#a30200",
+      "fallback": ":jigsaw: A case joined Incident #12; it now has 2 cases, 1 open.",
+      "blocks": [
+        {
+          "type": "section",
+          "block_id": "oto_incidentreply_38c2fe4ff9",
+          "text": {
+            "type": "mrkdwn",
+            "text": ":heavy_plus_sign: *A case joined* — now 2 cases, 1 open"
+          }
+        }
+      ]
+    }
+  ]
+}

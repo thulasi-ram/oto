@@ -1,0 +1,52 @@
+{
+  "blocks": [
+    {
+      "type": "section",
+      "block_id": "oto_incident_d9f7907701",
+      "text": {
+        "type": "mrkdwn",
+        "text": ":jigsaw: *<https://oto.example.com/incidents/12|Incident #12>* — :fire: *Active*, 1 case open\n_One story drawn over 2 cases. Later updates about its cases are posted in this thread._"
+      }
+    },
+    {
+      "type": "section",
+      "block_id": "oto_incidentfacts_d9f7907701",
+      "fields": [
+        {
+          "type": "mrkdwn",
+          "text": "*Cases*\n2"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*Open*\n1"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*Drawn*\n<!date^1786125489^{date_short_pretty} {time}|2026-08-07 17:58 UTC>"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*Drawn by*\na Correlator"
+        }
+      ]
+    },
+    {
+      "type": "section",
+      "block_id": "oto_incidentmembers_d9f7907701",
+      "text": {
+        "type": "mrkdwn",
+        "text": "• :fire: <https://oto.example.com/cases/019fe297-d84f-7599-b5b2-1f231749104a|Case #412> `CheckoutErrorRateHigh`\n• :white_check_mark: <https://oto.example.com/cases/019fe297-d84f-7599-b5b2-1f23174910c3|Case #413> `CheckoutLatencyHigh`"
+      }
+    },
+    {
+      "type": "context",
+      "block_id": "oto_incidentfooter_d9f7907701",
+      "elements": [
+        {
+          "type": "mrkdwn",
+          "text": "oto  ·  _Incident #12_  ·  updated <!date^1786125490^{time}|17:58 UTC>"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "blocks": [
+    {
+      "type": "section",
+      "block_id": "oto_incidentpointer_b6b518652a",
+      "text": {
+        "type": "mrkdwn",
+        "text": ":arrow_right: *Now part of <https://oto.example.com/incidents/12|Incident #12>* — later updates about this case are posted in that Incident's thread, not here."
+      }
+    }
+  ]
+}
