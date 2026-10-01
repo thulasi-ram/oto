@@ -20,6 +20,8 @@ import (
 // boundary.
 type ScopeResolver interface {
 	ForCase(ctx context.Context, caseID uuid.UUID) (db.TenantScope, error)
+	// ForIncident resolves an Incident fact's tenant through the Incident (ADR 0052 §5).
+	ForIncident(ctx context.Context, incidentID uuid.UUID) (db.TenantScope, error)
 	ForDelivery(ctx context.Context, deliveryID uuid.UUID) (db.TenantScope, error)
 }
 
@@ -90,6 +92,7 @@ func (w *Workers) Register(h *jobs.Handlers, orgs jobs.Tenants, enq db.Enqueuer)
 		return
 	}
 	h.NotifyEvaluate = w.NotifyEvaluate
+	h.NotifyIncident = w.NotifyIncident
 	h.DeliverDispatch = w.DeliverDispatch
 	h.NotifyDigest = w.NotifyDigest(orgs, enq)
 	h.NotifyDigestReconcile = w.NotifyDigestReconcile(orgs, enq)
@@ -139,6 +142,50 @@ func (w *Workers) NotifyEvaluate(ctx context.Context, job *jobs.Job[jobs.NotifyE
 
 	w.log.DebugContext(ctx, "notification: evaluated",
 		"case_id", args.CaseID, "reason", args.Reason,
+		"notification_id", res.Notification.ID, "created", res.Created,
+		"deliveries", res.Deliveries, "suppressed", string(res.Suppressed))
+	return nil
+}
+
+// NotifyIncident is the `notify.incident` handler (ADR 0052 §5).
+//
+// IDEMPOTENCY: the §C.7 key over the Incident and the fact's OCCASION, minted by the
+// producer inside the transaction that made the fact true. A redelivery collides on
+// `notifications_idem_uniq` and is swallowed; nothing here de-duplicates.
+func (w *Workers) NotifyIncident(ctx context.Context, job *jobs.Job[jobs.NotifyIncidentArgs]) error {
+	args := job.Args
+
+	reason := domain.Reason(args.Reason)
+	if !reason.Valid() || reason.Subject() != domain.SubjectIncident {
+		// Permanent, for `NotifyEvaluate`'s reason: it will still be wrong on the
+		// thirteenth attempt.
+		return jobs.Permanent(errs.Validation("unknown_reason",
+			"not an Incident notification reason",
+			errs.Violation{Field: "reason", Code: "enum", Message: args.Reason}))
+	}
+
+	scope, err := w.scopes.ForIncident(ctx, args.IncidentID)
+	if err != nil {
+		if errs.IsKind(err, errs.KindNotFound) {
+			return jobs.Permanent(err)
+		}
+		return err
+	}
+
+	res, err := w.notifier.EvaluateIncident(ctx, scope, service.IncidentIntent{
+		IncidentID: args.IncidentID,
+		Reason:     reason,
+		OccasionID: args.OccasionID,
+	})
+	if err != nil {
+		if errs.IsKind(err, errs.KindValidation) {
+			return jobs.Permanent(err)
+		}
+		return classify(err)
+	}
+
+	w.log.DebugContext(ctx, "notification: incident fact evaluated",
+		"incident_id", args.IncidentID, "reason", args.Reason,
 		"notification_id", res.Notification.ID, "created", res.Created,
 		"deliveries", res.Deliveries, "suppressed", string(res.Suppressed))
 	return nil

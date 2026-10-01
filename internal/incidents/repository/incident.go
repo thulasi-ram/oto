@@ -311,6 +311,110 @@ func (r *IncidentRepository) Get(ctx context.Context, s db.TenantScope, number i
 	return domain.Detail{Incident: inc, Members: members}, nil
 }
 
+// GetByID is Get addressed by id, for the readers that hold an id rather than a
+// number — the notification layer building an Incident fact's card (ADR 0052 §5).
+func (r *IncidentRepository) GetByID(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Detail, error) {
+	ref, err := r.refByID(ctx, s, id)
+	if err != nil {
+		return domain.Detail{}, err
+	}
+	return r.Get(ctx, s, ref.Number)
+}
+
+const refByIDSQL = `SELECT id, number FROM incidents WHERE org_id = $1 AND id = $2`
+
+func (r *IncidentRepository) refByID(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Ref, error) {
+	if err := db.RequireScope(s); err != nil {
+		return domain.Ref{}, err
+	}
+	var ref domain.Ref
+	if err := r.db(ctx).QueryRow(ctx, refByIDSQL, s.OrgID(), id).Scan(&ref.ID, &ref.Number); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Ref{}, domain.NotFound()
+		}
+		return domain.Ref{}, mapErr(err, "resolve an incident id")
+	}
+	return ref, nil
+}
+
+// ⭐ THE ROW LOCK IS WHAT MAKES "WENT QUIET" HAPPEN EXACTLY ONCE. Two transactions
+// each closing one of an Incident's last two open Cases would, under READ COMMITTED,
+// each still see the other's Case open and neither would announce `quiet`. Taking
+// this lock BEFORE counting serialises them on the Incident: the second waits for
+// the first to commit, then counts with its close visible, and is the one that sees
+// zero. The membership verbs take the same lock for the same count. Ordered by id,
+// so two transactions locking two Incidents (a move, a batch) always queue in one
+// order and cannot deadlock on each other.
+const lockSQL = `
+SELECT id FROM incidents
+ WHERE org_id = $1 AND id = ANY($2::uuid[])
+ ORDER BY id
+ FOR UPDATE`
+
+// Lock takes the row lock on each Incident, in id order, for the rest of the
+// caller's transaction.
+func (r *IncidentRepository) Lock(ctx context.Context, s db.TenantScope, ids []uuid.UUID) error {
+	if err := db.RequireScope(s); err != nil {
+		return err
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	rows, err := r.db(ctx).Query(ctx, lockSQL, s.OrgID(), ids)
+	if err != nil {
+		return mapErr(err, "lock incidents")
+	}
+	rows.Close()
+	return mapErr(rows.Err(), "lock incidents")
+}
+
+const openMembersSQL = `
+SELECT count(*)::int
+  FROM incident_members m
+  JOIN alert_cases c ON c.id = m.case_id
+ WHERE m.org_id = $1 AND m.incident_id = $2 AND m.removed_at IS NULL AND c.state = 'open'`
+
+// OpenMembers counts the Incident's CURRENT member Cases that are open — the one
+// number its derived state is read off (ADR 0052 §3).
+func (r *IncidentRepository) OpenMembers(ctx context.Context, s db.TenantScope, incidentID uuid.UUID) (int, error) {
+	if err := db.RequireScope(s); err != nil {
+		return 0, err
+	}
+	var n int
+	if err := r.db(ctx).QueryRow(ctx, openMembersSQL, s.OrgID(), incidentID).Scan(&n); err != nil {
+		return 0, mapErr(err, "count an incident's open members")
+	}
+	return n, nil
+}
+
+const holdingSQL = `
+SELECT DISTINCT incident_id
+  FROM incident_members
+ WHERE org_id = $1 AND case_id = ANY($2::uuid[]) AND removed_at IS NULL`
+
+// Holding returns the Incidents the given Cases are CURRENT members of. It is
+// served by `incident_members_case_live_uniq`, which is a unique index on exactly
+// the predicate.
+func (r *IncidentRepository) Holding(ctx context.Context, s db.TenantScope, caseIDs []uuid.UUID) ([]uuid.UUID, error) {
+	if err := db.RequireScope(s); err != nil {
+		return nil, err
+	}
+	rows, err := r.db(ctx).Query(ctx, holdingSQL, s.OrgID(), caseIDs)
+	if err != nil {
+		return nil, mapErr(err, "read the incidents holding cases")
+	}
+	defer rows.Close()
+	var out []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, mapErr(err, "read the incidents holding cases")
+		}
+		out = append(out, id)
+	}
+	return out, mapErr(rows.Err(), "read the incidents holding cases")
+}
+
 const refSQL = `SELECT id, number FROM incidents WHERE org_id = $1 AND number = $2`
 
 // Ref resolves an Incident number to the id its membership rows reference.

@@ -63,6 +63,14 @@ export const REASON_LABEL: Record<NotificationReason, string> = {
   // So the label names the window, never an alert — this row is about no alert,
   // no case and no generation, and it is the one notification with no `group_id`.
   digest: "a window closed with enough new cases to report",
+  // ⭐ THE FIVE INCIDENT FACTS (ADR 0052 §5). Each row is about an Incident and no
+  // single signal. ⛔ "went quiet" is every member Case closed — never "resolved":
+  // oto holds no response state and declares none.
+  drawn: "an Incident was drawn",
+  case_added: "a Case was added to an Incident",
+  case_removed: "a Case was removed from an Incident",
+  quiet: "an Incident went quiet: no member Case is open",
+  active_again: "an Incident became active again",
 };
 
 /**

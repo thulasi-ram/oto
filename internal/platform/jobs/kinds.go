@@ -48,7 +48,11 @@ const (
 	KindIngestProcessBatch = "ingest.process_batch"
 	KindEnrichRun          = "enrich.run"
 	KindNotifyEvaluate     = "notify.evaluate"
-	KindDeliverDispatch    = "deliver.dispatch"
+	// KindNotifyIncident evaluates notification policy for one Incident fact (ADR
+	// 0052 §5). It is enqueued by `incidents`, which never imports `notification`
+	// — the queue is the seam, as it is for `notify.evaluate`.
+	KindNotifyIncident  = "notify.incident"
+	KindDeliverDispatch = "deliver.dispatch"
 	// KindSlackInteraction is one verified Slack block action, taken off the HTTP
 	// request so the endpoint can answer inside Slack's three-second window.
 	KindSlackInteraction = "slack.interaction"

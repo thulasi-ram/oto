@@ -129,6 +129,38 @@ const (
 	// case-based policy gains no window at all. oto does not decide to be quiet
 	// about a firing.
 	ReasonDigest Reason = "digest"
+
+	// ⭐⭐ THE FIVE INCIDENT FACTS (ADR 0052 §5, migration 00084). Declaring an
+	// Incident is a notification, so each thing oto observes about one is a Reason
+	// whose subject is the Incident — `SubjectIncident` below — and "every Incident
+	// goes to incident.io" is one catch-all policy over these five.
+	//
+	// ⛔ NOT ONE OF THEM IS A COMMAND, AND NONE EVER WILL BE. There is no
+	// `resolved`, no `closed`, no `mitigated` and no status: oto sends an incident
+	// tool FACTS and never PagerDuty's `resolve` (§5). This is ADR 0013's rule run
+	// the other way — the incident tool does not resolve oto's alert, and oto does
+	// not resolve the incident tool's incident. An org that wants auto-resolve
+	// writes it in its own tool, keyed on `quiet`, and the provider docs say what
+	// that costs.
+
+	// ReasonDrawn is an Incident being drawn over its first Cases — by a human
+	// today, by a Correlator once one exists.
+	ReasonDrawn Reason = "drawn"
+	// ReasonCaseAdded is a Case joining an Incident after it was drawn, including
+	// the arriving half of a move.
+	ReasonCaseAdded Reason = "case_added"
+	// ReasonCaseRemoved is a human taking a Case out of an Incident, including the
+	// leaving half of a move. Only a human removes (ADR 0052 §4).
+	ReasonCaseRemoved Reason = "case_removed"
+	// ReasonQuiet is an Incident whose last open member Case has closed or left:
+	// its derived state went from active to quiet. It is a fact about signals —
+	// every member stopped firing — and NEVER "the incident is over", which is the
+	// incident tool's fact to state.
+	ReasonQuiet Reason = "quiet"
+	// ReasonActiveAgain is a quiet Incident gaining an open member Case. Cases are
+	// strictly terminal (ADR 0040), so this only ever happens by membership — an
+	// open Case added or moved in — never by a closed member reopening.
+	ReasonActiveAgain Reason = "active_again"
 )
 
 // ⛔ THERE IS NO `severity_raised`, AND ADDING ONE WOULD BE ADDING AN ENUM VALUE
@@ -160,6 +192,11 @@ var allReasons = []Reason{
 	// notifications_reason_ck the same way. Inserting it anywhere else means
 	// re-ordering a published enum for nothing.
 	ReasonDigest,
+	// The five Incident facts are APPENDED after `digest`, for the reason `digest`
+	// was appended after `comment`: the contract enum and migration 00084's
+	// `notifications_reason_ck` hold this order, and inserting them anywhere else
+	// re-orders a published enum for nothing.
+	ReasonDrawn, ReasonCaseAdded, ReasonCaseRemoved, ReasonQuiet, ReasonActiveAgain,
 }
 
 // AllReasons returns the closed Reason set. The slice is freshly built so a
@@ -215,6 +252,17 @@ const (
 	// `notifications_target_ck` admits that for this kind alone. Read `Subject`
 	// below before assuming a Notification has a group.
 	SubjectDigest SubjectKind = "digest"
+	// SubjectIncident is AN INCIDENT — a set of Cases drawn as one story (ADR 0052,
+	// migration 00084). `subject_id` is the `incidents.id`, and the row names NO
+	// alert and NO case (`notifications_subject_ck`'s fourth arm): a fact about the
+	// story is not a fact about any one of its signals, so no per-alert or per-case
+	// reader — the delivery roll-up, a case's notification list — counts it.
+	//
+	// ⛔ THERE IS NO `incident` COLUMN ON `notifications`, AND THE KIND IS WHY NONE
+	// IS NEEDED. SCOPE-BOUNDARY §5.6 keeps that column off every signal row;
+	// `subject_kind = 'incident'` is the reference, exactly as `digest` names a
+	// policy without a policy-shaped column of its own.
+	SubjectIncident SubjectKind = "incident"
 )
 
 // reasonSubjects is the TOTAL Reason → SubjectKind allocation: what each fact is
@@ -315,6 +363,17 @@ var reasonSubjects = map[Reason]SubjectKind{
 	ReasonComment:      SubjectAlert,
 
 	ReasonDigest: SubjectDigest,
+
+	// The five Incident facts are about the INCIDENT and nothing narrower. Even
+	// `case_added` and `case_removed`, which concern one Case, are facts about the
+	// story's membership: the Case's own timeline already carries the matching
+	// `incident.case_*` event, and an incident tool keyed on the Incident is what the
+	// declaration is for.
+	ReasonDrawn:       SubjectIncident,
+	ReasonCaseAdded:   SubjectIncident,
+	ReasonCaseRemoved: SubjectIncident,
+	ReasonQuiet:       SubjectIncident,
+	ReasonActiveAgain: SubjectIncident,
 }
 
 // Subject is what a Notification carrying this Reason is ABOUT — the value its

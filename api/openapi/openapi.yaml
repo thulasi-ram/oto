@@ -3977,7 +3977,7 @@ paths:
           description: Comma-separated reasons.
           schema:
             type: array
-            maxItems: 15
+            maxItems: 20
             uniqueItems: true
             items:
               $ref: '#/components/schemas/NotificationReason'
@@ -6317,6 +6317,11 @@ components:
         - rule_changed
         - comment
         - digest
+        - drawn
+        - case_added
+        - case_removed
+        - quiet
+        - active_again
       description: |
         Why a Notification exists. Distinct from Alertmanager's wire `notification_reason` string, which
         is mapped onto this enum on ingest.
@@ -6334,6 +6339,18 @@ components:
         ⛔ It is not a throttle and not a damper. A policy with a window sends its digest **in addition**
         to whatever else it routes, and alert-based and case-based policies gain no window at all: their
         noise is a signal to fix the Prometheus rule, and oto does not decide to be quiet about a firing.
+
+        The last five — `drawn`, `case_added`, `case_removed`, `quiet` and `active_again` — are facts about
+        an **Incident** (ADR 0052 §5): an Incident drawn over Cases, a Case joining or leaving it, and its
+        derived state moving from active to quiet (no member Case open) or back. Their `subject_kind` is
+        `incident`, their `subject_id` is the Incident, and they name no alert and no case. **None of them
+        is a command:** there is no `resolved`, no `closed` and no status, because oto declares facts to
+        an incident tool and never resolves its incident — `quiet` means every member Case has closed,
+        never that the response is over. A policy whose `subject_kinds` is `[incident]` and whose `reasons`
+        are these five is the catch-all "every Incident goes to the incident tool"; an org with no such
+        policy sends nothing about its Incidents. They are delivered over the generic webhook as the
+        `incident` subject of `oto.notification.v1`; a threaded channel records the delivery as skipped,
+        because an Incident is not yet a conversation on one.
 
         ⛔ **There is no `severity_raised`, and there was.** ADR 0020 proposed it as the purest case for
         broadcasting — a card going amber to red under a silent `chat.update` — and a migration was
@@ -9475,7 +9492,7 @@ components:
         reasons:
           type: array
           minItems: 1
-          maxItems: 15
+          maxItems: 20
           uniqueItems: true
           items:
             $ref: '#/components/schemas/NotificationReason'
@@ -9499,11 +9516,11 @@ components:
             - type: 'null'
         subject_kinds:
           type: array
-          maxItems: 3
+          maxItems: 4
           uniqueItems: true
           items:
             type: string
-            enum: [alert, case, digest]
+            enum: [alert, case, digest, incident]
           description: |
             WHICH ALTITUDE OF FACT THIS POLICY IS ABOUT, drawn from the same vocabulary
             `NotificationDTO.subject_kind` holds. An **empty array means every kind**, which is the
@@ -9661,7 +9678,7 @@ components:
           $ref: '#/components/schemas/Uuid'
         subject_kind:
           type: string
-          enum: [alert, case, digest]
+          enum: [alert, case, digest, incident]
           description: |
             WHAT this fact is about, which selects what `subject_id` resolves against:
 
@@ -9671,9 +9688,12 @@ components:
               here, because ack lives on the firing rather than on the identity.
             - `digest` — a WINDOW OVER A NAMESPACE, which is not an object at all. `subject_id` is the
               `notification_policies` row that asked.
+            - `incident` — an INCIDENT, a set of Cases drawn as one story (ADR 0052). `subject_id` is the
+              Incident; `alert_id` and `case_id` are always `null`, because a fact about the story is not a
+              fact about any one of its signals.
 
             It has always been part of the idempotency pre-image, which is why the vocabulary could grow
-            (00056, then 00058) without re-keying anything.
+            (00056, then 00058, then 00084) without re-keying anything.
         subject_id:
           $ref: '#/components/schemas/Uuid'
         alert_id:
@@ -12037,7 +12057,7 @@ components:
         reasons:
           type: array
           minItems: 1
-          maxItems: 15
+          maxItems: 20
           uniqueItems: true
           items:
             $ref: '#/components/schemas/NotificationReason'
@@ -12062,11 +12082,11 @@ components:
           $ref: '#/components/schemas/ThrottleDTO'
         subject_kinds:
           type: array
-          maxItems: 3
+          maxItems: 4
           uniqueItems: true
           items:
             type: string
-            enum: [alert, case, digest]
+            enum: [alert, case, digest, incident]
           description: |
             Bind this policy to an altitude of fact. Optional: omitting it — like sending `[]` — claims
             every kind, which is the shipped behaviour and what every payload written before migration
@@ -12157,7 +12177,7 @@ components:
         reasons:
           type: array
           minItems: 1
-          maxItems: 15
+          maxItems: 20
           uniqueItems: true
           items:
             $ref: '#/components/schemas/NotificationReason'
@@ -12198,11 +12218,11 @@ components:
             different request from omitting the field.
         subject_kinds:
           type: array
-          maxItems: 3
+          maxItems: 4
           uniqueItems: true
           items:
             type: string
-            enum: [alert, case, digest]
+            enum: [alert, case, digest, incident]
           description: |
             THE ONE FIELD ON THIS REQUEST THAT IS NOT NULLABLE, and the asymmetry is the column's:
             `subject_kinds` is `NOT NULL DEFAULT '{}'`, so there is no `null` to set. **An empty array is

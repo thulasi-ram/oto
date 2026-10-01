@@ -191,6 +191,9 @@ type Container struct {
 	NotifyWorkers   *notifworker.Workers
 	NotifyScopes    *notifrepo.ScopeResolver
 	notifConfigRepo *notifrepo.ConfigRepository
+	// incidentFacts is the notification layer's late-bound Incident reader, held
+	// here because it is built in buildNotification and filled after incidents.
+	incidentFacts *incidentFacts
 	// templates is held on the container because it is read at BOTH ends of the
 	// feature — the authoring API and the delivery-time resolver — and those are
 	// wired by two different methods.
@@ -580,6 +583,9 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	enrichmentRepo := enrichrepo.NewEnrichmentRepository(general).WithLogger(logger)
 
 	notificationsPort := &notificationReader{}
+	// Late-bound for the reason `notificationsPort` is: incidents is built after
+	// alerts, and alerts is what observes a Case ending.
+	endings := &caseEndings{}
 
 	c.Alerts, err = alertsservice.New(alertsservice.Deps{
 		Alerts:           alertRepo,
@@ -600,6 +606,7 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		Settings:         settings,
 		Enrichments:      enrichmentReader{repo: enrichmentRepo},
 		Notifications:    notificationsPort,
+		CaseEndings:      endings,
 		// `commentOnAlert` and `snoozeAlert` take their claim inside the same
 		// transaction as the write, on the store every other guarded operation
 		// claims in. A comment is the one action a retry duplicates VISIBLY —
@@ -695,11 +702,19 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		Incidents: incidentsrepo.NewIncidentRepository(general),
 		Tx:        incidentsrepo.NewTxRunner(general),
 		Timeline:  timeline,
+		// ⭐ EVERY INCIDENT FACT IS DECLARED THROUGH THE OUTBOX (ADR 0052 §5): one
+		// `notify.incident` job per fact, enqueued in the membership change's own
+		// transaction. Routing it anywhere is a notification policy's decision.
+		Announcer: incidentAnnouncer{enq: c.enqueuer},
 		Clock:     clk,
 	})
 	if err != nil {
 		return nil, err
 	}
+	// The two late-bound holders that were waiting for this service: alerts tells
+	// it when a Case ends, and the notification layer reads Incidents through it.
+	endings.svc = c.Incidents
+	c.incidentFacts.svc = c.Incidents
 
 	// ---- ingestion: THE ONLY MODULE ON THE INGEST POOL -------------------
 	//
@@ -865,10 +880,16 @@ func (c *Container) buildNotification(
 	// `alerts/service` ever publish an equivalent, the swap is this one constructor.
 	snapshots := notifrepo.NewSnapshotRepository(general, clk)
 
+	// The Incident reader both halves need (ADR 0052 §5): the evaluation reads an
+	// Incident to route its fact, the view reads it again at claim time (C11). One
+	// late-bound holder, filled once `c.Incidents` exists.
+	c.incidentFacts = &incidentFacts{}
+
 	if c.Views, err = notifservice.NewViewService(notifservice.ViewConfig{
 		Snapshots: snapshots,
 		BaseURL:   c.Config.HTTP.BaseURL,
 		Clock:     clk,
+		Incidents: c.incidentFacts,
 	}); err != nil {
 		return err
 	}
@@ -886,9 +907,10 @@ func (c *Container) buildNotification(
 		// ADR 0020's broadcast policy and the org's fallback verbosity, read from
 		// `orgs.settings` on every evaluation — the same adapter the alerts and
 		// grouping lifecycle ports use.
-		Settings: settings,
-		Clock:    clk,
-		Logger:   logger,
+		Settings:  settings,
+		Incidents: c.incidentFacts,
+		Clock:     clk,
+		Logger:    logger,
 	}); err != nil {
 		return err
 	}

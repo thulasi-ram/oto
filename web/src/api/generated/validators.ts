@@ -100,7 +100,7 @@ export const ActorKindSchema = v.picklist(["system", "ingest", "reconciler", "re
 
 export const AlertEventTypeSchema = v.picklist(["alert.created", "alert.mutated", "case.opened", "case.reopened", "case.suppressed", "case.unsuppressed", "case.resolved", "case.expired", "case.acknowledged", "case.unacknowledged", "alert.snoozed", "alert.unsnoozed", "group.opened", "group.closed", "group.member_joined", "group.member_left", "rule.snapshot_captured", "rule.definition_changed", "rule.lookup_failed", "enrichment.completed", "enrichment.failed", "notification.created", "notification.suppressed", "delivery.sent", "delivery.updated", "delivery.failed", "delivery.skipped", "delivery.dead", "comment.added", "source.unreachable", "source.recovered", "source.clock_skew", "incident.case_added", "incident.case_removed", "incident.case_moved"]);
 
-export const NotificationReasonSchema = v.picklist(["fired", "all_resolved", "repeat", "suppressed", "unsuppressed", "expired", "refired", "acked", "unacked", "snoozed", "unsnoozed", "enriched", "rule_changed", "comment", "digest"]);
+export const NotificationReasonSchema = v.picklist(["fired", "all_resolved", "repeat", "suppressed", "unsuppressed", "expired", "refired", "acked", "unacked", "snoozed", "unsnoozed", "enriched", "rule_changed", "comment", "digest", "drawn", "case_added", "case_removed", "quiet", "active_again"]);
 
 export const NotificationStatusSchema = v.picklist(["pending", "dispatched", "partial", "delivered", "failed", "suppressed"]);
 
@@ -1458,7 +1458,7 @@ export const PolicyDTOSchema = v.looseObject({
   "reasons": v.pipe(
     v.array(NotificationReasonSchema),
     v.minLength(1),
-    v.maxLength(15),
+    v.maxLength(20),
     v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
   ),
   "channel_ids": v.pipe(
@@ -1470,8 +1470,8 @@ export const PolicyDTOSchema = v.looseObject({
   "template_id": v.exactOptional(UuidSchema),
   "throttle": v.exactOptional(v.nullable(ThrottleDTOSchema)),
   "subject_kinds": v.pipe(
-    v.array(v.picklist(["alert", "case", "digest"])),
-    v.maxLength(3),
+    v.array(v.picklist(["alert", "case", "digest", "incident"])),
+    v.maxLength(4),
     v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
   ),
   "count_min": v.exactOptional(v.nullable(v.pipe(
@@ -1504,7 +1504,7 @@ export const PolicyDTOSchema = v.looseObject({
 
 export const NotificationDTOSchema = v.looseObject({
   "id": UuidSchema,
-  "subject_kind": v.picklist(["alert", "case", "digest"]),
+  "subject_kind": v.picklist(["alert", "case", "digest", "incident"]),
   "subject_id": UuidSchema,
   "alert_id": v.exactOptional(v.nullable(UuidSchema)),
   "case_id": v.exactOptional(v.nullable(UuidSchema)),
@@ -2767,7 +2767,7 @@ export const CreatePolicyRequestSchema = v.strictObject({
   "reasons": v.pipe(
     v.array(NotificationReasonSchema),
     v.minLength(1),
-    v.maxLength(15),
+    v.maxLength(20),
     v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
   ),
   "channel_ids": v.pipe(
@@ -2779,8 +2779,8 @@ export const CreatePolicyRequestSchema = v.strictObject({
   "template_id": v.exactOptional(UuidSchema),
   "throttle": v.exactOptional(ThrottleDTOSchema),
   "subject_kinds": v.exactOptional(v.pipe(
-    v.array(v.picklist(["alert", "case", "digest"])),
-    v.maxLength(3),
+    v.array(v.picklist(["alert", "case", "digest", "incident"])),
+    v.maxLength(4),
     v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
   )),
   "count_min": v.exactOptional(v.pipe(
@@ -2830,7 +2830,7 @@ export const UpdatePolicyRequestSchema = v.pipe(
     "reasons": v.exactOptional(v.pipe(
       v.array(NotificationReasonSchema),
       v.minLength(1),
-      v.maxLength(15),
+      v.maxLength(20),
       v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
     )),
     "channel_ids": v.exactOptional(v.pipe(
@@ -2854,8 +2854,8 @@ export const UpdatePolicyRequestSchema = v.pipe(
       v.maxValue(10000),
     ))),
     "subject_kinds": v.exactOptional(v.pipe(
-      v.array(v.picklist(["alert", "case", "digest"])),
-      v.maxLength(3),
+      v.array(v.picklist(["alert", "case", "digest", "incident"])),
+      v.maxLength(4),
       v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
     )),
     "count_min": v.exactOptional(v.nullable(v.pipe(

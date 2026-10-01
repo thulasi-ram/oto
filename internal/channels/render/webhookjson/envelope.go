@@ -54,6 +54,20 @@ type Envelope struct {
 	// consumer reads `digest` to know this message summarises a WINDOW rather than
 	// reporting a fact about a signal, and every Case-shaped key below is absent on one.
 	Digest *Digest `json:"digest,omitempty"`
+	// Incident is an Incident fact's subject (ADR 0052 §5): the Incident, its
+	// derived state, who drew it and every Case that has been in it. It is non-nil on
+	// exactly the envelopes whose `reason` is one of the five Incident facts, and on
+	// those `group`, `digest`, `occurrence` and `focus` are absent — an Incident is
+	// not a Case and names no single signal.
+	//
+	// ⛔ ADDITIVE, WHICH IS WHY IT MAY LAND ON A FROZEN ENVELOPE. §H.10 freezes v1
+	// against MOVING, RENAMING or DROPPING a key; a new `omitempty` key adds a
+	// promise and alters none, the argument that admitted `digest` and `rendered`.
+	//
+	// ⛔ AND IT CARRIES NO STATUS, BECAUSE OTO HOLDS NONE. `state` is `active` or
+	// `quiet`, read off the member Cases; a consumer that wants "resolved" decides
+	// that itself, keyed on `quiet`, and owns what that costs.
+	Incident *Incident `json:"incident,omitempty"`
 	// Alerts is `[]` and never `null` on a digest: a digest names no signal, and an
 	// empty list is the truthful rendering of "nothing here to enumerate". The key has
 	// no `omitempty` under v1 and does not get one.
@@ -172,6 +186,48 @@ type Digest struct {
 	// later edit to the policy's window, and it is usually LONGER than that window
 	// because of the straggler lookback above.
 	SpanSeconds *float64 `json:"span_seconds,omitempty"`
+}
+
+// Incident is one Incident as a consumer sees it: a set of Cases drawn as one story.
+type Incident struct {
+	ID     string `json:"id"`
+	Number int64  `json:"number"`
+	// State is `active` while any current member Case is open and `quiet` otherwise.
+	// Derived by oto from its Cases and never set by anyone.
+	State   string         `json:"state"`
+	DrawnAt time.Time      `json:"drawn_at"`
+	DrawnBy IncidentAuthor `json:"drawn_by"`
+	// Members is every spell of every Case that has been in the Incident, current
+	// and removed, in the order they joined. A removed spell carries `removed_at`.
+	Members []IncidentMember `json:"members"`
+	Link    string           `json:"link,omitempty"`
+}
+
+// IncidentAuthor is who decided: a human (`kind: human`, with the label frozen
+// when they acted) or an operator-written Correlator (`kind: correlator`). ACTOR,
+// NEVER SUBJECT: nothing here says anybody owes the Incident anything.
+type IncidentAuthor struct {
+	Kind         string `json:"kind"`
+	Label        string `json:"label,omitempty"`
+	CorrelatorID string `json:"correlator_id,omitempty"`
+}
+
+// IncidentMember is one spell of one Case inside an Incident.
+type IncidentMember struct {
+	CaseID     string            `json:"case_id"`
+	CaseNumber int64             `json:"case_number"`
+	CaseState  string            `json:"case_state"`
+	AlertID    string            `json:"alert_id"`
+	AlertName  string            `json:"alert_name"`
+	Labels     map[string]string `json:"labels,omitempty"`
+	AddedAt    time.Time         `json:"added_at"`
+	AddedBy    IncidentAuthor    `json:"added_by"`
+	// The three below are present only on a removed spell. A pointer, so a current
+	// member carries no `removed_at` rather than a zero time in the year 1.
+	RemovedAt      *time.Time `json:"removed_at,omitempty"`
+	RemovedByLabel string     `json:"removed_by_label,omitempty"`
+	MovedToNumber  int64      `json:"moved_to_number,omitempty"`
+	Link           string     `json:"link,omitempty"`
 }
 
 // Alert is one Alert as a consumer sees it.

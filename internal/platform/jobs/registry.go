@@ -131,6 +131,7 @@ type Handlers struct {
 	IngestProcessBatch Handler[IngestProcessBatchArgs]
 	EnrichRun          Handler[EnrichRunArgs]
 	NotifyEvaluate     Handler[NotifyEvaluateArgs]
+	NotifyIncident     Handler[NotifyIncidentArgs]
 	DeliverDispatch    Handler[DeliverDispatchArgs]
 	SourceReconcile    Handler[SourceReconcileArgs]
 	SilencesSync       Handler[SilencesSyncArgs]
@@ -190,6 +191,10 @@ func RegisterAll(r *Registry, h Handlers) error {
 		func() error {
 			return Register(r, Spec{Queue: QueueNotify, PayloadVersion: 1, Timeout: 30 * time.Second},
 				orStub(h.NotifyEvaluate, KindNotifyEvaluate))
+		},
+		func() error {
+			return Register(r, Spec{Queue: QueueNotify, PayloadVersion: 1, Timeout: 30 * time.Second},
+				orStub(h.NotifyIncident, KindNotifyIncident))
 		},
 		func() error {
 			return Register(r, Spec{Queue: QueueDeliverSlack, PayloadVersion: 1, Timeout: 30 * time.Second},

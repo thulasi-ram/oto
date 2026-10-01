@@ -43,6 +43,18 @@ type NotificationView struct {
 	// headline is the same category of leak one level up, a LAYOUT decision made in
 	// the module that has no channel.
 	Digest *DigestView
+	// Incident is set when this view is a FACT ABOUT AN INCIDENT (ADR 0052 §5) —
+	// drawn, a Case added or removed, quiet, active again — and it is non-nil on
+	// exactly those views. It is the second discriminator after `Digest` and it is
+	// checked in the same place for the same reason: an Incident is not a Case, has
+	// no group, no rule and no card state to colour, so none of the Case-shaped
+	// fields above mean anything on one and a renderer must not reach for them.
+	//
+	// ⭐ IT CARRIES FACTS, NEVER A STATUS SOMEBODY SET. `State` is `active` or
+	// `quiet`, read off the member Cases when the view was built; there is no field
+	// here for "mitigated", a lead or a severity, because oto holds none of them —
+	// the incident tool this view is being declared to does.
+	Incident *IncidentView
 	// Actor is who did it, for human-caused reasons.
 	Actor   *ActorView
 	Comment string
@@ -164,6 +176,53 @@ type DigestView struct {
 	// retroactively change the span every card oto has ever drawn claims to cover. A
 	// card that does not know its span says so.
 	CoveredFrom, CoveredTo time.Time
+}
+
+// IncidentView is what an Incident fact carries INSTEAD OF a GroupView: the
+// Incident as it stands at claim time (C11), and every Case that has been in it.
+type IncidentView struct {
+	ID     string
+	Number int64
+	// State is `active` (some current member Case is open) or `quiet` (none is).
+	// Derived, never set (ADR 0052 §3).
+	State   string
+	DrawnAt time.Time
+	// DrawnBy is who decided this is one story: a human's frozen label, or the
+	// Correlator that drew it. Exactly one of the two is non-empty.
+	DrawnBy IncidentAuthorView
+	// Members is every spell of every Case that has been in the Incident, current
+	// and removed, in the order they joined — so the fact a delivery reports
+	// (`case_added`, `case_removed`) can be read off the membership itself.
+	Members []IncidentMemberView
+	// Link is oto's own page for the Incident, or "" when no public URL is
+	// configured.
+	Link string
+}
+
+// IncidentAuthorView is an Incident attribution: a human label or a Correlator id.
+type IncidentAuthorView struct {
+	Label        string
+	CorrelatorID string
+}
+
+// IncidentMemberView is one spell of one Case inside an Incident.
+type IncidentMemberView struct {
+	CaseID     string
+	CaseNumber int64
+	// CaseState is the member Case's own `open | closed`.
+	CaseState string
+	AlertID   string
+	AlertName string
+	Labels    map[string]string
+	AddedAt   time.Time
+	AddedBy   IncidentAuthorView
+	// RemovedAt is zero while the Case is a member.
+	RemovedAt      time.Time
+	RemovedByLabel string
+	// MovedToNumber is the Incident a removed Case went to, or 0.
+	MovedToNumber int64
+	// Link is oto's page for the member Case, or "".
+	Link string
 }
 
 // AlertView is one Alert as a renderer sees it.

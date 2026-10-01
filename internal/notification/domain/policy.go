@@ -56,7 +56,9 @@ const (
 	// vocabulary: both assert a plurality and a conversation holds one Case. The
 	// ceiling tracks the vocabulary BY CONSTRUCTION, so it moves whenever the
 	// vocabulary does — which is the whole reason all three layers must agree.
-	MaxPolicyReasons = 15
+	//
+	// ⬆️ IT IS 20 AT MIGRATION 00084: the five Incident facts joined (ADR 0052 §5).
+	MaxPolicyReasons = 20
 	// MaxPolicyChannels is policies_chan_ck.
 	MaxPolicyChannels = 16
 	// MinPolicyPriority and MaxPolicyPriority are policies_prio_ck. LOWER IS
@@ -392,7 +394,9 @@ func (c CountOverWindow) Clears(count int) bool {
 // three-value vocabulary cannot exceed three by construction — so a cardinality
 // arm would be a number no row could ever test, which is the defect 00046 removed
 // from `policies_reasons_ck` when it stopped saying 32.
-const MaxPolicySubjectKinds = 3
+//
+// ⬆️ IT IS 4 AT MIGRATION 00084, when `incident` joined (ADR 0052 §5).
+const MaxPolicySubjectKinds = 4
 
 // SubjectBinding is WHICH ALTITUDE A POLICY IS ABOUT — the subset of
 // `notifications.subject_kind` it claims, as `notification_policies.subject_kinds`
@@ -658,7 +662,7 @@ func (p Policy) Validate() error {
 		})
 	case len(p.Reasons) > MaxPolicyReasons:
 		v = append(v, errs.Violation{
-			Field: "reasons", Code: "max_items", Message: "at most 18 reasons",
+			Field: "reasons", Code: "max_items", Message: "at most 20 reasons",
 		})
 	}
 	// ⭐ `reasons` IS A SET, and this loop is the layer that says so where it
@@ -755,7 +759,7 @@ func (p Policy) validateSubjects() []errs.Violation {
 	if len(p.Subjects) > MaxPolicySubjectKinds {
 		v = append(v, errs.Violation{
 			Field: "subject_kinds", Code: "max_items",
-			Message: "at most 3 subject kinds, which is the whole vocabulary",
+			Message: "at most 4 subject kinds, which is the whole vocabulary",
 		})
 	}
 

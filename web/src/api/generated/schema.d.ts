@@ -2731,6 +2731,18 @@ export interface components {
          *     to whatever else it routes, and alert-based and case-based policies gain no window at all: their
          *     noise is a signal to fix the Prometheus rule, and oto does not decide to be quiet about a firing.
          *
+         *     The last five — `drawn`, `case_added`, `case_removed`, `quiet` and `active_again` — are facts about
+         *     an **Incident** (ADR 0052 §5): an Incident drawn over Cases, a Case joining or leaving it, and its
+         *     derived state moving from active to quiet (no member Case open) or back. Their `subject_kind` is
+         *     `incident`, their `subject_id` is the Incident, and they name no alert and no case. **None of them
+         *     is a command:** there is no `resolved`, no `closed` and no status, because oto declares facts to
+         *     an incident tool and never resolves its incident — `quiet` means every member Case has closed,
+         *     never that the response is over. A policy whose `subject_kinds` is `[incident]` and whose `reasons`
+         *     are these five is the catch-all "every Incident goes to the incident tool"; an org with no such
+         *     policy sends nothing about its Incidents. They are delivered over the generic webhook as the
+         *     `incident` subject of `oto.notification.v1`; a threaded channel records the delivery as skipped,
+         *     because an Incident is not yet a conversation on one.
+         *
          *     ⛔ **There is no `severity_raised`, and there was.** ADR 0020 proposed it as the purest case for
          *     broadcasting — a card going amber to red under a silent `chat.update` — and a migration was
          *     written for it. The premise does not survive SPEC §C.2: in Prometheus `severity` is an ordinary
@@ -2769,7 +2781,7 @@ export interface components {
          * @example fired
          * @enum {string}
          */
-        NotificationReason: "fired" | "all_resolved" | "repeat" | "suppressed" | "unsuppressed" | "expired" | "refired" | "acked" | "unacked" | "snoozed" | "unsnoozed" | "enriched" | "rule_changed" | "comment" | "digest";
+        NotificationReason: "fired" | "all_resolved" | "repeat" | "suppressed" | "unsuppressed" | "expired" | "refired" | "acked" | "unacked" | "snoozed" | "unsnoozed" | "enriched" | "rule_changed" | "comment" | "digest" | "drawn" | "case_added" | "case_removed" | "quiet" | "active_again";
         /**
          * @example delivered
          * @enum {string}
@@ -5023,7 +5035,7 @@ export interface components {
              *       "case"
              *     ]
              */
-            subject_kinds: ("alert" | "case" | "digest")[];
+            subject_kinds: ("alert" | "case" | "digest" | "incident")[];
             /**
              * Format: int32
              * @description THE FLOOR TO `throttle`'S CEILING: stay silent until at least this many facts about this
@@ -5155,12 +5167,15 @@ export interface components {
              *       here, because ack lives on the firing rather than on the identity.
              *     - `digest` — a WINDOW OVER A NAMESPACE, which is not an object at all. `subject_id` is the
              *       `notification_policies` row that asked.
+             *     - `incident` — an INCIDENT, a set of Cases drawn as one story (ADR 0052). `subject_id` is the
+             *       Incident; `alert_id` and `case_id` are always `null`, because a fact about the story is not a
+             *       fact about any one of its signals.
              *
              *     It has always been part of the idempotency pre-image, which is why the vocabulary could grow
-             *     (00056, then 00058) without re-keying anything.
+             *     (00056, then 00058, then 00084) without re-keying anything.
              * @enum {string}
              */
-            subject_kind: "alert" | "case" | "digest";
+            subject_kind: "alert" | "case" | "digest" | "incident";
             subject_id: components["schemas"]["Uuid"];
             /**
              * @description Set when the fact is about one specific alert. Always set for `acked`, `unacked`, `refired`
@@ -6687,7 +6702,7 @@ export interface components {
              *       "case"
              *     ]
              */
-            subject_kinds?: ("alert" | "case" | "digest")[];
+            subject_kinds?: ("alert" | "case" | "digest" | "incident")[];
             /**
              * Format: int32
              * @description Stay silent until at least this many facts about the bound subject kind have happened inside
@@ -6775,7 +6790,7 @@ export interface components {
              *       "case"
              *     ]
              */
-            subject_kinds?: ("alert" | "case" | "digest")[];
+            subject_kinds?: ("alert" | "case" | "digest" | "incident")[];
             /**
              * Format: int32
              * @description An explicit `null` turns the count condition off, which is a different request from omitting

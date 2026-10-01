@@ -96,14 +96,24 @@ func (r *Renderer) Render(
 	// configuration produced customer prose on one provider's digest and oto's own
 	// on the other's. Two renderers disagreeing about what a setting MEANS is worse
 	// than either answer.
-	if v.Digest == nil && o.Mode != domain.ModeThreadReply {
+	// ⛔ AND NOT ON AN INCIDENT FACT EITHER: a template's stanzas are the units of a
+	// CASE card, and an Incident has none of them.
+	if v.Digest == nil && v.Incident == nil && o.Mode != domain.ModeThreadReply {
 		env.Rendered = renderTemplate(v, o, at)
 	}
 
-	if v.Digest != nil {
+	switch {
+	case v.Digest != nil:
 		env.Digest = mapDigest(*v.Digest)
 		env.Summary = digestSummary(*v.Digest)
-	} else {
+	case v.Incident != nil:
+		// ⭐ THE INCIDENT IS DECIDED BESIDE THE DIGEST AND FOR THE SAME REASON: the view
+		// says what it IS. `ViewService.incident` builds a view carrying a Reason, an
+		// `Incident` and a render time and nothing else, so — as for a digest — every
+		// Case-shaped key below stays absent by construction.
+		env.Incident = mapIncident(*v.Incident)
+		env.Summary = incidentSummary(v.Reason, *v.Incident)
+	default:
 		g := mapGroup(v.Group)
 		env.Group = &g
 		env.Summary = summarise(v)
@@ -205,6 +215,96 @@ func mapGroup(g domain.GroupView) Group {
 		ClusterKey:      g.ClusterKey,
 		SourceGroupKey:  g.SourceGroupKey,
 	}
+}
+
+// mapIncident projects an Incident's facts and NOTHING ELSE — no sentence, which
+// lives in `summary`, and no status, which oto does not hold.
+func mapIncident(i domain.IncidentView) *Incident {
+	out := &Incident{
+		ID:      i.ID,
+		Number:  i.Number,
+		State:   i.State,
+		DrawnAt: i.DrawnAt.UTC(),
+		DrawnBy: mapIncidentAuthor(i.DrawnBy),
+		Members: make([]IncidentMember, 0, len(i.Members)),
+		Link:    i.Link,
+	}
+	for _, m := range i.Members {
+		mm := IncidentMember{
+			CaseID:         m.CaseID,
+			CaseNumber:     m.CaseNumber,
+			CaseState:      m.CaseState,
+			AlertID:        m.AlertID,
+			AlertName:      m.AlertName,
+			Labels:         m.Labels,
+			AddedAt:        m.AddedAt.UTC(),
+			AddedBy:        mapIncidentAuthor(m.AddedBy),
+			RemovedByLabel: m.RemovedByLabel,
+			MovedToNumber:  m.MovedToNumber,
+			Link:           m.Link,
+		}
+		if !m.RemovedAt.IsZero() {
+			// Copied through a pointer for `mapDigest`'s reason: a zero time would
+			// marshal as a plausible instant in the year 1.
+			at := m.RemovedAt.UTC()
+			mm.RemovedAt = &at
+		}
+		out.Members = append(out.Members, mm)
+	}
+	return out
+}
+
+func mapIncidentAuthor(a domain.IncidentAuthorView) IncidentAuthor {
+	if a.CorrelatorID != "" {
+		return IncidentAuthor{Kind: "correlator", CorrelatorID: a.CorrelatorID}
+	}
+	return IncidentAuthor{Kind: "human", Label: a.Label}
+}
+
+// incidentSummary is an Incident fact's one human sentence, and the `Fallback`
+// `deliveries_fb_ck` needs non-empty.
+//
+// ⭐ THE BRACKETED WORD IS `[INCIDENT]`, NOT A STATE, for the reason `[DIGEST]` is
+// not one: a reader or a grep that has learned `[FIRING]` / `[RESOLVED]` must not
+// read an Incident fact as a sixth signal state. And it never says resolved or
+// closed — `quiet` is "every member Case has closed", which is what the sentence
+// says.
+func incidentSummary(reason string, i domain.IncidentView) string {
+	open, current := 0, 0
+	for _, m := range i.Members {
+		if !m.RemovedAt.IsZero() {
+			continue
+		}
+		current++
+		if m.CaseState == "open" {
+			open++
+		}
+	}
+	head := "[INCIDENT] #" + strconv.FormatInt(i.Number, 10)
+	var what string
+	switch reason {
+	case "drawn":
+		what = "drawn over " + plural(current, "Case", "Cases")
+	case "case_added":
+		what = "a Case was added"
+	case "case_removed":
+		what = "a Case was removed"
+	case "quiet":
+		what = "is quiet: no member Case is open"
+	case "active_again":
+		what = "is active again"
+	default:
+		what = reason
+	}
+	return head + " " + what + " — " + strconv.Itoa(open) + " of " +
+		plural(current, "Case", "Cases") + " open (" + i.State + ")"
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return strconv.Itoa(n) + " " + many
 }
 
 // mapDigest projects the digest's facts and NOTHING ELSE.
