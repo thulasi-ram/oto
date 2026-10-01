@@ -473,7 +473,7 @@ func (s *Service) announce(ctx context.Context, scope db.TenantScope, incidentID
 
 // resolveCases reads the named Cases inside the org, in the order asked, and
 // refuses the request if any is missing — another org's Case included, which is
-// the same 404 as one that never existed.
+// the same 404 as one that never existed — or is a delivery drill's.
 func (s *Service) resolveCases(ctx context.Context, scope db.TenantScope, ids []uuid.UUID) ([]domain.CaseRef, error) {
 	found, err := s.incidents.Cases(ctx, scope, ids)
 	if err != nil {
@@ -484,6 +484,9 @@ func (s *Service) resolveCases(ctx context.Context, scope db.TenantScope, ids []
 		c, ok := found[id]
 		if !ok {
 			return nil, domain.CaseNotFound()
+		}
+		if c.Synthetic {
+			return nil, domain.SyntheticCase(c)
 		}
 		out = append(out, c)
 	}

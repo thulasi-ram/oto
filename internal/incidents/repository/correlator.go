@@ -333,6 +333,10 @@ func (r *CorrelatorRepository) Delete(ctx context.Context, s db.TenantScope, cor
 // to the org's incident tool — a drill opening a real external incident — and the
 // drill's disposal would then leave an Incident with no members behind. So
 // `a.synthetic` reads as "already decided", the same answer as a live membership.
+//
+// ⭐ FOR SHARE OF c, the same Case lock `casesSQL` takes for the human verbs, and
+// taken FIRST for the same reason: the evaluator then locks the Correlator and the
+// Incident, so the order stays Case → Incident on every path.
 const correlationCaseSQL = `
 SELECT c.id, c.number, c.alert_id, c.started_at, a.labels, a.synthetic,
        EXISTS (SELECT 1 FROM incident_members m
@@ -341,7 +345,8 @@ SELECT c.id, c.number, c.alert_id, c.started_at, a.labels, a.synthetic,
                 WHERE m.org_id = c.org_id AND m.case_id = c.id AND m.removed_at IS NOT NULL)
   FROM alert_cases c
   JOIN alerts a ON a.id = c.alert_id
- WHERE c.org_id = $1 AND c.id = $2`
+ WHERE c.org_id = $1 AND c.id = $2
+   FOR SHARE OF c`
 
 // CorrelationCase reads the Case the evaluator is deciding. A Case the org does not
 // have is `case_not_found`.

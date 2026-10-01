@@ -192,6 +192,9 @@ type CaseRef struct {
 	ID      uuid.UUID
 	Number  int64
 	AlertID uuid.UUID
+	// Synthetic reports that the Case's Alert is a delivery drill's
+	// (`alerts.synthetic`). Such a Case is never drawn into an Incident.
+	Synthetic bool
 }
 
 // Incident is one row of the list: who drew it and when, and the counts its
@@ -282,6 +285,14 @@ func RaceLostToAnotherIncident() error {
 func AlreadyAMember(c CaseRef, in Ref) error {
 	return errs.Conflict("already_a_member",
 		fmt.Sprintf("Case #%d is already in Incident #%d", c.Number, in.Number))
+}
+
+// SyntheticCase refuses putting a delivery drill's Case into an Incident. A drill
+// proves delivery and is disposed of afterwards; an Incident holding it would
+// outlive the evidence and count a rehearsal as an outage.
+func SyntheticCase(c CaseRef) error {
+	return errs.Conflict("case_synthetic", fmt.Sprintf(
+		"Case #%d is a delivery drill's synthetic Case and is never drawn into an Incident", c.Number))
 }
 
 // NotFound is the one answer for an Incident number this org has not drawn —

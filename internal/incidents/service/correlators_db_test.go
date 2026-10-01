@@ -370,6 +370,64 @@ func TestWithNoGraceAReFireAfterQuietDrawsANewIncident(t *testing.T) {
 	assert.NotEqual(t, drawn.Incident.Number, again.Incident.Number)
 }
 
+// TestAnIncidentThatWentQuietWhileTheCorrelatorDecidedIsNotJoined is the race the
+// unlocked read lost: the evaluator read the Incident active, then a close quieted
+// it before the join. Joins is decided on a read taken UNDER the Incident's lock,
+// so the close is seen and — with no grace — this Case draws a new Incident.
+func TestAnIncidentThatWentQuietWhileTheCorrelatorDecidedIsNotJoined(t *testing.T) {
+	t.Parallel()
+	r := newCorrelatorRig(t)
+	ctx := context.Background()
+	r.write("disk", 100, domain.Count{}, eq("severity", "critical"))
+
+	first := r.flap(0)
+	drawn := r.correlate(first)
+	require.Equal(t, VerdictDrew, drawn.Verdict)
+	r.h.Advance(time.Minute)
+	closedAt := r.h.Now()
+	r.h.Advance(time.Minute)
+	again := r.flap(1)
+
+	// A close holds the Incident's lock, as CasesEnded does, and has not committed.
+	closer, err := r.h.Pool.Begin(ctx)
+	require.NoError(t, err)
+	defer func() { _ = closer.Rollback(ctx) }()
+	var closerPID int
+	require.NoError(t, closer.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&closerPID))
+	_, err = closer.Exec(ctx, `SELECT id FROM incidents WHERE id = $1 FOR UPDATE`, drawn.Incident.ID)
+	require.NoError(t, err)
+	_, err = closer.Exec(ctx, `UPDATE alert_cases
+	                              SET state = 'closed', ended_at = $2, resolve_reason = 'upstream'
+	                            WHERE id = $1`, first, closedAt)
+	require.NoError(t, err)
+
+	type result struct {
+		out Correlation
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		out, err := r.k.Correlate(ctx, r.scope, again)
+		done <- result{out, err}
+	}()
+
+	// The evaluator has read the Incident active and is now queued on its lock.
+	require.Eventually(t, func() bool {
+		var waiting int
+		err := r.h.Pool.QueryRow(ctx,
+			`SELECT count(*) FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))`,
+			closerPID).Scan(&waiting)
+		return err == nil && waiting > 0
+	}, 10*time.Second, 10*time.Millisecond, "the evaluator must wait on the Incident's lock")
+	require.NoError(t, closer.Commit(ctx))
+
+	got := <-done
+	require.NoError(t, got.err)
+	assert.Equal(t, VerdictDrew, got.out.Verdict, "the Incident went quiet before the join: no grace, a new one")
+	assert.NotEqual(t, drawn.Incident.Number, got.out.Incident.Number)
+	assert.Equal(t, []uuid.UUID{first}, current(r.get(drawn.Incident.Number)), "the quiet Incident gained nothing")
+}
+
 func TestAHumanDrawnQuietIncidentNeverTakesBackAReFire(t *testing.T) {
 	t.Parallel()
 	r := newCorrelatorRig(t)

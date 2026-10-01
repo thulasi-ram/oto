@@ -55,6 +55,9 @@ CREATE TABLE IF NOT EXISTS alerts (
 		{"ALTER TABLE ONLY on notifications", `-- +goose Up
 ALTER TABLE ONLY public.notifications ADD COLUMN incident_id UUID;
 `},
+		{"a quoted schema and table", `-- +goose Up
+ALTER TABLE "public"."alerts" ADD COLUMN incident_id uuid;
+`},
 		{"an index on notification_deliveries", `-- +goose Up
 CREATE INDEX deliveries_incident_idx ON notification_deliveries (incident_id);
 `},

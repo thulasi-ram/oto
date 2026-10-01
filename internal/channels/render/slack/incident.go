@@ -43,6 +43,13 @@ import (
 // reader who has learned the palette would read as a signal's state.
 const incidentEmoji = ":jigsaw:"
 
+// incidentQuietEmoji marks an Incident gone quiet. NOT CardResolved's check mark:
+// quiet is every member Case closed, and whether the response is over is the
+// incident tool's to say (ADR 0052 §3) — a green tick would say it for them. A
+// neutral circle, as the card's bar is the neutral colour and not the resolved
+// green. A closed MEMBER Case still wears CardResolved: that Case did close.
+const incidentQuietEmoji = ":white_circle:"
+
 // incidentStateActive is the derived state string `IncidentView.State` carries.
 const incidentStateActive = "active"
 
@@ -176,7 +183,7 @@ func incidentHead(iv domain.IncidentView, current, open int) string {
 	if incidentActive(iv) {
 		b.WriteString(CardFiring.Emoji() + " *Active*, " + plural(open, "case open", "cases open"))
 	} else {
-		b.WriteString(CardResolved.Emoji() + " *Quiet*, every member case has closed")
+		b.WriteString(incidentQuietEmoji + " *Quiet*, every member case has closed")
 	}
 	b.WriteString("\n_One story drawn over " + plural(current, "case", "cases") +
 		". Later updates about its cases are posted in this thread._")
@@ -284,7 +291,7 @@ func (r *Renderer) renderIncidentReply(v *domain.NotificationView, o domain.Rend
 		body = ":heavy_minus_sign: *A case left* — now " + now
 		sentence = "A case left " + incidentName(iv) + "; it now has " + now
 	case reasonQuiet:
-		body = CardResolved.Emoji() + " *Quiet* — every member case has closed. _Whether the " +
+		body = incidentQuietEmoji + " *Quiet* — every member case has closed. _Whether the " +
 			"response is over is for the incident tool to say._"
 		sentence = incidentName(iv) + " is quiet: every member case has closed"
 	case reasonActiveAgain:
