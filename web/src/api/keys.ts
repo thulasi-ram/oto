@@ -176,6 +176,11 @@ export const qk = {
     channels: () => ["settings", "channels"] as const,
     channelConnections: () => ["settings", "channel-connections"] as const,
     policies: () => ["settings", "policies"] as const,
+    /**
+     * The org's Correlators (ADR 0052 §2), in evaluation order. Only this
+     * screen writes them, so a mutation invalidates; no frame is about one.
+     */
+    correlators: () => ["settings", "correlators"] as const,
     /** The org's tuning, its origins and its bounds — one query, one screen. */
     org: () => ["settings", "org"] as const,
     /**

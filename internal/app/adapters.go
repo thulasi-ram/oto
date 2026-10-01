@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -279,13 +280,17 @@ func (r *timelineRecorder) RecordEnrichmentEvent(
 // RecordIncidentFact appends one `incident.case_*` fact onto a member Case's
 // timeline (ADR 0052), inside the membership change's transaction.
 //
-// ⭐ THE ACTOR IS THE HUMAN WHO DECIDED, NOT A MODULE NAME — unlike the two
-// narrators above, whose facts oto produced itself. `user` when the decision came
-// with a `users` row behind it, which is what `ev_actor_ck` requires an id for;
-// `slack` when it did not, which carries the frozen label alone. A Correlator is
-// not a human and has no path here yet: when it draws, the Correlator ticket
-// decides how it is named on the timeline, and this refuses it rather than
-// guessing.
+// ⭐ THE ACTOR IS WHOEVER DECIDED, NOT A MODULE NAME — unlike the two narrators
+// above, whose facts oto produced itself. For a human: `user` when the decision
+// came with a `users` row behind it, which is what `ev_actor_ck` requires an id
+// for; `slack` when it did not, which carries the frozen label alone.
+//
+// ⭐ FOR A CORRELATOR (git-bug 61eeddf): `system`, with the Correlator's id as the
+// actor id and "Correlator <name>" as the frozen label. `system` because a
+// Correlator is not a person and `ev_actor_ck` keeps `user` for people; the id and
+// the label because "a machine did it" is not an answer to "why is this Case in
+// this Incident?" — the Correlator someone WROTE is (ADR 0052 §2), and the label
+// keeps reading the same after it is renamed or retired, as a human's does.
 //
 // ⛔ A NIL SERVICE IS AN ERROR HERE, NOT A SILENT NO-OP. The rules and enrichment
 // narrators degrade to "un-narrated" because their facts are side notes to work
@@ -298,12 +303,16 @@ func (r *timelineRecorder) RecordIncidentFact(
 		return errs.New(errs.KindInternal, "incident_timeline_unwired",
 			"the alerts timeline is not wired, so an Incident change cannot be narrated")
 	}
-	if !f.By.IsHuman() {
-		return errs.New(errs.KindInternal, "incident_fact_not_human",
-			"an incident.case_* fact is attributed to a human on this path")
-	}
-	kind, actorID := alertsdomain.ActorSlack, ""
-	if f.By.UserID() != uuid.Nil {
+	kind, actorID, label := alertsdomain.ActorSlack, "", f.By.Label()
+	switch {
+	case !f.By.IsHuman():
+		if strings.TrimSpace(f.CorrelatorName) == "" {
+			return errs.New(errs.KindInternal, "incident_fact_correlator_unnamed",
+				"an incident.case_* fact a Correlator decided must name the Correlator")
+		}
+		kind, actorID = alertsdomain.ActorSystem, f.By.CorrelatorID().String()
+		label = "Correlator " + f.CorrelatorName
+	case f.By.UserID() != uuid.Nil:
 		kind, actorID = alertsdomain.ActorUser, f.By.UserID().String()
 	}
 	return r.svc.AppendTimelineEvent(ctx, s, alertsservice.TimelineEventRequest{
@@ -314,7 +323,7 @@ func (r *timelineRecorder) RecordIncidentFact(
 		Payload:    f.Payload,
 		ActorKind:  kind.String(),
 		ActorID:    actorID,
-		ActorLabel: f.By.Label(),
+		ActorLabel: label,
 	})
 }
 
@@ -425,6 +434,37 @@ func (c *caseEndings) CasesEnded(ctx context.Context, s db.TenantScope, caseIDs 
 		return nil
 	}
 	return c.svc.CasesEnded(ctx, s, caseIDs)
+}
+
+// caseOpenings is `alerts/service.CaseOpenings` over the outbox: each Case a batch
+// opened becomes one `incidents.correlate` job, enqueued in the transaction that
+// opened it (ADR 0052 §2, git-bug 61eeddf).
+//
+// ⛔ IT EVALUATES NOTHING, AND THAT IS THE WHOLE OF ITS CONTRACT. Running the
+// Correlators here would put them on the ingest worker's transaction — every
+// Case's open would wait on every Correlator's matchers and a draw's inserts, and
+// a Correlator's failure would roll the batch back (CONTEXT.md commitment 2). The
+// job runs on the `lifecycle` queue instead, off `notify`, so a Correlator can
+// neither block nor delay the Case's own notification. It is enqueued even for an
+// org with no Correlator, which costs one job that reads an empty list: cheaper
+// to reason about than a read on the ingest transaction deciding whether to ask.
+type caseOpenings struct {
+	enq db.Enqueuer
+}
+
+func (o caseOpenings) CasesOpened(ctx context.Context, _ db.TenantScope, caseIDs []uuid.UUID) error {
+	if len(caseIDs) == 0 {
+		return nil
+	}
+	reqs := make([]db.JobRequest, 0, len(caseIDs))
+	for _, id := range caseIDs {
+		reqs = append(reqs, db.JobRequest{Args: jobs.IncidentsCorrelateArgs{CaseID: id}})
+	}
+	if _, err := o.enq.EnqueueMany(ctx, reqs); err != nil {
+		return errs.Wrap(err, errs.KindInternal, "enqueue_correlate_failed",
+			"could not queue Correlator evaluation")
+	}
+	return nil
 }
 
 // withKey returns the payload with one more entry, without mutating the caller's

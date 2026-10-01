@@ -589,6 +589,33 @@ func plan() []probe {
 			want: http.StatusOK,
 		},
 
+		/* --------------------------------------------------------- correlators */
+		// ADR 0052 §2 (git-bug 61eeddf): the operator-written definitions that draw
+		// Incidents. List, write, reorder by `priority`; the DELETE is in the
+		// teardown group with the others.
+		//
+		// ⭐ ITS MATCHER NAMES AN `alertname` NO PROBE INGESTS. A Correlator acts on
+		// every Case that opens after it is written, so one matching the gate's own
+		// alerts would draw Incidents under the Incident probes above depending on
+		// where in the table it ran.
+		{method: http.MethodGet, tmpl: "/api/v1/correlators", want: http.StatusOK},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/correlators",
+			body: map[string]any{
+				"name":                 "GateG2 storm",
+				"matchers":             []map[string]string{{"name": "alertname", "op": "=", "value": "GateG2Correlator"}},
+				"count_min":            5,
+				"count_window_seconds": 600,
+			},
+			want:    http.StatusCreated,
+			capture: map[string][]string{"correlator": {"data", "id"}},
+		},
+		{
+			method: http.MethodPatch, tmpl: "/api/v1/correlators/{id}", url: "/api/v1/correlators/{{correlator}}",
+			body: map[string]any{"priority": 10},
+			want: http.StatusOK,
+		},
+
 		/* ------------------------------------------------------- case policies */
 		// The case RETENTION WINDOW W, per (namespace, alertname). The shape is
 		// `/api/v1/clusters`'s and so is the probe order: list, create by the
@@ -742,6 +769,10 @@ func plan() []probe {
 		{
 			method: http.MethodDelete, tmpl: "/api/v1/notification-policies/{id}",
 			url:  "/api/v1/notification-policies/{{policy}}",
+			want: http.StatusNoContent,
+		},
+		{
+			method: http.MethodDelete, tmpl: "/api/v1/correlators/{id}", url: "/api/v1/correlators/{{correlator}}",
 			want: http.StatusNoContent,
 		},
 		{

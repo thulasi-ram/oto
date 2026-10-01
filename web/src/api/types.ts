@@ -109,6 +109,13 @@ export type IncidentMember = S["IncidentMemberDTO"];
 export type IncidentState = S["IncidentState"];
 /** "Why is this here?" — a Correlator someone wrote, or a human who decided. */
 export type IncidentAttribution = S["IncidentAttributionDTO"];
+/**
+ * An operator-written definition that draws Incidents (ADR 0052 §2): matchers
+ * over Cases in the notification-policy grammar, optionally a count over a
+ * window. Walked in `priority` order, lower first — the order a policy is walked
+ * in. ⛔ Never call it a rule: in oto that word is the Prometheus alerting rule.
+ */
+export type Correlator = S["CorrelatorDTO"];
 export type AlertEvent = S["AlertEventDTO"];
 export type Enrichment = S["EnrichmentDTO"];
 export type EnrichmentSummary = S["EnrichmentSummaryDTO"];
@@ -252,6 +259,8 @@ export type UnackRequest = S["UnackRequest"];
 export type CreateIncidentRequest = S["CreateIncidentRequest"];
 export type AddIncidentCaseRequest = S["AddIncidentCaseRequest"];
 export type MoveIncidentCaseRequest = S["MoveIncidentCaseRequest"];
+export type CreateCorrelatorRequest = S["CreateCorrelatorRequest"];
+export type UpdateCorrelatorRequest = S["UpdateCorrelatorRequest"];
 export type CommentRequest = S["CommentRequest"];
 /** Exactly one of `until` and `duration_seconds`. Both, or neither, is a 422. */
 export type SnoozeRequest = S["SnoozeRequest"];

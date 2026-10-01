@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	alertsdomain "github.com/thulasiram/oto/internal/alerts/domain"
 	alertsrepo "github.com/thulasiram/oto/internal/alerts/repository"
 	alertsservice "github.com/thulasiram/oto/internal/alerts/service"
 	incidentsdomain "github.com/thulasiram/oto/internal/incidents/domain"
@@ -146,6 +147,37 @@ func TestEveryIncidentMembershipChangeIsOnTheMemberCasesTimeline(t *testing.T) {
 	}
 	assert.Contains(t, types, "incident.case_added")
 	assert.Contains(t, types, "incident.case_moved")
+}
+
+// ⭐ A CORRELATOR'S DECISION IS ON THE TIMELINE TOO, AND IT IS NAMED (git-bug
+// 61eeddf). The recorder used to refuse a non-human attribution outright, because
+// nothing could produce one; a Correlator now draws, and "a machine did it" is not
+// an answer to "why is this Case in this Incident?". The row's actor is `system`,
+// carrying the Correlator's id and its name as the frozen label.
+func TestACorrelatorsDecisionIsOnTheMemberCasesTimelineUnderItsName(t *testing.T) {
+	t.Parallel()
+	r := newIncidentTimelineRig(t)
+	ctx := context.Background()
+
+	correlators, err := incidentsservice.NewCorrelators(r.svc, incidentsrepo.NewCorrelatorRepository(r.h.Pool))
+	require.NoError(t, err)
+	_, err = correlators.Create(ctx, r.org.Scope, incidentsdomain.CorrelatorDraft{
+		Name:     "criticals",
+		Matchers: []alertsdomain.Matcher{{Name: "severity", Op: alertsdomain.OpEqual, Value: "critical"}},
+	})
+	require.NoError(t, err)
+
+	c := r.openCase(t, "HighErrorRate")
+	got, err := correlators.Correlate(ctx, r.org.Scope, c.ID)
+	require.NoError(t, err)
+	require.Equal(t, incidentsservice.VerdictDrew, got.Verdict)
+
+	rows := r.incidentRows(t, c.ID)
+	require.Len(t, rows, 1)
+	assert.Equal(t, "incident.case_added", rows[0].typ)
+	assert.Equal(t, `Drawn into Incident #1 by Correlator "criticals"`, rows[0].summary)
+	assert.Equal(t, "system", rows[0].kind, "a Correlator is not a person")
+	assert.Equal(t, "Correlator criticals", rows[0].label)
 }
 
 // discardAnnouncements is the Announcer port with nobody listening.
