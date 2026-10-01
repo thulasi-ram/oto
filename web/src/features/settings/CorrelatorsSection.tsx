@@ -104,6 +104,14 @@ const WINDOW_MAX = maxValueOf(
   CreateCorrelatorRequestSchema,
   "count_window_seconds",
 );
+const GRACE_MIN = minValueOf(
+  CreateCorrelatorRequestSchema,
+  "quiet_grace_seconds",
+);
+const GRACE_MAX = maxValueOf(
+  CreateCorrelatorRequestSchema,
+  "quiet_grace_seconds",
+);
 
 /** The gap `renumber` leaves between neighbours, so a later insert has room. */
 const PRIORITY_STEP = 10;
@@ -217,9 +225,10 @@ export const CorrelatorsSection: Component = () => {
           </p>
           <p>
             A claimed Case joins that Correlator's latest Incident while it is
-            active; otherwise it draws a new one. A Case already in an Incident
-            is left alone, a Case a person took out of one is never put back,
-            and an Incident a person drew never grows by itself.
+            active, or within its quiet grace after it went quiet; otherwise it
+            draws a new one. A Case already in an Incident is left alone, a Case
+            a person took out of one is never put back, and an Incident a person
+            drew never grows by itself.
           </p>
         </div>
       </Panel>
@@ -235,13 +244,19 @@ export const CorrelatorsSection: Component = () => {
 
 /* -------------------------------------------------------------------------- */
 
-/** "≥ 5 in 10m" — the count condition as an operator would say it. */
+/** A whole number of seconds as an operator would say it: `10m`, `1h`, `90s`. */
+function span(s: number): string {
+  return s % 3600 === 0
+    ? `${s / 3600}h`
+    : s % 60 === 0
+      ? `${s / 60}m`
+      : `${s}s`;
+}
+
+/** "≥ 5 within 10m" — the count condition as an operator would say it. */
 function describeCount(k: Correlator): string | null {
   if (k.count_min === null || k.count_window_seconds === null) return null;
-  const s = k.count_window_seconds;
-  const span =
-    s % 3600 === 0 ? `${s / 3600}h` : s % 60 === 0 ? `${s / 60}m` : `${s}s`;
-  return `≥ ${k.count_min} within ${span}`;
+  return `≥ ${k.count_min} within ${span(k.count_window_seconds)}`;
 }
 
 const CorrelatorRow: Component<{
@@ -280,6 +295,13 @@ const CorrelatorRow: Component<{
         <Chip title="Disabled: skipped by the walk, as if it were not in the list.">
           disabled
         </Chip>
+      </Show>
+      <Show when={k().quiet_grace_seconds}>
+        {(grace) => (
+          <Chip title="A matching Case still joins this Correlator's Incident this long after it went quiet, and makes it active again — so a flapping alert stays one story.">
+            joins quiet for {span(grace())}
+          </Chip>
+        )}
       </Show>
       <Show when={describeCount(k())}>
         {(count) => (
@@ -392,6 +414,7 @@ const EditorDialog: Component<{
   const [matcherText, setMatcherText] = createSignal("");
   const [countMin, setCountMin] = createSignal("");
   const [countWindow, setCountWindow] = createSignal("");
+  const [quietGrace, setQuietGrace] = createSignal("");
 
   const existing = (): Correlator | null =>
     props.editing !== null && props.editing !== "new" ? props.editing : null;
@@ -407,6 +430,7 @@ const EditorDialog: Component<{
       setMatcherText("");
       setCountMin("");
       setCountWindow("");
+      setQuietGrace("");
       return;
     }
     setName(e.name);
@@ -420,6 +444,9 @@ const EditorDialog: Component<{
     setCountMin(e.count_min === null ? "" : String(e.count_min));
     setCountWindow(
       e.count_window_seconds === null ? "" : String(e.count_window_seconds),
+    );
+    setQuietGrace(
+      e.quiet_grace_seconds === null ? "" : String(e.quiet_grace_seconds),
     );
   });
 
@@ -446,6 +473,7 @@ const EditorDialog: Component<{
     const p = intOrNull(priority());
     const min = intOrNull(countMin());
     const win = intOrNull(countWindow());
+    const grace = intOrNull(quietGrace());
     return {
       name: name().trim(),
       // The contract defaults it to 100 and the generated type therefore makes it
@@ -459,6 +487,7 @@ const EditorDialog: Component<{
       })),
       ...(min === null ? {} : { count_min: min }),
       ...(win === null ? {} : { count_window_seconds: win }),
+      ...(grace === null ? {} : { quiet_grace_seconds: grace }),
     };
   };
 
@@ -476,6 +505,7 @@ const EditorDialog: Component<{
         matchers: b.matchers ?? [],
         count_min: b.count_min ?? null,
         count_window_seconds: b.count_window_seconds ?? null,
+        quiet_grace_seconds: b.quiet_grace_seconds ?? null,
       });
     },
     onSuccess: () => {
@@ -627,6 +657,34 @@ const EditorDialog: Component<{
             once that many of its Cases have opened inside one window of that
             length — then over all of them at once.
           </p>
+
+          <TextField
+            class={cn(FIELD, "w-48")}
+            value={quietGrace()}
+            validationState={
+              errorOf("quiet_grace_seconds") ? "invalid" : "valid"
+            }
+            onChange={setQuietGrace}
+          >
+            <TextFieldLabel>Quiet grace (seconds)</TextFieldLabel>
+            <TextFieldInput
+              type="number"
+              min={GRACE_MIN}
+              max={GRACE_MAX}
+              step={1}
+              placeholder="—"
+            />
+            <TextFieldDescription class={HELP}>
+              Optional. How long after this Correlator's Incident went quiet a
+              matching Case still joins it — and makes it active again — instead
+              of drawing a new one. Empty joins only while it is active, so an
+              alert that flaps every twenty minutes draws an Incident each time;
+              1800 keeps it one story.
+            </TextFieldDescription>
+            <TextFieldErrorMessage role="alert">
+              {errorOf("quiet_grace_seconds")}
+            </TextFieldErrorMessage>
+          </TextField>
 
           <div class={CHECK_ROW}>
             <Checkbox

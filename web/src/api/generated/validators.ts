@@ -726,6 +726,12 @@ export const CorrelatorDTOSchema = v.looseObject({
     v.minValue(60),
     v.maxValue(86400),
   )),
+  "quiet_grace_seconds": v.nullable(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(60),
+    v.maxValue(86400),
+  )),
   "created_at": TimestampSchema,
   "updated_at": TimestampSchema,
 });
@@ -759,6 +765,12 @@ export const CreateCorrelatorRequestSchema = v.strictObject({
     v.minValue(60),
     v.maxValue(86400),
   )),
+  "quiet_grace_seconds": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(60),
+    v.maxValue(86400),
+  )),
 });
 
 export const UpdateCorrelatorRequestSchema = v.pipe(
@@ -786,6 +798,12 @@ export const UpdateCorrelatorRequestSchema = v.pipe(
       v.maxValue(10000),
     ))),
     "count_window_seconds": v.exactOptional(v.nullable(v.pipe(
+      v.number(),
+      v.integer(),
+      v.minValue(60),
+      v.maxValue(86400),
+    ))),
+    "quiet_grace_seconds": v.exactOptional(v.nullable(v.pipe(
       v.number(),
       v.integer(),
       v.minValue(60),

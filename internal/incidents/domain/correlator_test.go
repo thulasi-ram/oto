@@ -129,3 +129,40 @@ func TestTheSpanIsAWindowOfTheCorrelatorsLengthNotTwiceIt(t *testing.T) {
 	assert.Equal(t, []uuid.UUID{before.ID, anchor.ID, after.ID},
 		[]uuid.UUID{span[0].ID, span[1].ID, span[2].ID}, "drawn in start order")
 }
+
+// ------------------------------------------------------- quiet grace (34a27c5)
+
+func TestAQuietIncidentTakesBackAReFireOnlyInsideTheGrace(t *testing.T) {
+	t.Parallel()
+	quietAt := time.Date(2026, 10, 2, 3, 0, 0, 0, time.UTC)
+	quiet := CorrelatorIncident{OpenMembers: 0, QuietSince: quietAt}
+	active := CorrelatorIncident{OpenMembers: 1, QuietSince: quietAt}
+
+	none := Correlator{}
+	assert.True(t, none.Joins(active, quietAt.Add(time.Hour)), "an active Incident is always joined")
+	assert.False(t, none.Joins(quiet, quietAt.Add(time.Minute)),
+		"with no grace a quiet Incident is never joined: 61eeddf's behaviour")
+
+	grace := Correlator{QuietGrace: 1800 * time.Second}
+	assert.True(t, grace.Joins(quiet, quietAt.Add(20*time.Minute)), "twenty minutes after quiet joins")
+	assert.False(t, grace.Joins(quiet, quietAt.Add(40*time.Minute)), "forty minutes after quiet draws anew")
+	assert.True(t, grace.Joins(quiet, quietAt.Add(1800*time.Second)), "the boundary is inclusive")
+	assert.False(t, grace.Joins(quiet, quietAt.Add(1801*time.Second)), "one second past it is not")
+}
+
+func TestAQuietGraceIsValidatedAgainstItsBounds(t *testing.T) {
+	t.Parallel()
+	ok := Correlator{Name: "flappers", Priority: 100, QuietGrace: 1800 * time.Second}
+	require.NoError(t, ok.Validate())
+	for _, g := range []time.Duration{30 * time.Second, 25 * time.Hour, 90*time.Second + time.Millisecond} {
+		bad := ok
+		bad.QuietGrace = g
+		err := bad.Validate()
+		require.Error(t, err, "grace %s", g)
+		var fields []string
+		for _, v := range errs.ViolationsOf(err) {
+			fields = append(fields, v.Field)
+		}
+		assert.Contains(t, fields, "quiet_grace_seconds")
+	}
+}

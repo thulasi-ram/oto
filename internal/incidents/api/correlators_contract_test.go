@@ -158,6 +158,36 @@ func TestAPatchNamingOneCountHalfKeepsTheOther(t *testing.T) {
 	resp.MustViolate(t, "count_min")
 }
 
+// TestTheQuietGraceIsSetAndClearedOnTheWire — git-bug 34a27c5. A number sets the
+// grace, an explicit `null` clears it (join only while active), and omitting it
+// leaves it alone; the response carries it back.
+func TestTheQuietGraceIsSetAndClearedOnTheWire(t *testing.T) {
+	t.Parallel()
+
+	f, c := newCorrelatorClient(t)
+	resp := c.PATCH(t, correlatorPath, map[string]any{"quiet_grace_seconds": 1800}).MustStatus(t, http.StatusOK)
+	schema.Assert(t, "updateCorrelator", http.StatusOK, resp.Body())
+	c.PATCH(t, correlatorPath, map[string]any{"quiet_grace_seconds": nil}).MustStatus(t, http.StatusOK)
+	c.PATCH(t, correlatorPath, map[string]any{"priority": 5}).MustStatus(t, http.StatusOK)
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if g := f.patches[0].QuietGrace; g == nil || *g != 1800*time.Second {
+		t.Fatalf("a number reached the service as %v, want 30m", g)
+	}
+	if g := f.patches[1].QuietGrace; g == nil || *g != 0 {
+		t.Fatalf("an explicit null reached the service as %v, want a clear", g)
+	}
+	if g := f.patches[2].QuietGrace; g != nil {
+		t.Fatalf("an omitted grace reached the service as %v, want untouched", *g)
+	}
+
+	resp = c.PATCH(t, correlatorPath, map[string]any{"quiet_grace_seconds": 30}).
+		MustStatus(t, http.StatusUnprocessableEntity)
+	schema.AssertProblem(t, "updateCorrelator", http.StatusUnprocessableEntity, resp.Body())
+	resp.MustViolate(t, "quiet_grace_seconds")
+}
+
 // TestAMalformedMatcherIsRefusedAtTheDoor — the policy grammar's operators and
 // label-name rule hold for a Correlator too.
 func TestAMalformedMatcherIsRefusedAtTheDoor(t *testing.T) {

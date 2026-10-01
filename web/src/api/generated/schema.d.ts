@@ -1006,7 +1006,8 @@ export interface paths {
          *     - The **first** Correlator, in `priority` order, whose matchers hold **claims** the Case. No later
          *       Correlator is consulted — even when the first then declines to draw because its count is not
          *       met yet. That is a notification policy's first-match semantics, unchanged.
-         *     - It **joins** that Correlator's latest Incident while that Incident is active. A human-drawn
+         *     - It **joins** that Correlator's latest Incident while that Incident is active, or within
+         *       `quiet_grace_seconds` after it went quiet — which makes it active again. A human-drawn
          *       Incident never grows by itself.
          *     - Otherwise it **draws** a new Incident: over this Case alone with no count condition, or — once
          *       at least `count_min` of this Correlator's free Cases opened inside one `count_window_seconds`
@@ -3635,6 +3636,17 @@ export interface components {
              * @example 600
              */
             count_window_seconds: number | null;
+            /**
+             * Format: int32
+             * @description How long after this Correlator's latest Incident went **quiet** a matching Case still joins it
+             *     — and makes it active again — rather than drawing a new one (ADR 0052 §4). `null` joins only
+             *     while the Incident is active. It is what keeps a flapping alert one story instead of one
+             *     Incident per firing. Measured from when the Incident went quiet to when the new Case opened;
+             *     a re-fire exactly this long after still joins. A human-drawn Incident never grows by itself,
+             *     grace or not.
+             * @example 1800
+             */
+            quiet_grace_seconds: number | null;
             created_at: components["schemas"]["Timestamp"];
             updated_at: components["schemas"]["Timestamp"];
         };
@@ -3659,6 +3671,11 @@ export interface components {
              * @description Requires `count_min`.
              */
             count_window_seconds?: number;
+            /**
+             * Format: int32
+             * @description Omit it to join only while the Correlator's Incident is active.
+             */
+            quiet_grace_seconds?: number;
         };
         /** @description Change a Correlator. A change applies to Cases that open after it. */
         UpdateCorrelatorRequest: {
@@ -3680,6 +3697,11 @@ export interface components {
              * @description An explicit `null` clears the count condition; it must be cleared with `count_min`.
              */
             count_window_seconds?: number | null;
+            /**
+             * Format: int32
+             * @description An explicit `null` clears the grace, so the Correlator joins only while active.
+             */
+            quiet_grace_seconds?: number | null;
         };
         /**
          * @description The **case retention window** for one `(namespace, alertname)` pair — the only per-pair shaping of
