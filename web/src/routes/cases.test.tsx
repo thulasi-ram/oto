@@ -23,8 +23,17 @@ import { fireEvent, screen } from "@solidjs/testing-library";
 import { describe, expect, it } from "vitest";
 
 import CasesRoute from "./cases";
-import { alertRef, caseListItem } from "~/test/fixtures";
-import { item, list, renderScreen, stubFetch, until, type FetchStub } from "~/test/harness";
+import { alertRef, caseListItem, incident, incidentDetail } from "~/test/fixtures";
+import {
+  item,
+  list,
+  problem,
+  renderScreen,
+  stubFetch,
+  until,
+  type FetchStub,
+  type RecordedCall,
+} from "~/test/harness";
 
 const PATH = "/api/v1/cases";
 
@@ -440,5 +449,162 @@ describe("an empty list", () => {
     await until(() =>
       expect(screen.getByText("No cases match these filters.")).toBeTruthy(),
     );
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Drawing an Incident over a selection                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * ADR 0052 §2 names a human as one of an Incident's two authors, and this list is
+ * where a human sees several Cases at once (git-bug f89c9cc).
+ *
+ * ⛔ A CASE IS IN AT MOST ONE INCIDENT, and the tests below hold the screen to
+ * saying so BEFORE the press: a selected Case already in one is named as MOVED,
+ * and the requests prove it — the draw names only the Cases in none, and each
+ * held Case reaches the new Incident through `…/move`, never a second draw.
+ */
+describe("drawing an Incident over a selection", () => {
+  const ROWS = [
+    caseListItem({ id: "case-1", number: 412 }),
+    caseListItem({ id: "case-2", number: 413, alert: alertRef({ alertname: "DiskFillingUp" }) }),
+  ];
+
+  /** Mount the list; `held` maps a Case id to the Incident number it is in now. */
+  function mountHeld(held: Readonly<Record<string, number>> = {}): FetchStub {
+    const net = mount("", ROWS);
+    net.on("GET /api/v1/incidents", (call: RecordedCall) => {
+      const n = held[call.search.get("case_id") ?? ""];
+      return { json: list(n === undefined ? [] : [incident({ number: n })]) };
+    });
+    return net;
+  }
+
+  const draws = (net: FetchStub): readonly RecordedCall[] =>
+    net.calls.filter((c) => c.method === "POST" && c.path === "/api/v1/incidents");
+
+  async function pick(label: string): Promise<void> {
+    await until(() => expect(screen.getByLabelText(label)).toBeTruthy());
+    fireEvent.click(screen.getByLabelText(label));
+  }
+
+  const drawButton = (): HTMLElement => screen.getByRole("button", { name: "Draw Incident" });
+
+  it("offers no bar until something is selected, and selecting sends nothing to the list", async () => {
+    const net = mountHeld();
+    await until(() => expect(screen.getByText("DiskFillingUp")).toBeTruthy());
+    expect(screen.queryByRole("button", { name: "Draw Incident" })).toBeNull();
+
+    const before = net.to("/api/v1/cases").length;
+    await pick("Select Case #412, HighErrorRate");
+    await until(() => expect(screen.getByText("1 Case selected")).toBeTruthy());
+    // ⛔ A SELECTION IS NOT A FILTER: the list is not asked again for it.
+    expect(net.to("/api/v1/cases")).toHaveLength(before);
+  });
+
+  it("⭐ draws one Incident over every selected Case that is in none", async () => {
+    const net = mountHeld();
+    net.on("POST /api/v1/incidents", () => ({
+      status: 201,
+      json: item(incidentDetail({ number: 9 })),
+    }));
+
+    await pick("Select Case #412, HighErrorRate");
+    await pick("Select Case #413, DiskFillingUp");
+    await until(() => expect(screen.getByText("2 Cases selected")).toBeTruthy());
+    await until(() => expect(drawButton()).not.toBeDisabled());
+    fireEvent.click(drawButton());
+
+    await until(() => expect(draws(net)).toHaveLength(1));
+    const post = draws(net)[0]!;
+    // ⛔ ONLY CASE IDS — no status, lead or severity exists to send.
+    expect(post.body).toEqual({ case_ids: ["case-1", "case-2"] });
+    expect(post.headers["Idempotency-Key"]).toBeTruthy();
+    expect(net.to("/move")).toHaveLength(0);
+  });
+
+  it("⭐⭐ says a selected Case already in an Incident will be MOVED, and moves it", async () => {
+    const net = mountHeld({ "case-2": 3 });
+    net.on("POST /api/v1/incidents", () => ({
+      status: 201,
+      json: item(incidentDetail({ number: 9 })),
+    }));
+    net.on("POST /api/v1/incidents/3/cases/case-2/move", () => ({
+      json: item(incidentDetail({ number: 9 })),
+    }));
+
+    await pick("Select Case #412, HighErrorRate");
+    await pick("Select Case #413, DiskFillingUp");
+
+    // Said BEFORE the press, naming where it is now.
+    await until(() =>
+      expect(document.querySelector('[data-moving-case="case-2"]')?.textContent).toMatch(
+        /#413.*Incident #3.*moves it.*not added twice/,
+      ),
+    );
+    expect(document.querySelector('[data-moving-case="case-1"]')).toBeNull();
+
+    await until(() => expect(drawButton()).not.toBeDisabled());
+    fireEvent.click(drawButton());
+
+    await until(() => expect(net.to("/move")).toHaveLength(1));
+    // ⛔ THE DRAW NAMES ONLY THE CASE IN NONE. Naming case-2 would be the second
+    // membership the rule forbids, and the server would refuse the whole draw.
+    expect(draws(net)).toHaveLength(1);
+    expect(draws(net)[0]!.body).toEqual({ case_ids: ["case-1"] });
+    // The move is addressed by the Incident the Case is LEAVING, into the one
+    // just drawn — one transaction, one `incident.case_moved` fact.
+    const move = net.to("/move")[0]!;
+    expect(move.path).toBe("/api/v1/incidents/3/cases/case-2/move");
+    expect(move.body).toEqual({ to_number: 9 });
+    expect(move.headers["Idempotency-Key"]).toBeTruthy();
+    expect(net.calls.indexOf(draws(net)[0]!)).toBeLessThan(net.calls.indexOf(move));
+  });
+
+  it("⛔ offers no draw when every selected Case is already in an Incident", async () => {
+    const net = mountHeld({ "case-2": 3 });
+    await pick("Select Case #413, DiskFillingUp");
+
+    await until(() =>
+      expect(screen.getByText(/^Every selected Case is already in an Incident\./)).toBeTruthy(),
+    );
+    expect(drawButton()).toBeDisabled();
+    expect(draws(net)).toHaveLength(0);
+  });
+
+  it("says which Case did not move when the draw succeeded and a move did not", async () => {
+    const net = mountHeld({ "case-2": 3 });
+    net.on("POST /api/v1/incidents", () => ({
+      status: 201,
+      json: item(incidentDetail({ number: 9 })),
+    }));
+    net.on("POST /api/v1/incidents/3/cases/case-2/move", () =>
+      problem(404, "incident_member_not_found", { detail: "Case #413 is not in Incident #3." }),
+    );
+
+    await pick("Select Case #412, HighErrorRate");
+    await pick("Select Case #413, DiskFillingUp");
+    await until(() => expect(drawButton()).not.toBeDisabled());
+    fireEvent.click(drawButton());
+
+    // ⚠️ The Incident exists — it is not rolled back — so the banner says both
+    // halves and links to it.
+    await until(() =>
+      expect(screen.getByRole("alert").textContent).toMatch(
+        /Incident #9 was drawn, but Case #413 is still in Incident #3: Case #413 is not in Incident #3\./,
+      ),
+    );
+    expect(
+      screen.getByRole("link", { name: "Open Incident #9" }).getAttribute("href"),
+    ).toBe("/incidents/9");
+  });
+
+  it("clears the selection on request", async () => {
+    mountHeld();
+    await pick("Select Case #412, HighErrorRate");
+    await until(() => expect(screen.getByText("1 Case selected")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Clear selection" }));
+    await until(() => expect(screen.queryByText("1 Case selected")).toBeNull());
   });
 });

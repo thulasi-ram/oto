@@ -26,7 +26,8 @@ import { fireEvent, screen, within } from "@solidjs/testing-library";
 import { describe, expect, it } from "vitest";
 
 import CaseDetailRoute from "./case-detail";
-import { alertRef, caseDetail } from "~/test/fixtures";
+import type { Incident } from "~/api/types";
+import { alertRef, caseDetail, incident, incidentDetail } from "~/test/fixtures";
 import {
   item,
   list,
@@ -35,16 +36,26 @@ import {
   stubFetch,
   until,
   type FetchStub,
+  type RecordedCall,
 } from "~/test/harness";
 
 const ID = "0f8fad5b-d9cb-469f-a165-70867728950e";
 const ALERT_ID = "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d38ae";
 const PATH = `/api/v1/cases/${ID}`;
 
-function mount(patch = {}): FetchStub {
+/**
+ * Mount the Case page. `inIncident` is what `GET /incidents?case_id=` answers —
+ * the Incident this Case is in now, or none — and only for THIS Case's id: a
+ * screen asking about any other Case is asking the wrong question, and gets an
+ * empty answer that would make the in-an-Incident tests fail.
+ */
+function mount(patch = {}, inIncident: Incident | null = null): FetchStub {
   const net = stubFetch({
     [`GET ${PATH}`]: () => ({ json: item(caseDetail({ id: ID, ...patch })) }),
     [`GET ${PATH}/events`]: () => ({ json: list([]) }),
+    "GET /api/v1/incidents": (call: RecordedCall) => ({
+      json: list(call.search.get("case_id") === ID && inIncident !== null ? [inIncident] : []),
+    }),
   });
 
   renderScreen(() => <CaseDetailRoute />, { path: `/cases/${ID}`, routePath: "/cases/:id" });
@@ -216,9 +227,10 @@ describe("drawing an Incident", () => {
 
     fireEvent.click(await ready("Draw Incident"));
 
-    await until(() => expect(net.to("/api/v1/incidents")).toHaveLength(1));
-    const post = net.to("/api/v1/incidents")[0]!;
-    expect(post.method).toBe("POST");
+    // The page also GETs this path, to learn which Incident the Case is in.
+    const draws = () => net.to("/api/v1/incidents").filter((c) => c.method === "POST");
+    await until(() => expect(draws()).toHaveLength(1));
+    const post = draws()[0]!;
     // ⛔ ONLY CASE IDS. There is no status, lead or severity to send, and the
     // contract has no field that would take one.
     expect(post.body).toEqual({ case_ids: [ID] });
@@ -245,6 +257,104 @@ describe("drawing an Incident", () => {
 });
 
 /* -------------------------------------------------------------------------- */
+/* The Incident this Case is in, and the ways to change that                  */
+/* -------------------------------------------------------------------------- */
+
+describe("the Incident this Case is in", () => {
+  it("asks which Incident THIS Case is in, by its own id", async () => {
+    const net = mount();
+    await ready("Draw Incident");
+    const asked = net.calls.filter((c) => c.path === "/api/v1/incidents" && c.method === "GET");
+    expect(asked.length).toBeGreaterThan(0);
+    expect(asked[0]!.search.get("case_id")).toBe(ID);
+  });
+
+  it("⭐ names the Incident and offers a move — never a draw or an add", async () => {
+    // A Case is in at most one Incident (ADR 0052 §4). Offering "Draw" or "Add"
+    // here would be offering the one gesture the rule refuses; the honest verb
+    // for a Case that is already in a story is MOVE.
+    mount({}, incident({ number: 3, state: "active" }));
+    await ready("Move to Incident…");
+
+    const link = screen.getByRole("link", { name: /Incident #3/ });
+    expect(link.getAttribute("href")).toBe("/incidents/3");
+    expect(barButtons("Draw Incident")).toHaveLength(0);
+    expect(barButtons("Add to Incident…")).toHaveLength(0);
+  });
+
+  it("moves it out of the Incident it is in, addressed by THAT Incident, and shows the new one", async () => {
+    const net = mount({}, incident({ number: 3 }));
+    net.on(`POST /api/v1/incidents/3/cases/${ID}/move`, () => {
+      // The server's truth after the move, for the refetch the write triggers.
+      net.on("GET /api/v1/incidents", () => ({ json: list([incident({ number: 7 })]) }));
+      return { json: item(incidentDetail({ number: 7, members: [] })) };
+    });
+
+    fireEvent.click(await ready("Move to Incident…"));
+    fireEvent.input(screen.getByLabelText("Move to Incident #"), { target: { value: "7" } });
+    fireEvent.click(screen.getByRole("button", { name: "Move Case" }));
+
+    await until(() => expect(net.to("/move")).toHaveLength(1));
+    const post = net.to("/move")[0]!;
+    // ⭐ THE PATH NAMES WHERE IT IS LEAVING, the body where it goes — so a screen
+    // a frame behind gets a 404 rather than a move from somewhere it is not.
+    expect(post.path).toBe(`/api/v1/incidents/3/cases/${ID}/move`);
+    expect(post.body).toEqual({ to_number: 7 });
+    expect(post.headers["Idempotency-Key"]).toBeTruthy();
+    await until(() =>
+      expect(screen.getByRole("link", { name: /Incident #7/ }).getAttribute("href")).toBe(
+        "/incidents/7",
+      ),
+    );
+  });
+
+  it("⛔ will not move it into the Incident it is already in", async () => {
+    mount({}, incident({ number: 3 }));
+    fireEvent.click(await ready("Move to Incident…"));
+    fireEvent.input(screen.getByLabelText("Move to Incident #"), { target: { value: "3" } });
+    expect(screen.getByRole("button", { name: "Move Case" })).toBeDisabled();
+  });
+
+  it("adds a Case that is in none to an existing Incident, by its number", async () => {
+    const net = mount();
+    net.on("POST /api/v1/incidents/7/cases", () => {
+      net.on("GET /api/v1/incidents", () => ({ json: list([incident({ number: 7 })]) }));
+      return { json: item(incidentDetail({ number: 7 })) };
+    });
+
+    fireEvent.click(await ready("Add to Incident…"));
+    fireEvent.input(screen.getByLabelText("Add to Incident #"), { target: { value: "#7" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add Case" }));
+
+    await until(() => expect(net.to("/incidents/7/cases")).toHaveLength(1));
+    const post = net.to("/incidents/7/cases")[0]!;
+    expect(post.method).toBe("POST");
+    expect(post.body).toEqual({ case_id: ID });
+    expect(post.headers["Idempotency-Key"]).toBeTruthy();
+    // Now in one, so the header offers the move and no longer the add.
+    await ready("Move to Incident…");
+    expect(barButtons("Add to Incident…")).toHaveLength(0);
+  });
+
+  it("⛔ shows the server's own sentence when the add is refused", async () => {
+    const net = mount();
+    net.on("POST /api/v1/incidents/7/cases", () =>
+      problem(409, "case_in_incident", {
+        detail: `Case #412 is already in Incident #3; move it with POST /api/v1/incidents/3/cases/${ID}/move.`,
+      }),
+    );
+
+    fireEvent.click(await ready("Add to Incident…"));
+    fireEvent.input(screen.getByLabelText("Add to Incident #"), { target: { value: "7" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add Case" }));
+
+    await until(() =>
+      expect(screen.getByRole("alert").textContent).toMatch(/already in Incident #3.*\/move/),
+    );
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 /* The vocabulary the screen is allowed to use                                */
 /* -------------------------------------------------------------------------- */
 
@@ -252,6 +362,9 @@ describe("the word on screen", () => {
   it("⛔ never calls this firing an incident, a correlation or a group", async () => {
     mount({ alert: alertRef() });
     await ready("Acknowledge");
+    // The membership controls mount once the screen knows which Incident this
+    // Case is in, and the scan below has to see them to take them out.
+    await ready("Draw Incident");
 
     const text = document.body.textContent ?? "";
     // A Case is one firing of one alert — the thing that is acknowledged.
@@ -261,14 +374,16 @@ describe("the word on screen", () => {
     // no longer exists, so neither the panel nor the word may come back.
     expect(text).not.toMatch(/\bgroup\b/i);
     expect(text).not.toMatch(/currently-joined/i);
-    // ⭐ THE ONE PLACE THE WORD MAY APPEAR IS THE CONTROL THAT DRAWS ONE (ADR
-    // 0052), and its own `title`. An Incident is a different object — a set of
-    // Cases — so the button names it; what must never happen is the screen
-    // calling THIS FIRING an incident. So the assertion is made on the text with
-    // that control taken out.
-    const draw = barButton("Draw Incident");
-    const withoutDraw = text.replace(draw.textContent ?? "", "");
-    expect(withoutDraw).not.toMatch(/\bincident\b/i);
+    // ⭐ THE ONE PLACE THE WORD MAY APPEAR IS THE MEMBERSHIP CONTROLS (ADR 0052,
+    // git-bug f89c9cc): draw, add, move, and the Incident this Case is in. An
+    // Incident is a different object — a set of Cases — so those controls name
+    // it; what must never happen is the screen calling THIS FIRING an incident.
+    // So the assertion is made on the text with those controls taken out.
+    let withoutMembership = text;
+    for (const el of document.querySelectorAll("[data-incident-membership]")) {
+      withoutMembership = withoutMembership.replace(el.textContent ?? "", "");
+    }
+    expect(withoutMembership).not.toMatch(/\bincident\b/i);
     expect(text).not.toMatch(/\bcorrelat/i);
   });
 });

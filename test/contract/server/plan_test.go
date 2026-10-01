@@ -532,6 +532,12 @@ func plan() []probe {
 			want:    http.StatusCreated,
 			capture: map[string][]string{"incident": {"data", "number"}},
 		},
+		// Which Incident a Case is in now — the read a screen asks before it offers
+		// a move rather than a second draw (git-bug f89c9cc).
+		{
+			method: http.MethodGet, tmpl: "/api/v1/incidents", url: "/api/v1/incidents?case_id={{case}}",
+			want: http.StatusOK,
+		},
 		{
 			method: http.MethodPost, tmpl: "/api/v1/incidents",
 			body: map[string]any{"case_ids": []string{"{{case}}"}},

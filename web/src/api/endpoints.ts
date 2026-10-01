@@ -391,6 +391,21 @@ export function listIncidents(
 }
 
 /**
+ * The Incident one Case is in NOW, or `null` when it is in none.
+ *
+ * ⭐ NONE OR ONE, BY CONSTRUCTION. A Case is in at most one Incident (the
+ * server's partial unique index), so `?case_id=` answers a list of at most one
+ * row and there is nothing to page. It is the read a screen makes BEFORE a draw
+ * or an add, so it can say "this Case is in #3 and will be moved" instead of
+ * letting the `409 case_in_incident` be the first the operator hears of it
+ * (git-bug f89c9cc).
+ */
+export async function getCaseIncident(caseId: Uuid, c: Ctx = {}): Promise<Incident | null> {
+  const page = await listIncidents({ case_id: caseId }, c);
+  return page.data[0] ?? null;
+}
+
+/**
  * One Incident by the NUMBER a human quotes — never by its id, because the
  * number is what is read out on a call and typed into a URL — with every spell
  * of every Case that has been in it, removed ones included as tombstones.

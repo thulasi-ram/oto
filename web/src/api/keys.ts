@@ -142,6 +142,12 @@ export const qk = {
     all: () => ["incidents"] as const,
     list: (query: IncidentListQuery) => ["incidents", "list", query] as const,
     detail: (number: string) => ["incidents", "detail", number] as const,
+    /**
+     * The Incident one Case is in now (`?case_id=`), keyed by the CASE id. Under
+     * the `["incidents"]` root, so every membership write — and every frame
+     * `api/live.tsx` already sends that root — refreshes it with the rest.
+     */
+    holding: (caseId: string) => ["incidents", "holding", caseId] as const,
   },
   labels: {
     names: () => ["labels", "names"] as const,

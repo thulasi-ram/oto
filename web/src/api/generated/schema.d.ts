@@ -836,6 +836,10 @@ export interface paths {
          *     `state` is never stored and no endpoint sets it: an Incident is `active` while any member Case is
          *     open and `quiet` otherwise (ADR 0052 §3). It is read off the member Cases on every request, so it
          *     cannot disagree with them.
+         *
+         *     With `case_id`, the answer is the Incident that Case is in **now** — none or exactly one, because a
+         *     Case is in at most one — so a screen can say a Case would be moved before a draw or an add is
+         *     refused for it. A Case in no Incident, or one this org does not have, is the same empty list.
          */
         get: operations["listIncidents"];
         put?: never;
@@ -9405,6 +9409,8 @@ export interface operations {
                  *     pagination when the user changes a filter.
                  */
                 cursor?: components["parameters"]["CursorParam"];
+                /** @description Only the Incident this Case is a current member of (at most one). Nothing to page. */
+                case_id?: components["schemas"]["Uuid"];
             };
             header?: never;
             path?: never;

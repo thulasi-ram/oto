@@ -96,6 +96,31 @@ func (s *Service) GetByID(ctx context.Context, scope db.TenantScope, id uuid.UUI
 	return s.incidents.GetByID(ctx, scope, id)
 }
 
+// HoldingCase returns the Incident one Case is in NOW — none or exactly one,
+// because a Case is in at most one (`incident_members_case_live_uniq`).
+//
+// ⭐ IT IS THE READ THAT LETS A SCREEN SAY "IT WILL BE MOVED" BEFORE ANYONE PRESSES
+// ANYTHING (git-bug f89c9cc). Without it the only way a human learns a Case is
+// already in a story is the `409 case_in_incident` on the draw, which is the
+// refusal arriving where the question should have been answered. It reads the
+// same membership the refusal reads, and like that read it decides nothing: the
+// partial unique index is still what holds the line.
+func (s *Service) HoldingCase(ctx context.Context, scope db.TenantScope, caseID uuid.UUID) ([]domain.Incident, error) {
+	held, err := s.incidents.LiveMemberships(ctx, scope, []uuid.UUID{caseID})
+	if err != nil {
+		return nil, err
+	}
+	ref, ok := held[caseID]
+	if !ok {
+		return []domain.Incident{}, nil
+	}
+	d, err := s.incidents.GetByID(ctx, scope, ref.ID)
+	if err != nil {
+		return nil, err
+	}
+	return []domain.Incident{d.Incident}, nil
+}
+
 // Draw is a human drawing one Incident over one or more Cases (ADR 0052 §2).
 //
 // ⭐ ALL OR NOTHING. A Case the org does not have, or one already in another
