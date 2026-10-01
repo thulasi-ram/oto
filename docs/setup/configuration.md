@@ -296,4 +296,7 @@ and `internal/channels/registry/registry.go:42`; the value actually wired there 
 - [slack.md](slack.md) — connecting a workspace: the three credentials, the app manifest, and every
   Slack error oto classifies.
 - [slack-live-verification.md](slack-live-verification.md) — the checklist for a real workspace.
+- [victoriametrics.md](victoriametrics.md) — a VictoriaMetrics stack: vmalert through
+  Alertmanager, vmalert as the source's rule source, and the vmalert flags that decide how much of
+  a rule oto can record.
 - [`../runbooks/README.md`](../runbooks/README.md) — one runbook per exported metric.
