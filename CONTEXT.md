@@ -20,7 +20,9 @@ generic. Grafana OnCall OSS was archived 2026-03-24, leaving a documented vacuum
 OSS Slack-first alert layer over an existing Prometheus/Alertmanager stack.
 
 **What oto is not — permanently:** an incident manager, an on-call/paging system, a workflow engine,
-a rule editor, or anything that tracks who owes work. **oto is a flight recorder.** It records the
+a rule editor, or anything that tracks who owes work. oto **draws** Incidents — a set of Cases told
+as one story (ADR 0052) — but it does not **manage** one: the response (status, lead, severity, comms,
+write-up) lives in the incident tool the Incident is declared to, and oto only sends that tool facts. **oto is a flight recorder.** It records the
 aircraft. It does not fly the plane, roster the crew, decide who is in command, or write the
 accident report — and it is trusted precisely *because* it does none of those things.
 
@@ -82,15 +84,15 @@ Permanently out of scope, with hand-offs: SPEC §I.1.1.
 | **Alert** | The **identity of a label set** within `(org, cluster)`. Created on first sight, survives resolution forever. oto's answer to Sentry's *Issue*. |
 | **AlertCase** | One **contiguous firing episode** of an Alert, `(alert_id, seq)`. What you ack; whose FIRING DURATION is measured. Never "MTTR" — banned (§A.1). **Strictly terminal**: `open → closed`, once. A re-fire opens the next `seq`, never revives this one (ADR 0040). **Two numbers, and they are not interchangeable**: `seq` is the firing ordinal within ONE alert, `number` is the case's name within the ORG — unique, monotonic, what a human quotes, and what `/cases` leads each row with (migration 00081). Forty alerts that have each fired once carry forty `number`s and forty `seq` of 1. |
 | **AlertEvent** | One **immutable thing that happened at one instant**. The timeline. Append-only. |
-| **Incident** | A **set of one or more Cases drawn together as one story** — an Alert has Cases, an Incident spans Cases. A machine (by a stated rule) or a human may draw one. Inside oto it is a fact about **signals**: it is **active** while any of its Cases is open and **quiet** otherwise — read off its Cases, never set by a hand. Its **response** — status, lead, severity, comms, write-up — is managed in an external tool it is *declared* to, and oto holds only the **outbound mapping** to that tool's object; nothing about the response is read back. ⚠️ *Proposed (2026-10-02) — ADR 0052; admitted when it is Accepted — until then the scope ban below still binds.* _Avoid_: arc, group, cluster, episode, storm, outage, correlation (that names the relationship, not the container). |
-| **Correlator** | An **operator-written definition that draws Incidents** — matchers over Cases, optionally with a count over a window — so that why a Case is in an Incident always has an answer someone can read back. Only a Correlator or a human draws an Incident; a model may **propose** membership, never decide it. ⚠️ *Proposed (2026-10-02) — ADR 0052.* _Avoid_: rule (that is the Prometheus alerting rule), incident rule, policy (that routes notifications). |
+| **Incident** | A **set of one or more Cases drawn together as one story** — an Alert has Cases, an Incident spans Cases. A machine (by a stated rule) or a human may draw one. Inside oto it is a fact about **signals**: it is **active** while any of its Cases is open and **quiet** otherwise — read off its Cases, never set by a hand. Its **response** — status, lead, severity, comms, write-up — is managed in an external tool it is *declared* to, and oto holds only the **outbound mapping** to that tool's object; nothing about the response is read back (ADR 0052). _Avoid_: arc, group, cluster, episode, storm, outage, correlation (that names the relationship, not the container). |
+| **Correlator** | An **operator-written definition that draws Incidents** — matchers over Cases, optionally with a count over a window — so that why a Case is in an Incident always has an answer someone can read back. Only a Correlator or a human draws an Incident; a model may **propose** membership, never decide it (ADR 0052). _Avoid_: rule (that is the Prometheus alerting rule), incident rule, policy (that routes notifications). |
 | **RuleSnapshot** | A content-addressed capture of a Prometheus alerting rule at a point in time. The differentiator. |
 | **AlertSource** | One configured Alertmanager (+ optional Prometheus). HA replicas share a Cluster. |
 | **Cluster** | Identity/failure domain. `cluster_key` participates in alert identity. |
 | **Channel** | A **configured destination instance** ("Slack workspace T123, #sre-alerts"). Not a channel *type*. |
 | **Notification** | The channel-agnostic **intent** to communicate one fact. Idempotent. |
 | **NotificationDelivery** | **One materialisation** of a Notification on one Channel. Owns retry state and provider ids. |
-| **Conversation** | What a `channel_threads` row is *about*, as the pair `(conversation_kind, conversation_id)`: a **Case** or a **digest**. A conversation holds exactly **one Case** — a new Case always means a new thread — and a digest's conversation is keyed by the **policy** that asked for it, one per policy per channel. It is what **decides which facts share a message**, and that decision now belongs to the `notification` layer rather than to a stored grouping row (git-bug `7570090`, migration `00069`). It is **not** a `correlation` (deferred, and it would need a stated algorithm) and **not** an incident (permanently out). ⚠️ *Proposed (2026-10-02), ADR 0052: a third kind, an **Incident** whose Correlator says it is one — later facts about its member Cases share its conversation instead of opening their own, and nothing already posted moves.* |
+| **Conversation** | What a `channel_threads` row is *about*, as the pair `(conversation_kind, conversation_id)`: a **Case**, a **digest**, or an **Incident** whose Correlator says its Incidents are conversations (ADR 0052 §6). A Case conversation holds exactly **one Case** — a new Case always means a new thread, unless it joins an Incident that is a conversation, in which case later facts about it share the Incident's thread; nothing already posted moves, and nothing is held back to wait for a Correlator. A digest's conversation is keyed by the **policy** that asked for it, one per policy per channel. It is what **decides which facts share a message**, and that decision belongs to the `notification` layer and to what an operator wrote, never to a stored grouping oto derived on its own (git-bug `7570090`, migration `00069`). The Incident kind is the operator-written exception to ADR 0045's *"N alerts, N conversations"*, not a return of `AlertGroup`. |
 | **ChannelThread** | The binding of a **Conversation** to `(slack_channel_id, root_ts)`. |
 | **Enrichment** | One typed, provenanced result from one named, versioned `Enricher`. |
 | **Investigator** | A **named, versioned configuration of a model-driven investigation**: which model, which prompt, which Tools it may call, and its budgets. The AI-for-SRE category word "agent" may describe it in marketing, never name it. ⚠️ *Proposed (2026-10-02) — ADR 0053.* _Avoid_: agent (that is `vmagent` in a VictoriaMetrics stack, and the in-cluster daemon ADR 0016 rejected), bot, assistant. |
@@ -136,11 +138,15 @@ left with it, because arithmetic over a set of one has no answer to give.
 **Scope bans** — these MUST NOT appear in a Go identifier, a table or column name, a JSON field, an
 API path or UI copy. AC-49 greps for them in CI:
 
-`incident` · `escalation` · `on-call`/`oncall` · `rota` · `schedule` · `assignee`/`assigned_to` ·
+`escalation` · `on-call`/`oncall` · `rota` · `schedule` · `assignee`/`assigned_to` ·
 `owner_id` · `responder` · `triage` · `postmortem` · `war room` · `SLA` · `MTTA` · `MTTR` ·
 `severity override` · `close` (of an alert) · `merge` · `dismiss` · `watcher`/`subscriber`
 
-Say **firing duration**, not MTTR. Say **correlation**, not incidents. ⛔ `escalation` has no
+Say **firing duration**, not MTTR. ⚠️ `incident` was on this list until ADR 0052 made an **Incident**
+an oto noun. What it guarded is still shut, and by the right instrument: `incident_id` stays banned
+**on a signal row** (`alerts`, `alert_cases`, `notifications`, `notification_deliveries` —
+`tools/lintvocab` enforces exactly that), and the incident's **response** is PERMANENTLY OUT below.
+⛔ `escalation` has no
 replacement term and this line used to offer one: it said "say **unacked reminder**", and the one
 reminder stage `escalation` had been reshaped into was itself withdrawn (git-bug `bd0fb1d`) — see
 the **No unprompted reminder, at all** row above. The word stays banned with nothing to say
@@ -207,8 +213,9 @@ Rules you must not get wrong:
 | `drill` | PERIPHERAL | Synthetic end-to-end delivery drills. It imports **no** other module: it reaches five of them — `alerts`, `ingestion`, `notification`, `channels`, `rules` — by writing their table names into SQL (`alerts`, `alert_cases`, `alert_events`, `ingest_batches`, `ingest_rejections`, `notifications`, `notification_deliveries`, `notification_policies`, `channels`, `channel_threads`, `rule_snapshots`). Those eleven, plus its own `delivery_drills`, are DECLARED in `test/arch/sqltables_test.go` with their owner and how far the drill may go against each. The reads stay SQL on purpose — a port satisfied by the owning module's service would have the drill ask the code under test whether the code under test worked. |
 | ⛔ `grouping` | **DELETED** | It owned durable groups, generations, derived membership and group lifecycle — 20 non-test files, 5 243 LOC — and it is gone (git-bug `7570090`, migration `00069`). ⭐ The measurement is the lesson: deleting it produced **four** build errors, all in `internal/app`. `notification` never imported it and `alerts` carried only a `uuid`. **The module coupling was thin and the concept coupling was broad**, which is why the change touched 187 files and almost none of them were the module. The conversation is now the Case (see the glossary), so nothing replaced it. |
 | `app` | WIRING | The composition root. Constructs every concrete, satisfies every port, registers the workers and routes. THE one place allowed to know every module, and deliberately outside every cross-domain rule. Not a domain. |
-| `correlation` (was `incidents`), `k8scontext`, `changefeed`, `views`, `audit` (config changes only), `authz`, extra channel providers, anything AI | DEFERRED-POST-V1 | Do not build. Do not stub beyond the ports that already exist. |
-| `incidents`, `oncall`, assignment, multi-stage escalation, paging, status pages, postmortems, SLA/MTTA, manual resolve/merge/close, watchers | **PERMANENTLY OUT** | There is no version of oto containing these. Adding one needs an ADR arguing **against FR-1 by name**. See SPEC §I.1.1 for the hand-offs. |
+| `incidents` | ADR 0052 | Incidents drawn over Cases by a Correlator or a human; **active**/**quiet** read off member Cases; declared outbound as a notification, facts only. Replaces the deferred `correlation` row. |
+| `k8scontext`, `changefeed`, `views`, `audit` (config changes only), `authz`, extra channel providers, anything AI | DEFERRED-POST-V1 | Do not build. Do not stub beyond the ports that already exist. |
+| Incident **response** (status, lead, severity, comms, write-up), `oncall`, assignment, multi-stage escalation, paging, status pages, postmortems, SLA/MTTA, manual resolve/merge/close, watchers | **PERMANENTLY OUT** | There is no version of oto containing these. Adding one needs an ADR arguing **against FR-1 by name**. See SPEC §I.1.1 for the hand-offs. |
 
 ### Dependency direction
 

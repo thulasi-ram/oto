@@ -3,6 +3,10 @@
 **Status:** Accepted — this is a **product ruling**, not an implementation decision. The behaviour
 already shipped with git-bug `7570090`; what was missing was the authority to keep it.
 **Date:** 2026-08-20
+**Amended by:** [0052](0052-an-incident-is-drawn-over-cases-and-its-response-is-handed-off.md) §6 —
+*"N alerts, N conversations"* gains one exception: an Incident whose operator-written Correlator says
+its Incidents are conversations. Later facts about its member Cases post into its thread; nothing
+already posted moves.
 **Resolves:** the open question git-bug `7570090` left behind — *"`N` alerts now open `N` Slack
 threads, by construction. This needs a product ruling"* — recorded in SPEC §C.4 and, as an
 unwritable acceptance criterion, in §J's AC-14.

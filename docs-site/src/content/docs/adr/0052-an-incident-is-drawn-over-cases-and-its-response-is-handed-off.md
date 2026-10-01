@@ -1,19 +1,20 @@
-# 0052 — An Incident is drawn over Cases, and its response is handed off
-
+---
+title: 0052 — An Incident is drawn over Cases, and its response is handed off
+---
 **Status:** Accepted · 2026-10-02 — settled in a design session with the owner, who authorised
 building it the same day; Accepted when the delta list at the end was applied (git-bug `ee9f306`).
 §4's at-most-one-Incident clause is still flagged for the owner's review, and Accepting the ADR does
 not rule on it.
-**Supersedes in part:** [0013](0013-alert-first-scope-boundary.md) — its refusal of incident objects
+**Supersedes in part:** [0013](/oto/adr/0013-alert-first-scope-boundary/) — its refusal of incident objects
 and its classification of `incidents` as PERMANENTLY OUT. 0013's handoff contract is **not**
 superseded; this ADR is built on it. SCOPE-BOUNDARY **SS-3** and verdict **#33**.
-**Amends:** [0045](0045-a-case-is-a-conversation-and-a-thread-per-alert-is-accepted.md) — "N alerts,
+**Amends:** [0045](/oto/adr/0045-a-case-is-a-conversation-and-a-thread-per-alert-is-accepted/) — "N alerts,
 N conversations" gains one exception.
-**Relates to:** [0039](0039-group-close-stays-activity-driven.md) (a grace window returns, for a
-different entity), [0042](0042-storm-damping-is-removed.md) §3 and
-[0044](0044-a-count-condition-is-a-silence-the-operator-asked-for.md) (the authority test every
-grouping here passes), [0053](0053-an-investigator-reads-proposes-and-never-decides-delivery.md),
-[0054](0054-a-remedy-earns-the-write-path.md).
+**Relates to:** [0039](/oto/adr/0039-group-close-stays-activity-driven/) (a grace window returns, for a
+different entity), [0042](/oto/adr/0042-storm-damping-is-removed/) §3 and
+[0044](/oto/adr/0044-a-count-condition-is-a-silence-the-operator-asked-for/) (the authority test every
+grouping here passes), [0053](/oto/adr/0053-an-investigator-reads-proposes-and-never-decides-delivery/),
+[0054](/oto/adr/0054-a-remedy-earns-the-write-path/).
 
 ## Context
 
