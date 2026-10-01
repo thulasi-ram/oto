@@ -19,6 +19,7 @@ import (
 	enrichrepo "github.com/thulasiram/oto/internal/enrichment/repository"
 	enrichservice "github.com/thulasiram/oto/internal/enrichment/service"
 	identityservice "github.com/thulasiram/oto/internal/identity/service"
+	incidentsservice "github.com/thulasiram/oto/internal/incidents/service"
 	ingestiondomain "github.com/thulasiram/oto/internal/ingestion/domain"
 	ingestionservice "github.com/thulasiram/oto/internal/ingestion/service"
 	notifdomain "github.com/thulasiram/oto/internal/notification/domain"
@@ -207,6 +208,11 @@ type timelineRecorder struct {
 var (
 	_ rulesservice.EventRecorder  = (*timelineRecorder)(nil)
 	_ enrichservice.EventRecorder = (*timelineRecorder)(nil)
+	// ⭐ THE THIRD DOOR (ADR 0052, git-bug b2672a1). `incidents` narrates a
+	// membership change onto the member Case's timeline through the same seam, for
+	// the same reason the other two do: CONTEXT.md §4 draws no `incidents ──►
+	// alerts` edge, and one writer of request-shaped events is the point.
+	_ incidentsservice.Timeline = (*timelineRecorder)(nil)
 )
 
 // The actor identities the timeline shows for these two writers. They are
@@ -267,6 +273,48 @@ func (r *timelineRecorder) RecordEnrichmentEvent(
 		ActorKind:  alertsdomain.ActorEnricher.String(),
 		ActorID:    timelineActorEnrich,
 		ActorLabel: timelineActorEnrichLbl,
+	})
+}
+
+// RecordIncidentFact appends one `incident.case_*` fact onto a member Case's
+// timeline (ADR 0052), inside the membership change's transaction.
+//
+// ⭐ THE ACTOR IS THE HUMAN WHO DECIDED, NOT A MODULE NAME — unlike the two
+// narrators above, whose facts oto produced itself. `user` when the decision came
+// with a `users` row behind it, which is what `ev_actor_ck` requires an id for;
+// `slack` when it did not, which carries the frozen label alone. A Correlator is
+// not a human and has no path here yet: when it draws, the Correlator ticket
+// decides how it is named on the timeline, and this refuses it rather than
+// guessing.
+//
+// ⛔ A NIL SERVICE IS AN ERROR HERE, NOT A SILENT NO-OP. The rules and enrichment
+// narrators degrade to "un-narrated" because their facts are side notes to work
+// that succeeded; a membership change is the fact, and recording it in one table
+// and not the other would leave a Case whose history denies the Incident it is in.
+func (r *timelineRecorder) RecordIncidentFact(
+	ctx context.Context, s db.TenantScope, f incidentsservice.CaseFact,
+) error {
+	if r.svc == nil {
+		return errs.New(errs.KindInternal, "incident_timeline_unwired",
+			"the alerts timeline is not wired, so an Incident change cannot be narrated")
+	}
+	if !f.By.IsHuman() {
+		return errs.New(errs.KindInternal, "incident_fact_not_human",
+			"an incident.case_* fact is attributed to a human on this path")
+	}
+	kind, actorID := alertsdomain.ActorSlack, ""
+	if f.By.UserID() != uuid.Nil {
+		kind, actorID = alertsdomain.ActorUser, f.By.UserID().String()
+	}
+	return r.svc.AppendTimelineEvent(ctx, s, alertsservice.TimelineEventRequest{
+		Type:       f.Type,
+		AlertID:    f.AlertID,
+		CaseID:     f.CaseID,
+		Summary:    f.Summary,
+		Payload:    f.Payload,
+		ActorKind:  kind.String(),
+		ActorID:    actorID,
+		ActorLabel: f.By.Label(),
 	})
 }
 

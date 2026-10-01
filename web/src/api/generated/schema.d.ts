@@ -821,6 +821,157 @@ export interface paths {
         patch: operations["updateCasePolicy"];
         trace?: never;
     };
+    "/api/v1/incidents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Incidents
+         * @description Every Incident in the org, newest first by `number`. Each row carries its **derived** state and
+         *     the size of its current membership, so the list can be read without a request per row.
+         *
+         *     `state` is never stored and no endpoint sets it: an Incident is `active` while any member Case is
+         *     open and `quiet` otherwise (ADR 0052 §3). It is read off the member Cases on every request, so it
+         *     cannot disagree with them.
+         */
+        get: operations["listIncidents"];
+        put?: never;
+        /**
+         * Draw an Incident over Cases
+         * @description A human draws one Incident over one or more Cases (ADR 0052 §1–§2). The caller is recorded as
+         *     **actor metadata** — "drawn by alice" — and nothing on the Incident says anybody owes it work.
+         *     Each Case's own timeline gains an `incident.case_added` event.
+         *
+         *     **A Case belongs to at most one Incident** (§4). Naming a Case that is already in another
+         *     Incident refuses the whole draw with `409 case_in_incident`, whose `detail` names that Incident
+         *     and the `move` request that would take the Case out of it. Nothing is drawn by a refused
+         *     request. The rule is a partial unique index in the database, so two concurrent draws over one
+         *     Case cannot both succeed.
+         *
+         *     ⛔ There is no `status`, `lead` or `severity` on the request or the response. An Incident's
+         *     response is managed in the incident tool it is declared to, never here.
+         *
+         *     A retry needs no idempotency claim: a second draw over the same Cases meets the first one's
+         *     memberships and is refused with the `409` above, which names the Incident the first attempt
+         *     drew.
+         */
+        post: operations["createIncident"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/incidents/{number}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get one Incident
+         * @description One Incident addressed by the `number` a human quotes, with every Case that has ever been in it:
+         *     the current members, and the removed ones as tombstones carrying who removed them and, for a
+         *     move, which Incident they went to. A removed Case stays recorded as removed.
+         *
+         *     A number naming no Incident in this org is a `404`, indistinguishable from one another org drew.
+         */
+        get: operations["getIncident"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/incidents/{number}/cases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add a Case to an Incident
+         * @description A human adds one Case to this Incident. The Case's timeline gains `incident.case_added`.
+         *
+         *     A Case already in **another** Incident is refused with `409 case_in_incident`, whose `detail`
+         *     names that Incident and the move request — `POST /api/v1/incidents/{that}/cases/{case_id}/move`
+         *     — that takes it out of there and into here in one step. A Case already in **this** Incident is
+         *     `409 already_a_member`. Either answer is also what a retry meets, which is why this endpoint
+         *     takes no idempotency claim.
+         */
+        post: operations["addIncidentCase"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/incidents/{number}/cases/{case_id}/remove": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Remove a Case from an Incident
+         * @description A human takes one Case out of this Incident. The membership is **tombstoned, never deleted**:
+         *     the Incident keeps showing the Case as removed, by whom and when, and the Case's timeline gains
+         *     `incident.case_removed`. A Correlator never re-adds a Case a human removed (ADR 0052 §4).
+         *
+         *     Removing a Case does nothing to the Case. It stays open or closed exactly as it was, and the
+         *     Incident's derived state moves only because its membership did.
+         *
+         *     `{case_id}` must be a current member of this Incident; anything else — a removed member, a Case
+         *     in another Incident, another org's Case — is a `404`.
+         */
+        post: operations["removeIncidentCase"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/incidents/{number}/cases/{case_id}/move": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Move a Case to another Incident
+         * @description A human moves one Case from **this** Incident to the one named in the body, in **one
+         *     transaction**: the membership here is tombstoned as "moved to #M" and a new one is written there,
+         *     both attributed to the caller, so there is no instant at which the Case is in neither Incident or
+         *     in both. The Case's timeline gains one `incident.case_moved` event naming both numbers.
+         *
+         *     The path names the Incident the Case is leaving, so a move is always a statement about where the
+         *     Case is now: if it has been moved or removed meanwhile, the request is a `404` rather than a
+         *     move from somewhere it no longer is. A move to the same Incident is a `422`.
+         *
+         *     The response is the Incident the Case **went to**.
+         */
+        post: operations["moveIncidentCase"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/rule-snapshots": {
         parameters: {
             query?: never;
@@ -2548,10 +2699,20 @@ export interface components {
          *     `case.reopened` are **not** in that group. They are RETIRED — read but never written — and
          *     remain published here, because `ev_type_ck` still admits them and rows on disk still spell
          *     them.
+         *
+         *     `incident.case_added`, `incident.case_removed` and `incident.case_moved` are the three
+         *     membership facts a Case's timeline carries about the Incident it is in (ADR 0052). They are
+         *     written on the **Case**, never on the Incident, and always by a human actor: "added to
+         *     Incident #4 by alice", "removed from Incident #4 by alice", "moved from Incident #4 to #7 by
+         *     alice". `incident.case_added` carries `{incident_id, incident_number, drawn}`, where `drawn` is
+         *     true when the Case was one of those the Incident was drawn over; `incident.case_removed`
+         *     carries `{incident_id, incident_number}`; `incident.case_moved` carries
+         *     `{from_incident_id, from_number, to_incident_id, to_number}`. None of them changes the Case: an
+         *     episode is open or closed exactly as it was.
          * @example case.opened
          * @enum {string}
          */
-        AlertEventType: "alert.created" | "alert.mutated" | "case.opened" | "case.reopened" | "case.suppressed" | "case.unsuppressed" | "case.resolved" | "case.expired" | "case.acknowledged" | "case.unacknowledged" | "alert.snoozed" | "alert.unsnoozed" | "group.opened" | "group.closed" | "group.member_joined" | "group.member_left" | "rule.snapshot_captured" | "rule.definition_changed" | "rule.lookup_failed" | "enrichment.completed" | "enrichment.failed" | "notification.created" | "notification.suppressed" | "delivery.sent" | "delivery.updated" | "delivery.failed" | "delivery.skipped" | "delivery.dead" | "comment.added" | "source.unreachable" | "source.recovered" | "source.clock_skew";
+        AlertEventType: "alert.created" | "alert.mutated" | "case.opened" | "case.reopened" | "case.suppressed" | "case.unsuppressed" | "case.resolved" | "case.expired" | "case.acknowledged" | "case.unacknowledged" | "alert.snoozed" | "alert.unsnoozed" | "group.opened" | "group.closed" | "group.member_joined" | "group.member_left" | "rule.snapshot_captured" | "rule.definition_changed" | "rule.lookup_failed" | "enrichment.completed" | "enrichment.failed" | "notification.created" | "notification.suppressed" | "delivery.sent" | "delivery.updated" | "delivery.failed" | "delivery.skipped" | "delivery.dead" | "comment.added" | "source.unreachable" | "source.recovered" | "source.clock_skew" | "incident.case_added" | "incident.case_removed" | "incident.case_moved";
         /**
          * @description Why a Notification exists. Distinct from Alertmanager's wire `notification_reason` string, which
          *     is mapped onto this enum on ingest.
@@ -3208,6 +3369,142 @@ export interface components {
          */
         CaseListItemDTO: components["schemas"]["CaseDTO"] & {
             alert: components["schemas"]["AlertRefDTO"];
+        };
+        /**
+         * @description What an Incident's member Cases say about it, and nothing else (ADR 0052 §3). **Derived on every
+         *     read and never stored**: `active` while any current member Case is `open`, `quiet` otherwise —
+         *     including when every member has been removed.
+         *
+         *     **No endpoint sets it, and no human writes it.** "Quiet but not fixed" and "fixed but still
+         *     noisy" are facts about the *response*, and the response lives in the incident tool the Incident
+         *     is declared to. The two may disagree, and that is correct: they describe different things.
+         * @example active
+         * @enum {string}
+         */
+        IncidentState: "active" | "quiet";
+        /** @description The answer to "why is this here?" — a rule someone wrote, or a person who decided. */
+        IncidentAttributionDTO: {
+            /**
+             * @description Who decided: an operator-written **Correlator**, or a **human**. There is no third answer —
+             *     a model may only propose membership, never decide it (ADR 0052 §2).
+             * @enum {string}
+             */
+            kind: "human" | "correlator";
+            /**
+             * @description The human's display name, frozen when they acted so the record reads the same after a
+             *     rename. `null` exactly when `kind` is `correlator`. Actor metadata only: nothing is ever
+             *     aggregated per person.
+             * @example Priya R.
+             */
+            label?: string | null;
+            /** @description The Correlator that decided, `null` exactly when `kind` is `human`. */
+            correlator_id?: components["schemas"]["Uuid"] | null;
+        };
+        /**
+         * @description An **Incident**: a set of one or more Cases drawn together as one story (ADR 0052). An Alert has
+         *     Cases; an Incident spans Cases.
+         *
+         *     ⛔ It carries no `status`, no `lead`, no human-set `severity` and no write-up, and it never will:
+         *     its response is managed in the external tool it is declared to. Inside oto an Incident is a fact
+         *     about signals, and its `state` is read off its Cases.
+         */
+        IncidentDTO: {
+            id: components["schemas"]["Uuid"];
+            /**
+             * Format: int64
+             * @description The Incident's name within its organisation: 1-based, monotonic, and what `/incidents/{number}`
+             *     addresses. Per-organisation and never global, and unique and ordered but not gapless — the
+             *     same contract as a Case's `number`, from a counter of its own.
+             * @example 4
+             */
+            number: number;
+            state: components["schemas"]["IncidentState"];
+            drawn_at: components["schemas"]["Timestamp"];
+            drawn_by: components["schemas"]["IncidentAttributionDTO"];
+            /**
+             * Format: int32
+             * @description How many Cases are in the Incident now. Removed Cases are not counted.
+             * @example 3
+             */
+            member_count: number;
+            /**
+             * Format: int32
+             * @description How many of those are open. `state` is `active` exactly when this is above zero; the two are
+             *     served together so a client never has to decide which one to believe.
+             * @example 1
+             */
+            open_member_count: number;
+            /**
+             * @description The distinct `alertname`s of the current members, sorted, at most ten — enough for a list
+             *     row to say what the story is about without a request per row.
+             * @example [
+             *       "KubePodCrashLooping",
+             *       "HighErrorRate"
+             *     ]
+             */
+            alertnames: string[];
+        };
+        /**
+         * @description One spell of one Case inside an Incident — current when `removed_at` is `null`, a tombstone
+         *     otherwise. A Case removed and later added again appears once per spell.
+         */
+        IncidentMemberDTO: {
+            case_id: components["schemas"]["Uuid"];
+            /**
+             * Format: int64
+             * @description The member Case's own `number`, which is what `/cases` leads its rows with.
+             * @example 412
+             */
+            case_number: number;
+            case_state: components["schemas"]["CaseState"];
+            alert_id: components["schemas"]["Uuid"];
+            alertname: string;
+            labels: components["schemas"]["LabelMap"];
+            added_at: components["schemas"]["Timestamp"];
+            added_by: components["schemas"]["IncidentAttributionDTO"];
+            /**
+             * @description When a human took the Case out of this Incident; `null` while it is a member. A removed Case
+             *     stays on the Incident as a tombstone rather than disappearing from it.
+             */
+            removed_at?: components["schemas"]["Timestamp"] | null;
+            /** @description The display name of whoever removed it, frozen at the time. Only a human removes. */
+            removed_by_label?: string | null;
+            /**
+             * Format: int64
+             * @description Set when the removal was half of a **move**: the `number` of the Incident the Case went to.
+             *     `null` for a plain removal and for a current member.
+             * @example 7
+             */
+            moved_to_number?: number | null;
+        };
+        /** @description One Incident with its full membership history. */
+        IncidentDetailDTO: components["schemas"]["IncidentDTO"] & {
+            /**
+             * @description Every spell of every Case that has been in this Incident, current and removed, in the
+             *     order they joined.
+             */
+            members: components["schemas"]["IncidentMemberDTO"][];
+        };
+        /** @description Draw an Incident. The caller is recorded as the human who drew it. */
+        CreateIncidentRequest: {
+            /**
+             * @description The Cases to draw the Incident over — at least one, because an Incident is a set of one or
+             *     more Cases. Each must be in the caller's organisation and in no other Incident.
+             */
+            case_ids: components["schemas"]["Uuid"][];
+        };
+        /** @description Add one Case to an Incident. The caller is recorded as the human who added it. */
+        AddIncidentCaseRequest: {
+            case_id: components["schemas"]["Uuid"];
+        };
+        /** @description Move one Case from the Incident in the path to another, in one transaction. */
+        MoveIncidentCaseRequest: {
+            /**
+             * Format: int64
+             * @description The `number` of the Incident the Case is moving to. It must not be the one in the path.
+             * @example 7
+             */
+            to_number: number;
         };
         /**
          * @description The **case retention window** for one `(namespace, alertname)` pair — the only per-pair shaping of
@@ -6674,6 +6971,15 @@ export interface components {
             data: components["schemas"]["CasePolicyDTO"];
             meta: components["schemas"]["Meta"];
         };
+        IncidentListResponse: {
+            data: components["schemas"]["IncidentDTO"][];
+            page: components["schemas"]["PageInfo"];
+            meta: components["schemas"]["Meta"];
+        };
+        IncidentResponse: {
+            data: components["schemas"]["IncidentDetailDTO"];
+            meta: components["schemas"]["Meta"];
+        };
         ClusterListResponse: {
             data: components["schemas"]["ClusterDTO"][];
             page: components["schemas"]["PageInfo"];
@@ -7126,6 +7432,14 @@ export interface components {
     parameters: {
         /** @description Resource identifier (UUIDv7). */
         IdParam: components["schemas"]["Uuid"];
+        /**
+         * @description The Incident's number within the caller's organisation — the name a human quotes, not its id.
+         *     Per-organisation, so another org's Incident with the same number is simply a different one, and
+         *     a number naming nothing here is a `404`.
+         */
+        IncidentNumberParam: number;
+        /** @description The id of a Case that is a current member of the Incident in the path. */
+        IncidentCaseIdParam: components["schemas"]["Uuid"];
         /**
          * @description The `AlertSource` this webhook belongs to. The presented ingest token MUST be scoped to this
          *     exact id; a token for another source is a `401`, never a `403`.
@@ -9057,6 +9371,469 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    listIncidents: {
+        parameters: {
+            query?: {
+                /** @description Maximum items to return in one page. */
+                limit?: components["parameters"]["LimitParam"];
+                /**
+                 * @description Opaque keyset cursor, taken verbatim from `page.next_cursor` of the previous response. A cursor
+                 *     minted under a different filter set is rejected with `400 cursor_filter_mismatch` — reset
+                 *     pagination when the user changes a filter.
+                 */
+                cursor?: components["parameters"]["CursorParam"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of Incidents. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IncidentListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    createIncident: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
+                 *     body within the retention window returns the original result rather than acting twice; replaying
+                 *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
+                 *
+                 *     ### The second carve-out: endpoints that are idempotent by state machine
+                 *
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     a key, because the state after N calls equals the state after one. They are therefore **not**
+                 *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
+                 *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
+                 *     `delivery_not_dead` — rather than a replay of the original response.
+                 *
+                 *     **Treat those four codes as success-equivalent when you are retrying the same key.** They mean
+                 *     "the thing you asked for is already true", which is what a replayed `200` would have told you.
+                 *
+                 *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
+                 *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
+                 *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
+                 *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
+                 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateIncidentRequest"];
+            };
+        };
+        responses: {
+            /** @description The Incident that was drawn. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IncidentResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    getIncident: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description The Incident's number within the caller's organisation — the name a human quotes, not its id.
+                 *     Per-organisation, so another org's Incident with the same number is simply a different one, and
+                 *     a number naming nothing here is a `404`.
+                 */
+                number: components["parameters"]["IncidentNumberParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The Incident. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IncidentResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    addIncidentCase: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
+                 *     body within the retention window returns the original result rather than acting twice; replaying
+                 *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
+                 *
+                 *     ### The second carve-out: endpoints that are idempotent by state machine
+                 *
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     a key, because the state after N calls equals the state after one. They are therefore **not**
+                 *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
+                 *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
+                 *     `delivery_not_dead` — rather than a replay of the original response.
+                 *
+                 *     **Treat those four codes as success-equivalent when you are retrying the same key.** They mean
+                 *     "the thing you asked for is already true", which is what a replayed `200` would have told you.
+                 *
+                 *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
+                 *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
+                 *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
+                 *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
+                 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
+            };
+            path: {
+                /**
+                 * @description The Incident's number within the caller's organisation — the name a human quotes, not its id.
+                 *     Per-organisation, so another org's Incident with the same number is simply a different one, and
+                 *     a number naming nothing here is a `404`.
+                 */
+                number: components["parameters"]["IncidentNumberParam"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddIncidentCaseRequest"];
+            };
+        };
+        responses: {
+            /** @description The Incident, with the Case added. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IncidentResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    removeIncidentCase: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
+                 *     body within the retention window returns the original result rather than acting twice; replaying
+                 *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
+                 *
+                 *     ### The second carve-out: endpoints that are idempotent by state machine
+                 *
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     a key, because the state after N calls equals the state after one. They are therefore **not**
+                 *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
+                 *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
+                 *     `delivery_not_dead` — rather than a replay of the original response.
+                 *
+                 *     **Treat those four codes as success-equivalent when you are retrying the same key.** They mean
+                 *     "the thing you asked for is already true", which is what a replayed `200` would have told you.
+                 *
+                 *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
+                 *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
+                 *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
+                 *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
+                 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
+            };
+            path: {
+                /**
+                 * @description The Incident's number within the caller's organisation — the name a human quotes, not its id.
+                 *     Per-organisation, so another org's Incident with the same number is simply a different one, and
+                 *     a number naming nothing here is a `404`.
+                 */
+                number: components["parameters"]["IncidentNumberParam"];
+                /** @description The id of a Case that is a current member of the Incident in the path. */
+                case_id: components["parameters"]["IncidentCaseIdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The Incident, with the Case recorded as removed. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IncidentResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    moveIncidentCase: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
+                 *     body within the retention window returns the original result rather than acting twice; replaying
+                 *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
+                 *
+                 *     ### The second carve-out: endpoints that are idempotent by state machine
+                 *
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     a key, because the state after N calls equals the state after one. They are therefore **not**
+                 *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
+                 *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
+                 *     `delivery_not_dead` — rather than a replay of the original response.
+                 *
+                 *     **Treat those four codes as success-equivalent when you are retrying the same key.** They mean
+                 *     "the thing you asked for is already true", which is what a replayed `200` would have told you.
+                 *
+                 *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
+                 *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
+                 *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
+                 *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
+                 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
+            };
+            path: {
+                /**
+                 * @description The Incident's number within the caller's organisation — the name a human quotes, not its id.
+                 *     Per-organisation, so another org's Incident with the same number is simply a different one, and
+                 *     a number naming nothing here is a `404`.
+                 */
+                number: components["parameters"]["IncidentNumberParam"];
+                /** @description The id of a Case that is a current member of the Incident in the path. */
+                case_id: components["parameters"]["IncidentCaseIdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MoveIncidentCaseRequest"];
+            };
+        };
+        responses: {
+            /** @description The Incident the Case was moved to. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IncidentResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
             413: components["responses"]["PayloadTooLarge"];
             415: components["responses"]["UnsupportedMediaType"];
             422: components["responses"]["UnprocessableContent"];

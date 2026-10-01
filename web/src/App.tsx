@@ -40,6 +40,8 @@ const AlertsRoute = lazy(() => import("~/routes/alerts"));
 const AlertDetailRoute = lazy(() => import("~/routes/alert-detail"));
 const CasesRoute = lazy(() => import("~/routes/cases"));
 const CaseDetailRoute = lazy(() => import("~/routes/case-detail"));
+const IncidentsRoute = lazy(() => import("~/routes/incidents"));
+const IncidentDetailRoute = lazy(() => import("~/routes/incident-detail"));
 const NotificationsRoute = lazy(() => import("~/routes/notifications"));
 const SettingsRoute = lazy(() => import("~/routes/settings"));
 const LoginRoute = lazy(() => import("~/routes/login"));
@@ -81,7 +83,7 @@ const Root: Component<{ readonly children?: JSX.Element }> = (props) => {
  *
  * ⛔ IT IS A LAYOUT ROUTE'S COMPONENT, AND NEVER A WRAPPER A SCREEN PUTS AROUND
  * ITSELF. `props.children` here is the router's outlet, so navigating between the
- * six screens below swaps only the outlet and leaves this subtree standing.
+ * screens below swaps only the outlet and leaves this subtree standing.
  * Every route used to build its own `<Authenticated>` — five sibling route
  * components, five independent constructions of the same tree — and Solid does
  * not reconcile across siblings, so each nav click DISPOSED the shell and built a
@@ -128,7 +130,7 @@ export const routes = (): JSX.Element => (
     {/* Two entries read `/` and they do not compete: this one is a LEAF, so it
         matches `/` and nothing else, while the layout below carries children and
         is therefore matched partially — it contributes no branch of its own and
-        only ever prefixes the six paths inside it. */}
+        only ever prefixes the paths inside it. */}
     <Route path="/" component={() => <Navigate href="/cases" />} />
     <Route path="/" component={Authenticated}>
       <Route path="/alerts" component={AlertsRoute} />
@@ -137,6 +139,11 @@ export const routes = (): JSX.Element => (
           acknowledges. `/cases/:id` is one of those episodes. */}
       <Route path="/cases" component={CasesRoute} />
       <Route path="/cases/:id" component={CaseDetailRoute} />
+      {/* Sets of Cases drawn together as one story (ADR 0052). `:number` and
+          not an id, because the number is what a human quotes — the same
+          per-organisation name the server addresses the Incident by. */}
+      <Route path="/incidents" component={IncidentsRoute} />
+      <Route path="/incidents/:number" component={IncidentDetailRoute} />
       {/* Routing rules and the record of what they did (ADR 0034). `/settings`
           still answers `/settings/policies` and redirects it here, so links
           minted while policies lived there keep resolving.

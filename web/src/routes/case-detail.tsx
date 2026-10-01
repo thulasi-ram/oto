@@ -7,7 +7,7 @@
  * this firing, it clears itself when the next one opens, and it can never quietly
  * come to be about a different firing than the one that was looked at.
  *
- * ⛔ ACK IS THE ONLY VERB ON THIS SCREEN, AND SNOOZE IS DELIBERATELY NOT HERE.
+ * ⛔ ACK IS THE ONLY VERB ON THIS FIRING, AND SNOOZE IS DELIBERATELY NOT HERE.
  *
  *   - **Acknowledge** is case-scoped (`POST /api/v1/cases/{id}/ack`). It ends
  *     with this episode, which is exactly why it is written here.
@@ -20,7 +20,16 @@
  *     alert-scoped decision behind a case-shaped heading, and the panel below
  *     links out to the identity for exactly that reason.
  *
- * ⛔ THE ONE CONTROL HERE HAS ITS WAY BACK, and that is a rule rather than a
+ * ⭐ DRAWING AN INCIDENT STARTS HERE, AND IT IS NOT A VERB ON THE CASE. An
+ * Incident is a set of Cases drawn together as one story (ADR 0052); a person
+ * draws one from the firing that made them think "this is bigger than one alert",
+ * which is this screen. The button writes nothing onto this Case's row — the
+ * membership is a row of its own — and it leaves an `incident.case_added` fact on
+ * the timeline below. A Case already in an Incident is refused by the server with
+ * a sentence naming that Incident and the move that would take it out, and the
+ * header shows that sentence as it was written.
+ *
+ * ⛔ THE RECEIPT HERE HAS ITS WAY BACK, and that is a rule rather than a
  * coincidence. A gesture that writes a record and cannot unwrite it leaves the
  * operator with nothing to do but be wrong in public — so the receipt is a
  * TOGGLE: one control, reading `Acknowledge` while this firing carries none and
@@ -32,10 +41,10 @@
  * rule ever done", and this screen only ever asks the first.
  */
 import { For, Match, Show, Switch, createMemo, createSignal } from "solid-js";
-import { A, useParams } from "@solidjs/router";
-import { useQuery, useQueryClient } from "@tanstack/solid-query";
+import { A, useNavigate, useParams } from "@solidjs/router";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/solid-query";
 
-import { ackCase, getCase, getCaseTimeline, unackCase } from "~/api/endpoints";
+import { ackCase, createIncident, getCase, getCaseTimeline, unackCase } from "~/api/endpoints";
 import { qk } from "~/api/keys";
 import type { AlertEvent, TimelineQuery } from "~/api/types";
 import { AckDialog } from "~/features/alerts/AckDialog";
@@ -43,8 +52,8 @@ import { Elapsed, RelativeTime } from "~/components/Time";
 import { AckChip, CaseStateChip, SeverityMark, StateChip } from "~/components/StateChip";
 import { Button } from "~/components/ui/Button";
 import { Chip, DataRow, PageHeading, Panel, PanelHeader, PanelTitle } from "~/components/ui/surfaces";
-import { ErrorState, LoadingLine, Skeleton } from "~/components/ui/states";
-import { absoluteTime } from "~/lib/format";
+import { ErrorBanner, ErrorState, LoadingLine, Skeleton } from "~/components/ui/states";
+import { absoluteTime, idempotencyKey } from "~/lib/format";
 import { createKeysetFeed, keepPrevious, type KeysetFeed } from "~/lib/keysetFeed";
 import { EnrichmentPanel } from "~/features/alerts/detail/EnrichmentPanel";
 import { PANEL_CODE_BLOCK } from "~/features/alerts/detail/rhythm";
@@ -99,6 +108,26 @@ export default function CaseDetailRoute() {
   };
 
   const [ackOpen, setAckOpen] = createSignal(false);
+
+  const navigate = useNavigate();
+
+  /**
+   * Draw an Incident over this one Case.
+   *
+   * One key per press, minted here because the press IS the gesture — and a
+   * retry is safe regardless: the first attempt's membership refuses a second
+   * draw over the same Case with `409 case_in_incident`, naming the Incident the
+   * first one drew. On success the operator goes to the Incident, which is where
+   * further Cases are added to it.
+   */
+  const draw = useMutation(() => ({
+    mutationFn: () => createIncident([params.id], idempotencyKey()),
+    onSuccess: (incident: { readonly number: number }) => {
+      void client.invalidateQueries({ queryKey: qk.incidents.all() });
+      void client.invalidateQueries({ queryKey: qk.cases.all() });
+      navigate(`/incidents/${incident.number}`);
+    },
+  }));
 
   return (
     <Switch>
@@ -241,8 +270,27 @@ export default function CaseDetailRoute() {
                     >
                       {acked() ? "Withdraw acknowledgement" : "Acknowledge"}
                     </Button>
+                    {/* Offered on an ended firing too: an Incident may be drawn
+                        over history — it is then simply quiet — and only the
+                        server can say whether this Case is already in one. */}
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      busy={draw.isPending}
+                      onClick={() => draw.mutate()}
+                      title="Draw an Incident over this Case: a set of Cases told as one story. This firing is unchanged; more Cases can be added on the Incident's own page."
+                    >
+                      Draw Incident
+                    </Button>
                   </div>
                 </div>
+
+                {/* ⛔ THE SERVER'S SENTENCE, VERBATIM. A `409 case_in_incident`
+                    names the Incident this Case is already in and the move that
+                    would take it out; that pointer exists nowhere else. */}
+                <Show when={draw.isError}>
+                  <ErrorBanner class="mt-2" error={draw.error} />
+                </Show>
 
                 {/* One dialog, shared with the rest of the product, and the mode
                     it opens in is the same read the button's word came from —

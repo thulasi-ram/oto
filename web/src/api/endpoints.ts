@@ -59,6 +59,9 @@ import type {
   CaseDetail,
   CaseListItem,
   CaseListQuery,
+  Incident,
+  IncidentDetail,
+  IncidentListQuery,
   OrgSettingsView,
   Policy,
   PolicyPreview,
@@ -363,6 +366,112 @@ export function ackCase(id: Uuid, note: string | undefined, key: string): Promis
 export function unackCase(id: Uuid, note: string | undefined, key: string): Promise<Case> {
   const body = note !== undefined && note !== "" ? { note } : {};
   return postItem<Case>(`${V1}/cases/${id}/unack`, body, { idempotencyKey: key });
+}
+
+/* -------------------------------------------------------------------------- */
+/* Incidents                                                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Every Incident in the org, newest first by `number`.
+ *
+ * Each row carries its DERIVED `state` and the size of its current membership,
+ * so the list renders without a request per row. `state` is read off the member
+ * Cases by the server on every request (ADR 0052 §3) — it is never a field the
+ * UI can send, and nothing below sends it.
+ */
+export function listIncidents(
+  query: IncidentListQuery = {},
+  c: Ctx = {},
+): Promise<ListEnvelope<Incident>> {
+  return getList<Incident>(`${V1}/incidents`, {
+    ...ctx(c),
+    query: query as QueryParams,
+  });
+}
+
+/**
+ * One Incident by the NUMBER a human quotes — never by its id, because the
+ * number is what is read out on a call and typed into a URL — with every spell
+ * of every Case that has been in it, removed ones included as tombstones.
+ */
+export function getIncident(number: number, c: Ctx = {}): Promise<IncidentDetail> {
+  return getItem<IncidentDetail>(`${V1}/incidents/${number}`, ctx(c));
+}
+
+/**
+ * Draw an Incident over one or more Cases. The caller is recorded as the human
+ * who drew it — actor metadata, never an assignment.
+ *
+ * ⛔ A CASE ALREADY IN ANOTHER INCIDENT REFUSES THE WHOLE DRAW with `409
+ * case_in_incident`, and the problem's `detail` names that Incident and the move
+ * that would take the Case out of it. Surface the `detail` verbatim: it is the
+ * only place the pointer lives. The key is still minted per gesture, but a retry
+ * is safe by construction — the first attempt's memberships refuse the second.
+ */
+export function createIncident(
+  caseIds: readonly Uuid[],
+  key: string,
+): Promise<IncidentDetail> {
+  return postItem<IncidentDetail>(
+    `${V1}/incidents`,
+    { case_ids: [...caseIds] },
+    { idempotencyKey: key },
+  );
+}
+
+/** Add one Case to an Incident. `409 case_in_incident` points at the move. */
+export function addIncidentCase(
+  number: number,
+  caseId: Uuid,
+  key: string,
+): Promise<IncidentDetail> {
+  return postItem<IncidentDetail>(
+    `${V1}/incidents/${number}/cases`,
+    { case_id: caseId },
+    { idempotencyKey: key },
+  );
+}
+
+/**
+ * Take one Case out of an Incident. The membership is TOMBSTONED, not deleted:
+ * the answer still lists the Case, as removed, by whom and when.
+ *
+ * It is a POST with no body rather than a DELETE because nothing is deleted —
+ * the verb is in the path, as `/ack` is.
+ */
+export function removeIncidentCase(
+  number: number,
+  caseId: Uuid,
+  key: string,
+): Promise<IncidentDetail> {
+  return postItem<IncidentDetail>(
+    `${V1}/incidents/${number}/cases/${caseId}/remove`,
+    undefined,
+    { idempotencyKey: key },
+  );
+}
+
+/**
+ * Move one Case from Incident `number` to Incident `toNumber`, in one
+ * transaction on the server.
+ *
+ * ⭐ THE ANSWER IS THE DESTINATION, NOT THE INCIDENT IN THE PATH. The path names
+ * where the Case is leaving — so a stale screen gets a `404` rather than a move
+ * from somewhere the Case no longer is — and the body names where it goes, which
+ * is the Incident the operator now wants to be looking at.
+ */
+export function moveIncidentCase(
+  number: number,
+  caseId: Uuid,
+  toNumber: number,
+  key: string,
+): Promise<IncidentDetail> {
+  return postItem<IncidentDetail>(
+    `${V1}/incidents/${number}/cases/${caseId}/move`,
+    { to_number: toNumber },
+    { idempotencyKey: key },
+  );
 }
 
 /* -------------------------------------------------------------------------- */

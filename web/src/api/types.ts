@@ -93,6 +93,22 @@ export type Case = S["CaseDTO"];
  */
 export type CaseListItem = S["CaseListItemDTO"];
 export type CaseDetail = S["CaseDetailDTO"];
+/**
+ * An Incident: a set of one or more Cases drawn together as one story (ADR 0052).
+ *
+ * ⛔ `state` IS DERIVED AND THE UI NEVER SENDS IT. It is `active` while any
+ * current member Case is open and `quiet` otherwise, read off the Cases by the
+ * server on every request — so there is no request type below that carries it,
+ * and there is no `status`, `lead` or `severity` on any of these shapes either:
+ * the response lives in the incident tool the Incident is declared to.
+ */
+export type Incident = S["IncidentDTO"];
+export type IncidentDetail = S["IncidentDetailDTO"];
+/** One spell of one Case inside an Incident — a tombstone once `removed_at` is set. */
+export type IncidentMember = S["IncidentMemberDTO"];
+export type IncidentState = S["IncidentState"];
+/** "Why is this here?" — a Correlator someone wrote, or a human who decided. */
+export type IncidentAttribution = S["IncidentAttributionDTO"];
 export type AlertEvent = S["AlertEventDTO"];
 export type Enrichment = S["EnrichmentDTO"];
 export type EnrichmentSummary = S["EnrichmentSummaryDTO"];
@@ -233,6 +249,9 @@ export type VersionInfo = S["VersionDTO"];
 
 export type AckRequest = S["AckRequest"];
 export type UnackRequest = S["UnackRequest"];
+export type CreateIncidentRequest = S["CreateIncidentRequest"];
+export type AddIncidentCaseRequest = S["AddIncidentCaseRequest"];
+export type MoveIncidentCaseRequest = S["MoveIncidentCaseRequest"];
 export type CommentRequest = S["CommentRequest"];
 /** Exactly one of `until` and `duration_seconds`. Both, or neither, is a 422. */
 export type SnoozeRequest = S["SnoozeRequest"];
@@ -285,6 +304,7 @@ export type AlertRollupQuery = NonNullable<operations["listAlertRollups"]["param
  * `state=firing,suppressed` to mean the same thing.
  */
 export type CaseListQuery = NonNullable<operations["listCases"]["parameters"]["query"]>;
+export type IncidentListQuery = NonNullable<operations["listIncidents"]["parameters"]["query"]>;
 export type RollupAxis = AlertRollupQuery["group_by"];
 export type RuleSnapshotQuery = NonNullable<
   operations["listRuleSnapshots"]["parameters"]["query"]

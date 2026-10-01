@@ -23,6 +23,8 @@ import (
 	drilldomain "github.com/thulasiram/oto/internal/drill/domain"
 	enrichmentapi "github.com/thulasiram/oto/internal/enrichment/api"
 	identityapi "github.com/thulasiram/oto/internal/identity/api"
+	incidentsapi "github.com/thulasiram/oto/internal/incidents/api"
+	incidentsdomain "github.com/thulasiram/oto/internal/incidents/domain"
 	ingestionapi "github.com/thulasiram/oto/internal/ingestion/api"
 	notificationapi "github.com/thulasiram/oto/internal/notification/api"
 	notificationdomain "github.com/thulasiram/oto/internal/notification/domain"
@@ -117,6 +119,17 @@ var bindings = []binding{
 	// ⛔ TWELVE `grouping` DTOs WERE HERE AND ARE DELETED (git-bug `7570090`). The
 	// module is gone and so are the nine `/api/v1/alert-groups*` operations they
 	// served, so gate G1 has nothing left to reflect for it.
+
+	// ---------------------------------------------------------- incidents
+	// ADR 0052. `IncidentDetailDTO` embeds `IncidentDTO` exactly as the contract's
+	// `allOf` composes it, so the walk diffs the summary fields once per shape.
+	{"incidents", "IncidentAttributionDTO", incidentsapi.IncidentAttributionDTO{}},
+	{"incidents", "IncidentDTO", incidentsapi.IncidentDTO{}},
+	{"incidents", "IncidentMemberDTO", incidentsapi.IncidentMemberDTO{}},
+	{"incidents", "IncidentDetailDTO", incidentsapi.IncidentDetailDTO{}},
+	{"incidents", "CreateIncidentRequest", incidentsapi.CreateIncidentRequest{}},
+	{"incidents", "AddIncidentCaseRequest", incidentsapi.AddIncidentCaseRequest{}},
+	{"incidents", "MoveIncidentCaseRequest", incidentsapi.MoveIncidentCaseRequest{}},
 
 	// ------------------------------------------------------------ sources
 	{"sources", "ClusterDTO", sourcesapi.ClusterDTO{}},
@@ -1461,6 +1474,10 @@ func domainEnums() []domainEnum {
 	for _, s := range notificationdomain.SuppressorOrder() {
 		suppressed = append(suppressed, s.String())
 	}
+	incidentStates := make([]string, 0, len(incidentsdomain.AllStates()))
+	for _, st := range incidentsdomain.AllStates() {
+		incidentStates = append(incidentStates, st.String())
+	}
 	stages := make([]string, 0, len(drilldomain.AllStages()))
 	for _, s := range drilldomain.AllStages() {
 		stages = append(stages, string(s))
@@ -1477,6 +1494,10 @@ func domainEnums() []domainEnum {
 		{"NotificationSuppressedReason", "alerts/domain.SuppressorPrecedence()",
 			alertsdomain.SuppressorPrecedence()},
 		{"DrillStageName", "drill/domain.AllStages()", stages},
+		// ⭐ THE ONE ENUM HERE WITH NO COLUMN BEHIND IT. An Incident's state is
+		// derived on every read (ADR 0052 §3), so the domain set is the ONLY other
+		// copy of this vocabulary — and the only thing that could drift from the wire.
+		{"IncidentState", "incidents/domain.AllStates()", incidentStates},
 	}
 }
 

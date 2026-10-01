@@ -19,8 +19,8 @@ info:
 
     ## The resource model
 
-    The vocabulary below is binding. Do not introduce synonyms; the words `incident`, `issue`, and
-    unqualified `event` do not exist in this API.
+    The vocabulary below is binding. Do not introduce synonyms; the words `issue` and unqualified
+    `event` do not exist in this API.
 
     | Resource | Means |
     |---|---|
@@ -32,6 +32,7 @@ info:
     | **Channel** | A configured *destination instance* ("Slack workspace T123, #sre-alerts") — not a channel *type*. |
     | **Notification** | The channel-agnostic **intent** to communicate one fact. Idempotent. |
     | **NotificationDelivery** | **One materialisation** of a Notification on one Channel, owning retry state and provider ids. |
+    | **Incident** | A **set of one or more Cases drawn together as one story** (ADR 0052), by an operator-written Correlator or by a human, addressed by its per-organisation `number`. A Case belongs to at most one Incident. It is **active** while any member Case is open and **quiet** otherwise — read off its Cases, never set by a hand. Its *response* (status, lead, severity, comms, write-up) is managed in the incident tool it is declared to and is never stored here. |
 
     Current state is always a *projection* over the append-only event log, never the only record.
     `Alert.state` is the state of the current open case (or, if none is open, of the most recent one).
@@ -88,7 +89,8 @@ info:
     case formation by the **case retention window**, below.
     `storm_mode` was their companion and is gone: storm damping is removed,
     because a storm is many DIFFERENT alerts arriving together and the thing that owns many different
-    alerts is an incident, which oto does not model.
+    alerts is an **Incident** (ADR 0052) — an operator or a Correlator draws one, and nothing is
+    withheld at delivery to wait for it.
 
     ## Conventions
 
@@ -155,6 +157,11 @@ tags:
       Individual firing episodes, addressed directly — and the per-`(namespace, alertname)` **case
       retention window** that decides when a resolved episode closes, and therefore whether a flapping
       alert is one case or six.
+  - name: Incidents
+    description: |
+      Sets of one or more Cases drawn together as one story (ADR 0052) — by an operator-written
+      Correlator or by a human. An Incident's state is read off its Cases and never set by a hand, and
+      a Case belongs to at most one Incident. Its response is handed off to the tool it is declared to.
   - name: Rules
     description: Content-addressed rule snapshots captured at fire time. The differentiator.
   - name: Sources
@@ -926,7 +933,7 @@ paths:
             # a ceiling under the enum it filters refuses a caller for naming a
             # type this API already emits, and does it in the caller's own
             # generated client.
-            maxItems: 32
+            maxItems: 35
             uniqueItems: true
             items:
               $ref: '#/components/schemas/AlertEventType'
@@ -1636,7 +1643,7 @@ paths:
             # a ceiling under the enum it filters refuses a caller for naming a
             # type this API already emits, and does it in the caller's own
             # generated client.
-            maxItems: 32
+            maxItems: 35
             uniqueItems: true
             items:
               $ref: '#/components/schemas/AlertEventType'
@@ -2000,6 +2007,289 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  # =================================================================================================
+  # Incidents
+  # =================================================================================================
+
+  /api/v1/incidents:
+    get:
+      operationId: listIncidents
+      summary: List Incidents
+      tags: [Incidents]
+      description: |
+        Every Incident in the org, newest first by `number`. Each row carries its **derived** state and
+        the size of its current membership, so the list can be read without a request per row.
+
+        `state` is never stored and no endpoint sets it: an Incident is `active` while any member Case is
+        open and `quiet` otherwise (ADR 0052 §3). It is read off the member Cases on every request, so it
+        cannot disagree with them.
+      parameters:
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/CursorParam'
+      responses:
+        '200':
+          description: A page of Incidents.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IncidentListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    post:
+      operationId: createIncident
+      summary: Draw an Incident over Cases
+      tags: [Incidents]
+      description: |
+        A human draws one Incident over one or more Cases (ADR 0052 §1–§2). The caller is recorded as
+        **actor metadata** — "drawn by alice" — and nothing on the Incident says anybody owes it work.
+        Each Case's own timeline gains an `incident.case_added` event.
+
+        **A Case belongs to at most one Incident** (§4). Naming a Case that is already in another
+        Incident refuses the whole draw with `409 case_in_incident`, whose `detail` names that Incident
+        and the `move` request that would take the Case out of it. Nothing is drawn by a refused
+        request. The rule is a partial unique index in the database, so two concurrent draws over one
+        Case cannot both succeed.
+
+        ⛔ There is no `status`, `lead` or `severity` on the request or the response. An Incident's
+        response is managed in the incident tool it is declared to, never here.
+
+        A retry needs no idempotency claim: a second draw over the same Cases meets the first one's
+        memberships and is refused with the `409` above, which names the Incident the first attempt
+        drew.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateIncidentRequest'
+      responses:
+        '201':
+          description: The Incident that was drawn.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IncidentResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/incidents/{number}:
+    get:
+      operationId: getIncident
+      summary: Get one Incident
+      tags: [Incidents]
+      description: |
+        One Incident addressed by the `number` a human quotes, with every Case that has ever been in it:
+        the current members, and the removed ones as tombstones carrying who removed them and, for a
+        move, which Incident they went to. A removed Case stays recorded as removed.
+
+        A number naming no Incident in this org is a `404`, indistinguishable from one another org drew.
+      parameters:
+        - $ref: '#/components/parameters/IncidentNumberParam'
+      responses:
+        '200':
+          description: The Incident.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IncidentResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/incidents/{number}/cases:
+    post:
+      operationId: addIncidentCase
+      summary: Add a Case to an Incident
+      tags: [Incidents]
+      description: |
+        A human adds one Case to this Incident. The Case's timeline gains `incident.case_added`.
+
+        A Case already in **another** Incident is refused with `409 case_in_incident`, whose `detail`
+        names that Incident and the move request — `POST /api/v1/incidents/{that}/cases/{case_id}/move`
+        — that takes it out of there and into here in one step. A Case already in **this** Incident is
+        `409 already_a_member`. Either answer is also what a retry meets, which is why this endpoint
+        takes no idempotency claim.
+      parameters:
+        - $ref: '#/components/parameters/IncidentNumberParam'
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddIncidentCaseRequest'
+      responses:
+        '200':
+          description: The Incident, with the Case added.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IncidentResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/incidents/{number}/cases/{case_id}/remove:
+    post:
+      operationId: removeIncidentCase
+      summary: Remove a Case from an Incident
+      tags: [Incidents]
+      description: |
+        A human takes one Case out of this Incident. The membership is **tombstoned, never deleted**:
+        the Incident keeps showing the Case as removed, by whom and when, and the Case's timeline gains
+        `incident.case_removed`. A Correlator never re-adds a Case a human removed (ADR 0052 §4).
+
+        Removing a Case does nothing to the Case. It stays open or closed exactly as it was, and the
+        Incident's derived state moves only because its membership did.
+
+        `{case_id}` must be a current member of this Incident; anything else — a removed member, a Case
+        in another Incident, another org's Case — is a `404`.
+      parameters:
+        - $ref: '#/components/parameters/IncidentNumberParam'
+        - $ref: '#/components/parameters/IncidentCaseIdParam'
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+      responses:
+        '200':
+          description: The Incident, with the Case recorded as removed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IncidentResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/incidents/{number}/cases/{case_id}/move:
+    post:
+      operationId: moveIncidentCase
+      summary: Move a Case to another Incident
+      tags: [Incidents]
+      description: |
+        A human moves one Case from **this** Incident to the one named in the body, in **one
+        transaction**: the membership here is tombstoned as "moved to #M" and a new one is written there,
+        both attributed to the caller, so there is no instant at which the Case is in neither Incident or
+        in both. The Case's timeline gains one `incident.case_moved` event naming both numbers.
+
+        The path names the Incident the Case is leaving, so a move is always a statement about where the
+        Case is now: if it has been moved or removed meanwhile, the request is a `404` rather than a
+        move from somewhere it no longer is. A move to the same Incident is a `422`.
+
+        The response is the Incident the Case **went to**.
+      parameters:
+        - $ref: '#/components/parameters/IncidentNumberParam'
+        - $ref: '#/components/parameters/IncidentCaseIdParam'
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MoveIncidentCaseRequest'
+      responses:
+        '200':
+          description: The Incident the Case was moved to.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IncidentResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
         '429':
           $ref: '#/components/responses/RateLimited'
         '500':
@@ -5263,6 +5553,28 @@ components:
       schema:
         $ref: '#/components/schemas/Uuid'
 
+    IncidentNumberParam:
+      name: number
+      in: path
+      required: true
+      description: |
+        The Incident's number within the caller's organisation — the name a human quotes, not its id.
+        Per-organisation, so another org's Incident with the same number is simply a different one, and
+        a number naming nothing here is a `404`.
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+        examples: [4]
+
+    IncidentCaseIdParam:
+      name: case_id
+      in: path
+      required: true
+      description: The id of a Case that is a current member of the Incident in the path.
+      schema:
+        $ref: '#/components/schemas/Uuid'
+
     SourceIdPathParam:
       name: source_id
       in: path
@@ -5941,6 +6253,9 @@ components:
         - source.unreachable
         - source.recovered
         - source.clock_skew
+        - incident.case_added
+        - incident.case_removed
+        - incident.case_moved
       description: |
         The closed set of timeline event types. Clients should treat an unrecognised value as
         forward-compatible and render its `summary`, but the server never invents a type: adding one
@@ -5972,6 +6287,16 @@ components:
         `case.reopened` are **not** in that group. They are RETIRED — read but never written — and
         remain published here, because `ev_type_ck` still admits them and rows on disk still spell
         them.
+
+        `incident.case_added`, `incident.case_removed` and `incident.case_moved` are the three
+        membership facts a Case's timeline carries about the Incident it is in (ADR 0052). They are
+        written on the **Case**, never on the Incident, and always by a human actor: "added to
+        Incident #4 by alice", "removed from Incident #4 by alice", "moved from Incident #4 to #7 by
+        alice". `incident.case_added` carries `{incident_id, incident_number, drawn}`, where `drawn` is
+        true when the Case was one of those the Incident was drawn over; `incident.case_removed`
+        carries `{incident_id, incident_number}`; `incident.case_moved` carries
+        `{from_incident_id, from_number, to_incident_id, to_number}`. None of them changes the Case: an
+        episode is open or closed exactly as it was.
       examples: [case.opened]
 
     NotificationReason:
@@ -6852,6 +7177,200 @@ components:
         The server batch-loads the identities for the whole page in one further query, so a client can
         render the list without a request per row, and the query proves the alert is in the caller's
         organisation before the case is returned at all.
+
+    IncidentState:
+      type: string
+      enum: [active, quiet]
+      description: |
+        What an Incident's member Cases say about it, and nothing else (ADR 0052 §3). **Derived on every
+        read and never stored**: `active` while any current member Case is `open`, `quiet` otherwise —
+        including when every member has been removed.
+
+        **No endpoint sets it, and no human writes it.** "Quiet but not fixed" and "fixed but still
+        noisy" are facts about the *response*, and the response lives in the incident tool the Incident
+        is declared to. The two may disagree, and that is correct: they describe different things.
+      examples: [active]
+
+    IncidentAttributionDTO:
+      type: object
+      required: [kind]
+      properties:
+        kind:
+          type: string
+          enum: [human, correlator]
+          description: |
+            Who decided: an operator-written **Correlator**, or a **human**. There is no third answer —
+            a model may only propose membership, never decide it (ADR 0052 §2).
+        label:
+          type: ['string', 'null']
+          maxLength: 200
+          description: |
+            The human's display name, frozen when they acted so the record reads the same after a
+            rename. `null` exactly when `kind` is `correlator`. Actor metadata only: nothing is ever
+            aggregated per person.
+          examples: ['Priya R.']
+        correlator_id:
+          oneOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
+          description: The Correlator that decided, `null` exactly when `kind` is `human`.
+      description: The answer to "why is this here?" — a rule someone wrote, or a person who decided.
+
+    IncidentDTO:
+      type: object
+      required: [id, number, state, drawn_at, drawn_by, member_count, open_member_count, alertnames]
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        number:
+          type: integer
+          format: int64
+          minimum: 1
+          description: |
+            The Incident's name within its organisation: 1-based, monotonic, and what `/incidents/{number}`
+            addresses. Per-organisation and never global, and unique and ordered but not gapless — the
+            same contract as a Case's `number`, from a counter of its own.
+          examples: [4]
+        state:
+          $ref: '#/components/schemas/IncidentState'
+        drawn_at:
+          $ref: '#/components/schemas/Timestamp'
+        drawn_by:
+          $ref: '#/components/schemas/IncidentAttributionDTO'
+        member_count:
+          type: integer
+          format: int32
+          minimum: 0
+          description: How many Cases are in the Incident now. Removed Cases are not counted.
+          examples: [3]
+        open_member_count:
+          type: integer
+          format: int32
+          minimum: 0
+          description: |
+            How many of those are open. `state` is `active` exactly when this is above zero; the two are
+            served together so a client never has to decide which one to believe.
+          examples: [1]
+        alertnames:
+          type: array
+          maxItems: 10
+          items:
+            type: string
+            maxLength: 1024
+          description: |
+            The distinct `alertname`s of the current members, sorted, at most ten — enough for a list
+            row to say what the story is about without a request per row.
+          examples: [['KubePodCrashLooping', 'HighErrorRate']]
+      description: |
+        An **Incident**: a set of one or more Cases drawn together as one story (ADR 0052). An Alert has
+        Cases; an Incident spans Cases.
+
+        ⛔ It carries no `status`, no `lead`, no human-set `severity` and no write-up, and it never will:
+        its response is managed in the external tool it is declared to. Inside oto an Incident is a fact
+        about signals, and its `state` is read off its Cases.
+
+    IncidentMemberDTO:
+      type: object
+      required: [case_id, case_number, case_state, alert_id, alertname, labels, added_at, added_by]
+      properties:
+        case_id:
+          $ref: '#/components/schemas/Uuid'
+        case_number:
+          type: integer
+          format: int64
+          minimum: 1
+          description: The member Case's own `number`, which is what `/cases` leads its rows with.
+          examples: [412]
+        case_state:
+          $ref: '#/components/schemas/CaseState'
+        alert_id:
+          $ref: '#/components/schemas/Uuid'
+        alertname:
+          type: string
+          minLength: 1
+          maxLength: 1024
+        labels:
+          $ref: '#/components/schemas/LabelMap'
+        added_at:
+          $ref: '#/components/schemas/Timestamp'
+        added_by:
+          $ref: '#/components/schemas/IncidentAttributionDTO'
+        removed_at:
+          oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+          description: |
+            When a human took the Case out of this Incident; `null` while it is a member. A removed Case
+            stays on the Incident as a tombstone rather than disappearing from it.
+        removed_by_label:
+          type: ['string', 'null']
+          maxLength: 200
+          description: The display name of whoever removed it, frozen at the time. Only a human removes.
+        moved_to_number:
+          type: ['integer', 'null']
+          format: int64
+          minimum: 1
+          description: |
+            Set when the removal was half of a **move**: the `number` of the Incident the Case went to.
+            `null` for a plain removal and for a current member.
+          examples: [7]
+      description: |
+        One spell of one Case inside an Incident — current when `removed_at` is `null`, a tombstone
+        otherwise. A Case removed and later added again appears once per spell.
+
+    IncidentDetailDTO:
+      allOf:
+        - $ref: '#/components/schemas/IncidentDTO'
+        - type: object
+          required: [members]
+          properties:
+            members:
+              type: array
+              items:
+                $ref: '#/components/schemas/IncidentMemberDTO'
+              description: |
+                Every spell of every Case that has been in this Incident, current and removed, in the
+                order they joined.
+      description: One Incident with its full membership history.
+
+    CreateIncidentRequest:
+      type: object
+      required: [case_ids]
+      additionalProperties: false
+      properties:
+        case_ids:
+          type: array
+          minItems: 1
+          maxItems: 100
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/Uuid'
+          description: |
+            The Cases to draw the Incident over — at least one, because an Incident is a set of one or
+            more Cases. Each must be in the caller's organisation and in no other Incident.
+      description: Draw an Incident. The caller is recorded as the human who drew it.
+
+    AddIncidentCaseRequest:
+      type: object
+      required: [case_id]
+      additionalProperties: false
+      properties:
+        case_id:
+          $ref: '#/components/schemas/Uuid'
+      description: Add one Case to an Incident. The caller is recorded as the human who added it.
+
+    MoveIncidentCaseRequest:
+      type: object
+      required: [to_number]
+      additionalProperties: false
+      properties:
+        to_number:
+          type: integer
+          format: int64
+          minimum: 1
+          description: The `number` of the Incident the Case is moving to. It must not be the one in the path.
+          examples: [7]
+      description: Move one Case from the Incident in the path to another, in one transaction.
 
     CasePolicyDTO:
       type: object
@@ -12133,6 +12652,30 @@ components:
       properties:
         data:
           $ref: '#/components/schemas/CasePolicyDTO'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    IncidentListResponse:
+      type: object
+      required: [data, page, meta]
+      additionalProperties: false
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/IncidentDTO'
+        page:
+          $ref: '#/components/schemas/PageInfo'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    IncidentResponse:
+      type: object
+      required: [data, meta]
+      additionalProperties: false
+      properties:
+        data:
+          $ref: '#/components/schemas/IncidentDetailDTO'
         meta:
           $ref: '#/components/schemas/Meta'
 

@@ -31,6 +31,7 @@ import type {
   AlertRollupQuery,
   CaseListQuery,
   FailedBatchListQuery,
+  IncidentListQuery,
   NotificationListQuery,
   RejectionListQuery,
   RuleSnapshotQuery,
@@ -122,6 +123,25 @@ export const qk = {
     list: (query: CaseListQuery) => ["cases", "list", query] as const,
     detail: (id: string) => ["cases", "detail", id] as const,
     timeline: (id: string, query: TimelineQuery) => ["cases", "timeline", id, query] as const,
+  },
+  /**
+   * Incidents (ADR 0052) — a root of their own, beside `["cases"]` and not under
+   * it.
+   *
+   * ⛔ THE STREAM REACHES THEM EVEN THOUGH NO FRAME IS ABOUT AN INCIDENT. An
+   * Incident's `state` is read off its member Cases, so a Case closing is what
+   * turns an Incident quiet — and that arrives as `case.upserted`, not as any
+   * Incident frame. `api/live.tsx` therefore invalidates this prefix from the
+   * frames that move a Case; the membership writes themselves are local and
+   * invalidate it in their own handlers.
+   *
+   * `detail` is keyed by the NUMBER as a string, because that is what the route
+   * parameter is and what a human quotes; the id never reaches the URL.
+   */
+  incidents: {
+    all: () => ["incidents"] as const,
+    list: (query: IncidentListQuery) => ["incidents", "list", query] as const,
+    detail: (number: string) => ["incidents", "detail", number] as const,
   },
   labels: {
     names: () => ["labels", "names"] as const,
