@@ -88,12 +88,15 @@ type (
 	// the only file in the module allowed to name `internal/channels/domain`.
 	DigestView = chdomain.DigestView
 	// IncidentView is an Incident fact's read model — what an Incident has instead
-	// of a GroupView (ADR 0052 §5), aliased for `ViewService.incident`.
+	// of a GroupView (ADR 0052 §5), aliased for `ViewService.incidentCard`.
 	IncidentView = chdomain.IncidentView
 	// IncidentAuthorView is an Incident attribution: a human or a Correlator.
 	IncidentAuthorView = chdomain.IncidentAuthorView
 	// IncidentMemberView is one spell of one Case inside an Incident.
 	IncidentMemberView = chdomain.IncidentMemberView
+	// InIncidentView names the Incident conversation a Case fact is posted into
+	// (ADR 0052 §6).
+	InIncidentView = chdomain.InIncidentView
 	// RuleView is what the alerting rule said when the case fired.
 	RuleView = chdomain.RuleView
 	// RuleChangeView is what changed in the rule since the previous case.

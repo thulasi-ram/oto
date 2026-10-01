@@ -112,6 +112,18 @@ type Correlator struct {
 	// this Correlator's latest Incident went quiet a matching Case still joins it.
 	// Zero joins only while it is active.
 	QuietGrace time.Duration
+	// Conversations is `incidents_are_conversations` (ADR 0052 §6, migration
+	// 00087): the operator says the Incidents this Correlator draws are
+	// CONVERSATIONS, so a fact about a member Case evaluated after its membership
+	// committed posts into the Incident's thread instead of the Case's own.
+	//
+	// ⭐ IT IS READ AT DELIVERY, NEVER STAMPED AT DRAW. Nothing about an Incident
+	// records that it "became" a conversation: the notification layer asks, for
+	// each fact as it evaluates it, whether the Case is in an Incident whose
+	// Correlator says so. Turning it on redirects later facts; turning it off sends
+	// later facts back to each Case's own thread; neither moves anything already
+	// posted.
+	Conversations bool
 
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -224,6 +236,9 @@ type CorrelatorDraft struct {
 	Matchers   []kernel.Matcher
 	Count      Count
 	QuietGrace time.Duration
+	// Conversations defaults to false: N alerts, N conversations (ADR 0045) until
+	// an operator says otherwise, by name.
+	Conversations bool
 }
 
 // Correlator is the draft as the row it would become, for validation.
@@ -231,6 +246,7 @@ func (d CorrelatorDraft) Correlator() Correlator {
 	c := Correlator{
 		Name: d.Name, Priority: DefaultCorrelatorPriority, Enabled: true,
 		Matchers: d.Matchers, Count: d.Count, QuietGrace: d.QuietGrace,
+		Conversations: d.Conversations,
 	}
 	if d.Priority != nil {
 		c.Priority = *d.Priority
@@ -251,12 +267,15 @@ type CorrelatorPatch struct {
 	Count    *Count
 	// QuietGrace set to a pointer at zero CLEARS the grace.
 	QuietGrace *time.Duration
+	// Conversations turns ADR 0052 §6 on or off for this Correlator's Incidents.
+	// It redirects only facts evaluated after it commits.
+	Conversations *bool
 }
 
 // IsEmpty reports whether the patch changes nothing.
 func (p CorrelatorPatch) IsEmpty() bool {
 	return p.Name == nil && p.Priority == nil && p.Enabled == nil && p.Matchers == nil &&
-		p.Count == nil && p.QuietGrace == nil
+		p.Count == nil && p.QuietGrace == nil && p.Conversations == nil
 }
 
 // Apply returns c with the patch merged in. It is what validation runs against:
@@ -279,6 +298,9 @@ func (p CorrelatorPatch) Apply(c Correlator) Correlator {
 	}
 	if p.QuietGrace != nil {
 		c.QuietGrace = *p.QuietGrace
+	}
+	if p.Conversations != nil {
+		c.Conversations = *p.Conversations
 	}
 	return c
 }

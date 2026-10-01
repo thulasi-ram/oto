@@ -252,3 +252,29 @@ func TestAnUnknownCorrelatorQueryParameterIsRefused(t *testing.T) {
 		{Op: "deleteCorrelator", Method: http.MethodDelete, Path: correlatorPath + "?force=true"},
 	})
 }
+
+// TestTheConversationSettingRoundTripsOnTheWire — git-bug bf5fc7e. `true` makes the
+// Correlator's Incidents conversations (ADR 0052 §6), `false` turns it back off,
+// omitting it leaves it alone, and the response carries the stored value back.
+func TestTheConversationSettingRoundTripsOnTheWire(t *testing.T) {
+	t.Parallel()
+
+	f, c := newCorrelatorClient(t)
+	resp := c.PATCH(t, correlatorPath, map[string]any{"incidents_are_conversations": true}).
+		MustStatus(t, http.StatusOK)
+	schema.Assert(t, "updateCorrelator", http.StatusOK, resp.Body())
+	c.PATCH(t, correlatorPath, map[string]any{"incidents_are_conversations": false}).MustStatus(t, http.StatusOK)
+	c.PATCH(t, correlatorPath, map[string]any{"priority": 5}).MustStatus(t, http.StatusOK)
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if v := f.patches[0].Conversations; v == nil || !*v {
+		t.Fatalf("`true` reached the service as %v", v)
+	}
+	if v := f.patches[1].Conversations; v == nil || *v {
+		t.Fatalf("`false` reached the service as %v", v)
+	}
+	if v := f.patches[2].Conversations; v != nil {
+		t.Fatalf("an omitted setting reached the service as %v, want untouched", *v)
+	}
+}

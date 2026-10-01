@@ -296,6 +296,11 @@ const CorrelatorRow: Component<{
           disabled
         </Chip>
       </Show>
+      <Show when={k().incidents_are_conversations}>
+        <Chip title="Its Incidents are conversations: later updates about a member Case post in the Incident's Slack thread instead of the Case's own. Nothing already posted moves.">
+          one thread
+        </Chip>
+      </Show>
       <Show when={k().quiet_grace_seconds}>
         {(grace) => (
           <Chip title="A matching Case still joins this Correlator's Incident this long after it went quiet, and makes it active again — so a flapping alert stays one story.">
@@ -415,6 +420,7 @@ const EditorDialog: Component<{
   const [countMin, setCountMin] = createSignal("");
   const [countWindow, setCountWindow] = createSignal("");
   const [quietGrace, setQuietGrace] = createSignal("");
+  const [conversations, setConversations] = createSignal(false);
 
   const existing = (): Correlator | null =>
     props.editing !== null && props.editing !== "new" ? props.editing : null;
@@ -431,6 +437,7 @@ const EditorDialog: Component<{
       setCountMin("");
       setCountWindow("");
       setQuietGrace("");
+      setConversations(false);
       return;
     }
     setName(e.name);
@@ -448,6 +455,7 @@ const EditorDialog: Component<{
     setQuietGrace(
       e.quiet_grace_seconds === null ? "" : String(e.quiet_grace_seconds),
     );
+    setConversations(e.incidents_are_conversations);
   });
 
   const parsed = createMemo(() => parseMatchers(matcherText()));
@@ -488,6 +496,7 @@ const EditorDialog: Component<{
       ...(min === null ? {} : { count_min: min }),
       ...(win === null ? {} : { count_window_seconds: win }),
       ...(grace === null ? {} : { quiet_grace_seconds: grace }),
+      incidents_are_conversations: conversations(),
     };
   };
 
@@ -506,6 +515,7 @@ const EditorDialog: Component<{
         count_min: b.count_min ?? null,
         count_window_seconds: b.count_window_seconds ?? null,
         quiet_grace_seconds: b.quiet_grace_seconds ?? null,
+        incidents_are_conversations: b.incidents_are_conversations,
       });
     },
     onSuccess: () => {
@@ -685,6 +695,23 @@ const EditorDialog: Component<{
               {errorOf("quiet_grace_seconds")}
             </TextFieldErrorMessage>
           </TextField>
+
+          <div class={CHECK_ROW}>
+            <Checkbox
+              id="corr-conversations"
+              checked={conversations()}
+              onChange={setConversations}
+            />
+            <label for="corr-conversations-input" class={CHECK_LABEL}>
+              Its Incidents are conversations
+            </label>
+          </div>
+          <p class={HELP}>
+            Later updates about a member Case post in the Incident's Slack thread
+            instead of opening their own, and each Case that already had a thread
+            gets one “now part of Incident #N” reply there. Nothing is held back
+            to wait for this Correlator, and nothing already posted moves.
+          </p>
 
           <div class={CHECK_ROW}>
             <Checkbox

@@ -73,7 +73,8 @@ func encodeMatchers(ms []kernel.Matcher) ([]byte, error) {
 }
 
 const correlatorColumns = `
-  id, name, priority, enabled, matchers, count_min, count_window_s, quiet_grace_s, created_at, updated_at`
+  id, name, priority, enabled, matchers, count_min, count_window_s, quiet_grace_s,
+  incidents_are_conversations, created_at, updated_at`
 
 // correlatorRow is the row model of `correlators`. Unexported, per the three-model
 // rule.
@@ -86,13 +87,14 @@ type correlatorRow struct {
 	countMin  *int
 	countWinS *int
 	graceS    *int
+	convs     bool
 	createdAt time.Time
 	updatedAt time.Time
 }
 
 func (r *correlatorRow) scanInto() []any {
 	return []any{&r.id, &r.name, &r.priority, &r.enabled, &r.matchers,
-		&r.countMin, &r.countWinS, &r.graceS, &r.createdAt, &r.updatedAt}
+		&r.countMin, &r.countWinS, &r.graceS, &r.convs, &r.createdAt, &r.updatedAt}
 }
 
 func (r correlatorRow) toDomain() (domain.Correlator, error) {
@@ -116,6 +118,7 @@ func (r correlatorRow) toDomain() (domain.Correlator, error) {
 	if r.graceS != nil {
 		c.QuietGrace = time.Duration(*r.graceS) * time.Second
 	}
+	c.Conversations = r.convs
 	return c, nil
 }
 
@@ -233,8 +236,8 @@ func (r *CorrelatorRepository) getWith(
 const insertCorrelatorSQL = `
 INSERT INTO correlators
   (id, org_id, name, priority, enabled, matchers, count_min, count_window_s, quiet_grace_s,
-   created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $10, $9, $9)
+   incidents_are_conversations, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $10, $11, $9, $9)
 RETURNING` + correlatorColumns
 
 // Create writes one Correlator. The caller has validated it.
@@ -252,7 +255,7 @@ func (r *CorrelatorRepository) Create(
 	var row correlatorRow
 	if err := r.db(ctx).QueryRow(ctx, insertCorrelatorSQL,
 		id.New(), s.OrgID(), c.Name, c.Priority, c.Enabled, matchers, countMin, countWin, at.UTC(),
-		graceArg(c.QuietGrace),
+		graceArg(c.QuietGrace), c.Conversations,
 	).Scan(row.scanInto()...); err != nil {
 		return domain.Correlator{}, correlatorMapErr(err, "create a correlator")
 	}
@@ -267,6 +270,7 @@ const updateCorrelatorSQL = `
 UPDATE correlators
    SET name = $3, priority = $4, enabled = $5, matchers = $6,
        count_min = $7, count_window_s = $8, quiet_grace_s = $10,
+       incidents_are_conversations = $11,
        updated_at = GREATEST($9, created_at)
  WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL
 RETURNING` + correlatorColumns
@@ -286,7 +290,7 @@ func (r *CorrelatorRepository) Update(
 	var row correlatorRow
 	if err := r.db(ctx).QueryRow(ctx, updateCorrelatorSQL,
 		s.OrgID(), c.ID, c.Name, c.Priority, c.Enabled, matchers, countMin, countWin, at.UTC(),
-		graceArg(c.QuietGrace),
+		graceArg(c.QuietGrace), c.Conversations,
 	).Scan(row.scanInto()...); err != nil {
 		return domain.Correlator{}, correlatorMapErr(err, "update a correlator")
 	}

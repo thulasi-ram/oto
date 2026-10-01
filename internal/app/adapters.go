@@ -398,6 +398,7 @@ func (r *incidentFacts) Incident(
 		DrawnByLabel:      d.DrawnBy.Label(),
 		DrawnByCorrelator: d.DrawnBy.CorrelatorID(),
 		Members:           make([]notifdomain.IncidentMemberFacts, 0, len(d.Members)),
+		Conversation:      d.Conversation,
 	}
 	for _, m := range d.Members {
 		out.Members = append(out.Members, notifdomain.IncidentMemberFacts{
@@ -416,6 +417,26 @@ func (r *incidentFacts) Incident(
 		})
 	}
 	return out, nil
+}
+
+// ConversationFor is `notification/service.IncidentConversations` over the same
+// holder (ADR 0052 §6): the Incident conversation a Case's fact belongs in now.
+//
+// ⚠️ AN UNFILLED HOLDER ANSWERS "NONE", UNLIKE `Incident` ABOVE, and for
+// `caseEndings`' reason: before `c.Incidents` exists nothing can have drawn an
+// Incident, so no Case can be in one, and "its own thread" is the true answer
+// rather than a degraded one.
+func (r *incidentFacts) ConversationFor(
+	ctx context.Context, s db.TenantScope, caseID uuid.UUID,
+) (notifdomain.IncidentRef, bool, error) {
+	if r.svc == nil {
+		return notifdomain.IncidentRef{}, false, nil
+	}
+	ref, ok, err := r.svc.ConversationFor(ctx, s, caseID)
+	if err != nil || !ok {
+		return notifdomain.IncidentRef{}, false, err
+	}
+	return notifdomain.IncidentRef{ID: ref.ID, Number: ref.Number}, true, nil
 }
 
 // caseEndings is `alerts/service.CaseEndings` over `incidents/service`: a Case that

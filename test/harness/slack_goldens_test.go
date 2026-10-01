@@ -259,6 +259,12 @@ func TestEachCardStateCarriesItsOwnColourForAHumanToVerify(t *testing.T) {
 	// floor is four. This test is GREEN with zero margin, so deleting any further
 	// card turns it red. That is the intended signal and not a fragile test: a
 	// shrinking corpus should have to argue for itself.
+	//
+	// ⭐ ADR 0052 §6 ADDED TWO CARDS AND ONE COLOUR (git-bug bf5fc7e): `incident_root`
+	// is an active Incident and wears `#a30200` beside `root_firing` — the second and
+	// last capture that colour may have — and `thread_reply_incident_pointer` wears
+	// the neutral `#6b6b6b`, because a pointer reads no state. Five colours now, so
+	// the floor has one card of margin and the firing colour has none.
 	for colour, names := range byColour {
 		if len(names) > 2 {
 			t.Errorf("%d cards share the colour %s (%v); the colour has stopped "+

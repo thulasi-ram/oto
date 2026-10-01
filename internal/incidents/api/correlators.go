@@ -50,9 +50,13 @@ type CorrelatorDTO struct {
 	CountWindowSeconds *int         `json:"count_window_seconds"`
 	// QuietGraceSeconds is `quiet_grace_s` (migration 00086); null joins only
 	// while the Correlator's Incident is active.
-	QuietGraceSeconds *int      `json:"quiet_grace_seconds"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	QuietGraceSeconds *int `json:"quiet_grace_seconds"`
+	// IncidentsAreConversations is `incidents_are_conversations` (migration
+	// 00087, ADR 0052 §6): later facts about this Correlator's member Cases post
+	// into the Incident's thread instead of each Case's own.
+	IncidentsAreConversations bool      `json:"incidents_are_conversations"`
+	CreatedAt                 time.Time `json:"created_at"`
+	UpdatedAt                 time.Time `json:"updated_at"`
 }
 
 // CreateCorrelatorRequest is the body of `POST /api/v1/correlators`.
@@ -68,6 +72,9 @@ type CreateCorrelatorRequest struct {
 	CountMin           *int32       `json:"count_min,omitempty"            validate:"omitempty,min=2,max=10000"`
 	CountWindowSeconds *int32       `json:"count_window_seconds,omitempty" validate:"omitempty,min=60,max=86400"`
 	QuietGraceSeconds  *int32       `json:"quiet_grace_seconds,omitempty"  validate:"omitempty,min=60,max=86400"`
+	// IncidentsAreConversations defaults to false: one conversation per Case
+	// (ADR 0045) until an operator asks for the narrowing by name.
+	IncidentsAreConversations *bool `json:"incidents_are_conversations,omitempty"`
 }
 
 // UpdateCorrelatorRequest is the body of `PATCH /api/v1/correlators/{id}`.
@@ -91,6 +98,9 @@ type UpdateCorrelatorRequest struct {
 	// CLEARS the grace — join only while active — which is a different request
 	// from omitting it. Its range is checked by the domain, as the count's is.
 	QuietGraceSeconds NullableInt32 `json:"quiet_grace_seconds,omitempty"`
+	// IncidentsAreConversations redirects only facts evaluated after the PATCH
+	// commits; nothing already posted moves, in either direction.
+	IncidentsAreConversations *bool `json:"incidents_are_conversations,omitempty"`
 }
 
 // NullableInt32 is a contract field typed as `integer | null`, where an explicit
@@ -136,6 +146,7 @@ func correlatorDTO(c domain.Correlator) CorrelatorDTO {
 		ID: c.ID, Name: c.Name, Priority: c.Priority, Enabled: c.Enabled, Matchers: ms,
 		CreatedAt: c.CreatedAt.UTC(), UpdatedAt: c.UpdatedAt.UTC(),
 	}
+	out.IncidentsAreConversations = c.Conversations
 	if c.Count.Enabled() {
 		m, w := c.Count.Min, int(c.Count.Window/time.Second)
 		out.CountMin, out.CountWindowSeconds = &m, &w
@@ -175,6 +186,9 @@ func (r CreateCorrelatorRequest) toDraft() domain.CorrelatorDraft {
 	if r.QuietGraceSeconds != nil {
 		d.QuietGrace = time.Duration(*r.QuietGraceSeconds) * time.Second
 	}
+	if r.IncidentsAreConversations != nil {
+		d.Conversations = *r.IncidentsAreConversations
+	}
 	if r.Priority != nil {
 		p := int(*r.Priority)
 		d.Priority = &p
@@ -190,6 +204,7 @@ func (r UpdateCorrelatorRequest) toPatch() (domain.CorrelatorPatch, countPatch) 
 	var p domain.CorrelatorPatch
 	p.Name = r.Name
 	p.Enabled = r.Enabled
+	p.Conversations = r.IncidentsAreConversations
 	if r.Priority != nil {
 		v := int(*r.Priority)
 		p.Priority = &v

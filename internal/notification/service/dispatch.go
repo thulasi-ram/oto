@@ -560,7 +560,16 @@ func (s *DispatchService) claim(
 	}
 
 	// C11: the view is built HERE, at claim time, from the world as it is now.
-	view, err := s.views.Build(ctx, scope, ViewRequest{Notification: n})
+	//
+	// ⭐ THE ROOT OF AN INCIDENT'S THREAD IS THE INCIDENT'S CARD (ADR 0052 §6), and
+	// this is the one place that knows both the thread and the RE-DERIVED mode: a
+	// Case fact's reply that `effectiveMode` turned into a fresh root — no root yet,
+	// or past the reply ceiling — must post the story, not one of its signals.
+	req := ViewRequest{Notification: n}
+	if d.ThreadID != nil && th.SubjectKind == domain.SubjectIncident && !mode.IsReply() {
+		req.IncidentRoot = th.SubjectID
+	}
+	view, err := s.views.Build(ctx, scope, req)
 	if err != nil {
 		return outcome{}, nil, err
 	}

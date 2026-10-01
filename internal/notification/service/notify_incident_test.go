@@ -191,9 +191,11 @@ func TestAnOrgWithNoIncidentPolicySendsNothing(t *testing.T) {
 	assert.Zero(t, dispatches(r.jobs), "an org with no Incident policy sends nothing")
 }
 
-// TestAThreadedDestinationIsSkippedWithItsReason — an Incident is not a conversation
-// on a threaded channel yet (ADR 0052 §6), so the delivery is RECORDED as skipped
-// with that sentence, no thread is opened, and no job is enqueued.
+// TestAThreadedDestinationIsSkippedWithItsReason — an Incident whose Correlator does
+// not say its Incidents are conversations (here a human drew it, so there is no
+// Correlator at all) is not a conversation (ADR 0052 §6), so the delivery is
+// RECORDED as skipped with that sentence, no thread is opened, and no job is
+// enqueued.
 func TestAThreadedDestinationIsSkippedWithItsReason(t *testing.T) {
 	t.Parallel()
 	r := newIncidentRig(t, domain.CapThreading|domain.CapAmend, incidentPolicy)
@@ -211,12 +213,12 @@ func TestAThreadedDestinationIsSkippedWithItsReason(t *testing.T) {
 		`SELECT status, COALESCE(error, '') FROM notification_deliveries WHERE notification_id = $1`,
 		res.Notification.ID).Scan(&status, &why))
 	assert.Equal(t, "skipped", status)
-	assert.Contains(t, why, "not a conversation on any threaded channel yet")
+	assert.Contains(t, why, "this Incident is not a conversation")
 
 	var threads int
 	require.NoError(t, r.fx.pool.QueryRow(ctx,
 		`SELECT count(*) FROM channel_threads WHERE org_id = $1`, r.fx.orgID).Scan(&threads))
-	assert.Zero(t, threads, "threads_subjkind_ck is untouched, so no thread may be asked for")
+	assert.Zero(t, threads, "an Incident that is not a conversation opens no thread")
 }
 
 // TestTheIncidentCardIsBuiltFromTheIncident — the view the webhook renders carries

@@ -166,4 +166,11 @@ var (
 	_ sourcesservice.IdempotencyClaims = (*idempotency.Repository)(nil)
 	_ identityapi.UnitOfWork           = (*identityrepo.TxRunner)(nil)
 	_ sourcesservice.UnitOfWork        = (*sourcesrepo.TxRunner)(nil)
+
+	// --- ADR 0052 §6: the Incident holder also places a Case fact -------------
+	//
+	// The same late-bound `incidentFacts` that reads an Incident for its card answers
+	// which Incident conversation a Case's fact belongs in. A drift here would leave
+	// the field nil in the container and every Case in its own thread, silently.
+	_ notifservice.IncidentConversations = (*incidentFacts)(nil)
 )

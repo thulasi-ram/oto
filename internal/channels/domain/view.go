@@ -55,6 +55,13 @@ type NotificationView struct {
 	// here for "mitigated", a lead or a severity, because oto holds none of them —
 	// the incident tool this view is being declared to does.
 	Incident *IncidentView
+	// InIncident is set on a CASE fact that is being delivered into an Incident's
+	// conversation (ADR 0052 §6): the Case was a member of an Incident whose
+	// Correlator says its Incidents are conversations when the fact was evaluated.
+	// Everything Case-shaped above still describes the Case; this says which story's
+	// thread the fact is posted in, because in that thread — unlike in the Case's own
+	// — a reply has to name the Case it is about.
+	InIncident *InIncidentView
 	// Actor is who did it, for human-caused reasons.
 	Actor   *ActorView
 	Comment string
@@ -197,6 +204,21 @@ type IncidentView struct {
 	// Link is oto's own page for the Incident, or "" when no public URL is
 	// configured.
 	Link string
+	// PointsFrom is set on the ONE view that is not posted in the Incident's own
+	// conversation: the "now part of Incident #N" reply posted into a member Case's
+	// own thread (ADR 0052 §6). It is that Case's id; "" everywhere else.
+	PointsFrom string
+}
+
+// InIncidentView names the Incident conversation a Case fact is posted into, and
+// the Case as that Incident lists it.
+type InIncidentView struct {
+	Number int64
+	// Link is oto's page for the Incident, or "".
+	Link string
+	// CaseNumber is the Case's org-wide number, read off the Incident's membership;
+	// 0 when the Case is no longer a member at claim time.
+	CaseNumber int64
 }
 
 // IncidentAuthorView is an Incident attribution: a human label or a Correlator id.
