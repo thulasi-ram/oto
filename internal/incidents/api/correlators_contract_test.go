@@ -170,15 +170,18 @@ func TestTheQuietGraceIsSetAndClearedOnTheWire(t *testing.T) {
 	c.PATCH(t, correlatorPath, map[string]any{"quiet_grace_seconds": nil}).MustStatus(t, http.StatusOK)
 	c.PATCH(t, correlatorPath, map[string]any{"priority": 5}).MustStatus(t, http.StatusOK)
 
+	// Copied out under the lock and NOT held across the PATCH below: the fake's
+	// Update takes the same mutex, so a deferred unlock here deadlocks the request.
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	if g := f.patches[0].QuietGrace; g == nil || *g != 1800*time.Second {
+	patches := append([]domain.CorrelatorPatch(nil), f.patches...)
+	f.mu.Unlock()
+	if g := patches[0].QuietGrace; g == nil || *g != 1800*time.Second {
 		t.Fatalf("a number reached the service as %v, want 30m", g)
 	}
-	if g := f.patches[1].QuietGrace; g == nil || *g != 0 {
+	if g := patches[1].QuietGrace; g == nil || *g != 0 {
 		t.Fatalf("an explicit null reached the service as %v, want a clear", g)
 	}
-	if g := f.patches[2].QuietGrace; g != nil {
+	if g := patches[2].QuietGrace; g != nil {
 		t.Fatalf("an omitted grace reached the service as %v, want untouched", *g)
 	}
 

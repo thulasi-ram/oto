@@ -283,7 +283,8 @@ func TestTheExemptionListNamesRealRoutes(t *testing.T) {
 
 // TestTheProbeTableDrivesNoRouteTwiceUnannounced keeps the table readable: a
 // route may appear more than once (a happy path and its negative twin), but the
-// duplicates must differ in what they expect, or one of them is dead weight.
+// duplicates must differ in what they expect or in the fixtures they capture, or
+// one of them is dead weight.
 func TestTheProbeTableIsWellFormed(t *testing.T) {
 	t.Parallel()
 
@@ -298,7 +299,10 @@ func TestTheProbeTableIsWellFormed(t *testing.T) {
 			t.Errorf("%s %s is templated and states no url; the request would ask for the literal %q",
 				p.method, p.tmpl, p.tmpl)
 		}
-		sig := fmt.Sprintf("%s %s %d %v %s", p.method, p.tmpl, p.want, p.auth, p.url)
+		// The fixtures a probe captures are part of what it is FOR: a second draw that
+		// captures the Incident a later probe moves a Case into is not dead weight,
+		// while two probes capturing the same name would make the first one so.
+		sig := fmt.Sprintf("%s %s %d %v %s %v", p.method, p.tmpl, p.want, p.auth, p.url, captureNames(p.capture))
 		if seen[sig] {
 			t.Errorf("%s %s is probed twice with the same expectation (%d)", p.method, p.tmpl, p.want)
 		}
@@ -309,6 +313,16 @@ func TestTheProbeTableIsWellFormed(t *testing.T) {
 /* -------------------------------------------------------------------------- */
 /* Plumbing                                                                   */
 /* -------------------------------------------------------------------------- */
+
+// captureNames is the sorted fixture names a probe captures, for its signature.
+func captureNames(c map[string][]string) []string {
+	out := make([]string, 0, len(c))
+	for name := range c {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
 
 // routeIndex maps "METHOD /path/{template}" to the operation the contract
 // declares there.

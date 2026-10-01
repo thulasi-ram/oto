@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/url"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -194,9 +193,6 @@ func (v *ViewService) inIncident(
 	out := &InIncidentView{Number: f.Number}
 	if m, ok := f.Member(caseID); ok {
 		out.CaseNumber = m.CaseNumber
-	}
-	if v.baseURL != "" {
-		out.Link = v.baseURL + "/incidents/" + strconv.FormatInt(f.Number, 10)
 	}
 	return out, nil
 }

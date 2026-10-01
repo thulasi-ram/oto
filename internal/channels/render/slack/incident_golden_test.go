@@ -87,7 +87,7 @@ func TestGoldenACaseReplyInAnIncidentsThread(t *testing.T) {
 	t.Parallel()
 	v := resolvedView()
 	v.InIncident = &domain.InIncidentView{
-		Number: 12, Link: "http://localhost:8080/incidents/12", CaseNumber: 412,
+		Number: 12, CaseNumber: 412,
 	}
 	msg := renderView(t, v, domain.ModeThreadReply)
 	golden(t, "reply_all_resolved_in_incident.golden.json", msg.Payload)
@@ -193,7 +193,7 @@ func TestAnIncidentIsDrawnAsWhatTheModeAndTheThreadSay(t *testing.T) {
 func TestAReplyInAnIncidentsThreadNamesItsCase(t *testing.T) {
 	t.Parallel()
 	v := resolvedView()
-	v.InIncident = &domain.InIncidentView{Number: 12, Link: "http://localhost:8080/incidents/12", CaseNumber: 412}
+	v.InIncident = &domain.InIncidentView{Number: 12, CaseNumber: 412}
 	msg := renderView(t, v, domain.ModeThreadReply)
 	if !strings.Contains(string(msg.Payload), "|Case #412>*") {
 		t.Errorf("the reply body does not name its Case:\n%s", msg.Payload)
