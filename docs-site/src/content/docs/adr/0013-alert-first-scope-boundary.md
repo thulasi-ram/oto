@@ -2,6 +2,10 @@
 title: "0013 — oto is alert-first: the Flight Recorder Test defines the scope boundary"
 ---
 **Status:** Accepted · 2026-08-08
+**Superseded in part by:** [0052](/oto/adr/0052-an-incident-is-drawn-over-cases-and-its-response-is-handed-off/)
+— its refusal of incident objects and the PERMANENTLY-OUT classification of `incidents`. 0052 admits
+the **grouping** (an Incident drawn over Cases) and keeps the **response** out; this ADR's handoff
+contract is not superseded, and 0052 is built on it.
 **Doctrine:** `docs/design/SCOPE-BOUNDARY.md` (the full test, 32 worked verdicts, the audit delta, the
 slippery-slope map and the handoff contract). This ADR records the *decision*; that document is what
 engineers cite when refusing a feature.

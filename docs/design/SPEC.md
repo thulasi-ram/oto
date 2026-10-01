@@ -98,7 +98,7 @@ These names are binding on Go types, table names, JSON fields, API paths and UI 
 | **NotificationPolicy** | `notification.Policy` | `notification_policies` | matchers → channels → reasons. Decides *whether* and *where*. |
 | **Notification** | `notification.Notification` | `notifications` | **The channel-agnostic intent to communicate one fact about one subject.** Idempotent. |
 | **NotificationDelivery** | `notification.Delivery` | `notification_deliveries` | **One materialisation of a Notification on one Channel.** Owns retry state, provider ids, thread sequence, rendered bytes. |
-| **Conversation** | `notification.ConversationKind` + id | *(the pair `(conversation_kind, conversation_id)` on `notifications`)* | What a `channel_threads` row is *about*: a **Case** or a **digest**. A conversation holds exactly **one Case** — a new Case always means a new thread — and a digest's conversation is keyed by the **policy** that asked for it, one per policy per channel. It is what **decides which facts share a message**, and that decision belongs to the `notification` layer, not to a stored grouping row (git-bug `7570090`, migration `00069`). It is **not** a `correlation` (deferred) and **not** an incident (permanently out). |
+| **Conversation** | `notification.ConversationKind` + id | *(the pair `(conversation_kind, conversation_id)` on `notifications`)* | What a `channel_threads` row is *about*: a **Case** or a **digest**. A conversation holds exactly **one Case** — a new Case always means a new thread — and a digest's conversation is keyed by the **policy** that asked for it, one per policy per channel. It is what **decides which facts share a message**, and that decision belongs to the `notification` layer, not to a stored grouping row (git-bug `7570090`, migration `00069`). It is **not** an Incident: an Incident is a set of Cases (ADR 0052), and a conversation is about one Case or one digest — unless the Incident's Correlator says its Incidents are conversations, which ADR 0052 §6 admits as a third `conversation_kind`, `incident`, when the Incident module lands. |
 | **ChannelThread** | `notification.Thread` | `channel_threads` | Persisted binding of a **Conversation** to a provider conversation anchor (Slack `channel_id` + root `ts`). |
 | **Silence** | `silences.Silence` | `silences` | A **read-only mirror** of an Alertmanager silence. |
 | **UIEvent** | `streaming.UIEvent` | `ui_events` | A monotonic, replayable envelope for the SSE stream. |
@@ -129,7 +129,7 @@ migration 00051.
 **Scope bans** (SCOPE-BOUNDARY §3 — vocabulary is enforcement). These words MUST NOT appear in a Go
 identifier, a table or column name, a JSON field, an API path, or UI copy:
 
-`incident` · `escalation` · `escalation policy` · `on-call` / `oncall` · `rota` · `schedule` ·
+`escalation` · `escalation policy` · `on-call` / `oncall` · `rota` · `schedule` ·
 `assignee` / `assign` / `assigned_to` · `owner` / `owner_id` · `responder` · `triage` · `postmortem` ·
 `war room` · `SLA` · `MTTA` · `MTTR` · `severity override` · `close` (of an alert) · `merge` ·
 `dismiss` · `watcher` / `subscriber`
@@ -137,6 +137,12 @@ identifier, a table or column name, a JSON field, an API path, or UI copy:
 A pull request introducing one of these is **presumed over the line until argued otherwise against
 FR-1 by name** (SCOPE-BOUNDARY §1). AC-49 enforces this with a lint rule, because a vocabulary ban
 that is not mechanically enforced decays in a quarter.
+
+⚠️ **`incident` led this list until 2026-10-02, and ADR 0052 removed the bare word.** An **Incident**
+— a set of Cases drawn as one story by an operator-written Correlator or by a human — is an oto noun
+now, so the word names something oto has. The door it guarded is still shut, by §D.4.0 rather than by
+the word: `incident_id` MUST NOT appear on a signal row (`alerts`, `alert_cases`, `notifications`,
+`notification_deliveries`), and the incident **response** is PERMANENTLY OUT (§I.1.1).
 
 *Permitted uses:* `docs/`, this list, SCOPE-BOUNDARY cross-references, and `river.JobSnooze`
 (a third-party API name, unrelated to §B.8 snooze).
@@ -387,7 +393,7 @@ announced *itself* and called that visibility, but the thirty-nine replies it wi
 left no trace an operator could read — which is exactly the failure the rule above
 forbids. The deeper fault is that **the defence had no object.** A storm is many
 *different* alerts arriving together; the thing that owns many different alerts is an
-**Incident**, and correlation is DEFERRED-POST-V1. With no such object, storm detection
+**Incident** — DEFERRED-POST-V1 when storm damping was removed, admitted by ADR 0052 since. With no such object, storm detection
 had nowhere to put its verdict, so it put it in the notification layer — and a detector
 with nowhere to report becomes a damper. Flooding a channel with two hundred real
 firings is a *truthful* report that something is badly wrong.
@@ -4897,7 +4903,7 @@ Capability negotiation (in `DispatchService`, **never** in a provider):
 | `streaming` | **CORE PLATFORM** | Durable UI event log, Postgres `LISTEN/NOTIFY` bridge, SSE hub with `Last-Event-ID` resume. |
 | `silences` | **PERIPHERAL** | Read-only mirror of Alertmanager silences and suppression matching. **No write path (R3).** |
 | `stats` | **PERIPHERAL** | Alert-hygiene accounting: per-alertname volume, notification cost, ack rate, flap leaderboard. **Never per-person (R8).** |
-| `correlation` | **DEFERRED-POST-V1** | Machine-derived groupings over multiple signals, with a **stated algorithm**. No human create endpoint, no human-set severity, no status, no owner, no lifecycle beyond open/closed. Renamed from `incidents` (SCOPE-BOUNDARY §5.5). |
+| `incidents` | **ADR 0052** | An **Incident** is a set of one or more Cases drawn as one story, by an operator-written **Correlator** (matchers over Cases, optionally a count over a window) or by a human recorded as actor metadata; a model only proposes. It is **active** while any member Case is open and **quiet** otherwise — read off its Cases, never set by a hand. It is *declared* outbound as a notification (`subject_kinds` gains `incident`) and may be a conversation (`conversation_kind` gains `incident`); `notifications_subjkind_ck`, `threads_subjkind_ck`, `notifications_convkind_ck` and `policies_subjkinds_ck` widen in the migration that creates its tables, and §D.8's DDL is amended with that migration, not before it. Its **response** is not here — see §I.1.1. This row replaces `correlation` (DEFERRED-POST-V1, renamed from `incidents` by SCOPE-BOUNDARY §5.5), whose *"stated algorithm, no human create endpoint, no status"* charter ADR 0052 supersedes: the stated algorithm is the Correlator, a human may draw one, and its only state is read off its signals. |
 | `k8scontext` | **DEFERRED-POST-V1** | Pod/owner/node/event resolution via informers. Robusta's home turf; needs cluster RBAC; a 6-month sink. |
 | `changefeed` | **DEFERRED-POST-V1** | Deploy/change-event ingestion for correlation. A deploy is a machine event; correlating it is enrichment. |
 | `views` | **DEFERRED-POST-V1** | Saved filters and per-user UI preferences. Subject = a query. |
@@ -4915,7 +4921,7 @@ an argument, because it is always just one column.
 
 | Module / feature | Why permanently out | Hand off to |
 |---|---|---|
-| `incidents` | Human-coordinated response objects with their own human-owned lifecycle, severity, status, roles and comms. Subject = a response effort, not a signal (FR-1). Survives the deletion of every alert (H-2). SCOPE-BOUNDARY §4.6. The legitimate part of this request is `correlation` above. | incident.io, keep, FireHydrant — SCOPE-BOUNDARY §7 |
+| Incident **response** | The incident's status (e.g. "mitigated"), lead and other roles, human-set severity, comms and write-up — everything a human-coordinated response object owns. Subject = a response effort, not a signal (FR-1). Survives the deletion of every alert (H-2). SCOPE-BOUNDARY §4.6, SS-3. ⚠️ *Until ADR 0052 this row was `incidents` and refused the grouping too; the **grouping** is now IN as the `incidents` module above, and only the response stays here. oto declares an Incident to the tool that manages the response, sends it facts and never commands — never a resolve, close or status change — and reads nothing back.* | incident.io, PagerDuty, FireHydrant — SCOPE-BOUNDARY §7, ADR 0052 §5 |
 | `oncall` | Rotas, escalation policies, paging. Subject = people and time; exists with zero alerts (H-2). Drags in telephony vendors, 24/7 reliability obligations and compliance oto cannot meet. SCOPE-BOUNDARY §4.8–4.9. | PagerDuty, incident.io — SCOPE-BOUNDARY §7 |
 | Assignment / ownership | `assigned_to` is a fact about a person's workload, present tense (H-1). SCOPE-BOUNDARY §4.4, §6 SS-1. The sanctioned answer to "who's on it" is **ephemeral presence** derived from live SSE connections, never persisted — a `streaming` feature, not an `alerts` one. | — |
 | Multi-stage escalation | §G.9.1. One stage, forever. SCOPE-BOUNDARY §6 SS-2. | PagerDuty |
@@ -5219,7 +5225,7 @@ Numbered, user-observable. v1 is not done until every one of these is demonstrab
 **Scope boundary (§I.1.1, ADR 0013)**
 
 49. **A lint rule enforces the vocabulary ban.**
-    `grep -rniE '(assign(ee|ed_to)?|on.?call|rota|escalation|postmortem|incident|war.?room|\bMTTA\b|\bMTTR\b|\bSLA\b|watcher|subscriber_id|owner_id|triage|occurrences?)' internal/ web/src/ db/migrations/`
+    `grep -rniE '(assign(ee|ed_to)?|on.?call|rota|escalation|postmortem|war.?room|\bMTTA\b|\bMTTR\b|\bSLA\b|watcher|subscriber_id|owner_id|triage|occurrences?)' internal/ web/src/ db/migrations/`
     returns **no hits** outside `docs/` and explicit SCOPE-BOUNDARY cross-reference comments. It runs
     in CI as `just lint-vocabulary` and fails the build. `occurrence` is the one term here that names
     a concept oto **has** rather than one it refuses: it is §P-5's closing condition for the
@@ -5227,6 +5233,10 @@ Numbered, user-observable. v1 is not done until every one of these is demonstrab
     `occurrence_id` and `total_occurrences` — which a `\b` would let through — cannot come back.
     A vocabulary ban that is not mechanically
     enforced decays in a quarter — the same argument §I.3 makes about layering.
+    `incident` left this grep with ADR 0052: the bare word names an oto noun now, and
+    `incident_id` is banned **on a signal row** instead — `tools/lintvocab` fires on it only where
+    it would sit on `alerts`, `alert_cases`, `notifications` or `notification_deliveries` (§D.4.0),
+    so an Incident's own membership table may key on it.
 50. `alerts` and `alert_cases` contain no column matching
     `assigned|owner|watcher|subscriber|incident|ticket|sla_|^case$|case_status|priority`, asserted by
     a schema introspection test against the live database, not by reading the migration files

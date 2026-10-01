@@ -112,6 +112,13 @@ two refusals have different expiry dates: **FR-1 refusals are permanent; H-3 ref
 these words in a Go identifier, a table name, a JSON field or UI copy, it is presumed over the line until
 argued otherwise against FR-1.
 
+⚠️ **`incident` LEFT THIS LIST ON 2026-10-02 (ADR 0052), AND ONLY THE BARE WORD DID.** An
+**Incident** — a set of Cases drawn as one story by an operator-written Correlator or by a human — is
+now an oto noun, so the word names something oto has. What it refused is still refused, by FR-1 and
+by §5.6 rather than by a word: `incident_id` stays banned **on a signal row** (`alerts`,
+`alert_cases`, `notifications`, `notification_deliveries`), and every part of the incident
+**response** — status, lead, severity, comms, write-up — stays PERMANENTLY OUT (SS-3).
+
 ---
 
 ## 4. Verdicts on 32 candidate features
@@ -126,7 +133,7 @@ argued otherwise against FR-1.
 | 3 | Comment on an alert | **IN** | An immutable `comment.added` event on the signal's timeline. Subject = the alert. |
 | 4 | Assign an alert to a person | **OUT** | Subject = a person's workload. Present-tense obligation (H-1). The clearest violation on the list. |
 | 5 | Alert grouping (alertname/namespace/fingerprint) | **IN** | A view over signals; groups are machine-derived from Alertmanager, never human-created. |
-| 6 | Incident objects spanning alerts | **OUT** | Subject = a human response effort. Survives deletion of every alert (H-2). `incident` is a banned word. |
+| 6 | Incident objects spanning alerts | **OUT** → ⛔ **SUPERSEDED IN PART by ADR 0052** | Subject = a human response effort. Survives deletion of every alert (H-2). `incident` is a banned word. ⚠️ *0052 splits this row in two. The **grouping** — an Incident drawn over Cases by a Correlator or a human, **active** while any member Case is open and **quiet** otherwise — is a fact about signals and is IN. The **response** — status, lead, severity, comms, write-up — is still a human response effort and still OUT, handed off to the incident tool the Incident is declared to (§7). The word is no longer banned; `incident_id` on a signal row still is (§5.6).* |
 | 7 | Severity escalation (louder after unacked) | **BORDERLINE → IN as ONE stage only** | One re-notification to the **same channel**, triggered by the signal's own unacked duration, is a fact about the signal. A **second stage**, or a stage targeting a person, is an escalation policy → OUT. See §5.2. |
 | 8 | On-call rotas | **OUT** | Subject = people and time. Exists with zero alerts (H-2). |
 | 9 | Paging / telephony (phone, SMS, push) | **OUT** | The transport of an obligation to a named human (H-1), plus 24/7 reliability and compliance oto cannot meet. |
@@ -153,7 +160,7 @@ argued otherwise against FR-1.
 | 30 | Notification policies routing to **people** | **OUT** | A one-entry rota (H-1). Includes a static per-channel list of individuals to `@`-mention. |
 | 31 | Alert ownership by team (a `team` **label** as a filter/route) | **BORDERLINE → IN** | If it is a label already on the alert, oto is reading the signal. **OUT** if oto stores a team registry and assigns alerts to it — that is a directory of humans (H-2). |
 | 32 | Watchers / subscriptions | **BORDERLINE → OUT for v1** | "Tell me about alerts matching X" is a notification policy scoped to a person, i.e. a personal route to a human (H-1). The IN-shaped version is a **saved filter** (`views`, deferred) with no notification attached. |
-| 33 | Multi-alert correlation | **BORDERLINE → IN later as `correlation`, never as `incidents`** | A derived grouping over signals passes FR-1. It becomes OUT the instant it acquires a human-set severity, a status, an owner, or a create endpoint. |
+| 33 | Multi-alert correlation | **BORDERLINE → IN later as `correlation`, never as `incidents`** → ⛔ **SUPERSEDED by ADR 0052: IN, as Incidents** | A derived grouping over signals passes FR-1. It becomes OUT the instant it acquires a human-set severity, a status, an owner, or a create endpoint. ⚠️ *0052 admits the grouping under the name operators will use anyway, and moves two of these four lines. A **human** may now draw an Incident, recorded as actor metadata, because what makes the grouping honest is that its membership always has an answer someone can read back — a Correlator an operator wrote, or a person who decided — not that no person was involved. And the Incident has a state, **active** or **quiet**, but it is **read off its Cases and never set by a hand**. The other two hold and are PERMANENTLY OUT: no human-set severity, no owner — nor a lead, a status such as "mitigated", comms or a write-up. Those are the response, and the response is handed off.* |
 | 34 | Manual "resolve this alert" button | **OUT** | The signal's state is owned by Alertmanager and mirrored by oto. A human declaring a signal resolved is the exact lie C2/B.2 exist to prevent. **There is no `POST /alerts/{id}/resolve`, ever.** |
 | 35 | Merge / close / dismiss alerts | **OUT** | Triage verbs. They make the alert a work item with a human-owned lifecycle. |
 | 36 | Per-person response metrics | **OUT** | R8. Unrepresentable in the schema by construction. |
@@ -210,7 +217,7 @@ Everything below crosses, brushes, or props open the line. Ruled `KEEP` / `CUT` 
 
 | Element | Ruling | Detail |
 |---|---|---|
-| `incidents` — DEFERRED-POST-V1, *"Higher-level correlation over groups"* | **RESHAPE** | A module named `incidents` in a binding module map, in a spec whose §A.1 **bans the word `incident`**, is a self-contradiction and a propped-open door. **Becomes:** rename to `correlation`, restate the charter as *"machine-derived groupings over multiple signals, with a stated algorithm; no human create endpoint, no human-set severity, no status, no owner, no lifecycle beyond open/closed"*, and move it to a new **PERMANENTLY-OUT-OF-SCOPE** column entry named `incidents` reading *"Human-coordinated response objects. Permanently out (SCOPE-BOUNDARY §4.6). Hand off — §6."* |
+| `incidents` — DEFERRED-POST-V1, *"Higher-level correlation over groups"* | **RESHAPE** → ⛔ **SUPERSEDED by ADR 0052** | ⚠️ *The module map now admits the Incident grouping (SPEC §I.1) and keeps only its response PERMANENTLY OUT (SPEC §I.1.1). The ruling below is kept as the record of why the response is out; its premise that the word itself is banned no longer holds.* A module named `incidents` in a binding module map, in a spec whose §A.1 **bans the word `incident`**, is a self-contradiction and a propped-open door. **Becomes:** rename to `correlation`, restate the charter as *"machine-derived groupings over multiple signals, with a stated algorithm; no human create endpoint, no human-set severity, no status, no owner, no lifecycle beyond open/closed"*, and move it to a new **PERMANENTLY-OUT-OF-SCOPE** column entry named `incidents` reading *"Human-coordinated response objects. Permanently out (SCOPE-BOUNDARY §4.6). Hand off — §6."* |
 | `oncall` — DEFERRED-POST-V1, *"Schedules, escalation policies, paging"* | **RESHAPE** | "DEFERRED-POST-V1" reads as *not yet*. This one is *not ever*. **Becomes:** reclassify to **PERMANENTLY OUT**, note reading *"Rotas, escalation policies, paging. Permanently out (SCOPE-BOUNDARY §4.8–4.9). oto hands off to PagerDuty / incident.io — §6."* |
 | `analytics` — DEFERRED-POST-V1, *"MTTR/MTTA rollups beyond `stats`, subject to R8"* | **RESHAPE** | **CUT MTTA from the charter entirely** — it is not "subject to R8", it is *excluded by* R8, and leaving it in the sentence invites a future engineer to think it is negotiable. **Becomes:** *"Signal-duration and firing-frequency distributions beyond `stats`. Per-person and time-to-human-action metrics are permanently out (R8, SCOPE-BOUNDARY §4.14)."* |
 | `audit` — DEFERRED-POST-V1, *"Separate audit log"* | **KEEP + narrow** | An audit log whose subject is *"what humans did"* is a person-centric record. **Add to the note:** *"Scoped to configuration changes (sources, channels, policies, tokens) — facts about oto's own configuration. Human actions on alerts stay in `alert_events` as actor metadata."* |
@@ -227,7 +234,7 @@ Everything below crosses, brushes, or props open the line. Ruled `KEEP` / `CUT` 
 | Absence of `POST /alerts/{id}/resolve` | **KEEP — and state it** | **Add to §E.1 principles:** *"There is no endpoint by which a human sets a signal's `state`. `state` is owned by Alertmanager and mirrored by oto (C2). `ack_state` is the only state axis a human may write."* Currently this is true by omission; omission is not enforcement. |
 | Silences read-only (R3), `listSilences`, `getSilence`, Slack silence deep-link button | **KEEP** | Correct, and refused for the **right** reason. **Add a cross-reference:** R3 is an H-3 (safety) refusal, not an FR-1 (scope) refusal — it is *earnable*; the FR-1 refusals in this document are not. |
 | §A.1 banned-word list | **RESHAPE** | Extend with: `escalation`, `escalation policy`, `on-call`, `rota`, `schedule`, `assignee`, `owner`, `responder`, `triage`, `postmortem`, `war room`, `SLA`, `MTTA`, `severity override`, `close`, `merge`, `dismiss`. |
-| §J acceptance criteria | **KEEP** | Reviewed all 48. None crosses. AC-35 (*"no per-person data anywhere"*) is the doctrine already tested. **Add AC-49:** *"`grep -riE '(assign|assignee|on.?call|rota|escalation policy|postmortem|incident)' internal/ web/src/ db/migrations/` returns no hits outside `docs/` and the SCOPE-BOUNDARY cross-references. A lint rule enforces it."* Vocabulary bans that are not mechanically enforced decay in a quarter (I.3 already makes this argument about layering). |
+| §J acceptance criteria | **KEEP** | Reviewed all 48. None crosses. AC-35 (*"no per-person data anywhere"*) is the doctrine already tested. **Add AC-49:** *"`grep -riE '(assign|assignee|on.?call|rota|escalation policy|postmortem|incident)' internal/ web/src/ db/migrations/` returns no hits outside `docs/` and the SCOPE-BOUNDARY cross-references. A lint rule enforces it."* Vocabulary bans that are not mechanically enforced decay in a quarter (I.3 already makes this argument about layering). ⚠️ *Since ADR 0052 the bare `incident` is out of AC-49, and `incident_id` is enforced on the signal rows: this section's first row (`alerts`, `alert_cases`) plus the two FR-1 rows an Incident's facts would otherwise be stamped onto, `notifications` and `notification_deliveries`. An Incident's own membership table keys on `incident_id` legitimately — that row is a fact about the Incident, not a person-reference on a signal.* |
 
 ### 5.7 Reviewed and clean
 
@@ -293,6 +300,19 @@ status pages, postmortems, rotas — are not on this list, because nobody adds t
   **`correlation`** — a stated algorithm producing a derived grouping over signals — passes FR-1 and is
   the honest version of this request. What is out forever is a **human-created container with its own
   lifecycle**. The discriminator is one question: *can a human create one, and can they set its state?*
+- ⛔ **SUPERSEDED 2026-10-02 (ADR 0052): the grouping is IN, as an Incident; the response stays OUT
+  forever.** The door decision's premise is gone — migration `00069` deleted `alert_groups`, so
+  `AlertGroup` is no longer the multi-alert container and oto had **no** object spanning more than one
+  alert, which made the pressure described above stronger, not weaker. 0052 keeps the discriminator
+  and answers it differently for each half. **Can a human create one?** Yes — a human may draw an
+  Incident, recorded as actor metadata, beside the operator-written Correlator; a model may only
+  propose. **Can they set its state?** No, and that half holds: an Incident is **active** while any
+  member Case is open and **quiet** otherwise, read off its signals. Everything in *"What it drags
+  in"* after the first arrow — human-set severity, a status such as "mitigated", a lead or other roles,
+  comms, the write-up, status pages — is the **response**, and the response is **PERMANENTLY OUT**:
+  it is managed in the incident tool the Incident is declared to (§7), oto sends that tool facts and
+  never commands, and nothing is read back. The argument above is left as written because it is the
+  record of what was refused and why; the drag-in list is exactly what 0052 still refuses.
 
 ### SS-4. Silence-write, and its well-behaved sibling snooze
 
@@ -389,6 +409,8 @@ Drawing this line is not free, and pretending otherwise would make this document
   sales, not on love.
 - **No incident objects.** During a storm, users get an `AlertGroup` rather than an incident. For
   k8s-shaped grouping this is genuinely enough. Small, real cost at the very top end of severity.
+  ⛔ *Superseded by ADR 0052: `AlertGroup` is deleted (`00069`) and an Incident drawn by a Correlator
+  is the storm's one thing to talk about. The cost that remains is the response — still handed off.*
 - **`mention_on_reminder` restricted to usergroups and `!here`/`!channel` (§5.2).** This is the ruling in
   this document most likely to be overruled, and I want that on the record: users will want `@alice`, and
   the workaround (create a Slack usergroup of one) is petty. I hold the line because a static list of
