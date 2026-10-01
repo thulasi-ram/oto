@@ -436,7 +436,7 @@ func (r *incidentFacts) ConversationFor(
 	if err != nil || !ok {
 		return notifdomain.IncidentRef{}, false, err
 	}
-	return notifdomain.IncidentRef{ID: ref.ID, Number: ref.Number}, true, nil
+	return notifdomain.IncidentRef{ID: ref.ID}, true, nil
 }
 
 // caseEndings is `alerts/service.CaseEndings` over `incidents/service`: a Case that

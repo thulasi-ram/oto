@@ -38,11 +38,10 @@ type IncidentFacts struct {
 }
 
 // IncidentRef names the Incident conversation a Case's fact belongs in (ADR 0052
-// §6): the Incident's id, which keys its `channel_threads` row, and the number a
-// human quotes.
+// §6): the Incident's id, which keys its `channel_threads` row. The number a
+// human quotes is not carried: the card reads it off the Incident at claim time.
 type IncidentRef struct {
-	ID     uuid.UUID
-	Number int64
+	ID uuid.UUID
 }
 
 // Member returns the CURRENT spell of the given Case, if it is in the Incident now.

@@ -79,7 +79,7 @@ func newConversationRig(t *testing.T) conversationRig {
 	}}, channels)
 	require.NoError(t, err)
 
-	member := &membership{ref: domain.IncidentRef{ID: facts.ID, Number: facts.Number}}
+	member := &membership{ref: domain.IncidentRef{ID: facts.ID}}
 	threads := repository.NewThreadRepository(fx.pool)
 	clk := clock.New()
 	notifier, err := service.NewNotificationService(service.NotificationConfig{

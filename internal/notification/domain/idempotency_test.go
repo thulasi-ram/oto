@@ -162,9 +162,14 @@ func TestIdempotencyKeyEveryInputParticipates(t *testing.T) {
 // re-keyed for nothing, and one wrongly off it goes back to swallowing its own
 // second announcement.
 //
-// `snoozed` and `unsnoozed` are the two, and they are the SAME two §B.8.4 exempts
-// from snooze suppression — because both facts follow from the one structural
-// truth that a snooze is taken on an Alert and moves no Case lock.
+// Of the SIGNAL Reasons, `snoozed` and `unsnoozed` are the two, and they are the
+// SAME two §B.8.4 exempts from snooze suppression — because both facts follow from
+// the one structural truth that a snooze is taken on an Alert and moves no Case lock.
+//
+// ⚠️ THE FIVE INCIDENT REASONS NEED ONE TOO, FOR A DIFFERENT REASON (ADR 0052 §5):
+// an Incident has no `state_version` at all, so the occasion is the whole of what
+// tells two of its facts apart. They are not snooze-exempt and need not be — an
+// Incident fact is evaluated by `EvaluateIncident`, which no snooze is consulted on.
 func TestOnlyTheSnoozeReasonsNeedAnOccasion(t *testing.T) {
 	t.Parallel()
 
@@ -174,8 +179,15 @@ func TestOnlyTheSnoozeReasonsNeedAnOccasion(t *testing.T) {
 			need = append(need, r)
 		}
 	}
-	assert.Equal(t, []domain.Reason{domain.ReasonSnoozed, domain.ReasonUnsnoozed}, need)
+	assert.Equal(t, []domain.Reason{
+		domain.ReasonSnoozed, domain.ReasonUnsnoozed,
+		domain.ReasonDrawn, domain.ReasonCaseAdded, domain.ReasonCaseRemoved,
+		domain.ReasonQuiet, domain.ReasonActiveAgain,
+	}, need)
 	for _, r := range need {
+		if r.Subject() == domain.SubjectIncident {
+			continue
+		}
 		assert.True(t, r.SnoozeExempt(),
 			"a reason that needs an occasion is a reason about snoozing, so it is also exempt from snooze suppression")
 	}

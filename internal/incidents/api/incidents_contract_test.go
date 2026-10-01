@@ -150,7 +150,7 @@ func (f *fakeIncidents) Get(_ context.Context, s db.TenantScope, number int64) (
 	return contractDetail(), nil
 }
 
-func (f *fakeIncidents) Draw(_ context.Context, s db.TenantScope, _ []uuid.UUID, by domain.Attribution) (domain.Detail, error) {
+func (f *fakeIncidents) Draw(_ context.Context, _ db.TenantScope, _ []uuid.UUID, by domain.Attribution) (domain.Detail, error) {
 	f.record("draw", by)
 	if f.refuse != nil {
 		return domain.Detail{}, f.refuse

@@ -212,10 +212,11 @@ type IncidentView struct {
 
 // InIncidentView names the Incident conversation a Case fact is posted into, and
 // the Case as that Incident lists it.
+//
+// It carries no link to the Incident: the reply is posted beneath the Incident's
+// own card, which links it, so a second link in every reply would be noise.
 type InIncidentView struct {
 	Number int64
-	// Link is oto's page for the Incident, or "".
-	Link string
 	// CaseNumber is the Case's org-wide number, read off the Incident's membership;
 	// 0 when the Case is no longer a member at claim time.
 	CaseNumber int64
