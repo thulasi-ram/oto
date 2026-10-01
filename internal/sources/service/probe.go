@@ -64,9 +64,13 @@ type ProbeResult struct {
 	// PrometheusConfigured reports whether prometheus_url is set. Without it,
 	// RuleSnapshots can only ever carry the generatorURL expression.
 	PrometheusConfigured bool
-	// PrometheusReachable reports whether buildinfo answered.
+	// PrometheusReachable reports whether the rule source at prometheus_url
+	// answered: buildinfo, or — for a server with no buildinfo, which is vmalert
+	// — a valid envelope from the rules API itself.
 	PrometheusReachable bool
-	// PrometheusVersion is the paired Prometheus's version.
+	// PrometheusVersion is the paired Prometheus's version, and "" when the
+	// server answered rules but has no buildinfo to say what it is. "" is
+	// UNKNOWN; it is never guessed as `vmalert`.
 	PrometheusVersion string
 
 	// Warnings are the structured operator warnings this probe produced.
@@ -231,18 +235,47 @@ func (s *Service) probePrometheus(ctx context.Context, src domain.Source, cred d
 		return
 	}
 	info, err := pc.BuildInfo(ctx)
-	if err != nil {
-		res.Warnings = append(res.Warnings, domain.HealthWarning{
-			Code:    domain.WarnPrometheusUnreachable,
-			Message: "the paired Prometheus did not answer; rule snapshots will fall back to generatorURL",
-			Subject: errs.CodeOf(err),
-			At:      now,
-		})
+	if err == nil {
+		res.PrometheusReachable = true
+		res.PrometheusVersion = info.Version
 		return
 	}
-	res.PrometheusReachable = true
-	res.PrometheusVersion = info.Version
+
+	// ⚠️ A FAILED BUILDINFO IS NOT A SILENT RULE SOURCE. vmalert serves
+	// /api/v1/rules — honouring type, rule_name[] and exclude_alerts exactly as
+	// Rules sends them — and has no /api/v1/status/buildinfo at all (vmselect
+	// serves that, not vmalert). Warning on buildinfo alone told every operator
+	// who paired a vmalert that it "did not answer" while RuleSnapshots resolved
+	// through it, and a false health warning teaches people to ignore the real
+	// one. So the rules API is asked directly, for a rule that cannot exist: a
+	// valid envelope — empty groups is the expected answer — is the rule source
+	// answering, which is the only thing this check exists to establish.
+	//
+	// ⛔ NOT AFTER AN UNREACHABLE. A server that never answered buildinfo — no
+	// connection, a timeout, a 5xx past its retries — will not answer rules
+	// either, and asking anyway doubles every probe's wait on a source that is
+	// down, which is exactly when the probe runs most.
+	if !httpc.IsUnreachable(err) && ctx.Err() == nil {
+		if _, rerr := pc.Rules(ctx, []string{probeRuleName}); rerr == nil {
+			res.PrometheusReachable = true
+			return
+		}
+	}
+	res.Warnings = append(res.Warnings, domain.HealthWarning{
+		Code: domain.WarnPrometheusUnreachable,
+		// "rule source", not "Prometheus": the server at prometheus_url may be a
+		// vmalert or anything else that speaks the rules API, and when neither
+		// call answered oto does not know which it is.
+		Message: "the rule source at the Prometheus URL did not answer; rule snapshots will fall back to generatorURL",
+		Subject: errs.CodeOf(err),
+		At:      now,
+	})
 }
+
+// probeRuleName is the rule_name[] the fallback probe asks for. It only has to
+// be a name no real rule carries, so the answer is a small, valid, empty
+// envelope; a match would be harmless, merely larger.
+const probeRuleName = "oto_probe_no_such_rule"
 
 // withError stamps a failure onto a probe result. The distinction it preserves
 // is the one that matters operationally: unreachable versus malformed.
