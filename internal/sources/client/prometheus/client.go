@@ -137,17 +137,42 @@ type wireRuleGroup struct {
 // Duration and KeepFiringFor are FLOAT SECONDS. 600 means `for: 10m`. Not
 // milliseconds, not a Go duration string, not a Prometheus duration string
 // (research A7 pitfall 6).
+//
+// ⚠️ KEEP_FIRING_FOR HAS TWO SPELLINGS ON THE WIRE, AND MISSING ONE IS SILENT.
+// Prometheus tags it `keepFiringFor` (web/api/v1/api.go); vmalert's ApiRule
+// tags it `keep_firing_for` (app/vmalert/rule/web.go), and every other field
+// oto reads is spelled the same by both. encoding/json folds CASE, not
+// underscores, so a struct with only the camelCase tag decoded every vmalert
+// rule's value as 0 — and a RuleSnapshot is "what the rule said at that moment"
+// (ADR 0009), so that 0 was a false statement about the rule, folded into its
+// fingerprint, with nothing anywhere to say so. Both are pointers so ABSENT is
+// distinguishable from an explicit 0; keepFiringFor wins when a server sends
+// both, because that is the API oto was written against.
 type wireRule struct {
-	Type          string            `json:"type"`
-	Name          string            `json:"name"`
-	Query         string            `json:"query"`
-	Duration      float64           `json:"duration"`
-	KeepFiringFor float64           `json:"keepFiringFor"`
-	Labels        map[string]string `json:"labels"`
-	Annotations   map[string]string `json:"annotations"`
-	State         string            `json:"state"`
-	Health        string            `json:"health"`
-	LastError     string            `json:"lastError"`
+	Type               string            `json:"type"`
+	Name               string            `json:"name"`
+	Query              string            `json:"query"`
+	Duration           float64           `json:"duration"`
+	KeepFiringFor      *float64          `json:"keepFiringFor"`
+	KeepFiringForSnake *float64          `json:"keep_firing_for"`
+	Labels             map[string]string `json:"labels"`
+	Annotations        map[string]string `json:"annotations"`
+	State              string            `json:"state"`
+	Health             string            `json:"health"`
+	LastError          string            `json:"lastError"`
+}
+
+// keepFiringFor is the rule's keep_firing_for in float seconds, from whichever
+// spelling the server sent, and 0 when it sent neither — which is what a rule
+// with no keep_firing_for means on both servers.
+func (r wireRule) keepFiringFor() float64 {
+	switch {
+	case r.KeepFiringFor != nil:
+		return *r.KeepFiringFor
+	case r.KeepFiringForSnake != nil:
+		return *r.KeepFiringForSnake
+	}
+	return 0
 }
 
 // wireBuildInfo is the `data` of GET /api/v1/status/buildinfo.
@@ -235,7 +260,7 @@ func (c *Client) Rules(ctx context.Context, names []string) ([]domain.RuleGroup,
 				Name:          r.Name,
 				Query:         r.Query,
 				Duration:      r.Duration,
-				KeepFiringFor: r.KeepFiringFor,
+				KeepFiringFor: r.keepFiringFor(),
 				Labels:        copyMap(r.Labels),
 				Annotations:   copyMap(r.Annotations),
 				State:         r.State,
