@@ -149,9 +149,10 @@ type Correlation struct {
 //  2. Which Correlator? The first, in the operator's order, whose matchers hold.
 //     Only that one: a second matching Correlator does nothing, even when the first
 //     then declines to draw because its count is not met (policy semantics).
-//  3. May it join? Only the latest Incident THAT CORRELATOR drew, and only while it
-//     is active. A human-drawn Incident is never a candidate, so it never grows by
-//     itself.
+//  3. May it join? Only the latest Incident THAT CORRELATOR drew, while it is
+//     active or within the Correlator's `quiet_grace` after it went quiet
+//     (`domain.Correlator.Joins`). A human-drawn Incident is never a candidate, so
+//     it never grows by itself.
 //  4. Else, may it draw? With no count condition, yes, over this Case. With one,
 //     only if a window of the Correlator's length through this Case holds at least
 //     `count_min` of its free claimed Cases — and then over all of them at once.
@@ -218,7 +219,7 @@ func (c *Correlators) Correlate(ctx context.Context, scope db.TenantScope, caseI
 		if err != nil {
 			return err
 		}
-		if found && joinable(latest) {
+		if found && k.Joins(latest, cs.StartedAt) {
 			if err := c.join(ctx, scope, k, latest.Ref, cs.CaseRef, at); err != nil {
 				return err
 			}
@@ -251,12 +252,6 @@ func (c *Correlators) Correlate(ctx context.Context, scope db.TenantScope, caseI
 		return Correlation{}, err
 	}
 	return out, nil
-}
-
-// joinable reports whether a matching Case may join the Correlator's latest
-// Incident: while it is active (ADR 0052 §4).
-func joinable(latest domain.CorrelatorIncident) bool {
-	return latest.State() == domain.StateActive
 }
 
 // firstMatch is the walk: the first Correlator, in the order given, whose matchers
@@ -319,7 +314,8 @@ func (c *Correlators) draw(
 
 // join is a Correlator adding one Case to an Incident it drew — Service.Add with a
 // different author: the Incident's row lock before the count, then the membership,
-// then `case_added` and, if the Incident was quiet, `active_again`.
+// then `case_added` and, if the Incident was quiet — a re-fire inside the grace —
+// `active_again`.
 func (c *Correlators) join(
 	ctx context.Context, scope db.TenantScope, k domain.Correlator, in domain.Ref, cs domain.CaseRef, at time.Time,
 ) error {

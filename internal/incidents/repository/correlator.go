@@ -73,7 +73,7 @@ func encodeMatchers(ms []kernel.Matcher) ([]byte, error) {
 }
 
 const correlatorColumns = `
-  id, name, priority, enabled, matchers, count_min, count_window_s, created_at, updated_at`
+  id, name, priority, enabled, matchers, count_min, count_window_s, quiet_grace_s, created_at, updated_at`
 
 // correlatorRow is the row model of `correlators`. Unexported, per the three-model
 // rule.
@@ -85,13 +85,14 @@ type correlatorRow struct {
 	matchers  []byte
 	countMin  *int
 	countWinS *int
+	graceS    *int
 	createdAt time.Time
 	updatedAt time.Time
 }
 
 func (r *correlatorRow) scanInto() []any {
 	return []any{&r.id, &r.name, &r.priority, &r.enabled, &r.matchers,
-		&r.countMin, &r.countWinS, &r.createdAt, &r.updatedAt}
+		&r.countMin, &r.countWinS, &r.graceS, &r.createdAt, &r.updatedAt}
 }
 
 func (r correlatorRow) toDomain() (domain.Correlator, error) {
@@ -112,7 +113,19 @@ func (r correlatorRow) toDomain() (domain.Correlator, error) {
 	if r.countMin != nil && r.countWinS != nil {
 		c.Count = domain.Count{Min: *r.countMin, Window: time.Duration(*r.countWinS) * time.Second}
 	}
+	if r.graceS != nil {
+		c.QuietGrace = time.Duration(*r.graceS) * time.Second
+	}
 	return c, nil
+}
+
+// graceArg renders the grace as its nullable column: NULL for none.
+func graceArg(g time.Duration) *int {
+	if g <= 0 {
+		return nil
+	}
+	s := int(g / time.Second)
+	return &s
 }
 
 func countArgs(c domain.Count) (*int, *int) {
@@ -219,8 +232,9 @@ func (r *CorrelatorRepository) getWith(
 
 const insertCorrelatorSQL = `
 INSERT INTO correlators
-  (id, org_id, name, priority, enabled, matchers, count_min, count_window_s, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
+  (id, org_id, name, priority, enabled, matchers, count_min, count_window_s, quiet_grace_s,
+   created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $10, $9, $9)
 RETURNING` + correlatorColumns
 
 // Create writes one Correlator. The caller has validated it.
@@ -238,6 +252,7 @@ func (r *CorrelatorRepository) Create(
 	var row correlatorRow
 	if err := r.db(ctx).QueryRow(ctx, insertCorrelatorSQL,
 		id.New(), s.OrgID(), c.Name, c.Priority, c.Enabled, matchers, countMin, countWin, at.UTC(),
+		graceArg(c.QuietGrace),
 	).Scan(row.scanInto()...); err != nil {
 		return domain.Correlator{}, correlatorMapErr(err, "create a correlator")
 	}
@@ -251,7 +266,8 @@ func (r *CorrelatorRepository) Create(
 const updateCorrelatorSQL = `
 UPDATE correlators
    SET name = $3, priority = $4, enabled = $5, matchers = $6,
-       count_min = $7, count_window_s = $8, updated_at = GREATEST($9, created_at)
+       count_min = $7, count_window_s = $8, quiet_grace_s = $10,
+       updated_at = GREATEST($9, created_at)
  WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL
 RETURNING` + correlatorColumns
 
@@ -270,6 +286,7 @@ func (r *CorrelatorRepository) Update(
 	var row correlatorRow
 	if err := r.db(ctx).QueryRow(ctx, updateCorrelatorSQL,
 		s.OrgID(), c.ID, c.Name, c.Priority, c.Enabled, matchers, countMin, countWin, at.UTC(),
+		graceArg(c.QuietGrace),
 	).Scan(row.scanInto()...); err != nil {
 		return domain.Correlator{}, correlatorMapErr(err, "update a correlator")
 	}
@@ -424,12 +441,27 @@ func (r *CorrelatorRepository) WindowCandidates(
 // rides `incidents_correlator_idx`. The LATEST one only: a Correlator's Incidents
 // are drawn one after another — a new one is drawn only when the last could not be
 // joined — so the latest is the only one a Case could join.
+//
+// ⭐ "WENT QUIET" IS THE THIRD COLUMN AND IT IS READ, NOT STORED (migration 00086):
+// the latest close among the CURRENT members — the close that left no member open
+// — or the latest removal, when a human taking the last open Case out is what
+// quieted it. `GREATEST` ignores a NULL side, and the draw instant is the floor
+// for an Incident with neither (every member removed before any closed). The one
+// imprecision is conceded: removing an already-closed member from an already-quiet
+// Incident moves this later, which can only lengthen a grace, never cut one short.
 const latestDrawnBySQL = `
 SELECT i.id, i.number,
        (SELECT count(*)::int
           FROM incident_members m
           JOIN alert_cases c ON c.id = m.case_id
-         WHERE m.incident_id = i.id AND m.removed_at IS NULL AND c.state = 'open')
+         WHERE m.incident_id = i.id AND m.removed_at IS NULL AND c.state = 'open'),
+       COALESCE(GREATEST(
+         (SELECT max(c.ended_at)
+            FROM incident_members m
+            JOIN alert_cases c ON c.id = m.case_id
+           WHERE m.incident_id = i.id AND m.removed_at IS NULL),
+         (SELECT max(m.removed_at) FROM incident_members m WHERE m.incident_id = i.id)
+       ), i.drawn_at)
   FROM incidents i
  WHERE i.org_id = $1 AND i.drawn_by_correlator_id = $2
  ORDER BY i.number DESC
@@ -446,12 +478,13 @@ func (r *CorrelatorRepository) LatestDrawn(
 	}
 	var out domain.CorrelatorIncident
 	err := r.db(ctx).QueryRow(ctx, latestDrawnBySQL, s.OrgID(), correlatorID).
-		Scan(&out.ID, &out.Number, &out.OpenMembers)
+		Scan(&out.ID, &out.Number, &out.OpenMembers, &out.QuietSince)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.CorrelatorIncident{}, false, nil
 		}
 		return domain.CorrelatorIncident{}, false, mapErr(err, "read a correlator's latest incident")
 	}
+	out.QuietSince = out.QuietSince.UTC()
 	return out, true, nil
 }

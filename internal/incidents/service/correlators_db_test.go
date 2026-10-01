@@ -261,3 +261,132 @@ func TestACaseAHumanRemovedDoesNotCountTowardsANewStory(t *testing.T) {
 	// The fifth matching Case now finds only three free claims beside it.
 	assert.Equal(t, VerdictBelowCount, r.correlate(r.openLabelled(payments(4))).Verdict)
 }
+
+// ------------------------------------------------- quiet grace (git-bug 34a27c5)
+
+// endCase closes a Case at exactly `at`, the way the lifecycle does.
+func (r *correlatorRig) endCase(id uuid.UUID, at time.Time) {
+	r.t.Helper()
+	r.h.Exec(`UPDATE alert_cases
+	             SET state = 'closed', ended_at = $2, resolve_reason = 'upstream'
+	           WHERE id = $1`, id, at)
+}
+
+// flap opens one firing of the disk alert at the harness clock's instant. Each
+// firing is its own Alert here, which is what the Correlator sees either way: a
+// fresh Case whose labels match.
+func (r *correlatorRig) flap(i int) uuid.UUID {
+	r.t.Helper()
+	return r.openLabelled(map[string]string{
+		"alertname": "NodeDiskPressure" + string(rune('A'+i)), "severity": "critical",
+	})
+}
+
+func TestAReFireInsideTheGraceJoinsTheQuietIncidentAndOneOutsideDrawsANewOne(t *testing.T) {
+	t.Parallel()
+	r := newCorrelatorRig(t)
+	ctx := context.Background()
+	k := r.write("disk", 100, domain.Count{}, eq("severity", "critical"))
+	grace := 1800 * time.Second
+	_, err := r.k.Update(ctx, r.scope, k.ID, domain.CorrelatorPatch{QuietGrace: &grace})
+	require.NoError(t, err)
+
+	first := r.flap(0)
+	drawn := r.correlate(first)
+	require.Equal(t, VerdictDrew, drawn.Verdict)
+
+	// The firing ends: the Incident is quiet.
+	r.h.Advance(5 * time.Minute)
+	quietAt := r.h.Now()
+	r.endCase(first, quietAt)
+	require.Equal(t, domain.StateQuiet, r.get(drawn.Incident.Number).State())
+
+	// Twenty minutes later it fires again: it joins, and the Incident reads active.
+	r.h.Advance(20 * time.Minute)
+	again := r.flap(1)
+	joined := r.correlate(again)
+	require.Equal(t, VerdictJoined, joined.Verdict, "a re-fire 20 min after quiet is the same story")
+	assert.Equal(t, drawn.Incident.Number, joined.Incident.Number)
+	d := r.get(drawn.Incident.Number)
+	assert.Equal(t, domain.StateActive, d.State(), "it reads active again")
+	assert.Equal(t, []domain.Fact{domain.FactDrawn, domain.FactCaseAdded, domain.FactActiveAgain},
+		r.announce.of(d.ID), "joining a quiet Incident declares case_added and active_again")
+
+	// It ends again, and the next firing comes forty minutes later: a new Incident.
+	r.h.Advance(5 * time.Minute)
+	r.endCase(again, r.h.Now())
+	r.h.Advance(40 * time.Minute)
+	late := r.correlate(r.flap(2))
+	require.Equal(t, VerdictDrew, late.Verdict, "a re-fire 40 min after quiet is past the grace")
+	assert.NotEqual(t, drawn.Incident.Number, late.Incident.Number)
+	assert.Len(t, current(r.get(drawn.Incident.Number)), 2, "the old story kept its two firings")
+}
+
+func TestTheGraceBoundaryIsInclusiveToTheSecond(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		after time.Duration
+		want  Verdict
+	}{
+		{"exactly the grace", 1800 * time.Second, VerdictJoined},
+		{"one second past it", 1801 * time.Second, VerdictDrew},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := newCorrelatorRig(t)
+			ctx := context.Background()
+			k := r.write("disk", 100, domain.Count{}, eq("severity", "critical"))
+			grace := 1800 * time.Second
+			_, err := r.k.Update(ctx, r.scope, k.ID, domain.CorrelatorPatch{QuietGrace: &grace})
+			require.NoError(t, err)
+
+			first := r.flap(0)
+			require.Equal(t, VerdictDrew, r.correlate(first).Verdict)
+			r.h.Advance(time.Minute)
+			quietAt := r.h.Now()
+			r.endCase(first, quietAt)
+
+			r.h.Advance(tc.after)
+			assert.Equal(t, tc.want, r.correlate(r.flap(1)).Verdict)
+		})
+	}
+}
+
+func TestWithNoGraceAReFireAfterQuietDrawsANewIncident(t *testing.T) {
+	t.Parallel()
+	r := newCorrelatorRig(t)
+	r.write("disk", 100, domain.Count{}, eq("severity", "critical"))
+
+	first := r.flap(0)
+	drawn := r.correlate(first)
+	require.Equal(t, VerdictDrew, drawn.Verdict)
+	r.h.Advance(time.Minute)
+	r.endCase(first, r.h.Now())
+
+	r.h.Advance(time.Minute)
+	again := r.correlate(r.flap(1))
+	assert.Equal(t, VerdictDrew, again.Verdict, "no grace: a quiet Incident is never taken back")
+	assert.NotEqual(t, drawn.Incident.Number, again.Incident.Number)
+}
+
+func TestAHumanDrawnQuietIncidentNeverTakesBackAReFire(t *testing.T) {
+	t.Parallel()
+	r := newCorrelatorRig(t)
+	ctx := context.Background()
+	k := r.write("disk", 100, domain.Count{}, eq("severity", "critical"))
+	grace := 24 * time.Hour
+	_, err := r.k.Update(ctx, r.scope, k.ID, domain.CorrelatorPatch{QuietGrace: &grace})
+	require.NoError(t, err)
+
+	c := r.flap(0)
+	human, err := r.svc.Draw(ctx, r.scope, []uuid.UUID{c}, r.alice)
+	require.NoError(t, err)
+	r.h.Advance(time.Minute)
+	r.endCase(c, r.h.Now())
+
+	r.h.Advance(time.Minute)
+	got := r.correlate(r.flap(1))
+	require.Equal(t, VerdictDrew, got.Verdict, "a grace never reaches an Incident the Correlator did not draw")
+	assert.Equal(t, 1, r.get(human.Number).MemberCount)
+}

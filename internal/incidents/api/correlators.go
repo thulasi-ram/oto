@@ -48,8 +48,11 @@ type CorrelatorDTO struct {
 	Matchers           []MatcherDTO `json:"matchers"`
 	CountMin           *int         `json:"count_min"`
 	CountWindowSeconds *int         `json:"count_window_seconds"`
-	CreatedAt          time.Time    `json:"created_at"`
-	UpdatedAt          time.Time    `json:"updated_at"`
+	// QuietGraceSeconds is `quiet_grace_s` (migration 00086); null joins only
+	// while the Correlator's Incident is active.
+	QuietGraceSeconds *int      `json:"quiet_grace_seconds"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 // CreateCorrelatorRequest is the body of `POST /api/v1/correlators`.
@@ -64,6 +67,7 @@ type CreateCorrelatorRequest struct {
 	Matchers           []MatcherDTO `json:"matchers,omitempty"             validate:"omitempty,max=32,dive"`
 	CountMin           *int32       `json:"count_min,omitempty"            validate:"omitempty,min=2,max=10000"`
 	CountWindowSeconds *int32       `json:"count_window_seconds,omitempty" validate:"omitempty,min=60,max=86400"`
+	QuietGraceSeconds  *int32       `json:"quiet_grace_seconds,omitempty"  validate:"omitempty,min=60,max=86400"`
 }
 
 // UpdateCorrelatorRequest is the body of `PATCH /api/v1/correlators/{id}`.
@@ -83,6 +87,10 @@ type UpdateCorrelatorRequest struct {
 	Matchers           *[]MatcherDTO `json:"matchers,omitempty" validate:"omitempty,max=32,dive"`
 	CountMin           NullableInt32 `json:"count_min,omitempty"`
 	CountWindowSeconds NullableInt32 `json:"count_window_seconds,omitempty"`
+	// QuietGraceSeconds is nullable for the count's reason: an explicit `null`
+	// CLEARS the grace — join only while active — which is a different request
+	// from omitting it. Its range is checked by the domain, as the count's is.
+	QuietGraceSeconds NullableInt32 `json:"quiet_grace_seconds,omitempty"`
 }
 
 // NullableInt32 is a contract field typed as `integer | null`, where an explicit
@@ -132,6 +140,10 @@ func correlatorDTO(c domain.Correlator) CorrelatorDTO {
 		m, w := c.Count.Min, int(c.Count.Window/time.Second)
 		out.CountMin, out.CountWindowSeconds = &m, &w
 	}
+	if c.QuietGrace > 0 {
+		g := int(c.QuietGrace / time.Second)
+		out.QuietGraceSeconds = &g
+	}
 	return out
 }
 
@@ -160,6 +172,9 @@ func (r CreateCorrelatorRequest) toDraft() domain.CorrelatorDraft {
 		Matchers: toMatchers(r.Matchers),
 		Count:    countOf(r.CountMin, r.CountWindowSeconds),
 	}
+	if r.QuietGraceSeconds != nil {
+		d.QuietGrace = time.Duration(*r.QuietGraceSeconds) * time.Second
+	}
 	if r.Priority != nil {
 		p := int(*r.Priority)
 		d.Priority = &p
@@ -182,6 +197,13 @@ func (r UpdateCorrelatorRequest) toPatch() (domain.CorrelatorPatch, countPatch) 
 	if r.Matchers != nil {
 		ms := toMatchers(*r.Matchers)
 		p.Matchers = &ms
+	}
+	if r.QuietGraceSeconds.Set {
+		var g time.Duration
+		if r.QuietGraceSeconds.Value != nil {
+			g = time.Duration(*r.QuietGraceSeconds.Value) * time.Second
+		}
+		p.QuietGrace = &g
 	}
 	return p, countPatch{min: r.CountMin, window: r.CountWindowSeconds}
 }

@@ -606,6 +606,7 @@ func plan() []probe {
 				"matchers":             []map[string]string{{"name": "alertname", "op": "=", "value": "GateG2Correlator"}},
 				"count_min":            5,
 				"count_window_seconds": 600,
+				"quiet_grace_seconds":  1800,
 			},
 			want:    http.StatusCreated,
 			capture: map[string][]string{"correlator": {"data", "id"}},

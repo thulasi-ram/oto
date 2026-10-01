@@ -54,6 +54,13 @@ const (
 	MinCountWindow = time.Minute
 	// MaxCountWindow is one day, as it is for every span oto lets an operator hold.
 	MaxCountWindow = 24 * time.Hour
+
+	// MinQuietGrace and MaxQuietGrace are `correlators_quiet_grace_ck` (migration
+	// 00086): the count window's bounds. Under a minute is "only while active"
+	// with extra steps; over a day is not a story anybody would recognise.
+	MinQuietGrace = time.Minute
+	// MaxQuietGrace is the upper bound of `correlators_quiet_grace_ck`.
+	MaxQuietGrace = 24 * time.Hour
 )
 
 // Count is a Correlator's floor on DRAWING: "draw only once at least Min Cases I
@@ -101,9 +108,35 @@ type Correlator struct {
 	// Matchers are ANDed; an empty list matches every Case.
 	Matchers []kernel.Matcher
 	Count    Count
+	// QuietGrace is `quiet_grace_s` (ADR 0052 §4, migration 00086): how long after
+	// this Correlator's latest Incident went quiet a matching Case still joins it.
+	// Zero joins only while it is active.
+	QuietGrace time.Duration
 
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+// Joins reports whether a Case of this Correlator that opened at startedAt joins
+// the Correlator's latest Incident rather than drawing a new one (ADR 0052 §4).
+//
+// ⭐ WHILE ACTIVE, ALWAYS; WHILE QUIET, ONLY INSIDE THE GRACE. The grace is
+// measured from the instant the Incident went quiet to the instant the new Case
+// OPENED — not to when the job ran — so a late worker cannot turn a re-fire inside
+// the grace into a new story. The boundary is inclusive: a re-fire exactly
+// `quiet_grace_s` after quiet still joins.
+//
+// ⛔ A FLAPPING ALERT IS WHY THIS EXISTS. Without a grace, a disk alert that fires
+// every twenty minutes is quiet between firings, and every firing draws a fresh
+// Incident — each declared outbound as its own external incident.
+func (c Correlator) Joins(latest CorrelatorIncident, startedAt time.Time) bool {
+	if latest.State() == StateActive {
+		return true
+	}
+	if c.QuietGrace <= 0 || latest.QuietSince.IsZero() {
+		return false
+	}
+	return startedAt.Sub(latest.QuietSince) <= c.QuietGrace
 }
 
 // Matches reports whether every matcher holds against a Case's labels.
@@ -140,6 +173,13 @@ func (c Correlator) Validate() error {
 		}
 	}
 	v = append(v, c.Count.violations()...)
+	if c.QuietGrace != 0 &&
+		(c.QuietGrace < MinQuietGrace || c.QuietGrace > MaxQuietGrace || c.QuietGrace%time.Second != 0) {
+		v = append(v, errs.Violation{
+			Field: "quiet_grace_seconds", Code: "range",
+			Message: "quiet_grace_seconds is 60 to 86400, or absent to join only while active",
+		})
+	}
 
 	if len(v) > 0 {
 		return errs.Validation("correlator_invalid", "the Correlator is not valid", v...)
@@ -178,18 +218,19 @@ func (c Count) violations() []errs.Violation {
 // CorrelatorDraft is a Correlator being created: everything an operator writes,
 // with the two defaulted columns optional.
 type CorrelatorDraft struct {
-	Name     string
-	Priority *int
-	Enabled  *bool
-	Matchers []kernel.Matcher
-	Count    Count
+	Name       string
+	Priority   *int
+	Enabled    *bool
+	Matchers   []kernel.Matcher
+	Count      Count
+	QuietGrace time.Duration
 }
 
 // Correlator is the draft as the row it would become, for validation.
 func (d CorrelatorDraft) Correlator() Correlator {
 	c := Correlator{
 		Name: d.Name, Priority: DefaultCorrelatorPriority, Enabled: true,
-		Matchers: d.Matchers, Count: d.Count,
+		Matchers: d.Matchers, Count: d.Count, QuietGrace: d.QuietGrace,
 	}
 	if d.Priority != nil {
 		c.Priority = *d.Priority
@@ -208,11 +249,14 @@ type CorrelatorPatch struct {
 	Enabled  *bool
 	Matchers *[]kernel.Matcher
 	Count    *Count
+	// QuietGrace set to a pointer at zero CLEARS the grace.
+	QuietGrace *time.Duration
 }
 
 // IsEmpty reports whether the patch changes nothing.
 func (p CorrelatorPatch) IsEmpty() bool {
-	return p.Name == nil && p.Priority == nil && p.Enabled == nil && p.Matchers == nil && p.Count == nil
+	return p.Name == nil && p.Priority == nil && p.Enabled == nil && p.Matchers == nil &&
+		p.Count == nil && p.QuietGrace == nil
 }
 
 // Apply returns c with the patch merged in. It is what validation runs against:
@@ -232,6 +276,9 @@ func (p CorrelatorPatch) Apply(c Correlator) Correlator {
 	}
 	if p.Count != nil {
 		c.Count = *p.Count
+	}
+	if p.QuietGrace != nil {
+		c.QuietGrace = *p.QuietGrace
 	}
 	return c
 }
@@ -278,6 +325,10 @@ func (c CorrelationCase) Claimable() bool { return !c.InIncident && !c.EverRemov
 type CorrelatorIncident struct {
 	Ref
 	OpenMembers int
+	// QuietSince is when the Incident went quiet, READ rather than stored (ADR 0052
+	// §3): the latest `ended_at` among its current members, or the latest removal
+	// if a human's removal is what quieted it. Meaningful only while quiet.
+	QuietSince time.Time
 }
 
 // State is the Incident's derived state.
