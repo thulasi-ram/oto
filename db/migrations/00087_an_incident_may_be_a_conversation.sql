@@ -96,7 +96,7 @@ ALTER TABLE channel_threads ADD  CONSTRAINT threads_subjkind_ck
 
 -- +goose StatementBegin
 COMMENT ON COLUMN channel_threads.subject_kind IS
-  'WHAT this conversation is keyed by: alert | case | alert_group. v1 opens every thread on the AlertGroup generation, so forty alerts still produce one thread; the column is widened because thread identity is a POLICY decision and was welded to the alert grouping by a one-line CHECK. Widening it is what makes threads_subject_uniq say something -- a kind that could hold one value made its first column a constant.';
+  'WHAT this conversation is keyed by: alert | case | digest. A signal thread is keyed by the CASE, which is the conversation: one Case, one thread, always (git-bug 7570090). A DIGEST thread is keyed by the POLICY, so a policy''s digests are one ongoing conversation with one reply per tick rather than a new thread every window -- which is the noise a digest exists to replace.';
 -- +goose StatementEnd
 
 -- +goose StatementBegin
