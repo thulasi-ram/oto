@@ -44,25 +44,35 @@ export interface PickedCase {
   readonly in: Incident | null;
 }
 
+/** One held Case whose move into the new Incident was refused, and why. */
+export interface StrandedCase {
+  readonly c: PickedCase;
+  readonly reason: unknown;
+}
+
+/** "Case #413 is still in Incident #3: why." — always ending in punctuation. */
+function strandedSentence({ c, reason }: StrandedCase): string {
+  const why = (reason instanceof Error ? reason.message : String(reason)).trim();
+  const s = `Case #${c.number} is still in Incident #${c.in?.number ?? "?"}: ${why}`;
+  return /[.!?]$/.test(s) ? s : `${s}.`;
+}
+
 /**
  * The draw succeeded and at least one move after it did not.
  *
- * ⚠️ THE TWO HALVES ARE TWO REQUESTS, so this state exists and has to be said
- * plainly: the Incident IS drawn — over every Case that was in none — and the
+ * ⚠️ THE TWO HALVES ARE SEVERAL REQUESTS, so this state exists and has to be said
+ * plainly: the Incident IS drawn — over every Case that was in none — and every
  * Case named here is still where it was. Nothing is rolled back, because the
- * draw is a fact on several Cases' timelines already; the operator is told which
- * Case did not come along and where the new Incident is.
+ * draw is a fact on several Cases' timelines already; the operator is told EVERY
+ * Case that did not come along, and where the new Incident is.
  */
 export class PartialDraw extends Error {
   constructor(
     readonly drawn: IncidentDetail,
-    readonly stranded: PickedCase,
-    readonly reason: unknown,
+    readonly stranded: readonly StrandedCase[],
   ) {
     super(
-      `Incident #${drawn.number} was drawn, but Case #${stranded.number} is still in Incident #${
-        stranded.in?.number ?? "?"
-      }: ${reason instanceof Error ? reason.message : String(reason)}`,
+      `Incident #${drawn.number} was drawn, but ${stranded.map(strandedSentence).join(" ")}`,
     );
     this.name = "PartialDraw";
   }
@@ -95,12 +105,17 @@ export async function drawOver(picked: readonly PickedCase[]): Promise<IncidentD
     free.map((c) => c.id),
     idempotencyKey(),
   );
+  // ⭐ EVERY HELD CASE IS ATTEMPTED. Each move is its own transaction, so one
+  // refusal says nothing about the next; stopping at the first would leave Cases
+  // the human picked unmoved and unmentioned.
+  const stranded: StrandedCase[] = [];
   for (const c of held) {
     try {
       await moveIncidentCase((c.in as Incident).number, c.id, drawn.number, idempotencyKey());
-    } catch (err) {
-      throw new PartialDraw(drawn, c, err);
+    } catch (reason) {
+      stranded.push({ c, reason });
     }
   }
+  if (stranded.length > 0) throw new PartialDraw(drawn, stranded);
   return drawn;
 }

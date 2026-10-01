@@ -7575,7 +7575,7 @@ components:
           minLength: 1
           maxLength: 120
           description: Unique among the org's live Correlators, compared case-insensitively.
-          examples: ['payments storm']
+          examples: ['payments api']
         priority:
           type: integer
           format: int32

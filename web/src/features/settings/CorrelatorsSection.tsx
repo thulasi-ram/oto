@@ -425,39 +425,6 @@ const EditorDialog: Component<{
   const existing = (): Correlator | null =>
     props.editing !== null && props.editing !== "new" ? props.editing : null;
 
-  // Load the form whenever the dialog opens on a different subject.
-  createEffect(() => {
-    const e = props.editing;
-    if (e === null) return;
-    if (e === "new") {
-      setName("");
-      setPriority(String(Math.min(props.nextPriority, PRIORITY_MAX)));
-      setEnabled(true);
-      setMatcherText("");
-      setCountMin("");
-      setCountWindow("");
-      setQuietGrace("");
-      setConversations(false);
-      return;
-    }
-    setName(e.name);
-    setPriority(String(e.priority));
-    setEnabled(e.enabled);
-    setMatcherText(
-      formatMatchers(
-        e.matchers.map((m) => ({ name: m.name, op: m.op, value: m.value })),
-      ),
-    );
-    setCountMin(e.count_min === null ? "" : String(e.count_min));
-    setCountWindow(
-      e.count_window_seconds === null ? "" : String(e.count_window_seconds),
-    );
-    setQuietGrace(
-      e.quiet_grace_seconds === null ? "" : String(e.quiet_grace_seconds),
-    );
-    setConversations(e.incidents_are_conversations);
-  });
-
   const parsed = createMemo(() => parseMatchers(matcherText()));
 
   /*
@@ -524,6 +491,42 @@ const EditorDialog: Component<{
     },
   }));
 
+  // Load the form whenever the dialog opens on a different subject. It sits
+  // below `save` so it can clear the last attempt's error: a refused save must
+  // not greet the next open, on this subject or another, with its violations.
+  createEffect(() => {
+    const e = props.editing;
+    if (e === null) return;
+    save.reset();
+    if (e === "new") {
+      setName("");
+      setPriority(String(Math.min(props.nextPriority, PRIORITY_MAX)));
+      setEnabled(true);
+      setMatcherText("");
+      setCountMin("");
+      setCountWindow("");
+      setQuietGrace("");
+      setConversations(false);
+      return;
+    }
+    setName(e.name);
+    setPriority(String(e.priority));
+    setEnabled(e.enabled);
+    setMatcherText(
+      formatMatchers(
+        e.matchers.map((m) => ({ name: m.name, op: m.op, value: m.value })),
+      ),
+    );
+    setCountMin(e.count_min === null ? "" : String(e.count_min));
+    setCountWindow(
+      e.count_window_seconds === null ? "" : String(e.count_window_seconds),
+    );
+    setQuietGrace(
+      e.quiet_grace_seconds === null ? "" : String(e.quiet_grace_seconds),
+    );
+    setConversations(e.incidents_are_conversations);
+  });
+
   const violations = (): ReadonlyMap<string, string> =>
     violationsByField(save.error);
   const errorOf = (field: string): string | undefined =>
@@ -566,7 +569,7 @@ const EditorDialog: Component<{
               <TextFieldLabel>Name</TextFieldLabel>
               <TextFieldInput
                 maxLength={NAME_MAX}
-                placeholder="payments storm"
+                placeholder="payments api"
               />
               <TextFieldErrorMessage role="alert">
                 {errorOf("name")}
