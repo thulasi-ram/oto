@@ -66,6 +66,34 @@ func (r *recordedTimeline) of(t kernel.EventType) []CaseFact {
 	return out
 }
 
+// recordedAnnouncer is the Announcer port as a recorder: which Incident facts the
+// service declared, in order. Whether a policy routes them is the notification
+// layer's question and is tested there.
+type recordedAnnouncer struct {
+	mu    sync.Mutex
+	facts []Announcement
+}
+
+func (r *recordedAnnouncer) Announce(_ context.Context, _ db.TenantScope, facts []Announcement) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.facts = append(r.facts, facts...)
+	return nil
+}
+
+// of returns the facts declared about one Incident, in order.
+func (r *recordedAnnouncer) of(incidentID uuid.UUID) []domain.Fact {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []domain.Fact
+	for _, f := range r.facts {
+		if f.IncidentID == incidentID {
+			out = append(out, f.Fact)
+		}
+	}
+	return out
+}
+
 type rig struct {
 	t        *testing.T
 	h        *harness.H
@@ -75,6 +103,7 @@ type rig struct {
 	svc      *Service
 	repo     *repository.IncidentRepository
 	timeline *recordedTimeline
+	announce *recordedAnnouncer
 	alice    domain.Attribution
 }
 
@@ -90,12 +119,14 @@ func newRig(t *testing.T) *rig {
 		t: t, h: h, org: org, cluster: h.Cluster(org), scope: org.Scope,
 		repo:     repository.NewIncidentRepository(h.Pool),
 		timeline: &recordedTimeline{},
+		announce: &recordedAnnouncer{},
 		alice:    alice,
 	}
 	r.svc, err = New(Deps{
 		Incidents: r.repo,
 		Tx:        repository.NewTxRunner(h.Pool),
 		Timeline:  r.timeline,
+		Announcer: r.announce,
 		Clock:     h.Clock,
 	})
 	require.NoError(t, err)
@@ -400,4 +431,97 @@ func TestAnotherOrgsCasesAndIncidentsAreNotFound(t *testing.T) {
 	// Every org counts from 1, so `#1` exists in both; theirs is not mine.
 	_, err = r.svc.Get(ctx, other.Scope, mine.Number)
 	assert.Equal(t, "incident_not_found", errs.CodeOf(err))
+}
+
+// ------------------------------------------------------ declared outbound
+
+// TestEveryIncidentFactIsDeclaredAndTheStateEdgesFollowMembership is ADR 0052 §5's
+// producer half (git-bug aa6d18b): each verb declares its membership fact, and a
+// change that moves the derived state declares `quiet` or `active_again` after it —
+// read under the Incident's lock, so the edge is never missed and never doubled.
+func TestEveryIncidentFactIsDeclaredAndTheStateEdgesFollowMembership(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := context.Background()
+
+	open := r.openCase("HighErrorRate")
+	d, err := r.svc.Draw(ctx, r.scope, []uuid.UUID{open}, r.alice)
+	require.NoError(t, err)
+	id := d.ID
+	assert.Equal(t, []domain.Fact{domain.FactDrawn}, r.announce.of(id),
+		"a draw is one fact, not one per Case and not a state edge")
+
+	// Removing the only open member quiets the Incident.
+	_, err = r.svc.Remove(ctx, r.scope, d.Number, open, r.alice)
+	require.NoError(t, err)
+	assert.Equal(t, []domain.Fact{domain.FactDrawn, domain.FactCaseRemoved, domain.FactQuiet},
+		r.announce.of(id))
+
+	// Adding a CLOSED Case changes the membership and not the state.
+	closed := r.openCase("DiskFull")
+	r.closeCase(closed)
+	_, err = r.svc.Add(ctx, r.scope, d.Number, closed, r.alice)
+	require.NoError(t, err)
+	assert.Equal(t, domain.FactCaseAdded, r.announce.of(id)[3])
+	assert.Len(t, r.announce.of(id), 4, "a closed Case joining a quiet Incident moves no state")
+
+	// Adding an OPEN one makes it active again.
+	_, err = r.svc.Add(ctx, r.scope, d.Number, open, r.alice)
+	require.NoError(t, err)
+	assert.Equal(t, []domain.Fact{domain.FactCaseAdded, domain.FactActiveAgain}, r.announce.of(id)[4:])
+
+	// ⛔ NO FACT EVER MEANS RESOLVE OR CLOSE.
+	for _, f := range r.announce.facts {
+		assert.NotContains(t, []string{"resolved", "closed", "mitigated"}, string(f.Fact))
+		assert.NotEqual(t, uuid.Nil, f.Occasion, "every fact names its occasion")
+	}
+}
+
+func TestAMoveDeclaresAFactOnEachIncident(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := context.Background()
+
+	moving := r.openCase("HighErrorRate")
+	from, err := r.svc.Draw(ctx, r.scope, []uuid.UUID{moving}, r.alice)
+	require.NoError(t, err)
+	closed := r.openCase("DiskFull")
+	r.closeCase(closed)
+	to, err := r.svc.Draw(ctx, r.scope, []uuid.UUID{closed}, r.alice)
+	require.NoError(t, err)
+
+	_, err = r.svc.Move(ctx, r.scope, from.Number, to.Number, moving, r.alice)
+	require.NoError(t, err)
+
+	assert.Equal(t, []domain.Fact{domain.FactDrawn, domain.FactCaseRemoved, domain.FactQuiet},
+		r.announce.of(from.ID), "the Incident left behind lost its only open Case")
+	assert.Equal(t, []domain.Fact{domain.FactDrawn, domain.FactCaseAdded, domain.FactActiveAgain},
+		r.announce.of(to.ID), "the quiet Incident joined gained an open Case")
+}
+
+// TestACaseClosingQuietsItsIncidentOnce is the observer `alerts` calls inside the
+// closing transaction. Only the close of the LAST open member is the edge.
+func TestACaseClosingQuietsItsIncidentOnce(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := context.Background()
+
+	a, b := r.openCase("HighErrorRate"), r.openCase("KubePodCrashLooping")
+	d, err := r.svc.Draw(ctx, r.scope, []uuid.UUID{a, b}, r.alice)
+	require.NoError(t, err)
+
+	r.closeCase(a)
+	require.NoError(t, r.svc.CasesEnded(ctx, r.scope, []uuid.UUID{a}))
+	assert.Equal(t, []domain.Fact{domain.FactDrawn}, r.announce.of(d.ID),
+		"one member still open: the Incident is still active")
+
+	r.closeCase(b)
+	require.NoError(t, r.svc.CasesEnded(ctx, r.scope, []uuid.UUID{b}))
+	assert.Equal(t, []domain.Fact{domain.FactDrawn, domain.FactQuiet}, r.announce.of(d.ID))
+
+	// A Case in no Incident ends and nothing is declared about anything.
+	stray := r.openCase("DiskFull")
+	r.closeCase(stray)
+	require.NoError(t, r.svc.CasesEnded(ctx, r.scope, []uuid.UUID{stray}))
+	assert.Len(t, r.announce.facts, 2)
 }

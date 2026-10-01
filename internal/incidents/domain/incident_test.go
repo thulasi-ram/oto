@@ -112,3 +112,37 @@ func TestAMemberIsCurrentUntilItIsTombstoned(t *testing.T) {
 	m.RemovedByLabel = "alice"
 	assert.False(t, m.Current())
 }
+
+// TestTheStateEdgesAreTheOnlyStateFacts — ADR 0052 §5. `quiet` and `active_again`
+// are declared exactly when the derived state MOVES, and a membership change that
+// leaves it where it was declares nothing about state.
+func TestTheStateEdgesAreTheOnlyStateFacts(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name          string
+		before, after int
+		want          Fact
+		moved         bool
+	}{
+		{"the last open member left or closed", 1, 0, FactQuiet, true},
+		{"an open member joined a quiet Incident", 0, 1, FactActiveAgain, true},
+		{"one of several open members left", 3, 2, "", false},
+		{"a closed member joined a quiet Incident", 0, 0, "", false},
+		{"an open member joined an active Incident", 1, 2, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, moved := Transition(tc.before, tc.after)
+			assert.Equal(t, tc.moved, moved)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+
+	// ⛔ No fact means resolve or close.
+	for _, f := range []Fact{FactDrawn, FactCaseAdded, FactCaseRemoved, FactQuiet, FactActiveAgain} {
+		assert.NotContains(t, string(f), "resolve")
+		assert.NotContains(t, string(f), "close")
+	}
+}

@@ -35,6 +35,7 @@ const DefaultMaxInstances = 10
 // card, because a reader has no way to tell which one they are looking at.
 type ViewService struct {
 	snapshots SnapshotSource
+	incidents IncidentReader
 	baseURL   string
 	clk       clock.Clock
 }
@@ -61,6 +62,10 @@ type ViewConfig struct {
 	// runtime: `container.go` has never set it, so this view builder has been using
 	// `DefaultMaxInstances` on every deployment oto has ever had.
 	Clock clock.Clock
+	// Incidents reads the Incident an Incident fact's card is built from, at claim
+	// time (C11). Optional in the constructor for the reason
+	// `NotificationConfig.Incidents` is; `Build` refuses an Incident fact without it.
+	Incidents IncidentReader
 }
 
 // NewViewService builds the view service.
@@ -70,6 +75,7 @@ func NewViewService(cfg ViewConfig) (*ViewService, error) {
 	}
 	v := &ViewService{
 		snapshots: cfg.Snapshots,
+		incidents: cfg.Incidents,
 		baseURL:   strings.TrimRight(cfg.BaseURL, "/"),
 		clk:       cfg.Clock,
 	}
@@ -107,6 +113,13 @@ func (v *ViewService) Build(
 	// why 00058 stores it instead of recomputing at claim time.
 	if n.Digest() {
 		return v.digest(n), nil
+	}
+	// ⛔ AN INCIDENT FACT HAS NO CASE TO SNAPSHOT EITHER. Its `ConversationID` is the
+	// Incident, and handing that to `Snapshot` as a Case id would come back
+	// `case_not_found` and dead-letter the delivery. It reads the Incident instead —
+	// at claim time, so the card says what the Incident IS when it is sent.
+	if n.Incident() {
+		return v.incident(ctx, scope, n)
 	}
 
 	// ⛔ IT PASSED `GroupID: n.GroupID` PLUS AN OPTIONAL `CaseID` (git-bug

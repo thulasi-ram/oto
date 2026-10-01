@@ -70,6 +70,10 @@ type Deps struct {
 	Settings      SettingsReader
 	Enrichments   EnrichmentReader
 	Notifications NotificationReader
+	// CaseEndings is told which Cases just ENDED, inside the transaction that ended
+	// them (ADR 0052 §3, §5). Optional: unwired, a Case ending tells nobody but the
+	// timeline and `notify.evaluate`, which is what it did before Incidents existed.
+	CaseEndings CaseEndings
 
 	Clock  clock.Clock
 	Logger *slog.Logger
@@ -106,6 +110,7 @@ type Service struct {
 	settings      SettingsReader
 	enrichments   EnrichmentReader
 	notifications NotificationReader
+	caseEndings   CaseEndings
 
 	clock clock.Clock
 	log   *slog.Logger
@@ -155,6 +160,7 @@ func New(d Deps) (*Service, error) {
 		settings:      d.Settings,
 		enrichments:   d.Enrichments,
 		notifications: d.Notifications,
+		caseEndings:   d.CaseEndings,
 		clock:         clk,
 		log:           logger,
 	}, nil
@@ -419,9 +425,12 @@ type notifyRequest struct {
 // off, the card still goes out, without the rule, at the budget's edge. Silence
 // is never the degradation.
 func (s *Service) enqueueNotify(
-	ctx context.Context, _ db.TenantScope, reqs []notifyRequest,
+	ctx context.Context, scope db.TenantScope, reqs []notifyRequest,
 	awaitingEnrichment map[uuid.UUID]struct{},
 ) (int, error) {
+	if err := s.announceEndings(ctx, scope, reqs); err != nil {
+		return 0, err
+	}
 	if s.enqueuer == nil || len(reqs) == 0 {
 		return 0, nil
 	}
@@ -510,6 +519,37 @@ func (s *Service) enqueueEnrich(ctx context.Context, caseIDs []uuid.UUID) (int, 
 			"could not queue enrichment")
 	}
 	return len(reqs), nil
+}
+
+// announceEndings tells the CaseEndings port which of these requests report a
+// Case ENDING — `all_resolved` and `expired`, the two Reasons minted exactly when
+// an episode closes — inside the transaction that closed it.
+//
+// ⭐ IT RIDES THIS FUNCTION BECAUSE EVERY CLOSE ALREADY DOES. The immediate T5 in
+// the ingest batch, the delayed close once the retention window W lapses, and the
+// reaper's T6 all funnel their announcement through `enqueueNotify` (a deferred T5
+// inside W announces nothing, and is not a close), so this is the one place that
+// sees every ending and nothing else — one call site instead of three to keep in
+// step.
+//
+// ⛔ THE PORT IS THE WHOLE COUPLING, AND IT POINTS INWARD. This module does not
+// know what listens or why: `incidents` reads it to notice an Incident going quiet
+// (ADR 0052 §3), and `internal/app` is what connects the two. alerts imports
+// nothing to make that true (§I.1).
+func (s *Service) announceEndings(ctx context.Context, scope db.TenantScope, reqs []notifyRequest) error {
+	if s.caseEndings == nil {
+		return nil
+	}
+	var ended []uuid.UUID
+	for _, r := range reqs {
+		if r.caseID != uuid.Nil && (r.reason == reasonAllResolved || r.reason == reasonExpired) {
+			ended = append(ended, r.caseID)
+		}
+	}
+	if len(ended) == 0 {
+		return nil
+	}
+	return s.caseEndings.CasesEnded(ctx, scope, ended)
 }
 
 // ------------------------------------------------------------- notify reasons

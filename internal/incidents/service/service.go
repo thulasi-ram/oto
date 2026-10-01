@@ -13,6 +13,7 @@ import (
 	"github.com/thulasiram/oto/internal/platform/clock"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
+	"github.com/thulasiram/oto/internal/platform/id"
 )
 
 // Service is the Incident's four human verbs — draw, add, remove, move — and its
@@ -33,6 +34,7 @@ type Service struct {
 	incidents Repository
 	tx        TxRunner
 	timeline  Timeline
+	announcer Announcer
 	clock     clock.Clock
 }
 
@@ -44,6 +46,10 @@ type Deps struct {
 	Incidents Repository
 	Tx        TxRunner
 	Timeline  Timeline
+	// Announcer declares each Incident fact outbound (ADR 0052 §5). Required for the
+	// reason Timeline is: a membership change oto told nobody about is an Incident
+	// the incident tool never hears of, silently.
+	Announcer Announcer
 	Clock     clock.Clock
 }
 
@@ -57,11 +63,17 @@ func New(d Deps) (*Service, error) {
 	case d.Timeline == nil:
 		return nil, errors.New("incidents: a timeline is required; a membership change nobody " +
 			"narrates is a Case history with a hole in it")
+	case d.Announcer == nil:
+		return nil, errors.New("incidents: an announcer is required; an Incident fact nobody " +
+			"declares is one the incident tool never hears of")
 	}
 	if d.Clock == nil {
 		d.Clock = clock.New()
 	}
-	return &Service{incidents: d.Incidents, tx: d.Tx, timeline: d.Timeline, clock: d.Clock}, nil
+	return &Service{
+		incidents: d.Incidents, tx: d.Tx, timeline: d.Timeline,
+		announcer: d.Announcer, clock: d.Clock,
+	}, nil
 }
 
 func (s *Service) now() time.Time { return s.clock.Now().UTC() }
@@ -76,6 +88,12 @@ func (s *Service) List(ctx context.Context, scope db.TenantScope, p db.Keyset) (
 // every Case that has been in it.
 func (s *Service) Get(ctx context.Context, scope db.TenantScope, number int64) (domain.Detail, error) {
 	return s.incidents.Get(ctx, scope, number)
+}
+
+// GetByID is Get addressed by id, for the notification layer building an
+// Incident fact's card at claim time (ADR 0052 §5).
+func (s *Service) GetByID(ctx context.Context, scope db.TenantScope, id uuid.UUID) (domain.Detail, error) {
+	return s.incidents.GetByID(ctx, scope, id)
 }
 
 // Draw is a human drawing one Incident over one or more Cases (ADR 0052 §2).
@@ -121,6 +139,13 @@ func (s *Service) Draw(
 		at := s.now()
 		drawn, err = s.incidents.Insert(ctx, scope, at, by)
 		if err != nil {
+			return err
+		}
+		// ⭐ ONE FACT FOR THE DRAW, NOT ONE PER CASE. The Incident coming into being
+		// is the thing the incident tool is told; the Cases it was drawn over are on
+		// the card. Its initial state is not a separate fact either: an Incident
+		// drawn over closed Cases is born quiet and never went quiet.
+		if err := s.announce(ctx, scope, drawn.ID, domain.FactDrawn); err != nil {
 			return err
 		}
 		for _, c := range cases {
@@ -175,7 +200,14 @@ func (s *Service) Add(
 			return domain.CaseInIncident(c, holder)
 		}
 
+		before, err := s.lockAndCount(ctx, scope, in.ID)
+		if err != nil {
+			return err
+		}
 		if err := s.incidents.AddMember(ctx, scope, in.ID, caseID, s.now(), by); err != nil {
+			return err
+		}
+		if err := s.announceMembership(ctx, scope, in.ID, domain.FactCaseAdded, before); err != nil {
 			return err
 		}
 		return s.timeline.RecordIncidentFact(ctx, scope, CaseFact{
@@ -211,7 +243,14 @@ func (s *Service) Remove(
 		if err != nil {
 			return err
 		}
+		before, err := s.lockAndCount(ctx, scope, in.ID)
+		if err != nil {
+			return err
+		}
 		if err := s.incidents.RemoveMember(ctx, scope, in.ID, caseID, s.now(), by, uuid.Nil); err != nil {
+			return err
+		}
+		if err := s.announceMembership(ctx, scope, in.ID, domain.FactCaseRemoved, before); err != nil {
 			return err
 		}
 		return s.timeline.RecordIncidentFact(ctx, scope, CaseFact{
@@ -261,11 +300,34 @@ func (s *Service) Move(
 		if err != nil {
 			return err
 		}
+		// Both Incidents are locked in ONE call, in id order, so a move from A to B
+		// and a concurrent move from B to A queue rather than deadlock.
+		if err := s.incidents.Lock(ctx, scope, []uuid.UUID{src.ID, dst.ID}); err != nil {
+			return err
+		}
+		srcBefore, err := s.incidents.OpenMembers(ctx, scope, src.ID)
+		if err != nil {
+			return err
+		}
+		dstBefore, err := s.incidents.OpenMembers(ctx, scope, dst.ID)
+		if err != nil {
+			return err
+		}
 		at := s.now()
 		if err := s.incidents.RemoveMember(ctx, scope, src.ID, caseID, at, by, dst.ID); err != nil {
 			return err
 		}
 		if err := s.incidents.AddMember(ctx, scope, dst.ID, caseID, at, by); err != nil {
+			return err
+		}
+		// A move is TWO facts outbound, one per Incident, because each Incident is
+		// declared to the incident tool on its own: the one left behind lost a Case
+		// (and may have gone quiet), the one joined gained it (and may be active
+		// again). On the Case's own timeline it is ONE fact, below.
+		if err := s.announceMembership(ctx, scope, src.ID, domain.FactCaseRemoved, srcBefore); err != nil {
+			return err
+		}
+		if err := s.announceMembership(ctx, scope, dst.ID, domain.FactCaseAdded, dstBefore); err != nil {
 			return err
 		}
 		return s.timeline.RecordIncidentFact(ctx, scope, CaseFact{
@@ -286,6 +348,83 @@ func (s *Service) Move(
 		return domain.Detail{}, err
 	}
 	return s.incidents.Get(ctx, scope, to)
+}
+
+// CasesEnded is the Case-ending observer (`alerts/service.CaseEndings`): it runs
+// INSIDE the transaction that closed the Cases and announces `quiet` for every
+// Incident that closing left with no open member (ADR 0052 §3, §5).
+//
+// ⭐ "WENT QUIET" IS DECIDED HERE AND NOWHERE ELSE FOR A CLOSE, because a Case
+// closing is the only event that can quiet an Incident without a human touching
+// it — Cases are strictly terminal, so nothing can make a member open again. Every
+// Incident holding one of these Cases had that Case open a moment ago, so it was
+// active; if no current member is open now, it just went quiet. The row lock makes
+// two concurrent closes of an Incident's last two open Cases announce it once, not
+// zero times.
+//
+// It writes nothing to `incidents` or `incident_members`: the state is derived, so
+// there is nothing to write. It only declares.
+func (s *Service) CasesEnded(ctx context.Context, scope db.TenantScope, caseIDs []uuid.UUID) error {
+	if len(caseIDs) == 0 {
+		return nil
+	}
+	held, err := s.incidents.Holding(ctx, scope, caseIDs)
+	if err != nil || len(held) == 0 {
+		return err
+	}
+	if err := s.incidents.Lock(ctx, scope, held); err != nil {
+		return err
+	}
+	for _, id := range held {
+		open, err := s.incidents.OpenMembers(ctx, scope, id)
+		if err != nil {
+			return err
+		}
+		if open > 0 {
+			continue
+		}
+		if err := s.announce(ctx, scope, id, domain.FactQuiet); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// lockAndCount takes one Incident's row lock and reads its open-member count — the
+// "before" of a membership change, read where no concurrent change can move it.
+func (s *Service) lockAndCount(ctx context.Context, scope db.TenantScope, incidentID uuid.UUID) (int, error) {
+	if err := s.incidents.Lock(ctx, scope, []uuid.UUID{incidentID}); err != nil {
+		return 0, err
+	}
+	return s.incidents.OpenMembers(ctx, scope, incidentID)
+}
+
+// announceMembership declares a membership fact and, if the change moved the
+// Incident's derived state, the state fact after it — read under the lock the
+// caller already holds.
+func (s *Service) announceMembership(
+	ctx context.Context, scope db.TenantScope, incidentID uuid.UUID, fact domain.Fact, openBefore int,
+) error {
+	openAfter, err := s.incidents.OpenMembers(ctx, scope, incidentID)
+	if err != nil {
+		return err
+	}
+	if err := s.announce(ctx, scope, incidentID, fact); err != nil {
+		return err
+	}
+	if state, moved := domain.Transition(openBefore, openAfter); moved {
+		return s.announce(ctx, scope, incidentID, state)
+	}
+	return nil
+}
+
+// announce declares one fact, minting its occasion here — in the transaction that
+// made it true — so a redelivered job is the same fact and a second happening never
+// is.
+func (s *Service) announce(ctx context.Context, scope db.TenantScope, incidentID uuid.UUID, fact domain.Fact) error {
+	return s.announcer.Announce(ctx, scope, []Announcement{{
+		IncidentID: incidentID, Fact: fact, Occasion: id.New(),
+	}})
 }
 
 // resolveCases reads the named Cases inside the org, in the order asked, and

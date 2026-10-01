@@ -79,6 +79,49 @@ func (s State) String() string { return s.s }
 // AllStates is the closed set in contract order, for the enum gate.
 func AllStates() []State { return []State{StateActive, StateQuiet} }
 
+// Fact is one thing oto OBSERVED about an Incident, declared outbound (ADR 0052
+// §5). The five spellings are the notification Reasons they become; the
+// `notification` module owns that vocabulary and `internal/app` maps one onto the
+// other, so this module never imports it.
+//
+// ⛔ NONE OF THEM IS A COMMAND. There is no "resolved" and no "closed": oto sends an
+// incident tool facts and never a resolve, the same rule ADR 0013 set the other way
+// round.
+type Fact string
+
+// The five Incident facts.
+const (
+	// FactDrawn is the Incident being drawn over its first Cases.
+	FactDrawn Fact = "drawn"
+	// FactCaseAdded is a Case joining after the draw, including a move's arrival.
+	FactCaseAdded Fact = "case_added"
+	// FactCaseRemoved is a human taking a Case out, including a move's departure.
+	FactCaseRemoved Fact = "case_removed"
+	// FactQuiet is the derived state going from active to quiet: the last open
+	// member Case closed or left. Never "the incident is over".
+	FactQuiet Fact = "quiet"
+	// FactActiveAgain is the derived state going from quiet to active: an open Case
+	// joined. Cases never reopen (ADR 0040), so membership is the only way here.
+	FactActiveAgain Fact = "active_again"
+)
+
+// Transition is the state fact a membership change produced, if any: the
+// Incident's derived state read before and after the change, in the same
+// transaction, under the Incident's row lock.
+//
+// It is the one place the active→quiet and quiet→active edges are decided, so
+// every verb and the Case-ending observer agree on what counts as one.
+func Transition(openBefore, openAfter int) (Fact, bool) {
+	switch before, after := StateOf(openBefore), StateOf(openAfter); {
+	case before == StateActive && after == StateQuiet:
+		return FactQuiet, true
+	case before == StateQuiet && after == StateActive:
+		return FactActiveAgain, true
+	default:
+		return "", false
+	}
+}
+
 // Attribution is the answer to "why is this here?" — exactly one of a human or
 // an operator-written Correlator (ADR 0052 §2).
 //

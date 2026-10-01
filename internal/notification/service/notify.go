@@ -148,6 +148,7 @@ type NotificationService struct {
 	enqueuer      Enqueuer
 	channels      ChannelStore
 	settings      SettingsReader
+	incidents     IncidentReader
 	clk           clock.Clock
 	log           *slog.Logger
 }
@@ -175,8 +176,13 @@ type NotificationConfig struct {
 	// runs oto's shipped defaults, which is the correct degraded answer — a
 	// settings lookup must never be able to stop a notification.
 	Settings SettingsReader
-	Clock    clock.Clock
-	Logger   *slog.Logger
+	// Incidents reads the Incident an Incident fact is about (ADR 0052 §5). It is
+	// OPTIONAL in the constructor only so the many tests that never evaluate an
+	// Incident need not wire one; `EvaluateIncident` refuses loudly without it, and
+	// `internal/app` always supplies it.
+	Incidents IncidentReader
+	Clock     clock.Clock
+	Logger    *slog.Logger
 }
 
 // NewNotificationService builds the service.
@@ -196,7 +202,7 @@ func NewNotificationService(cfg NotificationConfig) (*NotificationService, error
 		txr: cfg.Tx, policies: cfg.Policies, notifications: cfg.Notifications,
 		deliveries: cfg.Deliveries, threads: cfg.Threads, snapshots: cfg.Snapshots,
 		events: cfg.Events, enqueuer: cfg.Enqueuer, channels: cfg.Channels,
-		settings: cfg.Settings, clk: cfg.Clock, log: cfg.Logger,
+		settings: cfg.Settings, incidents: cfg.Incidents, clk: cfg.Clock, log: cfg.Logger,
 	}
 	if s.clk == nil {
 		s.clk = clock.New()
@@ -807,7 +813,11 @@ func (s *NotificationService) fanOut(
 			threadID   *uuid.UUID
 			rootLanded bool
 		)
-		if needsThread(d.channel) {
+		// ⛔ AN INCIDENT FACT NEVER ASKS FOR A THREAD. `threads_subjkind_ck` does not
+		// admit `incident` (ADR 0052 §6 is its own ticket), so `EvaluateIncident`
+		// hands this function unthreaded destinations only; the guard is here so a
+		// future caller cannot reach `Ensure` with a conversation no thread can hold.
+		if needsThread(d.channel) && !n.Incident() {
 			kind, subject := threadSubjectOf(n)
 			th, err := s.threads.Ensure(ctx, scope, d.channel.ID, kind, subject, now)
 			if err != nil {
@@ -907,6 +917,12 @@ func (s *NotificationService) modesFor(
 	// digestModes.
 	if n.Digest() {
 		return digestModes(d.channel, rootLanded)
+	}
+	// An Incident fact is not a transition either, and on the only destinations
+	// that receive one — those that keep no thread — every message is a standalone
+	// post. See `incidentFanOut`.
+	if n.Incident() {
+		return []domain.Mode{domain.ModePostRoot}
 	}
 	in := d.input
 	in.ThreadExists = rootLanded

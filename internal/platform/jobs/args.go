@@ -195,6 +195,50 @@ func (NotifyEvaluateArgs) InsertOpts() river.InsertOpts {
 	}
 }
 
+// NotifyIncidentArgs evaluates notification policy for ONE FACT ABOUT AN INCIDENT
+// — drawn, a Case added or removed, quiet, active again (ADR 0052 §5). It is
+// enqueued by `incidents` inside the transaction that made the fact true, which
+// never imports `notification`: the queue is the seam (SPEC §I.1), exactly as for
+// `notify.evaluate`.
+//
+// Queue: notify · Priority: high · Retry: retryable (12) · Payload v1
+//
+// IDEMPOTENCY KEY: the §C.7 key over (org, `incident`, incident_id, reason, 1,
+// occasion_id). An Incident has no `state_version` — nothing about it is a
+// compare-and-set — so the OCCASION is the whole discriminator, and the producer
+// mints one per fact in the same transaction that enqueues this job. A redelivery
+// carries the same occasion and is swallowed by `notifications_idem_uniq`; a second
+// happening never carries the same one.
+//
+// ⛔ IT IS NOT `NotifyEvaluateArgs` WITH A FIELD ADDED. That job's subject IS a
+// Case — its tenancy is resolved through `alert_cases` — and an Incident fact names
+// no Case at all. A second kind keeps "which tenant owns this job" a question each
+// kind answers through its own subject's table.
+type NotifyIncidentArgs struct {
+	Payload
+	// IncidentID is the subject, and what the tenant is resolved through.
+	IncidentID uuid.UUID `json:"incident_id"`
+	// Reason is one of the five Incident Reasons.
+	Reason string `json:"reason"`
+	// OccasionID is WHICH TIME this fact happened. Required for every Incident
+	// Reason (`notification/domain.Reason.NeedsOccasion`).
+	OccasionID uuid.UUID `json:"occasion_id"`
+}
+
+// Kind implements db.JobArgs and river.JobArgs.
+func (NotifyIncidentArgs) Kind() string { return KindNotifyIncident }
+
+// InsertOpts pins the queue, priority and retry ceiling of this job type: the
+// same as `notify.evaluate`, because it is the same decision about a different
+// subject.
+func (NotifyIncidentArgs) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue:       QueueNotify,
+		Priority:    PriorityHigh,
+		MaxAttempts: MaxAttemptsRetryable,
+	}
+}
+
 // DeliverDispatchArgs sends one NotificationDelivery on one Channel. It is the
 // ONLY job subject to the per-thread ordering gate (SPEC §G.7); see
 // platform/jobs/ordering.

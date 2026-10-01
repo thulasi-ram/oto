@@ -208,3 +208,21 @@ type SnoozeRepository interface {
 	// ExpiredCandidates feeds the 60-second `snooze.expire` job (§B.8.3, §G.3).
 	ExpiredCandidates(ctx context.Context, s db.TenantScope, before time.Time, limit int) ([]domain.Snooze, error)
 }
+
+// CaseEndings is told, INSIDE the transaction that ended them, which Cases have
+// just closed (ADR 0052 §3, §5).
+//
+// It exists for one reader today: an Incident is `quiet` once no member Case is
+// open, and the moment that becomes true is the moment one of its Cases closes —
+// which only this module observes. Declaring the port HERE, and letting
+// `internal/app` satisfy it over `incidents/service`, keeps the dependency pointing
+// inward: alerts never imports the module that groups its Cases (CONTEXT.md §4).
+//
+// ⚠️ IT RUNS IN THE CLOSING TRANSACTION, so a failure fails the close and the
+// whole batch retries. That is deliberate rather than an oversight: the reader
+// enqueues the Incident fact through the same outbox, and a close that committed
+// without its fact would be the silent gap §B.6 refuses. What it does there must
+// therefore stay one indexed read and an enqueue.
+type CaseEndings interface {
+	CasesEnded(ctx context.Context, s db.TenantScope, caseIDs []uuid.UUID) error
+}

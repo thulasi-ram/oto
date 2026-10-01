@@ -19,7 +19,11 @@ import (
 type Repository interface {
 	List(ctx context.Context, s db.TenantScope, p db.Keyset) ([]domain.Incident, db.Cursor, error)
 	Get(ctx context.Context, s db.TenantScope, number int64) (domain.Detail, error)
+	GetByID(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Detail, error)
 	Ref(ctx context.Context, s db.TenantScope, number int64) (domain.Ref, error)
+	Lock(ctx context.Context, s db.TenantScope, ids []uuid.UUID) error
+	OpenMembers(ctx context.Context, s db.TenantScope, incidentID uuid.UUID) (int, error)
+	Holding(ctx context.Context, s db.TenantScope, caseIDs []uuid.UUID) ([]uuid.UUID, error)
 	Cases(ctx context.Context, s db.TenantScope, ids []uuid.UUID) (map[uuid.UUID]domain.CaseRef, error)
 	LiveMemberships(ctx context.Context, s db.TenantScope, caseIDs []uuid.UUID) (map[uuid.UUID]domain.Ref, error)
 	Insert(ctx context.Context, s db.TenantScope, at time.Time, by domain.Attribution) (domain.Ref, error)
@@ -56,4 +60,27 @@ type CaseFact struct {
 // satisfies it. One writer of request-shaped events, three doors onto it.
 type Timeline interface {
 	RecordIncidentFact(ctx context.Context, s db.TenantScope, f CaseFact) error
+}
+
+// Announcement is one Incident fact to declare outbound (ADR 0052 §5).
+type Announcement struct {
+	IncidentID uuid.UUID
+	Fact       domain.Fact
+	// Occasion is WHICH TIME this fact happened, minted in the transaction that made
+	// it true. An Incident has no version, so this is what keeps one Case added,
+	// removed and added again from collapsing into one notification.
+	Occasion uuid.UUID
+}
+
+// Announcer hands Incident facts to the notification layer, INSIDE the caller's
+// transaction (ADR 0001's outbox): a membership change and the job that declares
+// it commit together, so a fact can neither be lost by a crash after the commit nor
+// sent for a change that rolled back.
+//
+// ⛔ THIS MODULE MAY NOT IMPORT `notification` FOR IT. `internal/app` satisfies the
+// port by enqueueing `notify.incident`; whether any policy routes the fact
+// anywhere is entirely the notification layer's decision, and an org with no such
+// policy sends nothing.
+type Announcer interface {
+	Announce(ctx context.Context, s db.TenantScope, facts []Announcement) error
 }

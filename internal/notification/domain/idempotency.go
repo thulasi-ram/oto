@@ -47,6 +47,11 @@ var subjectKinds = map[SubjectKind]struct{}{
 	// THREAD's digest subject is the POLICY alone — one ongoing conversation per
 	// policy per channel, one reply per window.
 	SubjectDigest: {},
+	// `incident` (migration 00084) is admitted by `notifications_subjkind_ck` and
+	// NOT by `threads_subjkind_ck`: an Incident fact has a subject, and an Incident
+	// is not yet a thread on any channel (ADR 0052 §6 is its own ticket). See
+	// `ConversationIncident`.
+	SubjectIncident: {},
 }
 
 // allSubjectKinds is the same closed set as an ORDERED slice, and the two
@@ -60,7 +65,7 @@ var subjectKinds = map[SubjectKind]struct{}{
 // 00056, digest at 00058 — which is the same convention `allReasons` follows
 // ("migration 00018 declares it, 00058 appends to it"). Re-sorting a published
 // enum is a contract change for nothing.
-var allSubjectKinds = []SubjectKind{SubjectAlert, SubjectCase, SubjectDigest}
+var allSubjectKinds = []SubjectKind{SubjectAlert, SubjectCase, SubjectDigest, SubjectIncident}
 
 // AllSubjectKinds returns the closed SubjectKind vocabulary in declaration order.
 // The slice is freshly built so a caller cannot mutate the vocabulary.
@@ -179,6 +184,15 @@ func IdempotencyKey(
 func (r Reason) NeedsOccasion() bool {
 	switch r {
 	case ReasonSnoozed, ReasonUnsnoozed:
+		return true
+	case ReasonDrawn, ReasonCaseAdded, ReasonCaseRemoved, ReasonQuiet, ReasonActiveAgain:
+		// ⭐ AN INCIDENT HAS NO `state_version`, AND EVERY ONE OF ITS FACTS IS AN
+		// OCCASION. Nothing about an Incident is a compare-and-set, so the version is a
+		// constant and the occasion is the whole of what tells two facts apart: one Case
+		// added, removed and added again is three facts about the same subject with the
+		// same Reason twice. The producer mints one occasion per fact, inside the
+		// transaction that made it true, and the job carries it — so a redelivered job
+		// is the same key and a second happening never is.
 		return true
 	default:
 		return false

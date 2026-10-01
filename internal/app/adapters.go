@@ -318,6 +318,115 @@ func (r *timelineRecorder) RecordIncidentFact(
 	})
 }
 
+// ---------------------------------------------------------------- incidents
+
+// incidentAnnouncer is `incidents/service.Announcer` over the outbox: each Incident
+// fact becomes one `notify.incident` job, enqueued in the transaction that made it
+// true (ADR 0001, ADR 0052 §5).
+//
+// ⛔ IT DECIDES NOTHING ABOUT DELIVERY. Whether a policy routes the fact, and where,
+// is `notification/service.EvaluateIncident`'s question; an org with no Incident
+// policy has the job evaluate to a recorded `no_policy` and sends nothing.
+//
+// ⭐ THE FACT IS CHECKED AGAINST THE REASON VOCABULARY HERE, at the one place the two
+// modules' words meet, so a Fact spelled differently from its Reason fails the
+// membership change that produced it rather than dead-lettering a job afterwards.
+type incidentAnnouncer struct {
+	enq db.Enqueuer
+}
+
+func (a incidentAnnouncer) Announce(
+	ctx context.Context, _ db.TenantScope, facts []incidentsservice.Announcement,
+) error {
+	reqs := make([]db.JobRequest, 0, len(facts))
+	for _, f := range facts {
+		reason := notifdomain.Reason(f.Fact)
+		if !reason.Valid() || reason.Subject() != notifdomain.SubjectIncident {
+			return errs.Newf(errs.KindInternal, "incident_fact_unmapped",
+				"Incident fact %q is not an Incident notification reason", f.Fact)
+		}
+		reqs = append(reqs, db.JobRequest{Args: jobs.NotifyIncidentArgs{
+			IncidentID: f.IncidentID,
+			Reason:     string(reason),
+			OccasionID: f.Occasion,
+		}})
+	}
+	if len(reqs) == 0 {
+		return nil
+	}
+	_, err := a.enq.EnqueueMany(ctx, reqs)
+	return err
+}
+
+// incidentFacts is `notification/service.IncidentReader` over `incidents/service`
+// — the struct copy the boundary costs, in the shape `notificationReader` pays it
+// the other way round.
+//
+// ⚠️ LATE-BOUND: notification is built before incidents, so the holder is handed
+// over empty and filled once `c.Incidents` exists. An unfilled holder is an error,
+// never an empty Incident: a card about a story oto could not read would be a
+// positive false statement.
+type incidentFacts struct {
+	svc *incidentsservice.Service
+}
+
+func (r *incidentFacts) Incident(
+	ctx context.Context, s db.TenantScope, id uuid.UUID,
+) (notifdomain.IncidentFacts, error) {
+	if r.svc == nil {
+		return notifdomain.IncidentFacts{}, errs.New(errs.KindInternal, "incident_reader_unwired",
+			"the Incident reader is not wired yet")
+	}
+	d, err := r.svc.GetByID(ctx, s, id)
+	if err != nil {
+		return notifdomain.IncidentFacts{}, err
+	}
+	out := notifdomain.IncidentFacts{
+		ID:                d.ID,
+		Number:            d.Number,
+		Active:            d.OpenMemberCount > 0,
+		DrawnAt:           d.DrawnAt,
+		DrawnByLabel:      d.DrawnBy.Label(),
+		DrawnByCorrelator: d.DrawnBy.CorrelatorID(),
+		Members:           make([]notifdomain.IncidentMemberFacts, 0, len(d.Members)),
+	}
+	for _, m := range d.Members {
+		out.Members = append(out.Members, notifdomain.IncidentMemberFacts{
+			CaseID:            m.CaseID,
+			CaseNumber:        m.CaseNumber,
+			CaseOpen:          m.CaseState.IsOpen(),
+			AlertID:           m.AlertID,
+			Alertname:         m.Alertname,
+			Labels:            m.Labels,
+			AddedAt:           m.AddedAt,
+			AddedByLabel:      m.AddedBy.Label(),
+			AddedByCorrelator: m.AddedBy.CorrelatorID(),
+			RemovedAt:         m.RemovedAt,
+			RemovedByLabel:    m.RemovedByLabel,
+			MovedToNumber:     m.MovedToNumber,
+		})
+	}
+	return out, nil
+}
+
+// caseEndings is `alerts/service.CaseEndings` over `incidents/service`: a Case that
+// closed may have left its Incident quiet (ADR 0052 §3).
+//
+// ⚠️ LATE-BOUND, AND NIL ANSWERS NIL. alerts is the heart everything is wired
+// around and is built first; the holder is filled the moment incidents exists. A
+// close before that — which only construction itself could cause — has no Incident
+// to quiet, because nothing could have drawn one yet.
+type caseEndings struct {
+	svc *incidentsservice.Service
+}
+
+func (c *caseEndings) CasesEnded(ctx context.Context, s db.TenantScope, caseIDs []uuid.UUID) error {
+	if c.svc == nil {
+		return nil
+	}
+	return c.svc.CasesEnded(ctx, s, caseIDs)
+}
+
 // withKey returns the payload with one more entry, without mutating the caller's
 // map. The caller keeps its own copy — a recorder that edited it would be editing
 // the map the emitting service still holds.

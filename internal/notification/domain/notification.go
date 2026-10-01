@@ -284,6 +284,12 @@ type Notification struct {
 // policy, and that its card is drawn from DigestCount instead of from a snapshot.
 func (n Notification) Digest() bool { return n.SubjectKind == SubjectDigest }
 
+// Incident reports whether this Notification is a fact about an Incident (ADR
+// 0052 §5) — and therefore that it names no alert and no case, that its card is
+// drawn from the Incident rather than from a snapshot, and that a threaded
+// destination cannot carry it yet.
+func (n Notification) Incident() bool { return n.SubjectKind == SubjectIncident }
+
 // Delivery is ONE MATERIALISATION of a Notification on ONE Channel. It owns the
 // retry state, the provider ids and the rendered payload.
 type Delivery struct {
@@ -404,6 +410,18 @@ const (
 	// spans many generations, which is why it could never carry a group id and why
 	// it was the exception the pair exists to retire.
 	ConversationDigest ConversationKind = "digest"
+	// ConversationIncident is an Incident's own conversation (migration 00084).
+	//
+	// ⚠️ IT IS A CONVERSATION NO CHANNEL CAN HOLD AS A THREAD YET, AND THAT IS
+	// STATED RATHER THAN PAPERED OVER. `notifications.conversation_kind` is NOT
+	// NULL, so an Incident fact must say where it lands, and "in the Incident's own
+	// conversation" is the honest answer. On the generic webhook — which keeps no
+	// thread — that is just the destination. `threads_subjkind_ck` deliberately does
+	// NOT admit `incident`: an Incident becomes a thread only when a Correlator says
+	// its Incidents are conversations (ADR 0052 §6), which is its own ticket, so the
+	// incident fan-out SKIPS a threaded destination with that sentence instead of
+	// asking `Ensure` for a thread the schema refuses.
+	ConversationIncident ConversationKind = "incident"
 )
 
 // SubjectKind maps a conversation kind onto the `channel_threads.subject_kind`
@@ -420,6 +438,11 @@ func (k ConversationKind) SubjectKind() SubjectKind {
 		return SubjectCase
 	case ConversationDigest:
 		return SubjectDigest
+	case ConversationIncident:
+		// Total over the vocabulary, as the comment above promises. Nothing asks
+		// `Ensure` for this one — `fanOut` refuses to — and if anything ever did,
+		// `threads_subjkind_ck` is the loud failure that says so.
+		return SubjectIncident
 	}
 	return ""
 }

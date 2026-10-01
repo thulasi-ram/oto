@@ -50,6 +50,21 @@ func (r *ScopeResolver) ForCase(ctx context.Context, caseID uuid.UUID) (db.Tenan
 	return db.NewTenantScope(orgID)
 }
 
+// orgOfIncidentSQL resolves an Incident fact's tenant through the Incident itself
+// (ADR 0052 §5). It is the third subject-producing read, and it reads a table this
+// module does not own on the same terms the Case read above does: the id comes from
+// oto's own job args, and the answer is what every later query is scoped by.
+const orgOfIncidentSQL = `SELECT org_id FROM incidents WHERE id = $1`
+
+// ForIncident resolves the tenant that owns an Incident.
+func (r *ScopeResolver) ForIncident(ctx context.Context, incidentID uuid.UUID) (db.TenantScope, error) {
+	var orgID uuid.UUID
+	if err := r.db(ctx).QueryRow(ctx, orgOfIncidentSQL, incidentID).Scan(&orgID); err != nil {
+		return db.TenantScope{}, mapErr(err, "incident_not_found", "incident")
+	}
+	return db.NewTenantScope(orgID)
+}
+
 const orgOfDeliverySQL = `SELECT org_id FROM notification_deliveries WHERE id = $1`
 
 // ForDelivery resolves the tenant that owns a delivery.

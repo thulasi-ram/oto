@@ -63,6 +63,9 @@ func newIncidentTimelineRig(t *testing.T) *incidentTimelineRig {
 		Incidents: incidentsrepo.NewIncidentRepository(h.Pool),
 		Tx:        incidentsrepo.NewTxRunner(h.Pool),
 		Timeline:  recorder,
+		// Declared nowhere: this test is about the Case timelines, and the outbound
+		// half has its own tests on both sides of the port.
+		Announcer: discardAnnouncements{},
 		Clock:     h.Clock,
 	})
 	require.NoError(t, err)
@@ -143,4 +146,11 @@ func TestEveryIncidentMembershipChangeIsOnTheMemberCasesTimeline(t *testing.T) {
 	}
 	assert.Contains(t, types, "incident.case_added")
 	assert.Contains(t, types, "incident.case_moved")
+}
+
+// discardAnnouncements is the Announcer port with nobody listening.
+type discardAnnouncements struct{}
+
+func (discardAnnouncements) Announce(context.Context, db.TenantScope, []incidentsservice.Announcement) error {
+	return nil
 }

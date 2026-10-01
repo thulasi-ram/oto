@@ -12,6 +12,7 @@ import (
 	identityapi "github.com/thulasiram/oto/internal/identity/api"
 	identityrepo "github.com/thulasiram/oto/internal/identity/repository"
 	identityservice "github.com/thulasiram/oto/internal/identity/service"
+	incidentsservice "github.com/thulasiram/oto/internal/incidents/service"
 	ingestservice "github.com/thulasiram/oto/internal/ingestion/service"
 	notifapi "github.com/thulasiram/oto/internal/notification/api"
 	notifrepo "github.com/thulasiram/oto/internal/notification/repository"
@@ -58,6 +59,9 @@ var (
 	_ alertsservice.StreamAppender     = streamAppender{}
 	_ alertsservice.NotificationReader = (*notificationReader)(nil)
 	_ alertsservice.EnrichmentReader   = enrichmentReader{}
+	_ alertsservice.CaseEndings        = (*caseEndings)(nil)
+	_ incidentsservice.Announcer       = incidentAnnouncer{}
+	_ notifservice.IncidentReader      = (*incidentFacts)(nil)
 	_ alertsservice.SourceHealth       = sourceHealth{}
 	_ alertsservice.SettingsReader     = orgSettings{}
 	_ notifservice.SettingsReader      = orgSettings{}

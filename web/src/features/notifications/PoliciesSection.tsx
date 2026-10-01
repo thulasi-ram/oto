@@ -625,6 +625,16 @@ const REASON_LABEL: Record<NotificationReason, string> = {
   // damps nothing: a policy with a window sends the digest IN ADDITION to
   // whatever else it routes.
   digest: "window summary",
+  // ⭐ THE FIVE INCIDENT FACTS (ADR 0052 §5). Ticking them, with the subject bound
+  // to "an Incident", is the whole of "every Incident goes to the incident tool".
+  // ⛔ None of them is a command: there is no "resolved" to tick, because oto
+  // declares facts and never resolves another tool's incident. "went quiet" means
+  // every member Case closed — the label says exactly that and no more.
+  drawn: "Incident drawn",
+  case_added: "Case added to an Incident",
+  case_removed: "Case removed from an Incident",
+  quiet: "Incident went quiet",
+  active_again: "Incident active again",
 };
 
 /**
@@ -647,12 +657,16 @@ const SUBJECT_LABEL: Record<SubjectKind, string> = {
   // The only altitude that is not a row in the signal graph — a window over a
   // namespace, minted by the tick rather than by anything that happened.
   digest: "a window",
+  // A set of Cases drawn as one story (ADR 0052). Its facts are about the story,
+  // never about one of its signals, and today they reach the generic webhook only.
+  incident: "an Incident",
 };
 
 const SUBJECT_HELP: Record<SubjectKind, string> = {
   alert: "suppressed, snoozed, commented on",
   case: "started, acknowledged, resolved, enriched, rule changed",
   digest: "the periodic summary",
+  incident: "drawn, a Case added or removed, quiet, active again — webhook only",
 };
 
 export const PoliciesSection: Component = () => {
