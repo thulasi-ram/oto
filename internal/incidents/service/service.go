@@ -121,6 +121,25 @@ func (s *Service) HoldingCase(ctx context.Context, scope db.TenantScope, caseID 
 	return []domain.Incident{d.Incident}, nil
 }
 
+// ConversationFor answers the notification layer's one question about a Case at
+// the moment it evaluates a fact about it (ADR 0052 §6): is this Case in an
+// Incident that is a CONVERSATION — drawn by a Correlator that says its Incidents
+// are — and if so, which one?
+//
+// ⭐ THE BOUNDARY IS THE MEMBERSHIP ROW'S COMMIT, AND NOTHING WAITS ON IT. A fact
+// evaluated before the Case joined reads no row and lands in the Case's own
+// thread; one evaluated after reads the row and lands in the Incident's. Nothing
+// here holds a fact back for a Correlator that has not run yet, and nothing moves a
+// fact that has already been placed.
+//
+// ⭐ A HUMAN'S MEMBERSHIP COUNTS THE SAME AS A CORRELATOR'S. A Case a human added
+// to, or moved into, a Correlator-drawn conversation is a member like any other,
+// and its later facts follow it there; a Case moved OUT follows the move. What
+// decides is the Incident's author, never the membership's.
+func (s *Service) ConversationFor(ctx context.Context, scope db.TenantScope, caseID uuid.UUID) (domain.Ref, bool, error) {
+	return s.incidents.ConversationHolding(ctx, scope, caseID)
+}
+
 // Draw is a human drawing one Incident over one or more Cases (ADR 0052 §2).
 //
 // ⭐ ALL OR NOTHING. A Case the org does not have, or one already in another

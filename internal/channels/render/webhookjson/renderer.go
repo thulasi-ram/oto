@@ -108,7 +108,7 @@ func (r *Renderer) Render(
 		env.Summary = digestSummary(*v.Digest)
 	case v.Incident != nil:
 		// ⭐ THE INCIDENT IS DECIDED BESIDE THE DIGEST AND FOR THE SAME REASON: the view
-		// says what it IS. `ViewService.incident` builds a view carrying a Reason, an
+		// says what it IS. `ViewService.incidentCard` builds a view carrying a Reason, an
 		// `Incident` and a render time and nothing else, so — as for a digest — every
 		// Case-shaped key below stays absent by construction.
 		env.Incident = mapIncident(*v.Incident)

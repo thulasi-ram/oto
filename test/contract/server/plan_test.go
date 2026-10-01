@@ -607,6 +607,9 @@ func plan() []probe {
 				"count_min":            5,
 				"count_window_seconds": 600,
 				"quiet_grace_seconds":  1800,
+				// ADR 0052 §6. Harmless here for the matcher's reason above: no probe
+				// ingests the alertname, so no Incident of it ever has a thread.
+				"incidents_are_conversations": true,
 			},
 			want:    http.StatusCreated,
 			capture: map[string][]string{"correlator": {"data", "id"}},

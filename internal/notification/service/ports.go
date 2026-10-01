@@ -152,6 +152,7 @@ type DeliveryStore interface {
 type ThreadStore interface {
 	Ensure(ctx context.Context, s db.TenantScope, channelID uuid.UUID, kind domain.SubjectKind, subjectID uuid.UUID, now time.Time) (domain.Thread, error)
 	Get(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Thread, error)
+	ForSubjects(ctx context.Context, s db.TenantScope, kind domain.SubjectKind, subjectIDs []uuid.UUID) ([]domain.Thread, error)
 	AllocateSeq(ctx context.Context, s db.TenantScope, threadID uuid.UUID, now time.Time) (int, error)
 	RecordRoot(ctx context.Context, s db.TenantScope, threadID uuid.UUID, conversationID, messageID string, rootDeliveryID uuid.UUID, seq int, now time.Time) error
 	RecordReply(ctx context.Context, s db.TenantScope, threadID uuid.UUID, seq int, now time.Time) error

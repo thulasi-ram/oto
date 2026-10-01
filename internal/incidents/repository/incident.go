@@ -89,7 +89,9 @@ SELECT i.id, i.number, i.drawn_at, i.drawn_by, i.drawn_by_label, i.drawn_by_corr
        count(c.id)::int AS member_count,
        (count(c.id) FILTER (WHERE c.state = 'open'))::int AS open_member_count,
        COALESCE((array_agg(DISTINCT a.alertname ORDER BY a.alertname)
-                   FILTER (WHERE a.alertname IS NOT NULL))[1:10], '{}') AS alertnames
+                   FILTER (WHERE a.alertname IS NOT NULL))[1:10], '{}') AS alertnames,
+       COALESCE((SELECT k.incidents_are_conversations
+                   FROM correlators k WHERE k.id = i.drawn_by_correlator_id), false) AS conversation
   FROM incidents i
   LEFT JOIN incident_members m ON m.incident_id = i.id AND m.removed_at IS NULL
   LEFT JOIN alert_cases c      ON c.id = m.case_id
@@ -107,11 +109,12 @@ type summaryRow struct {
 	members      int
 	open         int
 	alertnames   []string
+	conversation bool
 }
 
 func (r *summaryRow) scanInto() []any {
 	return []any{&r.id, &r.number, &r.drawnAt, &r.drawnBy, &r.drawnByLabel, &r.correlatorID,
-		&r.members, &r.open, &r.alertnames}
+		&r.members, &r.open, &r.alertnames, &r.conversation}
 }
 
 func (r summaryRow) toDomain() (domain.Incident, error) {
@@ -131,6 +134,7 @@ func (r summaryRow) toDomain() (domain.Incident, error) {
 		MemberCount:     r.members,
 		OpenMemberCount: r.open,
 		Alertnames:      names,
+		Conversation:    r.conversation,
 	}, nil
 }
 
@@ -413,6 +417,45 @@ func (r *IncidentRepository) Holding(ctx context.Context, s db.TenantScope, case
 		out = append(out, id)
 	}
 	return out, mapErr(rows.Err(), "read the incidents holding cases")
+}
+
+// ⭐ THE CONVERSATION A CASE'S NEXT FACT LANDS IN, IN ONE INDEXED READ (ADR 0052
+// §6). The Case's CURRENT membership rides `incident_members_case_live_uniq` — a
+// unique index on exactly `case_id WHERE removed_at IS NULL`, so there is at most
+// one row — and the Incident is a conversation only while the Correlator that drew
+// it says so. A human-drawn Incident has no Correlator and the inner join drops it.
+//
+// ⚠️ A RETIRED OR DISABLED CORRELATOR STILL ANSWERS. `deleted_at` and `enabled`
+// stop a Correlator DRAWING; they say nothing about whether the stories it already
+// drew are conversations, and a thread that went quiet the moment its author was
+// switched off would scatter the next fact of a live storm into its Case's thread.
+// Clearing the setting is how an operator ends it.
+const conversationHoldingSQL = `
+SELECT i.id, i.number
+  FROM incident_members m
+  JOIN incidents i   ON i.id = m.incident_id AND i.org_id = m.org_id
+  JOIN correlators k ON k.id = i.drawn_by_correlator_id
+ WHERE m.org_id = $1 AND m.case_id = $2 AND m.removed_at IS NULL
+   AND k.incidents_are_conversations`
+
+// ConversationHolding returns the Incident whose conversation a fact about this
+// Case belongs in NOW, if there is one: the Incident the Case is a current member
+// of, when its Correlator says its Incidents are conversations.
+func (r *IncidentRepository) ConversationHolding(
+	ctx context.Context, s db.TenantScope, caseID uuid.UUID,
+) (domain.Ref, bool, error) {
+	if err := db.RequireScope(s); err != nil {
+		return domain.Ref{}, false, err
+	}
+	var ref domain.Ref
+	err := r.db(ctx).QueryRow(ctx, conversationHoldingSQL, s.OrgID(), caseID).Scan(&ref.ID, &ref.Number)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Ref{}, false, nil
+		}
+		return domain.Ref{}, false, mapErr(err, "read the incident conversation holding a case")
+	}
+	return ref, true, nil
 }
 
 const refSQL = `SELECT id, number FROM incidents WHERE org_id = $1 AND number = $2`

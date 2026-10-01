@@ -98,7 +98,7 @@ These names are binding on Go types, table names, JSON fields, API paths and UI 
 | **NotificationPolicy** | `notification.Policy` | `notification_policies` | matchers → channels → reasons. Decides *whether* and *where*. |
 | **Notification** | `notification.Notification` | `notifications` | **The channel-agnostic intent to communicate one fact about one subject.** Idempotent. |
 | **NotificationDelivery** | `notification.Delivery` | `notification_deliveries` | **One materialisation of a Notification on one Channel.** Owns retry state, provider ids, thread sequence, rendered bytes. |
-| **Conversation** | `notification.ConversationKind` + id | *(the pair `(conversation_kind, conversation_id)` on `notifications`)* | What a `channel_threads` row is *about*: a **Case** or a **digest**. A conversation holds exactly **one Case** — a new Case always means a new thread — and a digest's conversation is keyed by the **policy** that asked for it, one per policy per channel. It is what **decides which facts share a message**, and that decision belongs to the `notification` layer, not to a stored grouping row (git-bug `7570090`, migration `00069`). It is **not** an Incident: an Incident is a set of Cases (ADR 0052), and a conversation is about one Case or one digest — unless the Incident's Correlator says its Incidents are conversations, which ADR 0052 §6 admits as a third `conversation_kind`, `incident`, when the Incident module lands. |
+| **Conversation** | `notification.ConversationKind` + id | *(the pair `(conversation_kind, conversation_id)` on `notifications`)* | What a `channel_threads` row is *about*: a **Case** or a **digest**. A conversation holds exactly **one Case** — a new Case always means a new thread — and a digest's conversation is keyed by the **policy** that asked for it, one per policy per channel. It is what **decides which facts share a message**, and that decision belongs to the `notification` layer, not to a stored grouping row (git-bug `7570090`, migration `00069`). It is **not** an Incident: an Incident is a set of Cases (ADR 0052), and a conversation is about one Case or one digest — unless the Incident's Correlator says its Incidents are conversations, which ADR 0052 §6 admits as a third `conversation_kind`, `incident` (migrations `00084`, `00087`): a fact about a member Case evaluated after its membership exists posts into the Incident's thread; nothing is held back and nothing already posted moves. |
 | **ChannelThread** | `notification.Thread` | `channel_threads` | Persisted binding of a **Conversation** to a provider conversation anchor (Slack `channel_id` + root `ts`). |
 | **Silence** | `silences.Silence` | `silences` | A **read-only mirror** of an Alertmanager silence. |
 | **UIEvent** | `streaming.UIEvent` | `ui_events` | A monotonic, replayable envelope for the SSE stream. |
@@ -2250,9 +2250,12 @@ CREATE TABLE channel_threads (
   id                       UUID        PRIMARY KEY,
   org_id                   UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
   channel_id               UUID        NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
-  subject_kind             TEXT        NOT NULL CHECK (subject_kind IN ('alert','case','digest')),
-  subject_id               UUID        NOT NULL,   -- alerts.id | alert_cases.id | notification_policies.id, per
-                                                   -- subject_kind. ⛔ `alert_group` LEFT THIS SET with the entity
+  subject_kind             TEXT        NOT NULL CHECK (subject_kind IN ('alert','case','digest','incident')),
+  subject_id               UUID        NOT NULL,   -- alerts.id | alert_cases.id | notification_policies.id |
+                                                   -- incidents.id, per subject_kind. `incident` (00087, ADR 0052
+                                                   -- §6): an Incident whose Correlator says its Incidents are
+                                                   -- conversations keys a thread whose ROOT is the Incident's card;
+                                                   -- later facts about its member Cases reply beneath it. ⛔ `alert_group` LEFT THIS SET with the entity
                                                    -- (git-bug 7570090, migration 00069, narrowing threads_subjkind_ck).
                                                    -- v1 keyed EVERY thread by the alert_groups GENERATION, so forty
                                                    -- alerts produced one thread; a conversation now holds exactly one
@@ -2407,7 +2410,10 @@ CREATE TABLE notifications (
   -- the set in git-bug 7570090 and `case` replaced it. There is no `notifications_target_ck` beside
   -- it any more: every row names a conversation unconditionally, so the digest is no longer the one
   -- exception carved into a CHECK.
-  CONSTRAINT notifications_convkind_ck CHECK (conversation_kind IN ('case','digest')),
+  -- `incident` joined at 00084 (an Incident fact names the Incident's conversation) and since 00087
+  -- a CASE fact may name it too: the Case was a member of an Incident that is a conversation when
+  -- the fact was evaluated, and the answer is frozen on the row (ADR 0052 §6).
+  CONSTRAINT notifications_convkind_ck CHECK (conversation_kind IN ('case','digest','incident')),
   -- the two digest columns are present exactly for a digest, and a stored count is at least 1.
   -- The range test is a SEPARATE conjunct: folding it into the equality would make the whole
   -- predicate NULL for a digest row with a missing count, and a CHECK passes on NULL.
@@ -4645,6 +4651,24 @@ exists: an episode above the first succeeded one that had ended.
 **⛔ THE `storm` REPLY WAS HERE AND IS DELETED (ADR 0042), which is NOT `refired`'s treatment.** `refired` keeps its row because `notifications_reason_ck` still admits the value: a stored row can spell it, a policy can match on it, and a card rendering one must not fail. `storm` had exactly that argument until migration `00060` narrowed the CHECK to eighteen values and the owner authorised the database reset, at which point no row can spell it and no reader can be constructed. `reasonStorm` is gone from `render/slack/reply.go` — line 33 is the tombstone — and so are `replyLead`'s `:zap: Storm damping on for:` heading and `reasonPhrase`'s *storm damping* words. **The test is whether a ROW can spell it, and after 00060 none can.**
 
 `rule_changed` is the headline differentiator and is **always** delivered as a reply, regardless of verbosity. There is no exception: the storm-mode carve-out went with ADR 0042.
+
+**An Incident's conversation (ADR 0052 §6, migration `00087`, `render/slack/incident.go`).** When a
+Correlator says its Incidents are conversations, the Incident gets a thread of its own and three
+messages exist beside the Case's:
+
+| Message | Where | Blocks | Literal example |
+|---|---|---|---|
+| Incident card (root) | the Incident's thread | `section` + `fields` + `section` (current members, capped at the instance budget) + `context` | `":jigsaw: *<…/incidents/12\|Incident #12>* — :fire: *Active*, 1 case open"` · fields `Cases`, `Open` (omitted at 0, S11), `Drawn`, `Drawn by` · one bullet per current member, `"• :fire: <…/cases/…\|Case #412>"` plus its alertname as code |
+| Incident fact reply | the Incident's thread | 1 × `section` | `":heavy_plus_sign: *A case joined* — now 3 cases, 2 open"` |
+| Pointer | each member Case's OWN thread, once | 1 × `section` | `":arrow_right: *Now part of <…\|Incident #12>* — later updates about this case are posted in that Incident's thread, not here."` |
+
+The root is **always the Incident's card**, whichever fact posts or amends it — a Case fact that is the
+first to reach a channel posts the card and replies under it. It carries **no actions** (every action
+acts on one signal), the firing colour while a member Case is open and the neutral bar once quiet —
+**never** the resolved green, because quiet is not resolved. A Case fact replying in the Incident's thread
+is its ordinary §H.5 reply with the Case named in front (`*<…\|Case #412>*`, its alertname as code, then
+` · `), and `(case #412 in Incident #12)` in the top-level text. There is no outbound link yet: §5's outbound
+mapping is not stored by any table.
 
 ### H.6 `notification_reason` → Reason → mode decision table (BINDING)
 

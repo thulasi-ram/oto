@@ -135,6 +135,43 @@ func (r *ThreadRepository) Ensure(
 	return t, nil
 }
 
+const threadsForSubjectsSQL = `
+SELECT` + threadColumns + `
+  FROM channel_threads
+ WHERE org_id = $1 AND subject_kind = $2 AND subject_id = ANY($3::uuid[])
+ ORDER BY subject_id, channel_id`
+
+// ForSubjects lists every thread, on every channel, keyed by any of the given
+// subjects of one kind.
+//
+// ⭐ ITS ONE READER IS THE INCIDENT POINTER (ADR 0052 §6). When a Case's later facts
+// start going to an Incident's thread, each thread the Case ALREADY has gets one
+// "now part of Incident #N" reply — and which channels those are is exactly what
+// this table remembers and nothing else does: the policy that routed the Case's
+// first fact may have changed since, and the threads are where messages actually
+// landed. `threads_subject_idx` (00087) serves it.
+func (r *ThreadRepository) ForSubjects(
+	ctx context.Context, s db.TenantScope, kind domain.SubjectKind, subjectIDs []uuid.UUID,
+) ([]domain.Thread, error) {
+	if len(subjectIDs) == 0 {
+		return nil, nil
+	}
+	rows, err := r.db(ctx).Query(ctx, threadsForSubjectsSQL, s.OrgID(), string(kind), subjectIDs)
+	if err != nil {
+		return nil, mapErr(err, "thread_not_found", "list channel threads")
+	}
+	defer rows.Close()
+	var out []domain.Thread
+	for rows.Next() {
+		t, err := scanThread(rows)
+		if err != nil {
+			return nil, mapErr(err, "thread_not_found", "list channel threads")
+		}
+		out = append(out, t)
+	}
+	return out, mapErr(rows.Err(), "thread_not_found", "list channel threads")
+}
+
 const getThreadSQL = `
 SELECT` + threadColumns + `
   FROM channel_threads

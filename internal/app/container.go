@@ -928,8 +928,11 @@ func (c *Container) buildNotification(
 		// grouping lifecycle ports use.
 		Settings:  settings,
 		Incidents: c.incidentFacts,
-		Clock:     clk,
-		Logger:    logger,
+		// The same holder answers which Incident conversation a Case fact belongs
+		// in (ADR 0052 §6), read once per fact as it is evaluated.
+		Conversations: c.incidentFacts,
+		Clock:         clk,
+		Logger:        logger,
 	}); err != nil {
 		return err
 	}

@@ -70,6 +70,9 @@ const (
 func (r *Renderer) renderReply(v *domain.NotificationView, o domain.RenderOptions) (Payload, string, string) {
 	nonce := renderNonce(v, o)
 	body, extra, colour := r.replyBody(v)
+	// In an Incident's thread the reply has to say which Case it is about (ADR 0052
+	// §6); everywhere else this prefix is "" and the reply's bytes do not move.
+	body = incidentCasePrefix(v) + body
 
 	blocks := []Block{sectionBlock(blockID("reply", nonce), truncateSection(body, v.Links.Group))}
 	if extra != "" {
@@ -720,6 +723,10 @@ func replyText(v *domain.NotificationView) string {
 	if cluster := clusterChip(v); cluster != "" {
 		out += " on " + cluster
 	}
+	// "(case #412 in Incident #12)" when the reply is posted in an Incident's thread
+	// (ADR 0052 §6): forty Cases share that thread, and a push notification that
+	// named only the alert would not say which of them moved.
+	out += incidentCaseClause(v)
 	out += "."
 
 	// ⛔⛔ THE FACTS CLAUSE IS WHAT MAKES ADR 0020's RULE 4 TRUE RATHER THAN

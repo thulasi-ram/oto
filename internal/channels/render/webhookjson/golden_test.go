@@ -255,7 +255,7 @@ func TestADigestAssertsNoGroup(t *testing.T) {
 	}
 }
 
-// incidentView is what `notification/service.ViewService.incident` builds, field
+// incidentView is what `notification/service.ViewService.incidentCard` builds, field
 // for field: a Reason, an `IncidentView` and a render time, and NOTHING else (ADR
 // 0052 §5). Two current members — one open, one closed — and one tombstone that was
 // moved away, so every member key, set and absent, is on the wire.

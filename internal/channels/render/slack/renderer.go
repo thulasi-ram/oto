@@ -86,19 +86,6 @@ func (r *Renderer) Render(
 		fallback string
 		summary  string
 	)
-	// ⛔ AN INCIDENT FACT IS REFUSED, NOT DRAWN, AND THE FAN-OUT NEVER SENDS ONE HERE.
-	// An Incident is not yet a conversation on any threaded channel (ADR 0052 §6 is
-	// its own ticket, and `threads_subjkind_ck` does not admit it), so
-	// `notification/service`'s incident fan-out records a Slack destination as a
-	// SKIPPED delivery with that sentence and never reaches this renderer. Should
-	// anything ever route one here anyway, a Case-shaped card built from an empty
-	// group would be a positive false statement; a loud refusal is the honest
-	// failure.
-	if v.Incident != nil {
-		return domain.RenderedMessage{}, errs.New(errs.KindInternal, "render_incident_unsupported",
-			"an Incident fact is not drawn on a threaded channel until Incidents are conversations")
-	}
-
 	switch {
 	// ⭐ THE DIGEST IS DECIDED BEFORE THE MODE IS, because a digest is not a
 	// transition and the mode table has nothing to say about it (§H.6 does not list
@@ -111,6 +98,14 @@ func (r *Renderer) Render(
 	case v.Digest != nil:
 		payload, fallback = r.renderDigest(v, o)
 		summary = fallback
+	// ⭐ AN INCIDENT IS DECIDED BEFORE THE MODE TOO, and for the digest's reason: it
+	// is not a Case, has no group and no card state, so no Case-shaped arm may draw
+	// it (ADR 0052 §6). It used to be REFUSED here, because no threaded channel
+	// could carry one; since 00087 an Incident whose Correlator says so has a
+	// thread, and `renderIncident` picks between its card, a fact reply under it,
+	// and the pointer posted into a member Case's own thread.
+	case v.Incident != nil:
+		payload, fallback, summary = r.renderIncident(v, o)
 	case o.Mode == domain.ModeThreadReply:
 		payload, fallback, summary = r.renderReply(v, o)
 	default:

@@ -50,7 +50,8 @@ import (
 // randomness and no map iteration in the output, because a capture that changes
 // between two identical runs cannot be reviewed.
 
-// The corpus clock. One incident, told seven ways.
+// The corpus clock. One incident, told seven ways — and, since ADR 0052 §6, the
+// Incident it is part of, told twice.
 var (
 	// cardUpstreamStart is Alertmanager's own `startsAt` — when the SIGNAL began.
 	cardUpstreamStart = time.Date(2026, 8, 7, 17, 56, 9, 0, time.UTC)
@@ -169,6 +170,23 @@ func SlackCards() []SlackCard {
 			Mode:    chdomain.ModeUpdateRoot,
 			View:    silencedView(),
 			Options: cardOptions(chdomain.ModeUpdateRoot),
+		},
+		{
+			Name: "incident_root",
+			What: "An Incident's card, the root of its thread when a Correlator says its " +
+				"Incidents are conversations (ADR 0052 §6). Members link to their own Cases; " +
+				"no buttons, because every action acts on one signal.",
+			Mode:    chdomain.ModePostRoot,
+			View:    incidentCardView(),
+			Options: cardOptions(chdomain.ModePostRoot),
+		},
+		{
+			Name: "thread_reply_incident_pointer",
+			What: "The ONE reply posted into a member Case's own thread when its later " +
+				"updates start going to the Incident's thread. Nothing already posted moves.",
+			Mode:    chdomain.ModeThreadReply,
+			View:    incidentPointerView(),
+			Options: cardOptions(chdomain.ModeThreadReply),
 		},
 	}
 }
@@ -439,6 +457,47 @@ func silencedView() *chdomain.NotificationView {
 	})
 	v.Notifications = 2
 	v.RenderedAt = cardUpstreamStart.Add(10*time.Minute + time.Second)
+	return v
+}
+
+// incidentCardView is a Correlator-drawn Incident (ADR 0052 §6) over the corpus's
+// Case and a second one that has already closed, while the first still fires — so
+// the card is active, and its bar is the firing colour that `root_firing` also
+// wears: two captures, the most `TestEachCardStateCarriesItsOwnColourForAHumanToVerify`
+// allows per colour.
+func incidentCardView() *chdomain.NotificationView {
+	drawn := cardUpstreamStart.Add(2 * time.Minute)
+	correlator := chdomain.IncidentAuthorView{CorrelatorID: "019fe297-d84f-7599-b5b2-1f23174910c9"}
+	return &chdomain.NotificationView{
+		Reason: "drawn",
+		Incident: &chdomain.IncidentView{
+			ID: "019fe297-d84f-7599-b5b2-1f23174910c1", Number: 12, State: "active",
+			DrawnAt: drawn, DrawnBy: correlator,
+			Link: "https://oto.example.com/incidents/12",
+			Members: []chdomain.IncidentMemberView{
+				{
+					CaseID: "019fe297-d84f-7599-b5b2-1f231749104a", CaseNumber: 412, CaseState: "open",
+					AlertID: "a1", AlertName: "CheckoutErrorRateHigh",
+					AddedAt: drawn, AddedBy: correlator,
+					Link: "https://oto.example.com/cases/019fe297-d84f-7599-b5b2-1f231749104a",
+				},
+				{
+					CaseID: "019fe297-d84f-7599-b5b2-1f23174910c3", CaseNumber: 413, CaseState: "closed",
+					AlertID: "a3", AlertName: "CheckoutLatencyHigh",
+					AddedAt: drawn, AddedBy: correlator,
+					Link: "https://oto.example.com/cases/019fe297-d84f-7599-b5b2-1f23174910c3",
+				},
+			},
+		},
+		RenderedAt: drawn.Add(time.Second),
+	}
+}
+
+// incidentPointerView is the same Incident as the pointer in Case #412's own thread.
+func incidentPointerView() *chdomain.NotificationView {
+	v := incidentCardView()
+	v.Reason = "case_added"
+	v.Incident.PointsFrom = "019fe297-d84f-7599-b5b2-1f231749104a"
 	return v
 }
 

@@ -3647,6 +3647,16 @@ export interface components {
              * @example 1800
              */
             quiet_grace_seconds: number | null;
+            /**
+             * @description Whether this Correlator's Incidents are **conversations** (ADR 0052 §6). When `true`, a fact
+             *     about a member Case evaluated after its membership exists posts into the Incident's Slack
+             *     thread — whose root is the Incident's card — instead of the Case's own, and each member Case
+             *     that already had a thread gets one "now part of Incident #N" reply there. Nothing is held
+             *     back to wait for a Correlator and nothing already posted moves; changing it redirects only
+             *     later facts. `false`, the default, is one conversation per Case (ADR 0045). A human-drawn
+             *     Incident has no Correlator and is never a conversation.
+             */
+            incidents_are_conversations: boolean;
             created_at: components["schemas"]["Timestamp"];
             updated_at: components["schemas"]["Timestamp"];
         };
@@ -3676,6 +3686,11 @@ export interface components {
              * @description Omit it to join only while the Correlator's Incident is active.
              */
             quiet_grace_seconds?: number;
+            /**
+             * @description Make this Correlator's Incidents conversations (ADR 0052 §6).
+             * @default false
+             */
+            incidents_are_conversations: boolean;
         };
         /** @description Change a Correlator. A change applies to Cases that open after it. */
         UpdateCorrelatorRequest: {
@@ -3702,6 +3717,11 @@ export interface components {
              * @description An explicit `null` clears the grace, so the Correlator joins only while active.
              */
             quiet_grace_seconds?: number | null;
+            /**
+             * @description Redirects only facts evaluated after the change commits; nothing already posted moves, in
+             *     either direction.
+             */
+            incidents_are_conversations?: boolean;
         };
         /**
          * @description The **case retention window** for one `(namespace, alertname)` pair — the only per-pair shaping of

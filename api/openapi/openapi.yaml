@@ -7566,7 +7566,7 @@ components:
 
     CorrelatorDTO:
       type: object
-      required: [id, name, priority, enabled, matchers, count_min, count_window_seconds, quiet_grace_seconds, created_at, updated_at]
+      required: [id, name, priority, enabled, matchers, count_min, count_window_seconds, quiet_grace_seconds, incidents_are_conversations, created_at, updated_at]
       properties:
         id:
           $ref: '#/components/schemas/Uuid'
@@ -7624,6 +7624,16 @@ components:
             a re-fire exactly this long after still joins. A human-drawn Incident never grows by itself,
             grace or not.
           examples: [1800]
+        incidents_are_conversations:
+          type: boolean
+          description: |
+            Whether this Correlator's Incidents are **conversations** (ADR 0052 §6). When `true`, a fact
+            about a member Case evaluated after its membership exists posts into the Incident's Slack
+            thread — whose root is the Incident's card — instead of the Case's own, and each member Case
+            that already had a thread gets one "now part of Incident #N" reply there. Nothing is held
+            back to wait for a Correlator and nothing already posted moves; changing it redirects only
+            later facts. `false`, the default, is one conversation per Case (ADR 0045). A human-drawn
+            Incident has no Correlator and is never a conversation.
         created_at:
           $ref: '#/components/schemas/Timestamp'
         updated_at:
@@ -7673,6 +7683,10 @@ components:
           minimum: 60
           maximum: 86400
           description: Omit it to join only while the Correlator's Incident is active.
+        incidents_are_conversations:
+          type: boolean
+          default: false
+          description: Make this Correlator's Incidents conversations (ADR 0052 §6).
       description: Write a Correlator.
 
     UpdateCorrelatorRequest:
@@ -7715,6 +7729,11 @@ components:
           minimum: 60
           maximum: 86400
           description: An explicit `null` clears the grace, so the Correlator joins only while active.
+        incidents_are_conversations:
+          type: boolean
+          description: |
+            Redirects only facts evaluated after the change commits; nothing already posted moves, in
+            either direction.
       description: Change a Correlator. A change applies to Cases that open after it.
 
     CasePolicyDTO:

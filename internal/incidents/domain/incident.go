@@ -210,6 +210,11 @@ type Incident struct {
 	// Alertnames are the distinct alertnames of the current members, sorted, at
 	// most MaxAlertnames.
 	Alertnames []string
+	// Conversation reports that the Correlator which drew this Incident says its
+	// Incidents are conversations (ADR 0052 §6, `correlators.incidents_are_conversations`).
+	// READ, NEVER STORED on the Incident: it is the Correlator's setting as it is
+	// now, so a human-drawn Incident — which has no Correlator — is never one.
+	Conversation bool
 }
 
 // State is the derived state (ADR 0052 §3). There is no setter.

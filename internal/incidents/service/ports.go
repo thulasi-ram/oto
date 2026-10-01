@@ -26,6 +26,7 @@ type Repository interface {
 	Holding(ctx context.Context, s db.TenantScope, caseIDs []uuid.UUID) ([]uuid.UUID, error)
 	Cases(ctx context.Context, s db.TenantScope, ids []uuid.UUID) (map[uuid.UUID]domain.CaseRef, error)
 	LiveMemberships(ctx context.Context, s db.TenantScope, caseIDs []uuid.UUID) (map[uuid.UUID]domain.Ref, error)
+	ConversationHolding(ctx context.Context, s db.TenantScope, caseID uuid.UUID) (domain.Ref, bool, error)
 	Insert(ctx context.Context, s db.TenantScope, at time.Time, by domain.Attribution) (domain.Ref, error)
 	AddMember(ctx context.Context, s db.TenantScope, incidentID, caseID uuid.UUID, at time.Time, by domain.Attribution) error
 	RemoveMember(ctx context.Context, s db.TenantScope, incidentID, caseID uuid.UUID,

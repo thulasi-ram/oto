@@ -732,6 +732,7 @@ export const CorrelatorDTOSchema = v.looseObject({
     v.minValue(60),
     v.maxValue(86400),
   )),
+  "incidents_are_conversations": v.boolean(),
   "created_at": TimestampSchema,
   "updated_at": TimestampSchema,
 });
@@ -771,6 +772,7 @@ export const CreateCorrelatorRequestSchema = v.strictObject({
     v.minValue(60),
     v.maxValue(86400),
   )),
+  "incidents_are_conversations": v.exactOptional(v.boolean(), false),
 });
 
 export const UpdateCorrelatorRequestSchema = v.pipe(
@@ -809,6 +811,7 @@ export const UpdateCorrelatorRequestSchema = v.pipe(
       v.minValue(60),
       v.maxValue(86400),
     ))),
+    "incidents_are_conversations": v.exactOptional(v.boolean()),
   }),
   v.check((value) => Object.keys(value).length >= 1, "at least 1 property required"),
 );

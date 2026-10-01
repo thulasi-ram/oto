@@ -31,6 +31,28 @@ type IncidentFacts struct {
 	// Members is every spell of every Case that has been in the Incident, current
 	// and removed, in the order they joined.
 	Members []IncidentMemberFacts
+	// Conversation reports that the Correlator which drew this Incident says its
+	// Incidents are conversations (ADR 0052 §6). Read when the fact is evaluated, as
+	// everything else here is; a human-drawn Incident is never one.
+	Conversation bool
+}
+
+// IncidentRef names the Incident conversation a Case's fact belongs in (ADR 0052
+// §6): the Incident's id, which keys its `channel_threads` row, and the number a
+// human quotes.
+type IncidentRef struct {
+	ID     uuid.UUID
+	Number int64
+}
+
+// Member returns the CURRENT spell of the given Case, if it is in the Incident now.
+func (f IncidentFacts) Member(caseID uuid.UUID) (IncidentMemberFacts, bool) {
+	for _, m := range f.Members {
+		if m.CaseID == caseID && m.Current() {
+			return m, true
+		}
+	}
+	return IncidentMemberFacts{}, false
 }
 
 // IncidentMemberFacts is one spell of one Case inside an Incident.

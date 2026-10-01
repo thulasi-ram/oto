@@ -149,6 +149,7 @@ type NotificationService struct {
 	channels      ChannelStore
 	settings      SettingsReader
 	incidents     IncidentReader
+	conversations IncidentConversations
 	clk           clock.Clock
 	log           *slog.Logger
 }
@@ -181,8 +182,13 @@ type NotificationConfig struct {
 	// Incident need not wire one; `EvaluateIncident` refuses loudly without it, and
 	// `internal/app` always supplies it.
 	Incidents IncidentReader
-	Clock     clock.Clock
-	Logger    *slog.Logger
+	// Conversations answers, for a Case fact being evaluated, which Incident
+	// conversation it belongs in (ADR 0052 §6). OPTIONAL: nil means no Case fact is
+	// ever placed in an Incident's thread — one conversation per Case, ADR 0045's
+	// ruling unnarrowed — which is the honest answer for a wiring with no Incidents.
+	Conversations IncidentConversations
+	Clock         clock.Clock
+	Logger        *slog.Logger
 }
 
 // NewNotificationService builds the service.
@@ -202,7 +208,8 @@ func NewNotificationService(cfg NotificationConfig) (*NotificationService, error
 		txr: cfg.Tx, policies: cfg.Policies, notifications: cfg.Notifications,
 		deliveries: cfg.Deliveries, threads: cfg.Threads, snapshots: cfg.Snapshots,
 		events: cfg.Events, enqueuer: cfg.Enqueuer, channels: cfg.Channels,
-		settings: cfg.Settings, incidents: cfg.Incidents, clk: cfg.Clock, log: cfg.Logger,
+		settings: cfg.Settings, incidents: cfg.Incidents, conversations: cfg.Conversations,
+		clk: cfg.Clock, log: cfg.Logger,
 	}
 	if s.clk == nil {
 		s.clk = clock.New()
@@ -328,6 +335,9 @@ func (s *NotificationService) evaluate(
 	// `ReconcileWithWire` a body must move that check to after `mint` and read
 	// `n.Reason`.
 	n := s.mint(scope, in, snap, now)
+	if err := s.placeInIncident(ctx, scope, &n); err != nil {
+		return Result{}, err
+	}
 
 	// ⭐ THE MATCHER SEES THE GROUP'S LABELS PLUS THE FOCUSED ALERT'S OWN. The second
 	// half was landed as git-bug 7570090's declared prerequisite; that prerequisite is
@@ -370,7 +380,7 @@ func (s *NotificationService) evaluate(
 		n.PolicyID = &id
 	}
 
-	sup, err := s.suppressors(ctx, scope, in, snap, match)
+	sup, err := s.suppressors(ctx, scope, in, n.ConversationID, snap, match)
 	if err != nil {
 		return Result{}, err
 	}
@@ -458,7 +468,8 @@ func (s *NotificationService) mint(
 		// The delivery target, stored rather than re-derived at fan-out. Every intent
 		// that reaches `mint` names a Case — `Notify` rejects a nil `CaseID` at the
 		// door — so this arm is total here; the digest path builds its own row in
-		// `digest.go` and names its own conversation there.
+		// `digest.go` and names its own conversation there. `placeInIncident` may move
+		// it to the Case's Incident before the row is stored (ADR 0052 §6).
 		ConversationKind: domain.ConversationCase,
 		ConversationID:   in.CaseID,
 		AlertID:          in.AlertID,
@@ -510,6 +521,41 @@ func subjectOf(in Intent) (domain.SubjectKind, uuid.UUID) {
 	return domain.SubjectCase, in.CaseID
 }
 
+// placeInIncident moves a Case fact into its Incident's conversation when the Case
+// is, at this moment, a member of an Incident whose Correlator says its Incidents
+// are conversations (ADR 0052 §6).
+//
+// ⭐⭐ THE ANSWER IS READ NOW AND FROZEN ON THE ROW. `mint` names the Case as the
+// conversation, which is ADR 0045's default; this asks the membership — at the time
+// the fact is EVALUATED, inside the evaluating transaction — and, when it says so,
+// rewrites the pair to the Incident before anything is stored. So the boundary is
+// the membership row's commit: a fact evaluated before it stays in the Case's own
+// thread, one evaluated after goes to the Incident's, and a fact once placed is
+// never re-placed, because every reader after this one reads the stored pair.
+//
+// ⛔ NOTHING WAITS HERE. A Case whose Correlator has not run yet is simply not a
+// member yet, and its fact goes to its own thread at once: ADR 0052 §6 forbids
+// holding a fact back for a Correlator, and the cheapest way to honour that is to
+// have no code path that could.
+//
+// ⚠️ THE SUBJECT, THE IDEMPOTENCY KEY AND `case_id` DO NOT MOVE. The fact is still
+// about the Case (`subjectOf`), its §C.7 key is still the Case's, and the card is
+// still built from the Case's snapshot — only WHERE it is delivered changes, which
+// is the whole difference between a subject and a conversation (ConversationKind).
+func (s *NotificationService) placeInIncident(
+	ctx context.Context, scope db.TenantScope, n *domain.Notification,
+) error {
+	if s.conversations == nil || n.ConversationKind != domain.ConversationCase {
+		return nil
+	}
+	ref, ok, err := s.conversations.ConversationFor(ctx, scope, n.ConversationID)
+	if err != nil || !ok {
+		return err
+	}
+	n.ConversationKind, n.ConversationID = domain.ConversationIncident, ref.ID
+	return nil
+}
+
 // suppressors evaluates the suppressors that do not depend on a destination.
 //
 // They are gathered as a SET and resolved by §B.8.2 precedence at the end, never
@@ -518,7 +564,7 @@ func subjectOf(in Intent) (domain.SubjectKind, uuid.UUID) {
 // one the spec fixes, or the reason an operator reads is an accident of query
 // scheduling.
 func (s *NotificationService) suppressors(
-	ctx context.Context, scope db.TenantScope, in Intent,
+	ctx context.Context, scope db.TenantScope, in Intent, conversationID uuid.UUID,
 	snap domain.Snapshot, match Match,
 ) (domain.Suppressors, error) {
 	var sup domain.Suppressors
@@ -557,8 +603,13 @@ func (s *NotificationService) suppressors(
 		// group-subject subset and quietly loosened every throttle in the fleet. If you
 		// are allocating a new SubjectKind in reason.go, this line needs no change —
 		// that is the point of keying it on `in.GroupID`.
+		//
+		// ⭐ AND THE TARGET IS THE CONVERSATION THE FACT WAS PLACED IN, NOT THE CASE
+		// (ADR 0052 §6). A Case fact placed in an Incident's conversation lands in the
+		// Incident's thread, so the cap counts everything said there — forty member
+		// Cases share one numerator, as they share one thread.
 		count, err := s.notifications.CountRecent(ctx, scope,
-			in.CaseID, snap.TakenAt.Add(-t.Window))
+			conversationID, snap.TakenAt.Add(-t.Window))
 		if err != nil {
 			return sup, err
 		}
@@ -813,11 +864,14 @@ func (s *NotificationService) fanOut(
 			threadID   *uuid.UUID
 			rootLanded bool
 		)
-		// ⛔ AN INCIDENT FACT NEVER ASKS FOR A THREAD. `threads_subjkind_ck` does not
-		// admit `incident` (ADR 0052 §6 is its own ticket), so `EvaluateIncident`
-		// hands this function unthreaded destinations only; the guard is here so a
-		// future caller cannot reach `Ensure` with a conversation no thread can hold.
-		if needsThread(d.channel) && !n.Incident() {
+		// ⭐ AN INCIDENT CONVERSATION IS ENSURED LIKE ANY OTHER (ADR 0052 §6,
+		// migration 00087). Until 00087 `threads_subjkind_ck` refused `incident` and a
+		// guard here kept every Incident fact away from `Ensure`; now the conversation
+		// pair decides, as it does for a Case and a digest. Whether an Incident fact
+		// reaches a threaded destination at all is `incidentFanOut`'s question — an
+		// Incident that is not a conversation still skips it there — so nothing in
+		// this loop has to ask it again.
+		if needsThread(d.channel) {
 			kind, subject := threadSubjectOf(n)
 			th, err := s.threads.Ensure(ctx, scope, d.channel.ID, kind, subject, now)
 			if err != nil {
@@ -918,14 +972,17 @@ func (s *NotificationService) modesFor(
 	if n.Digest() {
 		return digestModes(d.channel, rootLanded)
 	}
-	// An Incident fact is not a transition either, and on the only destinations
-	// that receive one — those that keep no thread — every message is a standalone
-	// post. See `incidentFanOut`.
+	// An Incident fact is not a transition either. See `incidentModes`.
 	if n.Incident() {
-		return []domain.Mode{domain.ModePostRoot}
+		return incidentModes(n, d.channel, rootLanded)
 	}
 	in := d.input
 	in.ThreadExists = rootLanded
+	// A Case fact in an Incident's conversation is never that thread's root: the
+	// root is the Incident's card. See `caseModesInIncident`.
+	if n.InIncidentConversation() {
+		return caseModesInIncident(in, d.channel, rootLanded)
+	}
 	if p := domain.PlanFor(in); !p.Empty() {
 		return p.Modes
 	}
