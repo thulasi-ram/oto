@@ -57,6 +57,11 @@ external tool. The two may disagree, and that is correct: they describe differen
 - A **human-drawn** Incident never grows by itself.
 - A human may add or remove Cases on any Incident; a Case a human removed is never re-added by a
   Correlator.
+- **A Case belongs to at most one Incident.** When several Correlators match one Case, the first in
+  the operator's Correlator order draws it; a human may move it to another Incident. Two
+  memberships would mean two conversations to post a Case's facts into and two external incidents
+  to send them to, with no rule to choose between them. ⚠️ *Decided while the owner was away, to
+  unblock implementation; flagged for review.*
 
 `group_close_delay_s` and `refire_grace_s` left with `AlertGroup` (`00069`, `00071`) because their
 **entity** was wrong — a grouping no operator could configure — not because a grace window is. This
