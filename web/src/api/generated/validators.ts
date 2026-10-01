@@ -2543,6 +2543,10 @@ export const NotificationTemplateDTOSchema = v.looseObject({
     v.string(),
     v.maxLength(16384),
   ),
+  "reply_source": v.nullable(v.pipe(
+    v.string(),
+    v.maxLength(16384),
+  )),
   "version": v.pipe(
     v.number(),
     v.integer(),
@@ -2579,6 +2583,7 @@ export const TemplatePreviewDTOSchema = v.looseObject({
   "source": v.string(),
   "problems": v.array(TemplateProblemDTOSchema),
   "renderings": v.array(TemplateRenderingDTOSchema),
+  "reply_renderings": v.array(TemplateRenderingDTOSchema),
 });
 
 export const CreateNotificationTemplateRequestSchema = v.strictObject({
@@ -2598,6 +2603,10 @@ export const CreateNotificationTemplateRequestSchema = v.strictObject({
     v.minLength(1),
     v.maxLength(16384),
   ),
+  "reply_source": v.exactOptional(v.pipe(
+    v.string(),
+    v.maxLength(16384),
+  )),
   "enabled": v.exactOptional(v.boolean(), true),
 });
 
@@ -2619,6 +2628,10 @@ export const UpdateNotificationTemplateRequestSchema = v.pipe(
       v.minLength(1),
       v.maxLength(16384),
     )),
+    "reply_source": v.exactOptional(v.pipe(
+      v.string(),
+      v.maxLength(16384),
+    )),
     "enabled": v.exactOptional(v.boolean()),
   }),
   v.check((value) => Object.keys(value).length >= 1, "at least 1 property required"),
@@ -2631,6 +2644,10 @@ export const PreviewNotificationTemplateRequestSchema = v.strictObject({
     v.minLength(1),
     v.maxLength(16384),
   ),
+  "reply_source": v.exactOptional(v.pipe(
+    v.string(),
+    v.maxLength(16384),
+  )),
 });
 
 export const CreatePolicyRequestSchema = v.strictObject({

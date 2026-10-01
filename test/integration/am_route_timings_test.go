@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 81 {
-		t.Fatalf("latest migration is %d, want 81 — this test pins the number so that a "+
+	if latest != 82 {
+		t.Fatalf("latest migration is %d, want 82 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1629,6 +1629,28 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// accepts a kind the release below it cannot interpret. No column reading can
 	// see that, and it is the half most likely to be forgotten because nothing
 	// references it.
+	// ⭐ 00082 GIVES A TEMPLATE A REPLY BODY, and its Down takes back the column and
+	// the floor on it. The floor is read as its DEFINITION, because "a constraint
+	// exists" reads the same whether `''` is refused or quietly becomes a second
+	// spelling of "oto's own replies".
+	if n := countColumns("notification_templates", "reply_source"); n != 1 {
+		t.Fatalf("notification_templates.reply_source is absent at migration 82 (found %d); "+
+			"it is the body a thread reply is rendered from", n)
+	}
+	if def := constraintDef("notification_templates_reply_source_ck", "notification_templates"); !strings.Contains(def, ">= 1") || !strings.Contains(def, "<= 16384") {
+		t.Fatalf("notification_templates_reply_source_ck is %q at migration 82 — it must bound "+
+			"reply_source to 1..16384 when present, or an empty reply body is stored and means nothing", def)
+	}
+
+	down(82)
+
+	if n := countColumns("notification_templates", "reply_source"); n != 0 {
+		t.Fatalf("notification_templates.reply_source survived 00082's Down (found %d)", n)
+	}
+	if n := countConstraints("notification_templates_reply_source_ck"); n != 0 {
+		t.Fatalf("notification_templates_reply_source_ck survived 00082's Down (found %d)", n)
+	}
+
 	// ⭐ 00081 GIVES A CASE A NAME OF ITS OWN, and its Down has to take back three
 	// coupled things: the counter table, the column, and the two constraints that
 	// make the column a name rather than an integer. A Down that dropped the column

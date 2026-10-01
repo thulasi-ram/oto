@@ -88,7 +88,7 @@ func (f *tmplStore) Create(
 	f.created = append(f.created, n)
 	return domain.NotificationTemplate{
 		ID: n.ID, OrgID: s.OrgID(), Name: n.Name,
-		Provider: n.Provider, Format: n.Format, Source: n.Source,
+		Provider: n.Provider, Format: n.Format, Source: n.Source, ReplySource: n.ReplySource,
 		Version: 1, Enabled: n.Enabled,
 		CreatedAt: chanNow, UpdatedAt: chanNow,
 	}, nil
@@ -104,6 +104,10 @@ func (f *tmplStore) Update(
 	f.patched = append(f.patched, p)
 	if p.Source != nil {
 		row.Source = *p.Source
+		row.Version++
+	}
+	if p.ReplySource != nil {
+		row.ReplySource = *p.ReplySource
 		row.Version++
 	}
 	if p.Name != nil {
@@ -381,5 +385,82 @@ func TestNotificationTemplateEndpointsRefuseAnotherTenantsID(t *testing.T) {
 				t.Fatal("a stranger's request reached the store")
 			}
 		})
+	}
+}
+
+// tmplReply restyles one reason and leaves every other reply oto's.
+const tmplReply = `{% if reason == 'all_resolved' %}{"text":"{{ alert.name }} is over","blocks":[` +
+	`{"type":"context","elements":[{"type":"mrkdwn","text":"over after {{ group.firing_for }}"}]}]}{% endif %}`
+
+// ⭐ A TEMPLATE CARRIES ITS THREAD REPLIES (ADR 0051), and the wire says so: the
+// body goes in as `reply_source` and comes back as it went in.
+func TestCreateNotificationTemplateCarriesAReplyBody(t *testing.T) {
+	t.Parallel()
+
+	w := newTmplWorld(t)
+	resp := w.client.POST(t, "/notification-templates", map[string]any{
+		"name": "calm", "provider": "slack", "format": "raw",
+		"source":       `[{"type":"section","text":{"type":"mrkdwn","text":"{{ alert.name }}"}},{"type":"oto_actions"}]`,
+		"reply_source": tmplReply,
+	}).MustStatus(t, http.StatusCreated)
+	schema.Assert(t, "createNotificationTemplate", http.StatusCreated, resp.Body())
+
+	if got := w.templates.created[0].ReplySource; got != tmplReply {
+		t.Errorf("the reply body was stored as %q", got)
+	}
+	if got, _ := resp.JSON(t)["data"].(map[string]any); got["reply_source"] != tmplReply {
+		t.Errorf("the reply body did not come back on the wire: %v", got["reply_source"])
+	}
+}
+
+// ⛔ A BROKEN REPLY BODY IS REFUSED, AND THE AUTHOR IS TOLD IT WAS THE REPLY. Two
+// bodies on one row are two places a mistake can be; naming `source` for a
+// mistake in `reply_source` sends them to the wrong textarea.
+func TestABrokenReplyBodyIsRefusedOnItsOwnField(t *testing.T) {
+	t.Parallel()
+
+	w := newTmplWorld(t)
+	resp := w.client.POST(t, "/notification-templates", map[string]any{
+		"name": "broken reply", "provider": "slack", "format": "card", "source": tmplSource,
+		"reply_source": "{{ alert.name | no_such_filter }}",
+	}).MustStatus(t, http.StatusUnprocessableEntity)
+	if !strings.Contains(string(resp.Body()), `"reply_source"`) {
+		t.Errorf("the refusal does not name reply_source: %s", resp.Body())
+	}
+	if len(w.templates.created) != 0 {
+		t.Fatal("a template with a broken reply body was written anyway")
+	}
+}
+
+// ⭐ THE REPLY PREVIEW IS ONE ROW PER REASON, AND "NOTHING" IS A ROW TOO. A reason
+// the body does not handle is shown as a spelling with no text and no error —
+// which the editor reads as "oto's own reply here".
+func TestPreviewRendersAReplyBodyOncePerReason(t *testing.T) {
+	t.Parallel()
+
+	w := newTmplWorld(t)
+	resp := w.client.POST(t, "/notification-templates/preview", map[string]any{
+		"format": "raw", "source": `[{"type":"section","text":{"type":"mrkdwn","text":"{{ alert.name }}"}}]`,
+		"reply_source": tmplReply,
+	}).MustStatus(t, http.StatusOK)
+	schema.Assert(t, "previewNotificationTemplate", http.StatusOK, resp.Body())
+
+	data, _ := resp.JSON(t)["data"].(map[string]any)
+	rows, _ := data["reply_renderings"].([]any)
+	byReason := map[string]map[string]any{}
+	for _, r := range rows {
+		row, _ := r.(map[string]any)
+		spellings, _ := row["spellings"].([]any)
+		if len(spellings) != 1 {
+			t.Fatalf("a raw reply showed %d spellings, want Slack's alone", len(spellings))
+		}
+		sp, _ := spellings[0].(map[string]any)
+		byReason[row["fixture"].(string)] = sp
+	}
+	if got, _ := byReason["all_resolved"]["text"].(string); !strings.Contains(got, "is over") {
+		t.Errorf("all_resolved did not render the reply body: %q", got)
+	}
+	if acked, ok := byReason["acked"]; !ok || acked["text"] != "" || acked["error"] != nil {
+		t.Errorf("acked should read as oto's own reply (no text, no error): %v", acked)
 	}
 }

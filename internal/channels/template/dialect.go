@@ -1,6 +1,8 @@
 package template
 
 import (
+	"bytes"
+	"encoding/json"
 	"strconv"
 	"strings"
 	"time"
@@ -461,6 +463,115 @@ func Spell(d Dialect, s string, links map[string]string) string {
 	flush()
 	return neutralise(d, b.String())
 }
+
+// SpellRaw resolves oto's marks inside one string of a `raw` template's output.
+//
+// ⭐ IT IS Spell WITHOUT THE ESCAPING, AND THAT IS THE WHOLE DIFFERENCE. A raw
+// template is Block Kit an author typed by hand, so the text around the marks is
+// THEIRS — `<https://grafana|Grafana>` included — and escaping it would break the
+// one format whose promise is "what you write is what Slack gets". The values
+// inside it were already escaped for Slack and for JSON when they were bound
+// (newBinder), which is where the line between author and data can still be drawn.
+//
+// mrkdwn says whether the string is a Slack `mrkdwn` text object. There, emphasis
+// marks become Slack's own and a time becomes a <!date> token every reader sees in
+// their own timezone; anywhere else (`plain_text`, a URL, the push-notification
+// `text`) emphasis has no spelling and is dropped, and a time is oto's UTC string.
+//
+// A link handle becomes the BARE address, because in raw the author writes the
+// `<…|…>` or the `"url"` around it themselves.
+func SpellRaw(s string, links map[string]string, mrkdwn bool) string {
+	if !strings.ContainsFunc(s, isPrivateUse) {
+		return s
+	}
+	d := Dialect(PlainDialect{})
+	if mrkdwn {
+		d = SlackDialect{}
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	runes := []rune(s)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		switch r {
+		case markCodeOpen, markCodeClose, markStrikeOpen, markStrikeClose,
+			markBoldOpen, markBoldClose, markItalicOpen, markItalicClose:
+			if mrkdwn {
+				kind, opening := markMeta(r)
+				open, shut := d.Emphasis(kind)
+				if opening {
+					b.WriteString(open)
+				} else {
+					b.WriteString(shut)
+				}
+			}
+		case markTimeOpen:
+			end := indexRune(runes, i+1, markTimeClose)
+			if end < 0 {
+				continue
+			}
+			b.WriteString(spellTime(d, string(runes[i+1:end])))
+			i = end
+		case linkOpenRune:
+			end := indexRune(runes, i+1, linkShutRune)
+			if end < 0 {
+				continue
+			}
+			b.WriteString(links[string(runes[i+1:end])])
+			i = end
+		case markTimeClose, markTimeSep, linkShutRune, actionsRune:
+			// Orphaned, or an actions token: raw places buttons with an
+			// `oto_actions` block, so the token has no spelling here.
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// SpellRawJSON resolves oto's marks in every string of a rendered `raw` template,
+// which is the shape both a delivery and a preview have to show.
+//
+// mrkdwn is true for exactly one kind of string: the `text` of a Block Kit text
+// object whose `type` is `mrkdwn`. Numbers are carried through as written, so a
+// `{{ group.firing_count }}` interpolated as a JSON number stays one.
+func SpellRawJSON(raw json.RawMessage, links map[string]string) (json.RawMessage, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var doc any
+	if err := dec.Decode(&doc); err != nil {
+		return nil, err
+	}
+	var out bytes.Buffer
+	enc := json.NewEncoder(&out)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(spellRawTree(doc, links, false)); err != nil {
+		return nil, err
+	}
+	return json.RawMessage(bytes.TrimSpace(out.Bytes())), nil
+}
+
+func spellRawTree(node any, links map[string]string, mrkdwn bool) any {
+	switch n := node.(type) {
+	case string:
+		return SpellRaw(n, links, mrkdwn)
+	case []any:
+		for i := range n {
+			n[i] = spellRawTree(n[i], links, false)
+		}
+		return n
+	case map[string]any:
+		isMrkdwn := n["type"] == "mrkdwn"
+		for k, child := range n {
+			n[k] = spellRawTree(child, links, isMrkdwn && k == "text")
+		}
+		return n
+	default:
+		return node
+	}
+}
+
+func isPrivateUse(r rune) bool { return r >= '\uE000' && r <= '\uF8FF' }
 
 func spellTime(d Dialect, payload string) string {
 	sep := strings.IndexRune(payload, markTimeSep)

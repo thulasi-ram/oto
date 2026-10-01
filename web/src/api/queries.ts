@@ -204,7 +204,8 @@ export function notificationTemplatesQuery() {
  * endpoint writes nothing and its answer is a pure function of the two strings in
  * the key, so an author who types a word and deletes it again gets the previous
  * rendering back instantly rather than paying for a second POST of a question
- * already answered. `enabled` is the caller's, because only the caller knows
+ * already answered. `replySource` is the thread-reply body; `""` asks about the
+ * root card alone. `enabled` is the caller's, because only the caller knows
  * whether there is a template to ask about — the contract's `minLength: 1` makes
  * an empty one a `422` rather than an empty answer.
  *
@@ -212,11 +213,20 @@ export function notificationTemplatesQuery() {
  * for an invalid template on purpose: the refusal and the output belong on screen
  * together, because the fix is usually only visible when both are.
  */
-export function templatePreviewQuery(format: NotificationTemplateFormat, source: string) {
+export function templatePreviewQuery(
+  format: NotificationTemplateFormat,
+  source: string,
+  replySource = "",
+) {
   return {
-    queryKey: qk.templates.preview(format, source),
+    queryKey: qk.templates.preview(format, source, replySource),
     queryFn: ({ signal }: { signal: AbortSignal }) =>
-      previewNotificationTemplate({ format, source }, { signal }),
+      previewNotificationTemplate(
+        // ⛔ An empty reply body is LEFT OUT rather than sent as `""`: absent is
+        // how the contract spells "no reply body, so no `reply_renderings`".
+        replySource === "" ? { format, source } : { format, source, reply_source: replySource },
+        { signal },
+      ),
   };
 }
 

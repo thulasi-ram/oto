@@ -1,7 +1,7 @@
 ---
 title: 0050 — A NotificationTemplate is one whole message, and its policy says which one
 ---
-**Status:** Accepted · 2026-08-22
+**Status:** Accepted · 2026-08-22 · amended by [0051](/oto/adr/0051-a-raw-template-owns-the-message-and-its-replies/) (`raw` owns the colour, text and button placement; templates carry replies)
 **Supersedes:** [0037](/oto/adr/0037-wordings-are-liquid-and-structure-stays-otos/) (Wordings, per-Stanza
 overrides), and the two ADRs that extended it — 0048 (a Wording is spelled by its channel) and 0049
 (a Wording is selected by its own clause), both withdrawn with this one.
@@ -153,7 +153,8 @@ the feature and it is pinned by a test that walks six distinct ways to be wrong.
 
 - **A Dialect registry.** `previewDialects` is a literal slice in two places. A provider shipped
   without a Dialect should refuse to construct; today it is simply a column the preview does not show.
-- **Digests and thread replies take no template.** They are built by their own renderers and emit
-  block names §H.7 does not have. The digest view stays in the fixture corpus as a robustness case.
-- **A `raw` template is validated for JSON shape, not for Block Kit validity**, until `render/slack`
-  runs `Validate` on the result. Slack's own rejection is caught and falls back; it is not predicted.
+- **Digests take no template.** They are built by their own renderer and emit block names §H.7
+  does not have. The digest view stays in the fixture corpus as a robustness case. *(Thread replies
+  were listed here too; ADR 0051 gives a template a `reply_source`.)*
+- ~~**A `raw` template is validated for JSON shape, not for Block Kit validity**~~ — closed by ADR
+  0051: `render/slack` runs `Validate` on a templated payload before choosing it, and falls back.

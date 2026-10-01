@@ -151,7 +151,7 @@ func Compile(f Format, src string) (*Template, error) {
 	if d := forDepth(src); d > MaxForDepth {
 		return nil, fmt.Errorf("`{%% for %%}` is nested %d deep and the limit is %d", d, MaxForDepth)
 	}
-	if msg := unbalanced(src); msg != "" {
+	if msg := unbalanced(src, f); msg != "" {
 		return nil, errors.New(msg)
 	}
 	// The SOURCE is sanitised, not only the values interpolated into it: a
@@ -178,6 +178,13 @@ func (t *Template) expand(in Input) (string, error) {
 		return "", fmt.Errorf("template rendered %d bytes and the limit is %d", len(out), MaxOutputBytes)
 	}
 	return string(out), nil
+}
+
+// RendersNothing reports whether this template expands to whitespace for in —
+// which, for a REPLY body, is how it says "oto's own reply here".
+func (t *Template) RendersNothing(in Input) bool {
+	out, err := t.expand(in)
+	return err == nil && strings.TrimSpace(out) == ""
 }
 
 // RenderCard renders a `card` template to the IR. links resolves oto's link
@@ -246,7 +253,8 @@ func (t *Template) RenderRaw(in Input) (json.RawMessage, error) {
 	trimmed := strings.TrimSpace(raw)
 	if !json.Valid([]byte(trimmed)) {
 		return nil, errors.New("the template rendered text that is not valid JSON; " +
-			"a value interpolated into a JSON string almost certainly needs `| json`")
+			"interpolated values are escaped for you, so look for a missing comma, quote or bracket " +
+			"in the template itself")
 	}
 	return json.RawMessage(trimmed), nil
 }
@@ -319,7 +327,19 @@ func forDepth(src string) int {
 // ⚠️ IT RETURNS WARNINGS ALONGSIDE REFUSALS. Call Blocking() to tell them apart:
 // a missing action row is reported and does not stop the save, because the operator
 // is allowed to choose that.
-func Validate(f Format, src string) []Problem {
+func Validate(f Format, src string) []Problem { return validate(f, src, false) }
+
+// ValidateReply is Validate for a template's REPLY body.
+//
+// ⭐ RENDERING NOTHING IS A REPLY BODY'S ORDINARY ANSWER, NOT A MISTAKE. A reply
+// body is rendered for every reason a thread can be told about, and the natural
+// way to restyle only `all_resolved` is `{% if reason == 'all_resolved' %}` around
+// the lot — which renders empty for every other fixture and means "oto's own reply
+// here". So emptiness is not reported, and neither is a missing action row: a
+// thread reply is not where the buttons live.
+func ValidateReply(f Format, src string) []Problem { return validate(f, src, true) }
+
+func validate(f Format, src string, reply bool) []Problem {
 	if !f.Valid() {
 		return []Problem{{Kind: ProblemParse, Message: fmt.Sprintf("%q is not a template format", string(f))}}
 	}
@@ -327,7 +347,7 @@ func Validate(f Format, src string) []Problem {
 		return []Problem{{Kind: ProblemTooLong, Message: fmt.Sprintf(
 			"this template is %d bytes and the limit is %d", len(src), MaxSourceBytes)}}
 	}
-	if msg := unbalanced(src); msg != "" {
+	if msg := unbalanced(src, f); msg != "" {
 		return []Problem{{Kind: ProblemParse, Message: msg}}
 	}
 	clean := sanitise(src)
@@ -351,12 +371,24 @@ func Validate(f Format, src string) []Problem {
 	}
 
 	sawActions := false
-	for _, fx := range Fixtures() {
+	corpus := Fixtures()
+	if reply {
+		// Every reason a reply body may branch on, so a mistake inside the `acked`
+		// branch is caught at save and not on the first acknowledgement.
+		corpus = append(ReplyFixtures(), corpus...)
+	}
+	for _, fx := range corpus {
 		in, links := fx.Bind(f)
+		if reply && t.RendersNothing(in) {
+			continue
+		}
 		switch f {
 		case FormatCard:
 			doc, probs := t.RenderCard(in, links)
 			for _, p := range probs {
+				if reply && p.Kind == ProblemEmpty {
+					continue
+				}
 				p.Fixture = fx.Name
 				out = append(out, p)
 			}
@@ -383,7 +415,7 @@ func Validate(f Format, src string) []Problem {
 	// way to acknowledge is `POST /api/v1/cases/{id}/ack` or the console. That
 	// is a degraded card, not a lost alert, and it is worth exactly one sentence
 	// at the moment somebody can still change their mind.
-	if f == FormatCard && !sawActions && !Blocking(out) {
+	if f == FormatCard && !reply && !sawActions && !Blocking(out) {
 		out = append(out, Problem{
 			Kind: ProblemWarning,
 			Message: "this template has no `{{ actions }}`, so its cards carry no Acknowledge or Snooze " +
@@ -470,7 +502,14 @@ func liquidMessage(err error) string {
 // ⚠️ IT CHECKS THE SOURCE, NOT THE OUTPUT, ON PURPOSE. Scanning rendered text for
 // "{{" would also fire on an alert whose annotation legitimately contains a PromQL
 // or Go-template snippet, and punish the data for the template's mistake.
-func unbalanced(src string) string {
+//
+// ⚠️ A STRAY `}}` IS JSON IN A `raw` TEMPLATE, NOT A MISTAKE. `{"text":{"type":"x"}}`
+// closes two objects, and refusing it made every author space their braces apart.
+// Liquid prints a stray `}}` as literal text, which is exactly what raw wants, and a
+// `raw` render that comes out malformed is refused as invalid JSON anyway. Every
+// other shape — an unclosed expression, a nested opener, a stray `%}` — is still
+// the silent failure this scan exists for, in every format.
+func unbalanced(src string, f Format) string {
 	type opener struct {
 		close string
 		what  string
@@ -488,6 +527,8 @@ func unbalanced(src string) string {
 			} else {
 				open = &opener{"%}", "a tag"}
 			}
+			i++
+		case open == nil && two == "}}" && f == FormatRaw:
 			i++
 		case open == nil && (two == "}}" || two == "%}"):
 			return "a stray " + two + " with no " + openerFor(two) + " before it — " +

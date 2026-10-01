@@ -11247,7 +11247,7 @@ components:
 
     NotificationTemplateDTO:
       type: object
-      required: [id, name, provider, format, source, version, enabled, created_at, updated_at]
+      required: [id, name, provider, format, source, reply_source, version, enabled, created_at, updated_at]
       properties:
         id:
           $ref: '#/components/schemas/Uuid'
@@ -11280,13 +11280,28 @@ components:
 
             Every interpolated value is markdown-escaped unconditionally in `card` format, with no
             opt-out. An alert label is attacker-influenced, and a value that cannot produce syntax
-            cannot produce structure, a link, a mention, or a forged handle.
+            cannot produce structure, a link, a mention, or a forged handle. In `raw` format every
+            value is escaped for Slack and for a JSON string instead, so it can neither ping a
+            channel nor break the document.
+
+            In `raw` the body may be the whole message — `{"text", "color", "blocks"}` — and a
+            `{"type": "oto_actions"}` block places oto's buttons (ADR 0051).
+        reply_source:
+          type: ['string', 'null']
+          maxLength: 16384
+          description: |
+            The body **thread replies** are rendered from, in this template's `format` (ADR 0051).
+            `null` means oto's own replies.
+
+            It is rendered for every reply with `reason` bound, so the usual body is one
+            `{% if reason == 'all_resolved' %}` branch per reason it restyles. A reason the body
+            renders nothing for keeps oto's own reply.
         version:
           type: integer
           format: int32
           minimum: 1
           description: |
-            Increments only when `source` or `format` changes.
+            Increments only when `source`, `reply_source` or `format` changes.
 
             It is the provenance half of the delivery row: a card that read strangely last Tuesday can
             be attributed to a revision even after somebody has edited it since. A rename produced no
@@ -11321,7 +11336,7 @@ components:
             Markdown that no provider can render, such as a table or a nested list.
         field:
           type: string
-          description: The request field this is about. Always `source` today.
+          description: The request field this is about — `source` (the root card) or `reply_source` (the thread replies).
         message:
           type: string
           description: One sentence, in words meant for the person who typed it.
@@ -11379,7 +11394,7 @@ components:
 
     TemplatePreviewDTO:
       type: object
-      required: [format, source, problems, renderings]
+      required: [format, source, problems, renderings, reply_renderings]
       properties:
         format:
           $ref: '#/components/schemas/NotificationTemplateFormat'
@@ -11396,6 +11411,14 @@ components:
         renderings:
           type: array
           description: Empty when the template does not compile; `problems` says why.
+          items:
+            $ref: '#/components/schemas/TemplateRenderingDTO'
+        reply_renderings:
+          type: array
+          description: |
+            The reply body against one example per reason, each fixture named for its reason. A
+            spelling with neither `text` nor `error` means the body says nothing for that reason, so
+            oto's own reply is sent. Empty when no `reply_source` was sent.
           items:
             $ref: '#/components/schemas/TemplateRenderingDTO'
 
@@ -11418,6 +11441,10 @@ components:
           type: string
           minLength: 1
           maxLength: 16384
+        reply_source:
+          type: string
+          maxLength: 16384
+          description: The thread-reply body. Absent or empty means oto's own replies.
         enabled:
           type: boolean
           default: true
@@ -11443,6 +11470,10 @@ components:
           type: string
           minLength: 1
           maxLength: 16384
+        reply_source:
+          type: string
+          maxLength: 16384
+          description: The thread-reply body. `""` clears it, back to oto's own replies.
         enabled:
           type: boolean
 
@@ -11456,6 +11487,10 @@ components:
           type: string
           minLength: 1
           maxLength: 16384
+        reply_source:
+          type: string
+          maxLength: 16384
+          description: When present, previewed against one example per reply reason.
     CreatePolicyRequest:
       type: object
       required: [name, reasons, channel_ids]

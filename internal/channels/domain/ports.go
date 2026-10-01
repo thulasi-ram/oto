@@ -370,4 +370,8 @@ type TemplateRef struct {
 	Format string
 	// Source is the template body, already sanitised at save time.
 	Source string
+	// ReplySource is the body a THREAD REPLY is rendered from, in the same format.
+	// Empty means oto's own replies, which is every template written before it
+	// existed. A body that renders nothing for a reason leaves oto's reply too.
+	ReplySource string
 }

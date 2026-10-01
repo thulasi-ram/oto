@@ -275,16 +275,18 @@ func stringOr(p *string, def string) string {
 // notificationTemplateDTO maps a stored template onto the wire.
 func notificationTemplateDTO(t domain.NotificationTemplate) NotificationTemplateDTO {
 	return NotificationTemplateDTO{
-		ID:        t.ID,
-		Name:      t.Name,
-		Provider:  t.Provider,
-		Format:    t.Format,
-		Source:    t.Source,
-		Version:   t.Version,
-		Enabled:   t.Enabled,
-		CreatedAt: t.CreatedAt.UTC(),
-		UpdatedAt: t.UpdatedAt.UTC(),
-		DeletedAt: utcPtr(t.DeletedAt),
+		ID:       t.ID,
+		Name:     t.Name,
+		Provider: t.Provider,
+		Format:   t.Format,
+		Source:   t.Source,
+		// "" is stored as NULL and goes out as null: one spelling of "oto's own".
+		ReplySource: nonEmptyPtr(t.ReplySource),
+		Version:     t.Version,
+		Enabled:     t.Enabled,
+		CreatedAt:   t.CreatedAt.UTC(),
+		UpdatedAt:   t.UpdatedAt.UTC(),
+		DeletedAt:   utcPtr(t.DeletedAt),
 	}
 }
 
@@ -298,12 +300,13 @@ func (r CreateNotificationTemplateRequest) toNewNotificationTemplate() domain.Ne
 		// ⭐ THE ID IS MINTED HERE, not left to the repository. It is the rule
 		// `platform/id` states for the whole codebase — a row's id is known before
 		// the INSERT, and oto never asks Postgres for one.
-		ID:       id.New(),
-		Name:     r.Name,
-		Provider: r.Provider,
-		Format:   r.Format,
-		Source:   r.Source,
-		Enabled:  boolOr(r.Enabled, true),
+		ID:          id.New(),
+		Name:        r.Name,
+		Provider:    r.Provider,
+		Format:      r.Format,
+		Source:      r.Source,
+		ReplySource: derefOr(r.ReplySource),
+		Enabled:     boolOr(r.Enabled, true),
 	}
 }
 
@@ -312,11 +315,12 @@ func (r CreateNotificationTemplateRequest) toNewNotificationTemplate() domain.Ne
 // are different requests.
 func (r UpdateNotificationTemplateRequest) toPatch() domain.NotificationTemplatePatch {
 	return domain.NotificationTemplatePatch{
-		Name:     r.Name,
-		Provider: r.Provider,
-		Format:   r.Format,
-		Source:   r.Source,
-		Enabled:  r.Enabled,
+		Name:        r.Name,
+		Provider:    r.Provider,
+		Format:      r.Format,
+		Source:      r.Source,
+		ReplySource: r.ReplySource,
+		Enabled:     r.Enabled,
 	}
 }
 
@@ -341,5 +345,22 @@ func patchedTemplate(existing domain.NotificationTemplate, p UpdateNotificationT
 	if p.Source != nil {
 		out.Source = *p.Source
 	}
+	if p.ReplySource != nil {
+		out.ReplySource = *p.ReplySource
+	}
 	return out
+}
+
+func nonEmptyPtr(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+func derefOr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }

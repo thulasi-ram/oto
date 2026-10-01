@@ -20,6 +20,14 @@
  * is allowed to ship that, and an alert stays acknowledgeable from the console
  * and from `POST /api/v1/cases/{id}/ack`. The screen says so loudly and then
  * gets out of the way.
+ *
+ * ⭐ A TEMPLATE HAS TWO BODIES, AND THEY ARE TWO TABS OF ONE DOCUMENT. The root
+ * card is `source`; the thread replies are `reply_source`, branched on `reason`.
+ * They share a format, a version and a save, so they live in one dialog under one
+ * Format toggle — a second dialog would let them drift apart. A reason the reply
+ * body does not handle keeps oto's own reply, and the preview says exactly that
+ * per reason rather than drawing an empty box an author would read as "nothing is
+ * sent".
  */
 import {
   For,
@@ -52,7 +60,9 @@ import type {
   CreateNotificationTemplateRequest,
   NotificationTemplate,
   NotificationTemplateFormat,
+  TemplateProblem,
   TemplateRendering,
+  UpdateNotificationTemplateRequest,
 } from "~/api/types";
 import { Button } from "~/components/ui/Button";
 import { Checkbox } from "~/components/ui/Checkbox";
@@ -74,6 +84,7 @@ import {
   TextFieldLabel,
   TextFieldTextArea,
 } from "~/components/ui/TextField";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "~/components/ui/Tabs";
 import { ToggleGroup, ToggleGroupItem } from "~/components/ui/ToggleGroup";
 import { cn } from "~/lib/cn";
 import {
@@ -112,6 +123,7 @@ const FORMAT_HELP: Record<NotificationTemplateFormat, string> = {
 const SOURCE_MIN = minLengthOf(CreateNotificationTemplateRequestSchema, "source");
 const SOURCE_MAX = maxLengthOf(CreateNotificationTemplateRequestSchema, "source");
 const NAME_MAX = maxLengthOf(CreateNotificationTemplateRequestSchema, "name");
+const REPLY_MAX = maxLengthOf(CreateNotificationTemplateRequestSchema, "reply_source");
 
 /**
  * The starter, and it is a TEACHING ARTEFACT rather than a placeholder.
@@ -146,6 +158,8 @@ type TemplateForm = {
   provider: string;
   format: NotificationTemplateFormat;
   source: string;
+  /** The thread-reply body. `""` is "every reply is oto's own". */
+  reply_source: string;
   enabled: boolean;
 };
 
@@ -158,8 +172,17 @@ const TemplateFormSchema = v.object({
     v.minLength(SOURCE_MIN, "A template with no body would send an empty message."),
     v.maxLength(SOURCE_MAX, `A template may be ${SOURCE_MAX} characters.`),
   ),
+  reply_source: v.pipe(
+    v.string(),
+    v.maxLength(REPLY_MAX, `A reply body may be ${REPLY_MAX} characters.`),
+  ),
   enabled: v.boolean(),
 });
+
+/** A reply body of nothing but whitespace is no reply body, here as on the server. */
+function hasReplyBody(replySource: string): boolean {
+  return replySource.trim() !== "";
+}
 
 function toCreateRequest(f: TemplateForm): CreateNotificationTemplateRequest {
   return {
@@ -167,8 +190,27 @@ function toCreateRequest(f: TemplateForm): CreateNotificationTemplateRequest {
     provider: f.provider.trim(),
     format: f.format,
     source: f.source,
+    ...(hasReplyBody(f.reply_source) ? { reply_source: f.reply_source } : {}),
     enabled: f.enabled,
   };
+}
+
+/**
+ * ⛔ `reply_source` IS ALWAYS SENT ON AN EDIT, AND `""` IS HOW IT IS CLEARED. The
+ * create body leaves an empty one out, which on a PATCH would mean "unchanged" —
+ * so an author who emptied the box and pressed Save would get their old replies
+ * back, silently.
+ */
+function toUpdateRequest(f: TemplateForm): UpdateNotificationTemplateRequest {
+  return {
+    ...toCreateRequest(f),
+    reply_source: hasReplyBody(f.reply_source) ? f.reply_source : "",
+  };
+}
+
+/** A problem with no `field` predates reply bodies, so it is the root card's. */
+function isReplyProblem(p: TemplateProblem): boolean {
+  return p.field === "reply_source";
 }
 
 function live(rows: readonly NotificationTemplate[]): readonly NotificationTemplate[] {
@@ -285,8 +327,10 @@ const TemplateDialog: Component<{
     provider: existing()?.provider ?? "slack",
     format: (existing()?.format as NotificationTemplateFormat) ?? "card",
     source: existing()?.source ?? STARTER,
+    reply_source: existing()?.reply_source ?? "",
     enabled: existing()?.enabled ?? true,
   });
+  const [tab, setTab] = createSignal<"root" | "replies">("root");
   const patch = (d: Partial<TemplateForm>) => setForm((f) => ({ ...f, ...d }));
 
   /*
@@ -294,29 +338,50 @@ const TemplateDialog: Component<{
    * failure this exists to avoid, and 250ms is short enough that the two columns
    * feel attached to the typing. The query key is (format, source), so a
    * keystroke undone gets its previous answer back with no round trip at all.
+   * Both bodies ride one debounce and one request: the reply preview needs the
+   * root body anyway (the contract requires `source`), and two timers would ask
+   * the server about a pair of drafts that never existed together.
    */
-  const [debounced, setDebounced] = createSignal(form().source);
+  const [debounced, setDebounced] = createSignal({
+    source: form().source,
+    reply: form().reply_source,
+  });
   createEffect(() => {
-    const next = form().source;
+    const next = { source: form().source, reply: form().reply_source };
     const id = setTimeout(() => setDebounced(next), PREVIEW_DEBOUNCE_MS);
     onCleanup(() => clearTimeout(id));
   });
 
   const preview = useQuery(() => ({
-    ...templatePreviewQuery(form().format, debounced()),
-    enabled: debounced().trim().length >= SOURCE_MIN,
+    ...templatePreviewQuery(
+      form().format,
+      debounced().source,
+      hasReplyBody(debounced().reply) ? debounced().reply : "",
+    ),
+    enabled: debounced().source.trim().length >= SOURCE_MIN,
   }));
 
   const problems = createMemo(() => preview.data?.problems ?? []);
   /** Refusals only. A warning is reported and does not stop a save. */
   const blocking = createMemo(() => problems().filter((p) => p.kind !== "warning"));
-  const warnings = createMemo(() => problems().filter((p) => p.kind === "warning"));
+  /** Each tab shows its own body's problems, and only its own. */
+  const rootBlocking = createMemo(() => blocking().filter((p) => !isReplyProblem(p)));
+  const replyBlocking = createMemo(() => blocking().filter(isReplyProblem));
+  /** The missing `{{ actions }}` warning is about the root card; it is the only one there is. */
+  const rootWarnings = createMemo(() =>
+    problems().filter((p) => p.kind === "warning" && !isReplyProblem(p)),
+  );
+  const replyWarnings = createMemo(() =>
+    problems().filter((p) => p.kind === "warning" && isReplyProblem(p)),
+  );
 
   /** The ordinary cards first: those are the ones an author is writing for. */
   const renderings = createMemo<readonly TemplateRendering[]>(() => {
     const all = preview.data?.renderings ?? [];
     return [...all].sort((a, b) => Number(b.representative) - Number(a.representative));
   });
+  /** One per reason, in the server's order. */
+  const replyRenderings = createMemo(() => preview.data?.reply_renderings ?? []);
 
   const [fieldErrors, setFieldErrors] = createSignal<Record<string, string>>({});
   const [banner, setBanner] = createSignal<unknown>(null);
@@ -336,7 +401,7 @@ const TemplateDialog: Component<{
     onError: failed,
   }));
   const update = useMutation(() => ({
-    mutationFn: (body: CreateNotificationTemplateRequest) =>
+    mutationFn: (body: UpdateNotificationTemplateRequest) =>
       updateNotificationTemplate(existing()!.id, body),
     onSuccess: done,
     onError: failed,
@@ -361,12 +426,19 @@ const TemplateDialog: Component<{
       return;
     }
     setFieldErrors({});
-    const body = toCreateRequest(parsed.output);
-    if (existing()) update.mutate(body);
-    else create.mutate(body);
+    if (existing()) update.mutate(toUpdateRequest(parsed.output));
+    else create.mutate(toCreateRequest(parsed.output));
   };
 
   const busy = () => create.isPending || update.isPending || remove.isPending;
+
+  /*
+   * ⛔ A TAB THAT IS NOT SHOWING STILL OWES ITS PROBLEMS A MARK. Save is disabled
+   * by a refusal in EITHER body, and an author looking at the other tab would
+   * otherwise see a dead button and no reason anywhere on screen.
+   */
+  const rootInvalid = () => rootBlocking().length > 0 || fieldErrors().source !== undefined;
+  const replyInvalid = () => replyBlocking().length > 0 || fieldErrors().reply_source !== undefined;
 
   return (
     <Modal open onOpenChange={(o) => !o && props.onClose()}>
@@ -427,28 +499,84 @@ const TemplateDialog: Component<{
             <p class={HELP}>{FORMAT_HELP[form().format]}</p>
           </div>
 
-          <div class="grid gap-4 md:grid-cols-2">
-            <TextField class={FIELD} validationState={fieldErrors().source ? "invalid" : "valid"}>
-              <TextFieldLabel class={LABEL}>The message</TextFieldLabel>
-              <TextFieldTextArea
-                class="min-h-80 font-mono text-meta"
-                value={form().source}
-                spellcheck={false}
-                onInput={(e) => patch({ source: e.currentTarget.value })}
-              />
-              <TextFieldErrorMessage>{fieldErrors().source}</TextFieldErrorMessage>
-            </TextField>
+          <Tabs
+            value={tab()}
+            onChange={(t: string) => setTab(t === "replies" ? "replies" : "root")}
+          >
+            <TabsList aria-label="Which message to edit">
+              <TabsTrigger value="root">
+                Root card
+                <Show when={rootInvalid()}>
+                  <ProblemDot />
+                </Show>
+              </TabsTrigger>
+              <TabsTrigger value="replies">
+                Thread replies
+                {/* A separate node, as `AlertTabs` does with its count, so the
+                    tab's own word stays stable for a screen reader. */}
+                <Show when={hasReplyBody(form().reply_source)}>
+                  <span class="ml-1.5 text-ink-muted">(custom)</span>
+                </Show>
+                <Show when={replyInvalid()}>
+                  <ProblemDot />
+                </Show>
+              </TabsTrigger>
+            </TabsList>
 
-            <div class={FIELD}>
-              <span class={LABEL}>What it sends</span>
-              <PreviewPane
-                loading={preview.isFetching}
-                blocking={blocking()}
-                warnings={warnings()}
-                renderings={renderings()}
-              />
-            </div>
-          </div>
+            <TabsContent value="root" class="grid gap-4 md:grid-cols-2">
+              <TextField class={FIELD} validationState={fieldErrors().source ? "invalid" : "valid"}>
+                <TextFieldLabel class={LABEL}>The message</TextFieldLabel>
+                <TextFieldTextArea
+                  class="min-h-80 font-mono text-meta"
+                  value={form().source}
+                  spellcheck={false}
+                  onInput={(e) => patch({ source: e.currentTarget.value })}
+                />
+                <TextFieldErrorMessage>{fieldErrors().source}</TextFieldErrorMessage>
+              </TextField>
+
+              <div class={FIELD}>
+                <span class={LABEL}>What it sends</span>
+                <PreviewPane
+                  loading={preview.isFetching}
+                  blocking={rootBlocking()}
+                  warnings={rootWarnings()}
+                  renderings={renderings()}
+                />
+              </div>
+            </TabsContent>
+
+            <TabsContent value="replies" class="grid gap-4 md:grid-cols-2">
+              <TextField
+                class={FIELD}
+                validationState={fieldErrors().reply_source ? "invalid" : "valid"}
+              >
+                <TextFieldLabel class={LABEL}>The reply</TextFieldLabel>
+                <TextFieldTextArea
+                  class="min-h-80 font-mono text-meta"
+                  value={form().reply_source}
+                  spellcheck={false}
+                  onInput={(e) => patch({ reply_source: e.currentTarget.value })}
+                />
+                <TextFieldDescription class={HELP}>
+                  Leave empty and every reply is oto's own. Branch on <code>reason</code> — a reason
+                  you don't handle keeps oto's own reply.
+                </TextFieldDescription>
+                <TextFieldErrorMessage>{fieldErrors().reply_source}</TextFieldErrorMessage>
+              </TextField>
+
+              <div class={FIELD}>
+                <span class={LABEL}>What each reply sends</span>
+                <PreviewPane
+                  replies
+                  loading={preview.isFetching}
+                  blocking={replyBlocking()}
+                  warnings={replyWarnings()}
+                  renderings={replyRenderings()}
+                />
+              </div>
+            </TabsContent>
+          </Tabs>
 
           <label class={CHECK_ROW}>
             <Checkbox
@@ -489,7 +617,21 @@ const TemplateDialog: Component<{
 
 /* -------------------------------------------------------------------------- */
 
+/** The mark on a tab whose body holds a refusal — the same red the refusal list is drawn in. */
+const ProblemDot: Component = () => (
+  <>
+    <span aria-hidden="true" class="ml-1.5 inline-block size-1.5 rounded-full bg-destructive" />
+    <span class="sr-only">(has problems)</span>
+  </>
+);
+
+/**
+ * One body's preview. `replies` switches it to the reply corpus: each fixture is
+ * a REASON, the card-only chips mean nothing there, and an empty spelling is not
+ * an empty message but oto's own reply going out instead.
+ */
 const PreviewPane: Component<{
+  replies?: boolean;
   loading: boolean;
   blocking: readonly { kind: string; message: string; fixture?: string }[];
   warnings: readonly { kind: string; message: string; fixture?: string }[];
@@ -503,7 +645,9 @@ const PreviewPane: Component<{
             <li>
               <span class="font-medium">{p.message}</span>
               <Show when={p.fixture}>
-                <span class={cn(HELP, "ml-1")}>(on the {p.fixture} example)</span>
+                <span class={cn(HELP, "ml-1")}>
+                  (on the {p.fixture} {props.replies ? "reply" : "example"})
+                </span>
               </Show>
             </li>
           )}
@@ -527,15 +671,26 @@ const PreviewPane: Component<{
       <LoadingLine />
     </Show>
 
+    <Show
+      when={
+        props.replies &&
+        !props.loading &&
+        props.renderings.length === 0 &&
+        props.blocking.length === 0
+      }
+    >
+      <p class={HELP}>Nothing written yet, so every reply is oto's own.</p>
+    </Show>
+
     <For each={props.renderings}>
       {(r) => (
         <div class="rounded-surface border border-border">
           <div class={cn(SECTION_LABEL, "flex items-center gap-2 border-b border-border px-3 py-1.5")}>
             <span>{r.fixture}</span>
-            <Show when={r.representative}>
+            <Show when={!props.replies && r.representative}>
               <Chip>ordinary card</Chip>
             </Show>
-            <Show when={!r.has_actions}>
+            <Show when={!props.replies && !r.has_actions}>
               <Chip>no buttons</Chip>
             </Show>
           </div>
@@ -550,12 +705,20 @@ const PreviewPane: Component<{
               {(s) => (
                 <div class="bg-background p-3">
                   <div class={SECTION_LABEL}>{s.dialect}</div>
-                  <Show
-                    when={!s.error}
-                    fallback={<p class="text-meta text-destructive">{s.error}</p>}
-                  >
-                    <pre class="whitespace-pre-wrap break-words font-mono text-meta">{s.text}</pre>
-                  </Show>
+                  <Switch>
+                    <Match when={s.error}>
+                      <p class="text-meta text-destructive">{s.error}</p>
+                    </Match>
+                    {/* ⭐ NEITHER TEXT NOR ERROR IS THE CONTRACT'S "this reason is
+                        not handled": the body branched past it, so oto's own reply
+                        goes out. It is said in words, never drawn as a blank. */}
+                    <Match when={props.replies && s.text === ""}>
+                      <p class={HELP}>oto's own reply</p>
+                    </Match>
+                    <Match when={true}>
+                      <pre class="whitespace-pre-wrap break-words font-mono text-meta">{s.text}</pre>
+                    </Match>
+                  </Switch>
                 </div>
               )}
             </For>
