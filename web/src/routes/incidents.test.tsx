@@ -90,7 +90,7 @@ describe("the Incident list", () => {
   it("says where an Incident comes from when there are none", async () => {
     mount([]);
     await until(() => expect(screen.getByText("No Incidents have been drawn.")).toBeTruthy());
-    expect(document.body.textContent).toMatch(/from a Case's own screen/);
+    expect(document.body.textContent).toMatch(/by selecting Cases on the Cases screen/);
   });
 
   it("asks for nothing but a page", async () => {

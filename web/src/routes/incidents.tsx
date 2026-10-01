@@ -96,12 +96,12 @@ export default function IncidentsRoute() {
         <Match when={rows().length === 0}>
           {/* ⭐ AN EMPTY LIST IS AN ANSWER, AND IT SAYS WHERE ONE COMES FROM. No
               Incident exists until a Correlator or a person draws one; telling the
-              operator that the Case screen is where a person does it is the whole
+              operator that the Cases screen is where a person does it is the whole
               of the onboarding this needs. */}
           <PageEmptyState
             motif="kumo"
             title="No Incidents have been drawn."
-            body="An Incident is a set of Cases drawn together as one story. A Correlator draws one by its rule, or a person draws one from a Case's own screen."
+            body="An Incident is a set of Cases drawn together as one story. A Correlator draws one as Cases open, or a person draws one by selecting Cases on the Cases screen."
           />
         </Match>
 

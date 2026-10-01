@@ -309,7 +309,7 @@ export const EVENT_KINDS: Record<AlertEventType, EventKind> = {
     category: "incident",
     tone: NEUTRAL_STRONG,
     shape: "square",
-    note: "A human put this firing in an Incident. The firing itself is unchanged.",
+    note: "A person or a Correlator put this firing in an Incident. The firing itself is unchanged.",
   },
   "incident.case_removed": {
     label: "Removed from an Incident",

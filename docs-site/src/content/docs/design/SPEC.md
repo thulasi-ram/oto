@@ -99,7 +99,7 @@ These names are binding on Go types, table names, JSON fields, API paths and UI 
 | **NotificationPolicy** | `notification.Policy` | `notification_policies` | matchers → channels → reasons. Decides *whether* and *where*. |
 | **Notification** | `notification.Notification` | `notifications` | **The channel-agnostic intent to communicate one fact about one subject.** Idempotent. |
 | **NotificationDelivery** | `notification.Delivery` | `notification_deliveries` | **One materialisation of a Notification on one Channel.** Owns retry state, provider ids, thread sequence, rendered bytes. |
-| **Conversation** | `notification.ConversationKind` + id | *(the pair `(conversation_kind, conversation_id)` on `notifications`)* | What a `channel_threads` row is *about*: a **Case** or a **digest**. A conversation holds exactly **one Case** — a new Case always means a new thread — and a digest's conversation is keyed by the **policy** that asked for it, one per policy per channel. It is what **decides which facts share a message**, and that decision belongs to the `notification` layer, not to a stored grouping row (git-bug `7570090`, migration `00069`). It is **not** an Incident: an Incident is a set of Cases (ADR 0052), and a conversation is about one Case or one digest — unless the Incident's Correlator says its Incidents are conversations, which ADR 0052 §6 admits as a third `conversation_kind`, `incident`, when the Incident module lands. |
+| **Conversation** | `notification.ConversationKind` + id | *(the pair `(conversation_kind, conversation_id)` on `notifications`)* | What a `channel_threads` row is *about*: a **Case** or a **digest**. A conversation holds exactly **one Case** — a new Case always means a new thread — and a digest's conversation is keyed by the **policy** that asked for it, one per policy per channel. It is what **decides which facts share a message**, and that decision belongs to the `notification` layer, not to a stored grouping row (git-bug `7570090`, migration `00069`). It is **not** an Incident: an Incident is a set of Cases (ADR 0052), and a conversation is about one Case or one digest — unless the Incident's Correlator says its Incidents are conversations, which ADR 0052 §6 admits as a third `conversation_kind`, `incident` (migrations `00084`, `00087`): a fact about a member Case evaluated after its membership exists posts into the Incident's thread; nothing is held back and nothing already posted moves. |
 | **ChannelThread** | `notification.Thread` | `channel_threads` | Persisted binding of a **Conversation** to a provider conversation anchor (Slack `channel_id` + root `ts`). |
 | **Silence** | `silences.Silence` | `silences` | A **read-only mirror** of an Alertmanager silence. |
 | **UIEvent** | `streaming.UIEvent` | `ui_events` | A monotonic, replayable envelope for the SSE stream. |
@@ -2194,13 +2194,17 @@ CREATE TABLE notification_policies (
   CONSTRAINT policies_name_ck     CHECK (length(btrim(name::text)) BETWEEN 1 AND 120),
   CONSTRAINT policies_prio_ck     CHECK (priority BETWEEN 0 AND 10000),
   CONSTRAINT policies_matchers_ck CHECK (jsonb_typeof(matchers) = 'array' AND jsonb_array_length(matchers) <= 32),
-  -- 00046: a SET, and bounded by the enum rather than by a round number. 18 is the
+  -- 00046: a SET, and bounded by the enum rather than by a round number. 20 is the
   -- size of the §H.6 Reason enum, so it is the most a set drawn from it can hold,
-  -- and it is the same number the DTO tag and domain.MaxPolicyReasons carry.
+  -- and it is the same number the DTO tag and domain.MaxPolicyReasons carry. The
+  -- ceiling moves with the enum: 00058 added `digest`, 00060 removed `storm`, 00067
+  -- removed `unacked_reminder`, 00069 removed `new_alerts` and `some_resolved`, and
+  -- 00084 added the five Incident facts. ⛔ IT DOES NOT CONSTRAIN MEMBERSHIP: every
+  -- narrowing of the Reason vocabulary must strip the value from this column by hand.
   -- `oto_array_is_set` is the uniqueness half: the contract publishes uniqueItems
   -- on the RESPONSE, so a duplicate reaching this column comes back on a read as a
   -- row the generated frontend client refuses.
-  CONSTRAINT policies_reasons_ck  CHECK (cardinality(reasons) BETWEEN 1 AND 18
+  CONSTRAINT policies_reasons_ck  CHECK (cardinality(reasons) BETWEEN 1 AND 20
                                          AND array_position(reasons, NULL) IS NULL
                                          AND oto_array_is_set(reasons)),
   CONSTRAINT policies_chan_ck     CHECK (array_length(channel_ids, 1) BETWEEN 1 AND 16
@@ -2215,8 +2219,9 @@ CREATE TABLE notification_policies (
   -- `subject_kinds = '{NULL}'` through. ⚠️ The vocabulary is a LITERAL here and that is the cost of a
   -- closed set in DDL: it is the third copy (with `subjectKinds` in `internal/notification/domain`
   -- and the contract's enum), so narrowing or widening SubjectKind means editing this constraint,
-  -- exactly as 00069 had to edit `notifications_subjkind_ck` and `threads_subjkind_ck`.
-  CONSTRAINT policies_subjkinds_ck CHECK (subject_kinds <@ ARRAY['alert','case','digest']::text[]
+  -- exactly as 00069 had to edit `notifications_subjkind_ck` and `threads_subjkind_ck`, and as
+  -- 00084 widened all three for `incident` (ADR 0052 §5).
+  CONSTRAINT policies_subjkinds_ck CHECK (subject_kinds <@ ARRAY['alert','case','digest','incident']::text[]
                                          AND array_position(subject_kinds, NULL) IS NULL
                                          AND oto_array_is_set(subject_kinds)),
   -- 2..10000. TWO, because the fact being evaluated is itself inside the window, so a threshold of
@@ -2251,9 +2256,12 @@ CREATE TABLE channel_threads (
   id                       UUID        PRIMARY KEY,
   org_id                   UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
   channel_id               UUID        NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
-  subject_kind             TEXT        NOT NULL CHECK (subject_kind IN ('alert','case','digest')),
-  subject_id               UUID        NOT NULL,   -- alerts.id | alert_cases.id | notification_policies.id, per
-                                                   -- subject_kind. ⛔ `alert_group` LEFT THIS SET with the entity
+  subject_kind             TEXT        NOT NULL,   -- threads_subjkind_ck, below.
+  subject_id               UUID        NOT NULL,   -- alerts.id | alert_cases.id | notification_policies.id |
+                                                   -- incidents.id, per subject_kind. `incident` (00087, ADR 0052
+                                                   -- §6): an Incident whose Correlator says its Incidents are
+                                                   -- conversations keys a thread whose ROOT is the Incident's card;
+                                                   -- later facts about its member Cases reply beneath it. ⛔ `alert_group` LEFT THIS SET with the entity
                                                    -- (git-bug 7570090, migration 00069, narrowing threads_subjkind_ck).
                                                    -- v1 keyed EVERY thread by the alert_groups GENERATION, so forty
                                                    -- alerts produced one thread; a conversation now holds exactly one
@@ -2276,6 +2284,9 @@ CREATE TABLE channel_threads (
   created_at               TIMESTAMPTZ NOT NULL,
   updated_at               TIMESTAMPTZ NOT NULL,
   CONSTRAINT threads_subject_uniq UNIQUE (channel_id, subject_kind, subject_id),
+  -- 00087 widened it for `incident` (ADR 0052 §6); 00069 had narrowed it when `alert_group` left.
+  -- `alert` is admitted and nothing keys a thread by it.
+  CONSTRAINT threads_subjkind_ck CHECK (subject_kind IN ('alert','case','digest','incident')),
   CONSTRAINT threads_seq_ck    CHECK (next_seq >= 1 AND last_sent_seq >= 0 AND last_sent_seq < next_seq),
   CONSTRAINT threads_reply_ck  CHECK (reply_count >= 0),
   -- an OPEN thread must have both halves of the provider handle; ts is TEXT, never a float (S7)
@@ -2289,21 +2300,25 @@ CREATE TABLE channel_threads (
   CONSTRAINT threads_time_ck   CHECK (updated_at >= created_at)
 );
 CREATE INDEX threads_open_idx ON channel_threads (org_id, state) WHERE state IN ('opening','open');
+-- 00087. Finds an Incident's thread by its subject, which `threads_subject_uniq` cannot serve
+-- because it leads with `channel_id`.
+CREATE INDEX threads_subject_idx ON channel_threads (org_id, subject_kind, subject_id);
 
 CREATE TABLE notifications (
   id              UUID        PRIMARY KEY,
   org_id          UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
-  subject_kind    TEXT        NOT NULL,            -- notifications_subjkind_ck, below. THREE kinds since 00069:
-                                                   -- 'alert','case','digest'. It was four from 00058 until git-bug
-                                                   -- 7570090 dropped the `alert_group` arm with the table it named.
+  subject_kind    TEXT        NOT NULL,            -- notifications_subjkind_ck, below. FOUR kinds since 00084:
+                                                   -- 'alert','case','digest','incident'. It was four from 00058 until
+                                                   -- git-bug 7570090 dropped the `alert_group` arm with the table it
+                                                   -- named (00069), and 00084 added `incident` (ADR 0052 §5).
                                                    -- WHAT the fact is about. Which Reason declares which subject is the
                                                    -- domain allocation (`notification/domain/reason.go`, proven total by
                                                    -- a test), deliberately NOT a reason → subject CHECK: release N
                                                    -- wrote 'alert_group' for every reason and both releases ran at once.
-  subject_id      UUID        NOT NULL,            -- alerts.id | alert_cases.id, or — for a digest —
+  subject_id      UUID        NOT NULL,            -- alerts.id | alert_cases.id | incidents.id, or — for a digest —
                                                    -- notification_policies.id, the POLICY half of the (policy, window)
-                                                   -- pair. No FK: one column cannot reference three tables — the tie is
-                                                   -- notifications_subject_ck, which has three arms since 00069.
+                                                   -- pair. No FK: one column cannot reference four tables — the tie is
+                                                   -- notifications_subject_ck, which has four arms since 00084.
   -- ⛔ `group_id UUID REFERENCES alert_groups(id) ON DELETE CASCADE` WAS HERE AND IS DROPPED
   -- (git-bug 7570090, migration 00069), along with notifications_group_id_fkey. The delivery target
   -- is the pair (conversation_kind, conversation_id) and nothing else; `conversation_id` holds an
@@ -2320,9 +2335,10 @@ CREATE TABLE notifications (
                                                    -- notifications_convkind_ck, below.
   conversation_id   UUID      NOT NULL,            -- the conversation itself, in the table
                                                    -- conversation_kind names: alert_cases.id for
-                                                   -- `case`, notification_policies.id for `digest`. No
-                                                   -- FK — one column cannot reference two tables, the
-                                                   -- same reason subject_id has none.
+                                                   -- `case`, notification_policies.id for `digest`,
+                                                   -- incidents.id for `incident`. No FK — one column
+                                                   -- cannot reference three tables, the same reason
+                                                   -- subject_id has none.
   alert_id        UUID,                            -- set when the fact is about one alert
   case_id   UUID,
   digest_window_start TIMESTAMPTZ,                 -- 00058. The WINDOW half of a digest's subject: the inclusive start,
@@ -2374,14 +2390,20 @@ CREATE TABLE notifications (
   created_at      TIMESTAMPTZ NOT NULL,
   updated_at      TIMESTAMPTZ NOT NULL,
   CONSTRAINT notifications_idem_uniq UNIQUE (org_id, idempotency_key),
-  CONSTRAINT notifications_subjkind_ck CHECK (subject_kind IN ('alert','case','digest')),
+  CONSTRAINT notifications_subjkind_ck CHECK (subject_kind IN ('alert','case','digest','incident')),
   CONSTRAINT notifications_reason_ck CHECK (reason IN
-    ('fired','new_alerts','some_resolved','all_resolved','repeat','suppressed','unsuppressed',
-     'expired','refired','acked','unacked','snoozed','unsnoozed','enriched','rule_changed',
-     'comment','digest')),
-                                                   -- SEVENTEEN reasons: 00018's order, `digest`
+    ('fired','all_resolved','repeat','suppressed','unsuppressed','expired','refired',
+     'acked','unacked','snoozed','unsnoozed','enriched','rule_changed','comment','digest',
+     'drawn','case_added','case_removed','quiet','active_again')),
+                                                   -- TWENTY reasons: 00018's order, `digest`
                                                    -- appended by 00058, `storm` DELETED by 00060,
-                                                   -- `unacked_reminder` DELETED by 00067.
+                                                   -- `unacked_reminder` DELETED by 00067,
+                                                   -- `new_alerts` and `some_resolved` DELETED by
+                                                   -- 00069, and the five Incident facts —
+                                                   -- `drawn`, `case_added`, `case_removed`,
+                                                   -- `quiet`, `active_again` — appended by 00084.
+                                                   -- None of the five is a resolve, a close or a
+                                                   -- status (ADR 0052 §5).
                                                    -- `refired` is RETIRED — nothing writes it since
                                                    -- ADR 0040, the CHECK still admits it, and rows
                                                    -- carrying it still render.
@@ -2400,7 +2422,7 @@ CREATE TABLE notifications (
   -- destination. ⛔ IT READ `CHECK (subject_kind = 'digest' OR group_id IS NOT NULL)` and the
   -- column it named is dropped (git-bug 7570090, migration 00069); the delivery target is the pair
   -- (conversation_kind, conversation_id) and `notifications_convkind_ck` bounds the kind to
-  -- `case | digest`.
+  -- `case | digest | incident`.
   -- ⭐ THE CONVERSATION VOCABULARY IS ITS OWN CHECK AND DELIBERATELY NOT `subject_kind`'s. A subject
   -- is what a fact is ABOUT; a conversation is where it is DELIVERED, and the two sets are not the
   -- same: `alert` is a subject no conversation is ever keyed by. Sharing one CHECK would tie two
@@ -2408,7 +2430,10 @@ CREATE TABLE notifications (
   -- the set in git-bug 7570090 and `case` replaced it. There is no `notifications_target_ck` beside
   -- it any more: every row names a conversation unconditionally, so the digest is no longer the one
   -- exception carved into a CHECK.
-  CONSTRAINT notifications_convkind_ck CHECK (conversation_kind IN ('case','digest')),
+  -- `incident` joined at 00084 (an Incident fact names the Incident's conversation) and since 00087
+  -- a CASE fact may name it too: the Case was a member of an Incident that is a conversation when
+  -- the fact was evaluated, and the answer is frozen on the row (ADR 0052 §6).
+  CONSTRAINT notifications_convkind_ck CHECK (conversation_kind IN ('case','digest','incident')),
   -- the two digest columns are present exactly for a digest, and a stored count is at least 1.
   -- The range test is a SEPARATE conjunct: folding it into the equality would make the whole
   -- predicate NULL for a digest row with a missing count, and a CHECK passes on NULL.
@@ -2442,15 +2467,20 @@ CREATE TABLE notifications (
   -- have, and it is what makes subject_id a usable join key instead of a convention.
   -- Each arm carries its own IS NOT NULL because `subject_id = alert_id` over a NULL alert_id
   -- evaluates to NULL and a CHECK passes on NULL — the group arm gained its guard in 00058, when
-  -- `group_id` stopped being NOT NULL, and left with the entity in 00069. THREE arms now, one per
-  -- surviving subject kind. The digest arm tolerates a NULL policy_id because policy_id is
+  -- `group_id` stopped being NOT NULL, and left with the entity in 00069. FOUR arms since 00084, one
+  -- per subject kind. The digest arm tolerates a NULL policy_id because policy_id is
   -- ON DELETE SET NULL, and enforcing the tie unconditionally would make the first digest ever sent
-  -- turn its own policy undeletable.
+  -- turn its own policy undeletable. The incident arm (00084) names NO typed column at all:
+  -- subject_id is the incidents.id, and alert_id, case_id and the digest window are NULL, because an
+  -- Incident fact is about the story and never about one of its signals — and this table has no
+  -- column naming an Incident, by SCOPE-BOUNDARY §5.6.
   CONSTRAINT notifications_subject_ck CHECK (
-       (subject_kind = 'alert'       AND alert_id IS NOT NULL AND subject_id = alert_id)
-    OR (subject_kind = 'case'        AND case_id  IS NOT NULL AND subject_id = case_id)
-    OR (subject_kind = 'digest'      AND digest_window_start IS NOT NULL
-                                     AND (policy_id IS NULL OR subject_id = policy_id))),
+       (subject_kind = 'alert'    AND alert_id IS NOT NULL AND subject_id = alert_id)
+    OR (subject_kind = 'case'     AND case_id  IS NOT NULL AND subject_id = case_id)
+    OR (subject_kind = 'digest'   AND digest_window_start IS NOT NULL
+        AND (policy_id IS NULL OR subject_id = policy_id))
+    OR (subject_kind = 'incident' AND alert_id IS NULL AND case_id IS NULL
+        AND digest_window_start IS NULL)),
   CONSTRAINT notifications_time_ck   CHECK (updated_at >= created_at)
 );
 CREATE INDEX notif_subject_idx ON notifications (org_id, subject_kind, subject_id, created_at DESC);
@@ -2661,6 +2691,143 @@ CREATE INDEX alert_snoozes_org_idx    ON alert_snoozes (org_id, alert_id, snooze
 > `time_of_day`, or a NULL `snoozed_until`.** A recurring snooze is a maintenance calendar; an
 > unexpiring snooze is a mute. Both are how a channel dies. Maintenance windows, if ever built, are
 > a separate feature with their own scope review (SCOPE-BOUNDARY §4.40).
+
+### D.8c Incidents and Correlators (ADR 0052) — migrations `00083`, `00085`, `00086`, `00087`
+
+> **Five tables, and not one of them is a signal table.** `alerts` and `alert_cases` gain no column:
+> membership is its own row keyed by the Case, so the signal tables keep saying what fired, when and
+> how it ended, and an Incident is a READING over them (SCOPE-BOUNDARY §5.6 — no
+> `alert_cases.incident_id`, ever). ⛔ **An Incident has no state column** (ADR 0052 §3): it is
+> active while any member Case is open and quiet otherwise, both read off the member Cases at query
+> time. There is no `status`, `severity`, `lead` or `closed_at`; the response lives in the incident
+> tool the Incident is declared to (§5). The DDL below is the post-`00087` state: `00083` created the
+> Incident tables with `drawn_by_correlator_id` / `added_by_correlator_id` unconstrained, `00085`
+> created the Correlator tables and added the two foreign keys `00083` owed, and `00086` / `00087`
+> each added one column to `correlators`.
+
+```sql
+-- 00083. The next incidents.number to hand out, bumped by the single INSERT that draws an
+-- Incident and read by nothing else. A missing row means the org has drawn no Incident yet.
+CREATE TABLE org_incident_numbers (
+  org_id      UUID   PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
+  next_number BIGINT NOT NULL DEFAULT 1,
+  CONSTRAINT org_incident_numbers_next_ck CHECK (next_number >= 1)
+);
+
+-- 00085. An operator-written definition that draws Incidents (ADR 0052 §2): matchers over Cases in
+-- the notification-policy grammar (ADR 0017), optionally a count over a sliding window (00072's
+-- shape). Walked in priority order, LOWER FIRST, on every Case open by the incidents.correlate job —
+-- never on the ingest transaction — and the first whose matchers hold claims the Case. NOT a rule:
+-- in oto that word is the Prometheus alerting rule. Soft-deleted, because the Incidents it drew
+-- name it.
+CREATE TABLE correlators (
+  id             UUID        PRIMARY KEY,
+  org_id         UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  name           CITEXT      NOT NULL,
+  priority       INT         NOT NULL DEFAULT 100,   -- 0..10000, LOWER IS FIRST, ties by created_at then id
+  enabled        BOOLEAN     NOT NULL DEFAULT true,
+  matchers       JSONB       NOT NULL DEFAULT '[]'::jsonb,
+  -- a floor on DRAWING, never on joining: a Case that matches while this Correlator's Incident is
+  -- active joins it whatever the count. NULL for both is "every matching Case draws or joins".
+  count_min      INT,
+  count_window_s INT,
+  created_at     TIMESTAMPTZ NOT NULL,
+  updated_at     TIMESTAMPTZ NOT NULL,
+  deleted_at     TIMESTAMPTZ,
+  -- 00086. How long after this Correlator's latest Incident went QUIET a matching Case still joins
+  -- it (ADR 0052 §4); NULL joins only while it is active. "Went quiet" is read, not stored.
+  quiet_grace_s  INT,
+  -- 00087. The Incidents this Correlator draws are CONVERSATIONS (ADR 0052 §6). Read at delivery,
+  -- never stamped on the Incident: flipping it redirects later facts only.
+  incidents_are_conversations BOOLEAN NOT NULL DEFAULT false,
+  CONSTRAINT correlators_name_ck     CHECK (length(btrim(name::text)) BETWEEN 1 AND 120),
+  CONSTRAINT correlators_prio_ck     CHECK (priority BETWEEN 0 AND 10000),
+  -- `policies_matchers_ck` verbatim. AN EMPTY LIST MATCHES EVERY CASE: with a count it is
+  -- "≥N Cases of anything inside W", which is the storm.
+  CONSTRAINT correlators_matchers_ck CHECK (jsonb_typeof(matchers) = 'array' AND jsonb_array_length(matchers) <= 32),
+  -- 00072's three count constraints, with 00072's arguments. There is no unit rule: a Correlator
+  -- counts Cases and nothing else.
+  CONSTRAINT correlators_count_min_ck    CHECK (count_min IS NULL OR count_min BETWEEN 2 AND 10000),
+  CONSTRAINT correlators_count_window_ck CHECK (count_window_s IS NULL OR count_window_s BETWEEN 60 AND 86400),
+  CONSTRAINT correlators_count_pair_ck   CHECK ((count_min IS NULL) = (count_window_s IS NULL)),
+  CONSTRAINT correlators_time_ck         CHECK (updated_at >= created_at),
+  CONSTRAINT correlators_quiet_grace_ck  CHECK (quiet_grace_s IS NULL OR quiet_grace_s BETWEEN 60 AND 86400)
+);
+-- unique among the LIVE ones: a retired Correlator keeps its name on the Incidents it drew
+CREATE UNIQUE INDEX correlators_name_uniq ON correlators (org_id, name) WHERE deleted_at IS NULL;
+-- the evaluator's walk, first match wins, with the tie-break columns so it needs no Sort node
+CREATE INDEX correlators_eval_idx ON correlators (org_id, priority, created_at, id)
+  WHERE enabled AND deleted_at IS NULL;
+
+-- 00083. A set of one or more Cases drawn together as one story. Its state is NOT stored.
+CREATE TABLE incidents (
+  id                     UUID        PRIMARY KEY,
+  org_id                 UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  number                 BIGINT      NOT NULL,   -- the name within the org: monotonic, not gapless
+  drawn_at               TIMESTAMPTZ NOT NULL,
+  drawn_by               UUID        REFERENCES users(id) ON DELETE SET NULL,   -- ACTOR metadata (R8)
+  drawn_by_label         TEXT,
+  drawn_by_correlator_id UUID,
+  CONSTRAINT incidents_number_uniq UNIQUE (org_id, number),
+  CONSTRAINT incidents_number_ck   CHECK (number >= 1),
+  -- EXACTLY ONE AUTHOR (ADR 0052 §2). The LABEL is the human half's presence marker rather than
+  -- `drawn_by`, because `drawn_by` is nulled when the user is deleted.
+  CONSTRAINT incidents_drawn_by_ck CHECK ((drawn_by_label IS NULL) <> (drawn_by_correlator_id IS NULL)),
+  CONSTRAINT incidents_human_ck    CHECK (drawn_by IS NULL OR drawn_by_label IS NOT NULL),
+  CONSTRAINT incidents_label_ck    CHECK (drawn_by_label IS NULL OR length(btrim(drawn_by_label)) BETWEEN 1 AND 200),
+  -- 00085, the foreign key 00083 owed
+  CONSTRAINT incidents_correlator_fk FOREIGN KEY (drawn_by_correlator_id) REFERENCES correlators(id)
+);
+-- 00085. "This Correlator's latest Incident" — the one a matching Case may join. Partial, because a
+-- human-drawn Incident is never a Correlator's to grow (§4).
+CREATE INDEX incidents_correlator_idx ON incidents (drawn_by_correlator_id, number DESC)
+  WHERE drawn_by_correlator_id IS NOT NULL;
+
+-- 00083. One spell of one Case inside one Incident. Tombstoned (removed_at) when a human removes or
+-- moves it, never deleted: a Correlator must never re-add a Case a human removed (§4).
+CREATE TABLE incident_members (
+  id                     UUID        PRIMARY KEY,
+  org_id                 UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  incident_id            UUID        NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+  case_id                UUID        NOT NULL REFERENCES alert_cases(id) ON DELETE CASCADE,
+  added_at               TIMESTAMPTZ NOT NULL,
+  added_by               UUID        REFERENCES users(id) ON DELETE SET NULL,
+  added_by_label         TEXT,
+  added_by_correlator_id UUID,
+  removed_at             TIMESTAMPTZ,
+  removed_by             UUID        REFERENCES users(id) ON DELETE SET NULL,
+  removed_by_label       TEXT,
+  -- set only when the removal was HALF OF A MOVE, so the tombstone reads "moved to #7"
+  moved_to_incident_id   UUID        REFERENCES incidents(id) ON DELETE SET NULL,
+  CONSTRAINT incident_members_added_by_ck    CHECK ((added_by_label IS NULL) <> (added_by_correlator_id IS NULL)),
+  CONSTRAINT incident_members_added_human_ck CHECK (added_by IS NULL OR added_by_label IS NOT NULL),
+  CONSTRAINT incident_members_added_label_ck CHECK (added_by_label IS NULL OR length(btrim(added_by_label)) BETWEEN 1 AND 200),
+  -- ⛔ ONLY A HUMAN REMOVES (ADR 0052 §4), so there is no correlator column on this half.
+  CONSTRAINT incident_members_removed_ck       CHECK ((removed_at IS NULL) = (removed_by_label IS NULL)),
+  CONSTRAINT incident_members_removed_human_ck CHECK (removed_by IS NULL OR removed_at IS NOT NULL),
+  CONSTRAINT incident_members_removed_label_ck CHECK (removed_by_label IS NULL OR length(btrim(removed_by_label)) BETWEEN 1 AND 200),
+  CONSTRAINT incident_members_moved_ck         CHECK (moved_to_incident_id IS NULL OR removed_at IS NOT NULL),
+  CONSTRAINT incident_members_moved_self_ck    CHECK (moved_to_incident_id IS DISTINCT FROM incident_id),
+  CONSTRAINT incident_members_time_ck          CHECK (removed_at IS NULL OR removed_at >= added_at),
+  -- 00085, the foreign key 00083 owed
+  CONSTRAINT incident_members_correlator_fk FOREIGN KEY (added_by_correlator_id) REFERENCES correlators(id)
+);
+-- ⭐⭐ THE AT-MOST-ONE RULE (ADR 0052 §4), over LIVE memberships only: a tombstone is history.
+CREATE UNIQUE INDEX incident_members_case_live_uniq ON incident_members (case_id) WHERE removed_at IS NULL;
+CREATE INDEX incident_members_incident_idx ON incident_members (incident_id, added_at, id);
+
+-- 00085. Which Correlator claimed which Case. It is the numerator of a count condition and says
+-- nothing about membership: a claimed Case may be below its Correlator's threshold and in no Incident.
+CREATE TABLE correlator_matches (
+  -- ⭐ THE PRIMARY KEY IS THE CASE, and that is first-wins as a constraint.
+  case_id         UUID        PRIMARY KEY REFERENCES alert_cases(id) ON DELETE CASCADE,
+  org_id          UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  correlator_id   UUID        NOT NULL REFERENCES correlators(id),
+  case_started_at TIMESTAMPTZ NOT NULL,   -- a COPY of alert_cases.started_at, so the window read is one range
+  matched_at      TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX correlator_matches_window_idx ON correlator_matches (correlator_id, case_started_at);
+```
 
 ### D.9 Silences (read-only mirror)
 
@@ -4646,6 +4813,24 @@ exists: an episode above the first succeeded one that had ended.
 **⛔ THE `storm` REPLY WAS HERE AND IS DELETED (ADR 0042), which is NOT `refired`'s treatment.** `refired` keeps its row because `notifications_reason_ck` still admits the value: a stored row can spell it, a policy can match on it, and a card rendering one must not fail. `storm` had exactly that argument until migration `00060` narrowed the CHECK to eighteen values and the owner authorised the database reset, at which point no row can spell it and no reader can be constructed. `reasonStorm` is gone from `render/slack/reply.go` — line 33 is the tombstone — and so are `replyLead`'s `:zap: Storm damping on for:` heading and `reasonPhrase`'s *storm damping* words. **The test is whether a ROW can spell it, and after 00060 none can.**
 
 `rule_changed` is the headline differentiator and is **always** delivered as a reply, regardless of verbosity. There is no exception: the storm-mode carve-out went with ADR 0042.
+
+**An Incident's conversation (ADR 0052 §6, migration `00087`, `render/slack/incident.go`).** When a
+Correlator says its Incidents are conversations, the Incident gets a thread of its own and three
+messages exist beside the Case's:
+
+| Message | Where | Blocks | Literal example |
+|---|---|---|---|
+| Incident card (root) | the Incident's thread | `section` + `fields` + `section` (current members, capped at the instance budget) + `context` | `":jigsaw: *<…/incidents/12\|Incident #12>* — :fire: *Active*, 1 case open"` · fields `Cases`, `Open` (omitted at 0, S11), `Drawn`, `Drawn by` · one bullet per current member, `"• :fire: <…/cases/…\|Case #412>"` plus its alertname as code |
+| Incident fact reply | the Incident's thread | 1 × `section` | `":heavy_plus_sign: *A case joined* — now 3 cases, 2 open"` |
+| Pointer | each member Case's OWN thread, once | 1 × `section` | `":arrow_right: *Now part of <…\|Incident #12>* — later updates about this case are posted in that Incident's thread, not here."` |
+
+The root is **always the Incident's card**, whichever fact posts or amends it — a Case fact that is the
+first to reach a channel posts the card and replies under it. It carries **no actions** (every action
+acts on one signal), the firing colour while a member Case is open and the neutral bar once quiet —
+**never** the resolved green, because quiet is not resolved. A Case fact replying in the Incident's thread
+is its ordinary §H.5 reply with the Case named in front (`*<…\|Case #412>*`, its alertname as code, then
+` · `), and `(case #412 in Incident #12)` in the top-level text. There is no outbound link yet: §5's outbound
+mapping is not stored by any table.
 
 ### H.6 `notification_reason` → Reason → mode decision table (BINDING)
 

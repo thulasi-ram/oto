@@ -3608,7 +3608,7 @@ export interface components {
             id: components["schemas"]["Uuid"];
             /**
              * @description Unique among the org's live Correlators, compared case-insensitively.
-             * @example payments storm
+             * @example payments api
              */
             name: string;
             /**
