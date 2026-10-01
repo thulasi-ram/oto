@@ -518,6 +518,71 @@ func plan() []probe {
 			want: http.StatusOK,
 		},
 
+		/* ----------------------------------------------------------- incidents */
+		// ADR 0052: a human draws an Incident over Cases, and a Case belongs to at
+		// most one. The order walks the membership lifecycle — draw, refuse a second
+		// draw over the same Case, draw a second Incident over a second Case, refuse
+		// adding that Case where it is not, move it, remove it, add it back — so
+		// every refusal the at-most-one rule produces is observed on the wire, not
+		// only every success. `{number}` is the per-org number the create captured.
+		{method: http.MethodGet, tmpl: "/api/v1/incidents", want: http.StatusOK},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/incidents",
+			body:    map[string]any{"case_ids": []string{"{{case}}"}},
+			want:    http.StatusCreated,
+			capture: map[string][]string{"incident": {"data", "number"}},
+		},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/incidents",
+			body: map[string]any{"case_ids": []string{"{{case}}"}},
+			want: http.StatusConflict,
+			why: "a Case belongs to at most one Incident: the second draw is refused by " +
+				"incident_members_case_live_uniq and its detail points at the move",
+		},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/incidents",
+			body:    map[string]any{"case_ids": []string{"{{case2}}"}},
+			want:    http.StatusCreated,
+			capture: map[string][]string{"incident2": {"data", "number"}},
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/incidents/{number}", url: "/api/v1/incidents/{{incident}}",
+			want: http.StatusOK,
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/incidents/{number}", url: "/api/v1/incidents/999999",
+			want: http.StatusNotFound,
+			why:  "a number this org never drew is indistinguishable from one another org drew",
+		},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/incidents/{number}/cases", url: "/api/v1/incidents/{{incident}}/cases",
+			body: map[string]any{"case_id": "{{case2}}"},
+			want: http.StatusConflict,
+			why:  "the Case is in the second Incident, so adding it here is refused with a pointer to move",
+		},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/incidents/{number}/cases/{case_id}/move",
+			url:     "/api/v1/incidents/{{incident2}}/cases/{{case2}}/move",
+			rawBody: `{"to_number": {{incident}}}`,
+			want:    http.StatusOK,
+		},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/incidents/{number}/cases/{case_id}/remove",
+			url:  "/api/v1/incidents/{{incident}}/cases/{{case2}}/remove",
+			want: http.StatusOK,
+		},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/incidents/{number}/cases/{case_id}/remove",
+			url:  "/api/v1/incidents/{{incident}}/cases/{{case2}}/remove",
+			want: http.StatusNotFound,
+			why:  "the membership is a tombstone now; a second removal finds no current member to remove",
+		},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/incidents/{number}/cases", url: "/api/v1/incidents/{{incident2}}/cases",
+			body: map[string]any{"case_id": "{{case2}}"},
+			want: http.StatusOK,
+		},
+
 		/* ------------------------------------------------------- case policies */
 		// The case RETENTION WINDOW W, per (namespace, alertname). The shape is
 		// `/api/v1/clusters`'s and so is the probe order: list, create by the

@@ -157,6 +157,27 @@ var (
 	EventSourceRecovered = EventType{"source.recovered"}
 	// EventSourceClockSkew records measured upstream clock skew (C12).
 	EventSourceClockSkew = EventType{"source.clock_skew"}
+
+	// ⭐ THE THREE INCIDENT MEMBERSHIP FACTS (ADR 0052, git-bug b2672a1). They are
+	// written on the CASE — never on the Incident, which has no timeline of its own
+	// in `alert_events` — because the question an operator asks of a Case's history
+	// is "when did this become part of a bigger story, and who said so". Always a
+	// human actor today: a Correlator draws through its own ticket and will name
+	// itself as the actor when it does. None of them changes the Case: an episode
+	// is open or closed exactly as it was before the sentence was written.
+
+	// EventIncidentCaseAdded records the Case joining an Incident — drawn with it
+	// (payload `drawn: true`) or added to it later. Payload: incident_id,
+	// incident_number, drawn.
+	EventIncidentCaseAdded = EventType{"incident.case_added"}
+	// EventIncidentCaseRemoved records a human taking the Case out of an Incident.
+	// Payload: incident_id, incident_number.
+	EventIncidentCaseRemoved = EventType{"incident.case_removed"}
+	// EventIncidentCaseMoved records a human moving the Case from one Incident to
+	// another in one transaction — ONE fact, not a removal and an add, because it
+	// was one decision. Payload: from_incident_id, from_number, to_incident_id,
+	// to_number.
+	EventIncidentCaseMoved = EventType{"incident.case_moved"}
 )
 
 var eventTypes = map[string]struct{}{}
@@ -400,6 +421,7 @@ func AllEventTypes() []EventType {
 		EventDeliverySkipped, EventDeliveryDead,
 		EventCommentAdded,
 		EventSourceUnreachable, EventSourceRecovered, EventSourceClockSkew,
+		EventIncidentCaseAdded, EventIncidentCaseRemoved, EventIncidentCaseMoved,
 	}
 }
 

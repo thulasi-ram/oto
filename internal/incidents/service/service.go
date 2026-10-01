@@ -1,0 +1,359 @@
+package service
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/google/uuid"
+
+	kernel "github.com/thulasiram/oto/internal/alerts/domain"
+	"github.com/thulasiram/oto/internal/incidents/domain"
+	"github.com/thulasiram/oto/internal/platform/clock"
+	"github.com/thulasiram/oto/internal/platform/db"
+	"github.com/thulasiram/oto/internal/platform/errs"
+)
+
+// Service is the Incident's four human verbs — draw, add, remove, move — and its
+// two reads (ADR 0052 §1–§4).
+//
+// ⛔ THERE IS NO FIFTH VERB, AND THE ABSENCE IS THE RULING. Nothing here sets an
+// Incident's state (§3: it is read off the member Cases), resolves or closes one,
+// names a lead, or records a severity a human chose: that is the RESPONSE, and it
+// lives in the incident tool the Incident is declared to (§5). Nothing here deletes
+// an Incident either — a story that turned out to be two stories is two moves, and
+// both stay on the record.
+//
+// ⭐ EVERY WRITE IS ONE TRANSACTION THAT ALSO NARRATES. The membership row and the
+// `incident.case_*` fact on the member Case's timeline commit together or not at
+// all, so the Case's history can never claim a membership the Incident does not
+// have, or miss one it does.
+type Service struct {
+	incidents Repository
+	tx        TxRunner
+	timeline  Timeline
+	clock     clock.Clock
+}
+
+// Deps are the Service's collaborators. Every one is required: an Incident write
+// with no transaction, or with no timeline to narrate onto, is a write whose
+// guarantees are gone, and failing at construction is cheaper than failing at
+// 03:00.
+type Deps struct {
+	Incidents Repository
+	Tx        TxRunner
+	Timeline  Timeline
+	Clock     clock.Clock
+}
+
+// New builds the Service.
+func New(d Deps) (*Service, error) {
+	switch {
+	case d.Incidents == nil:
+		return nil, errors.New("incidents: a repository is required")
+	case d.Tx == nil:
+		return nil, errors.New("incidents: a unit of work is required")
+	case d.Timeline == nil:
+		return nil, errors.New("incidents: a timeline is required; a membership change nobody " +
+			"narrates is a Case history with a hole in it")
+	}
+	if d.Clock == nil {
+		d.Clock = clock.New()
+	}
+	return &Service{incidents: d.Incidents, tx: d.Tx, timeline: d.Timeline, clock: d.Clock}, nil
+}
+
+func (s *Service) now() time.Time { return s.clock.Now().UTC() }
+
+// List returns a page of the org's Incidents, newest first, each with its derived
+// state.
+func (s *Service) List(ctx context.Context, scope db.TenantScope, p db.Keyset) ([]domain.Incident, db.Cursor, error) {
+	return s.incidents.List(ctx, scope, p)
+}
+
+// Get returns one Incident by the number a human quotes, with every spell of
+// every Case that has been in it.
+func (s *Service) Get(ctx context.Context, scope db.TenantScope, number int64) (domain.Detail, error) {
+	return s.incidents.Get(ctx, scope, number)
+}
+
+// Draw is a human drawing one Incident over one or more Cases (ADR 0052 §2).
+//
+// ⭐ ALL OR NOTHING. A Case the org does not have, or one already in another
+// Incident, refuses the whole draw: an Incident drawn over "the Cases that
+// happened to be free" is not the story the human asked for. The refusal for the
+// second names the holding Incident and the move — the read below exists only to
+// write that sentence; the partial unique index is what actually holds the line.
+//
+// ⚠️ A RETRY IS SAFE WITHOUT AN IDEMPOTENCY CLAIM, and that is a consequence of
+// the rule rather than an oversight: a second draw over the same Cases meets the
+// first draw's memberships and is refused with a pointer to the Incident the
+// first attempt drew.
+func (s *Service) Draw(
+	ctx context.Context, scope db.TenantScope, caseIDs []uuid.UUID, by domain.Attribution,
+) (domain.Detail, error) {
+	if !by.IsHuman() {
+		return domain.Detail{}, errs.New(errs.KindInternal, "incident_draw_not_human",
+			"this path draws for a human; a Correlator draws through its own")
+	}
+	ids, err := distinctCases(caseIDs)
+	if err != nil {
+		return domain.Detail{}, err
+	}
+
+	var drawn domain.Ref
+	err = s.tx.InTx(ctx, func(ctx context.Context) error {
+		cases, err := s.resolveCases(ctx, scope, ids)
+		if err != nil {
+			return err
+		}
+		live, err := s.incidents.LiveMemberships(ctx, scope, ids)
+		if err != nil {
+			return err
+		}
+		for _, c := range cases {
+			if holder, ok := live[c.ID]; ok {
+				return domain.CaseInIncident(c, holder)
+			}
+		}
+
+		at := s.now()
+		drawn, err = s.incidents.Insert(ctx, scope, at, by)
+		if err != nil {
+			return err
+		}
+		for _, c := range cases {
+			if err := s.incidents.AddMember(ctx, scope, drawn.ID, c.ID, at, by); err != nil {
+				return err
+			}
+			if err := s.timeline.RecordIncidentFact(ctx, scope, CaseFact{
+				Type:    kernel.EventIncidentCaseAdded,
+				CaseID:  c.ID,
+				AlertID: c.AlertID,
+				Summary: fmt.Sprintf("Drawn into Incident #%d by %s", drawn.Number, who(by)),
+				Payload: map[string]any{
+					"incident_id":     drawn.ID.String(),
+					"incident_number": drawn.Number,
+					"drawn":           true,
+				},
+				By: by,
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return domain.Detail{}, err
+	}
+	return s.incidents.Get(ctx, scope, drawn.Number)
+}
+
+// Add is a human adding one Case to an Incident (ADR 0052 §4).
+func (s *Service) Add(
+	ctx context.Context, scope db.TenantScope, number int64, caseID uuid.UUID, by domain.Attribution,
+) (domain.Detail, error) {
+	err := s.tx.InTx(ctx, func(ctx context.Context) error {
+		in, err := s.incidents.Ref(ctx, scope, number)
+		if err != nil {
+			return err
+		}
+		cases, err := s.resolveCases(ctx, scope, []uuid.UUID{caseID})
+		if err != nil {
+			return err
+		}
+		c := cases[0]
+		live, err := s.incidents.LiveMemberships(ctx, scope, []uuid.UUID{caseID})
+		if err != nil {
+			return err
+		}
+		if holder, ok := live[caseID]; ok {
+			if holder.ID == in.ID {
+				return domain.AlreadyAMember(c, in)
+			}
+			return domain.CaseInIncident(c, holder)
+		}
+
+		if err := s.incidents.AddMember(ctx, scope, in.ID, caseID, s.now(), by); err != nil {
+			return err
+		}
+		return s.timeline.RecordIncidentFact(ctx, scope, CaseFact{
+			Type:    kernel.EventIncidentCaseAdded,
+			CaseID:  c.ID,
+			AlertID: c.AlertID,
+			Summary: fmt.Sprintf("Added to Incident #%d by %s", in.Number, who(by)),
+			Payload: map[string]any{
+				"incident_id":     in.ID.String(),
+				"incident_number": in.Number,
+				"drawn":           false,
+			},
+			By: by,
+		})
+	})
+	if err != nil {
+		return domain.Detail{}, err
+	}
+	return s.incidents.Get(ctx, scope, number)
+}
+
+// Remove is a human taking one Case out of an Incident. The membership is
+// tombstoned, never deleted, and the Case itself is untouched.
+func (s *Service) Remove(
+	ctx context.Context, scope db.TenantScope, number int64, caseID uuid.UUID, by domain.Attribution,
+) (domain.Detail, error) {
+	err := s.tx.InTx(ctx, func(ctx context.Context) error {
+		in, err := s.incidents.Ref(ctx, scope, number)
+		if err != nil {
+			return err
+		}
+		c, err := s.memberCase(ctx, scope, caseID)
+		if err != nil {
+			return err
+		}
+		if err := s.incidents.RemoveMember(ctx, scope, in.ID, caseID, s.now(), by, uuid.Nil); err != nil {
+			return err
+		}
+		return s.timeline.RecordIncidentFact(ctx, scope, CaseFact{
+			Type:    kernel.EventIncidentCaseRemoved,
+			CaseID:  c.ID,
+			AlertID: c.AlertID,
+			Summary: fmt.Sprintf("Removed from Incident #%d by %s", in.Number, who(by)),
+			Payload: map[string]any{
+				"incident_id":     in.ID.String(),
+				"incident_number": in.Number,
+			},
+			By: by,
+		})
+	})
+	if err != nil {
+		return domain.Detail{}, err
+	}
+	return s.incidents.Get(ctx, scope, number)
+}
+
+// Move is a human moving one Case from one Incident to another, in ONE
+// transaction: the tombstone here and the membership there are written together,
+// both attributed to the same human, so no reader ever sees the Case in neither
+// Incident or in both (ADR 0052 §4).
+//
+// ⭐ THE SOURCE IS NAMED, NOT LOOKED UP. The caller says which Incident the Case is
+// leaving, and the tombstone's `removed_at IS NULL` guard is what checks it: a Case
+// moved or removed meanwhile is a 404 here rather than a move from somewhere it no
+// longer is. It returns the DESTINATION, which is the Incident the caller now
+// cares about.
+func (s *Service) Move(
+	ctx context.Context, scope db.TenantScope, from, to int64, caseID uuid.UUID, by domain.Attribution,
+) (domain.Detail, error) {
+	if from == to {
+		return domain.Detail{}, domain.MoveToSelf()
+	}
+	err := s.tx.InTx(ctx, func(ctx context.Context) error {
+		src, err := s.incidents.Ref(ctx, scope, from)
+		if err != nil {
+			return err
+		}
+		dst, err := s.incidents.Ref(ctx, scope, to)
+		if err != nil {
+			return err
+		}
+		c, err := s.memberCase(ctx, scope, caseID)
+		if err != nil {
+			return err
+		}
+		at := s.now()
+		if err := s.incidents.RemoveMember(ctx, scope, src.ID, caseID, at, by, dst.ID); err != nil {
+			return err
+		}
+		if err := s.incidents.AddMember(ctx, scope, dst.ID, caseID, at, by); err != nil {
+			return err
+		}
+		return s.timeline.RecordIncidentFact(ctx, scope, CaseFact{
+			Type:    kernel.EventIncidentCaseMoved,
+			CaseID:  c.ID,
+			AlertID: c.AlertID,
+			Summary: fmt.Sprintf("Moved from Incident #%d to #%d by %s", src.Number, dst.Number, who(by)),
+			Payload: map[string]any{
+				"from_incident_id": src.ID.String(),
+				"from_number":      src.Number,
+				"to_incident_id":   dst.ID.String(),
+				"to_number":        dst.Number,
+			},
+			By: by,
+		})
+	})
+	if err != nil {
+		return domain.Detail{}, err
+	}
+	return s.incidents.Get(ctx, scope, to)
+}
+
+// resolveCases reads the named Cases inside the org, in the order asked, and
+// refuses the request if any is missing — another org's Case included, which is
+// the same 404 as one that never existed.
+func (s *Service) resolveCases(ctx context.Context, scope db.TenantScope, ids []uuid.UUID) ([]domain.CaseRef, error) {
+	found, err := s.incidents.Cases(ctx, scope, ids)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domain.CaseRef, 0, len(ids))
+	for _, id := range ids {
+		c, ok := found[id]
+		if !ok {
+			return nil, domain.CaseNotFound()
+		}
+		out = append(out, c)
+	}
+	return out, nil
+}
+
+// memberCase is resolveCases for the remove and move paths, where the subject is
+// an existing membership: a Case this org does not have cannot be a member of
+// anything here, so it gets the member's 404 rather than a different one that
+// would tell a caller more than the path asked.
+func (s *Service) memberCase(ctx context.Context, scope db.TenantScope, caseID uuid.UUID) (domain.CaseRef, error) {
+	found, err := s.incidents.Cases(ctx, scope, []uuid.UUID{caseID})
+	if err != nil {
+		return domain.CaseRef{}, err
+	}
+	c, ok := found[caseID]
+	if !ok {
+		return domain.CaseRef{}, domain.MemberNotFound()
+	}
+	return c, nil
+}
+
+// distinctCases refuses an empty draw and an oversized one, and folds repeats:
+// an Incident is a SET of Cases, so naming one twice names it once.
+func distinctCases(ids []uuid.UUID) ([]uuid.UUID, error) {
+	if len(ids) == 0 {
+		return nil, errs.Validation("validation_failed", "an Incident is drawn over at least one Case",
+			errs.Violation{Field: "case_ids", Code: "min_items", Message: "name at least one Case"})
+	}
+	seen := make(map[uuid.UUID]bool, len(ids))
+	out := make([]uuid.UUID, 0, len(ids))
+	for _, id := range ids {
+		if id == uuid.Nil || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	if len(out) > domain.MaxCasesPerDraw {
+		return nil, errs.Validation("validation_failed", "too many Cases for one draw",
+			errs.Violation{Field: "case_ids", Code: "max_items",
+				Message: fmt.Sprintf("name at most %d Cases", domain.MaxCasesPerDraw)})
+	}
+	if len(out) == 0 {
+		return nil, domain.CaseNotFound()
+	}
+	return out, nil
+}
+
+// who renders the actor for a timeline sentence.
+func who(a domain.Attribution) string {
+	if a.IsHuman() {
+		return a.Label()
+	}
+	return "a Correlator"
+}

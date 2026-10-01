@@ -98,7 +98,7 @@ export const GroupStateSchema = v.picklist(["open", "closed"]);
 
 export const ActorKindSchema = v.picklist(["system", "ingest", "reconciler", "reaper", "enricher", "notifier", "user", "slack"]);
 
-export const AlertEventTypeSchema = v.picklist(["alert.created", "alert.mutated", "case.opened", "case.reopened", "case.suppressed", "case.unsuppressed", "case.resolved", "case.expired", "case.acknowledged", "case.unacknowledged", "alert.snoozed", "alert.unsnoozed", "group.opened", "group.closed", "group.member_joined", "group.member_left", "rule.snapshot_captured", "rule.definition_changed", "rule.lookup_failed", "enrichment.completed", "enrichment.failed", "notification.created", "notification.suppressed", "delivery.sent", "delivery.updated", "delivery.failed", "delivery.skipped", "delivery.dead", "comment.added", "source.unreachable", "source.recovered", "source.clock_skew"]);
+export const AlertEventTypeSchema = v.picklist(["alert.created", "alert.mutated", "case.opened", "case.reopened", "case.suppressed", "case.unsuppressed", "case.resolved", "case.expired", "case.acknowledged", "case.unacknowledged", "alert.snoozed", "alert.unsnoozed", "group.opened", "group.closed", "group.member_joined", "group.member_left", "rule.snapshot_captured", "rule.definition_changed", "rule.lookup_failed", "enrichment.completed", "enrichment.failed", "notification.created", "notification.suppressed", "delivery.sent", "delivery.updated", "delivery.failed", "delivery.skipped", "delivery.dead", "comment.added", "source.unreachable", "source.recovered", "source.clock_skew", "incident.case_added", "incident.case_removed", "incident.case_moved"]);
 
 export const NotificationReasonSchema = v.picklist(["fired", "all_resolved", "repeat", "suppressed", "unsuppressed", "expired", "refired", "acked", "unacked", "snoozed", "unsnoozed", "enriched", "rule_changed", "comment", "digest"]);
 
@@ -589,6 +589,103 @@ export const CaseListItemDTOSchema = v.intersect([
     "alert": AlertRefDTOSchema,
   }),
 ]);
+
+export const IncidentStateSchema = v.picklist(["active", "quiet"]);
+
+export const IncidentAttributionDTOSchema = v.looseObject({
+  "kind": v.picklist(["human", "correlator"]),
+  "label": v.exactOptional(v.nullable(v.pipe(
+    v.string(),
+    v.maxLength(200),
+  ))),
+  "correlator_id": v.exactOptional(v.nullable(UuidSchema)),
+});
+
+export const IncidentDTOSchema = v.looseObject({
+  "id": UuidSchema,
+  "number": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+  ),
+  "state": IncidentStateSchema,
+  "drawn_at": TimestampSchema,
+  "drawn_by": IncidentAttributionDTOSchema,
+  "member_count": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+  ),
+  "open_member_count": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+  ),
+  "alertnames": v.pipe(
+    v.array(v.pipe(
+      v.string(),
+      v.maxLength(1024),
+    )),
+    v.maxLength(10),
+  ),
+});
+
+export const IncidentMemberDTOSchema = v.looseObject({
+  "case_id": UuidSchema,
+  "case_number": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+  ),
+  "case_state": CaseStateSchema,
+  "alert_id": UuidSchema,
+  "alertname": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(1024),
+  ),
+  "labels": LabelMapSchema,
+  "added_at": TimestampSchema,
+  "added_by": IncidentAttributionDTOSchema,
+  "removed_at": v.exactOptional(v.nullable(TimestampSchema)),
+  "removed_by_label": v.exactOptional(v.nullable(v.pipe(
+    v.string(),
+    v.maxLength(200),
+  ))),
+  "moved_to_number": v.exactOptional(v.nullable(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+  ))),
+});
+
+export const IncidentDetailDTOSchema = v.intersect([
+  IncidentDTOSchema,
+  v.looseObject({
+    "members": v.array(IncidentMemberDTOSchema),
+  }),
+]);
+
+export const CreateIncidentRequestSchema = v.strictObject({
+  "case_ids": v.pipe(
+    v.array(UuidSchema),
+    v.minLength(1),
+    v.maxLength(100),
+    v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
+  ),
+});
+
+export const AddIncidentCaseRequestSchema = v.strictObject({
+  "case_id": UuidSchema,
+});
+
+export const MoveIncidentCaseRequestSchema = v.strictObject({
+  "to_number": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+  ),
+});
 
 export const CasePolicyDTOSchema = v.looseObject({
   "id": UuidSchema,
@@ -2964,6 +3061,17 @@ export const CasePolicyListResponseSchema = v.looseObject({
 
 export const CasePolicyResponseSchema = v.looseObject({
   "data": CasePolicyDTOSchema,
+  "meta": MetaSchema,
+});
+
+export const IncidentListResponseSchema = v.looseObject({
+  "data": v.array(IncidentDTOSchema),
+  "page": PageInfoSchema,
+  "meta": MetaSchema,
+});
+
+export const IncidentResponseSchema = v.looseObject({
+  "data": IncidentDetailDTOSchema,
   "meta": MetaSchema,
 });
 

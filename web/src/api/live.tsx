@@ -70,6 +70,11 @@ export function LiveProvider(props: LiveProviderProps): JSX.Element {
         // queue on `/cases`.
         void queryClient.invalidateQueries({ queryKey: qk.cases.all() });
         void queryClient.invalidateQueries({ queryKey: qk.alerts.all() });
+        // ⭐ AND THE INCIDENTS, BECAUSE THEIR STATE IS THIS FRAME. An Incident is
+        // active while any member Case is open (ADR 0052 §3) and nothing stores
+        // that — so the Case closing IS the Incident going quiet, and no other
+        // frame would ever say so.
+        void queryClient.invalidateQueries({ queryKey: qk.incidents.all() });
         break;
       // ⛔ HANDLED, AND IT INVALIDATES NOTHING ON PURPOSE. The AlertGroup was
       // deleted from oto (git-bug 7570090) and no screen holds one any more, so
@@ -85,6 +90,10 @@ export function LiveProvider(props: LiveProviderProps): JSX.Element {
         void queryClient.invalidateQueries({ queryKey: qk.cases.all() });
         void queryClient.invalidateQueries({ queryKey: qk.alerts.all() });
         void queryClient.invalidateQueries({ queryKey: qk.notifications.all() });
+        // `incident.case_added` / `_removed` / `_moved` arrive here, appended to a
+        // member Case's timeline — the one announcement a membership change made
+        // in another session ever gets.
+        void queryClient.invalidateQueries({ queryKey: qk.incidents.all() });
         break;
       case "delivery.updated":
         // `["alerts"]` because that is where a delivery is read per alert: the

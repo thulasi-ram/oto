@@ -214,9 +214,16 @@ const NAV: readonly NavEntry[] = [
     // identities second. Leading with Alerts taught the eye that the identity
     // was the operational object, which is backwards: nobody acknowledges a
     // label set.
+    //
+    // ⭐ INCIDENTS SIT BETWEEN THE TWO, BECAUSE THAT IS WHERE THE OBJECT IS. An
+    // Incident spans Cases (ADR 0052) — it is the story several firings are one
+    // chapter of — so it is read after the firings it is drawn over and before the
+    // identities underneath them. It is a reading over signals, not a queue of
+    // work: nothing on that screen sets its state, and nothing there is owed.
     label: "Alerts",
     children: [
       { href: "/cases", label: "Cases", prefix: "/cases" },
+      { href: "/incidents", label: "Incidents", prefix: "/incidents" },
       { href: "/alerts", label: "Alerts", prefix: "/alerts" },
     ],
   },

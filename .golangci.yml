@@ -159,9 +159,12 @@ linters:
             - "**/internal/silences/api/**"
             - "**/internal/stats/api/**"
             - "**/internal/drill/api/**"
+            - "**/internal/incidents/api/**"
           deny:
             - pkg: github.com/thulasiram/oto/internal/drill/repository
               desc: "api MUST NOT import repository (drill); call the service"
+            - pkg: github.com/thulasiram/oto/internal/incidents/repository
+              desc: "api MUST NOT import repository (incidents); call the service"
             - pkg: github.com/thulasiram/oto/internal/identity/repository
               desc: "api MUST NOT import repository (identity); call the service"
             - pkg: github.com/thulasiram/oto/internal/sources/repository
@@ -205,9 +208,12 @@ linters:
             - "**/internal/silences/repository/**"
             - "**/internal/stats/repository/**"
             - "**/internal/drill/repository/**"
+            - "**/internal/incidents/repository/**"
           deny:
             - pkg: github.com/thulasiram/oto/internal/drill/api
               desc: "repository MUST NOT import api (drill)"
+            - pkg: github.com/thulasiram/oto/internal/incidents/api
+              desc: "repository MUST NOT import api (incidents)"
             - pkg: github.com/thulasiram/oto/internal/identity/api
               desc: "repository MUST NOT import api (identity)"
             - pkg: github.com/thulasiram/oto/internal/sources/api
@@ -251,6 +257,7 @@ linters:
             - "**/internal/silences/domain/**"
             - "**/internal/stats/domain/**"
             - "**/internal/drill/domain/**"
+            - "**/internal/incidents/domain/**"
           allow:
             # THE SHARED DOMAIN KERNEL (rule K below). A domain package may name the
             # kernel's value objects; it may name nothing else outside platform.
@@ -961,6 +968,8 @@ linters:
               desc: "platform MUST NOT import the silences domain"
             - pkg: github.com/thulasiram/oto/internal/stats
               desc: "platform MUST NOT import the stats domain"
+            - pkg: github.com/thulasiram/oto/internal/incidents
+              desc: "platform MUST NOT import the incidents domain"
             - pkg: github.com/thulasiram/oto/internal/app
               desc: "platform MUST NOT import the wiring layer"
 

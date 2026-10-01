@@ -20,6 +20,9 @@ import type {
   Case,
   CaseDetail,
   CaseListItem,
+  Incident,
+  IncidentDetail,
+  IncidentMember,
   OrgSettingsView,
   Policy,
   RuleSnapshot,
@@ -87,6 +90,50 @@ export function caseDetail(patch: Partial<CaseDetail> = {}): CaseDetail {
     delivery_summary: { total: 0, sent: 0, failed: 0, pending: 0, suppressed: 0 },
     ...patch,
   } as CaseDetail;
+}
+
+/**
+ * One Incident as a row of `GET /api/v1/incidents`.
+ *
+ * ⭐ `number` 4 IS NOT ANY CASE'S NUMBER. Incidents count from a counter of their
+ * own, and a fixture that reused the case fixture's 412 would pass against a
+ * screen that rendered the wrong one.
+ */
+export function incident(patch: Partial<Incident> = {}): Incident {
+  return {
+    id: "5a0e9c8e-3c1f-4b8e-9a51-6f0d2c7b1e44",
+    number: 4,
+    state: "active",
+    drawn_at: T0,
+    drawn_by: { kind: "human", label: "Priya R.", correlator_id: null },
+    member_count: 1,
+    open_member_count: 1,
+    alertnames: ["HighErrorRate"],
+    ...patch,
+  };
+}
+
+/** One spell of one Case inside an Incident — current unless `removed_at` is set. */
+export function incidentMember(patch: Partial<IncidentMember> = {}): IncidentMember {
+  return {
+    case_id: "0f8fad5b-d9cb-469f-a165-70867728950e",
+    case_number: 412,
+    case_state: "open",
+    alert_id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d38ae",
+    alertname: "HighErrorRate",
+    labels: { alertname: "HighErrorRate", severity: "critical" },
+    added_at: T0,
+    added_by: { kind: "human", label: "Priya R.", correlator_id: null },
+    removed_at: null,
+    removed_by_label: null,
+    moved_to_number: null,
+    ...patch,
+  };
+}
+
+/** One Incident with its membership history, as `GET /api/v1/incidents/{number}` serves it. */
+export function incidentDetail(patch: Partial<IncidentDetail> = {}): IncidentDetail {
+  return { ...incident(), members: [incidentMember()], ...patch } as IncidentDetail;
 }
 
 export function ruleSnapshot(patch: Partial<RuleSnapshot> = {}): RuleSnapshot {

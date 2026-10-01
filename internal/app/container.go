@@ -34,6 +34,9 @@ import (
 	identitydomain "github.com/thulasiram/oto/internal/identity/domain"
 	identityrepo "github.com/thulasiram/oto/internal/identity/repository"
 	identityservice "github.com/thulasiram/oto/internal/identity/service"
+	incidentsapi "github.com/thulasiram/oto/internal/incidents/api"
+	incidentsrepo "github.com/thulasiram/oto/internal/incidents/repository"
+	incidentsservice "github.com/thulasiram/oto/internal/incidents/service"
 	"github.com/thulasiram/oto/internal/ingestion"
 	ingestionservice "github.com/thulasiram/oto/internal/ingestion/service"
 	notifapi "github.com/thulasiram/oto/internal/notification/api"
@@ -158,7 +161,10 @@ type Container struct {
 	Enrichment *enrichservice.Service
 	Silences   *silencesservice.Service
 	Stats      *statsservice.Service
-	Ingestion  *ingestion.Module
+	// Incidents is ADR 0052's grouping over Cases: drawn by a human here, by a
+	// Correlator later, with a state read off its Cases and never written.
+	Incidents *incidentsservice.Service
+	Ingestion *ingestion.Module
 	// Drills runs delivery drills: one synthetic alert pushed through the REAL
 	// pipeline. It is built AFTER ingestion because it drives ingestion — through
 	// the same `Accept` the webhook handler calls, which is the whole point.
@@ -222,6 +228,7 @@ type routerSet struct {
 	notifs    *notifapi.Router
 	silences  *silencesapi.Router
 	stats     *statsapi.Router
+	incidents *incidentsapi.Router
 	drills    *drillapi.Router
 	enrichers *enrichapi.Router
 	streaming *streamingapi.Router
@@ -677,6 +684,23 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		return nil, err
 	}
 
+	// ---- incidents: a story drawn over Cases (ADR 0052) -------------------
+	//
+	// ⭐ THE TIMELINE IS THE SAME ADAPTER `rules` AND `enrichment` NARRATE
+	// THROUGH, and by now it is bound: `c.Alerts` exists. Every
+	// `incident.case_*` row in `alert_events` is written through it, inside the
+	// membership change's own transaction, so a Case's history and the
+	// Incident's membership commit together.
+	c.Incidents, err = incidentsservice.New(incidentsservice.Deps{
+		Incidents: incidentsrepo.NewIncidentRepository(general),
+		Tx:        incidentsrepo.NewTxRunner(general),
+		Timeline:  timeline,
+		Clock:     clk,
+	})
+	if err != nil {
+		return nil, err
+	}
+
 	// ---- ingestion: THE ONLY MODULE ON THE INGEST POOL -------------------
 	//
 	// The orchestrator is hoisted into a variable because it has TWO producers:
@@ -1102,6 +1126,7 @@ func (c *Container) buildRouters(
 		}),
 		silences:  silencesapi.NewRouter(c.Silences, silenceBaseURLs{svc: c.Sources}, clk),
 		stats:     statsapi.NewRouter(c.Stats, clk),
+		incidents: incidentsapi.NewRouter(c.Incidents, clk),
 		drills:    drillRouter(c.Drills, clk),
 		enrichers: enrichapi.NewRouter(enricherRegistry, clk),
 		streaming: streamingapi.NewRouter(c.Streaming, c.StreamHub,

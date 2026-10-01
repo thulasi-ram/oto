@@ -387,6 +387,15 @@ export const FRESHNESS: Readonly<Record<string, Freshness>> = {
   "cases.detail": { by: "live" },
   "cases.timeline": { by: "live" },
 
+  // Incidents. No frame is ABOUT one, but every frame that can turn one quiet or
+  // active is about one of its Cases: `case.upserted` closes a member, and
+  // `event.appended` carries the `incident.case_*` facts a membership write
+  // leaves on the Case. Both invalidate `["incidents"]` in `api/live.tsx`, and
+  // the membership writes on `/incidents/:number` invalidate it as well.
+  "incidents.all": { by: "live" },
+  "incidents.list": { by: "live" },
+  "incidents.detail": { by: "live" },
+
   // Health arrives as `source.health`; the rejection feed and the failed-batch
   // list hang under the same source prefix and ride the same frame.
   "settings.sources": { by: "live" },

@@ -726,7 +726,7 @@ type TimelineQuery struct {
 	// "give me everything" is always expressible. It must never fall below that
 	// enum: a ceiling under it refuses a caller for naming a type the server is
 	// already writing.
-	Type   []string   `json:"type"      validate:"omitempty,max=32,unique"`
+	Type   []string   `json:"type"      validate:"omitempty,max=35,unique"`
 	Since  *time.Time `json:"since"`
 	Until  *time.Time `json:"until"`
 	Order  string     `json:"order"     validate:"omitempty,oneof=asc desc"`

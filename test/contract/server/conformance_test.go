@@ -152,7 +152,12 @@ func TestTheRunningServerMatchesTheContract(t *testing.T) {
 // out, six template routes in — so the count is unchanged and this constant is
 // deliberately NOT re-derived. A rename that quietly lowered the floor would be
 // the ratchet's exact failure mode.
-const minimumSuccessfulOperations = 83
+//
+// ⬆️ 83 → 89 (ADR 0052, git-bug b2672a1). Six Incident operations landed with
+// probes, and each of the six has at least one probe that answers 2xx — list,
+// draw, get, add, remove and move — so the floor rises by exactly six, the same
+// arithmetic as the last raise.
+const minimumSuccessfulOperations = 89
 
 /* -------------------------------------------------------------------------- */
 /* The three assertions                                                       */

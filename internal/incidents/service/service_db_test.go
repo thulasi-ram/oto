@@ -1,0 +1,403 @@
+package service
+
+// ADR 0052 §1–§4 AGAINST A REAL POSTGRES (git-bug b2672a1).
+//
+// ⭐ THE CLAIMS HERE ARE ABOUT SQL, SO THE DATABASE IS REAL. "A Case belongs to at
+// most one Incident" is a partial unique index; "active/quiet is derived" is an
+// aggregate over `alert_cases`; "a removed Case stays recorded as removed" is a
+// tombstone column; "a move is atomic" is a transaction. A fake repository would
+// agree with whatever the service asked of it, which is exactly the failure each of
+// those four sentences exists to rule out.
+//
+// The timeline port is the one fake, and it is a RECORDER rather than a stub: the
+// row it would write is `internal/app`'s concern (timeline_incident_db_test.go
+// there drives the real seam), and what this file asks is which facts the service
+// narrates and that a narration failure takes the membership change down with it.
+
+import (
+	"context"
+	"errors"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	kernel "github.com/thulasiram/oto/internal/alerts/domain"
+	"github.com/thulasiram/oto/internal/incidents/domain"
+	"github.com/thulasiram/oto/internal/incidents/repository"
+	"github.com/thulasiram/oto/internal/platform/db"
+	"github.com/thulasiram/oto/internal/platform/errs"
+	"github.com/thulasiram/oto/test/harness"
+)
+
+func TestMain(m *testing.M) { harness.Main(m) }
+
+// recordedTimeline is the Timeline port as a recorder. failOn, when set, makes the
+// append of that one type fail — which is how a test proves the narration and the
+// membership commit together.
+type recordedTimeline struct {
+	mu     sync.Mutex
+	facts  []CaseFact
+	failOn kernel.EventType
+}
+
+func (r *recordedTimeline) RecordIncidentFact(_ context.Context, _ db.TenantScope, f CaseFact) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.failOn.IsZero() && f.Type == r.failOn {
+		return errors.New("the timeline refused the fact")
+	}
+	r.facts = append(r.facts, f)
+	return nil
+}
+
+func (r *recordedTimeline) of(t kernel.EventType) []CaseFact {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []CaseFact
+	for _, f := range r.facts {
+		if f.Type == t {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+type rig struct {
+	t        *testing.T
+	h        *harness.H
+	org      harness.Org
+	cluster  harness.Cluster
+	scope    db.TenantScope
+	svc      *Service
+	repo     *repository.IncidentRepository
+	timeline *recordedTimeline
+	alice    domain.Attribution
+}
+
+func newRig(t *testing.T) *rig {
+	t.Helper()
+	h := harness.New(t)
+	org := h.Org()
+	user := h.User(org)
+	alice, err := domain.Human(user.ID, "alice")
+	require.NoError(t, err)
+
+	r := &rig{
+		t: t, h: h, org: org, cluster: h.Cluster(org), scope: org.Scope,
+		repo:     repository.NewIncidentRepository(h.Pool),
+		timeline: &recordedTimeline{},
+		alice:    alice,
+	}
+	r.svc, err = New(Deps{
+		Incidents: r.repo,
+		Tx:        repository.NewTxRunner(h.Pool),
+		Timeline:  r.timeline,
+		Clock:     h.Clock,
+	})
+	require.NoError(t, err)
+	return r
+}
+
+// openCase seeds one open Case of a fresh Alert, so every Case in a test belongs to
+// a different identity, as the Cases of a real story usually do.
+func (r *rig) openCase(alertname string) uuid.UUID {
+	r.t.Helper()
+	a := r.h.AlertWith(r.org, r.cluster, map[string]string{
+		"alertname": alertname, "severity": "critical", "service": "checkout",
+	})
+	return r.h.Case(a).ID
+}
+
+// closeCase ends a Case the way the lifecycle does — state, ended_at and the
+// resolve reason together, as `case_terminal_ended` and `case_resolve_ck` demand.
+func (r *rig) closeCase(id uuid.UUID) {
+	r.t.Helper()
+	r.h.Exec(`UPDATE alert_cases
+	             SET state = 'closed', ended_at = $2, resolve_reason = 'upstream'
+	           WHERE id = $1`, id, r.h.Now().Add(time.Minute))
+}
+
+func (r *rig) get(number int64) domain.Detail {
+	r.t.Helper()
+	d, err := r.svc.Get(context.Background(), r.scope, number)
+	require.NoError(r.t, err)
+	return d
+}
+
+func current(d domain.Detail) []uuid.UUID {
+	var out []uuid.UUID
+	for _, m := range d.Members {
+		if m.Current() {
+			out = append(out, m.CaseID)
+		}
+	}
+	return out
+}
+
+// ------------------------------------------------------------------- draw
+
+func TestADrawnIncidentHoldsItsCasesAndNarratesEachOne(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := context.Background()
+
+	a, b := r.openCase("HighErrorRate"), r.openCase("KubePodCrashLooping")
+	d, err := r.svc.Draw(ctx, r.scope, []uuid.UUID{a, b, a}, r.alice)
+	require.NoError(t, err)
+
+	assert.EqualValues(t, 1, d.Number, "every org counts from 1")
+	assert.Equal(t, domain.StateActive, d.State())
+	assert.Equal(t, 2, d.MemberCount, "a repeated id names the Case once: an Incident is a set")
+	assert.Equal(t, []string{"HighErrorRate", "KubePodCrashLooping"}, d.Alertnames)
+	assert.True(t, d.DrawnBy.IsHuman())
+	assert.Equal(t, "alice", d.DrawnBy.Label())
+	assert.ElementsMatch(t, []uuid.UUID{a, b}, current(d))
+
+	facts := r.timeline.of(kernel.EventIncidentCaseAdded)
+	require.Len(t, facts, 2, "one fact on each member Case's timeline")
+	for _, f := range facts {
+		assert.Equal(t, true, f.Payload["drawn"])
+		assert.EqualValues(t, 1, f.Payload["incident_number"])
+		assert.Contains(t, f.Summary, "Drawn into Incident #1 by alice")
+		assert.NotEqual(t, uuid.Nil, f.AlertID, "the fact lands on the Alert's timeline too")
+	}
+
+	second, err := r.svc.Draw(ctx, r.scope, []uuid.UUID{r.openCase("DiskFull")}, r.alice)
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, second.Number, "numbers are per-org and monotonic")
+
+	list, _, err := r.svc.List(ctx, r.scope, db.Keyset{Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, list, 2)
+	assert.EqualValues(t, 2, list[0].Number, "newest first")
+}
+
+// ------------------------------------------------------------ at most one
+
+func TestACaseInAnIncidentCannotBeDrawnOrAddedIntoAnother(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := context.Background()
+
+	held := r.openCase("HighErrorRate")
+	first, err := r.svc.Draw(ctx, r.scope, []uuid.UUID{held}, r.alice)
+	require.NoError(t, err)
+
+	// A second draw naming the held Case is refused WHOLE — the free Case beside it
+	// is not drawn either — and the refusal points at the move.
+	free := r.openCase("DiskFull")
+	_, err = r.svc.Draw(ctx, r.scope, []uuid.UUID{free, held}, r.alice)
+	require.Error(t, err)
+	assert.Equal(t, "case_in_incident", errs.CodeOf(err))
+	assert.Contains(t, err.Error(), "/api/v1/incidents/1/cases/"+held.String()+"/move")
+	list, _, err := r.svc.List(ctx, r.scope, db.Keyset{Limit: 10})
+	require.NoError(t, err)
+	assert.Len(t, list, 1, "a refused draw draws nothing")
+
+	other, err := r.svc.Draw(ctx, r.scope, []uuid.UUID{free}, r.alice)
+	require.NoError(t, err)
+
+	_, err = r.svc.Add(ctx, r.scope, other.Number, held, r.alice)
+	assert.Equal(t, "case_in_incident", errs.CodeOf(err), "adding a Case held elsewhere points at the move")
+
+	_, err = r.svc.Add(ctx, r.scope, first.Number, held, r.alice)
+	assert.Equal(t, "already_a_member", errs.CodeOf(err))
+}
+
+// TestTheDatabaseNotTheServiceEnforcesAtMostOne goes UNDER the service's read and
+// writes the second membership directly. The partial unique index is the rule; if
+// it were only a service check, this write would succeed.
+func TestTheDatabaseNotTheServiceEnforcesAtMostOne(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := context.Background()
+
+	c := r.openCase("HighErrorRate")
+	first, err := r.repo.Insert(ctx, r.scope, r.h.Now(), r.alice)
+	require.NoError(t, err)
+	second, err := r.repo.Insert(ctx, r.scope, r.h.Now(), r.alice)
+	require.NoError(t, err)
+
+	require.NoError(t, r.repo.AddMember(ctx, r.scope, first.ID, c, r.h.Now(), r.alice))
+	err = r.repo.AddMember(ctx, r.scope, second.ID, c, r.h.Now(), r.alice)
+	require.Error(t, err, "incident_members_case_live_uniq must refuse a second live membership")
+	assert.Equal(t, "case_in_incident", errs.CodeOf(err), "the race answers in the same code as the read")
+
+	// A TOMBSTONE DOES NOT COUNT: once removed, the Case may join elsewhere.
+	require.NoError(t, r.repo.RemoveMember(ctx, r.scope, first.ID, c, r.h.Now(), r.alice, uuid.Nil))
+	require.NoError(t, r.repo.AddMember(ctx, r.scope, second.ID, c, r.h.Now(), r.alice))
+}
+
+// ---------------------------------------------------------- derived state
+
+func TestTheStateIsReadOffTheMemberCasesAndNeverWritten(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := context.Background()
+
+	a, b := r.openCase("HighErrorRate"), r.openCase("KubePodCrashLooping")
+	d, err := r.svc.Draw(ctx, r.scope, []uuid.UUID{a, b}, r.alice)
+	require.NoError(t, err)
+	assert.Equal(t, domain.StateActive, d.State())
+
+	r.closeCase(a)
+	d = r.get(d.Number)
+	assert.Equal(t, domain.StateActive, d.State(), "one open member is enough")
+	assert.Equal(t, 1, d.OpenMemberCount)
+
+	r.closeCase(b)
+	d = r.get(d.Number)
+	assert.Equal(t, domain.StateQuiet, d.State(), "no open member left: quiet — not resolved, not closed")
+	assert.Equal(t, 2, d.MemberCount, "a closed Case is still a member; closing it is not removing it")
+
+	// ⭐ ADDING AN OPEN CASE TO A QUIET INCIDENT MAKES IT ACTIVE AGAIN, and nothing
+	// but the membership moved.
+	c := r.openCase("DiskFull")
+	d, err = r.svc.Add(ctx, r.scope, d.Number, c, r.alice)
+	require.NoError(t, err)
+	assert.Equal(t, domain.StateActive, d.State())
+
+	// ⭐ AND REMOVING IT MAKES IT QUIET AGAIN. An Incident whose open members have
+	// all been removed has nothing open in it.
+	d, err = r.svc.Remove(ctx, r.scope, d.Number, c, r.alice)
+	require.NoError(t, err)
+	assert.Equal(t, domain.StateQuiet, d.State())
+}
+
+// ------------------------------------------------------------------ remove
+
+func TestARemovedCaseStaysRecordedAsRemoved(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := context.Background()
+
+	a, b := r.openCase("HighErrorRate"), r.openCase("KubePodCrashLooping")
+	d, err := r.svc.Draw(ctx, r.scope, []uuid.UUID{a, b}, r.alice)
+	require.NoError(t, err)
+
+	r.h.Advance(time.Minute)
+	d, err = r.svc.Remove(ctx, r.scope, d.Number, a, r.alice)
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, d.MemberCount, "removed Cases are not counted")
+	require.Len(t, d.Members, 2, "but they are still on the record")
+	var tomb domain.Member
+	for _, m := range d.Members {
+		if m.CaseID == a {
+			tomb = m
+		}
+	}
+	assert.False(t, tomb.Current())
+	assert.Equal(t, "alice", tomb.RemovedByLabel)
+	assert.Zero(t, tomb.MovedToNumber, "a plain removal is not a move")
+	assert.True(t, tomb.CaseState.IsOpen(), "removing a Case from a story does nothing to the Case")
+
+	removed := r.timeline.of(kernel.EventIncidentCaseRemoved)
+	require.Len(t, removed, 1)
+	assert.Equal(t, a, removed[0].CaseID)
+	assert.Contains(t, removed[0].Summary, "Removed from Incident #1 by alice")
+
+	// A second removal finds no CURRENT membership: the tombstone is not one.
+	_, err = r.svc.Remove(ctx, r.scope, d.Number, a, r.alice)
+	assert.Equal(t, "incident_member_not_found", errs.CodeOf(err))
+
+	// And a removed Case may come back, as a second spell beside the first.
+	d, err = r.svc.Add(ctx, r.scope, d.Number, a, r.alice)
+	require.NoError(t, err)
+	assert.Len(t, d.Members, 3)
+	assert.Equal(t, 2, d.MemberCount)
+}
+
+// -------------------------------------------------------------------- move
+
+func TestAMoveIsOneAttributedTransaction(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := context.Background()
+
+	moving := r.openCase("HighErrorRate")
+	from, err := r.svc.Draw(ctx, r.scope, []uuid.UUID{moving}, r.alice)
+	require.NoError(t, err)
+	to, err := r.svc.Draw(ctx, r.scope, []uuid.UUID{r.openCase("KubePodCrashLooping")}, r.alice)
+	require.NoError(t, err)
+
+	dst, err := r.svc.Move(ctx, r.scope, from.Number, to.Number, moving, r.alice)
+	require.NoError(t, err)
+	assert.Equal(t, to.Number, dst.Number, "a move answers with where the Case went")
+	assert.Contains(t, current(dst), moving)
+	assert.Equal(t, 2, dst.MemberCount)
+
+	src := r.get(from.Number)
+	require.Len(t, src.Members, 1)
+	assert.False(t, src.Members[0].Current())
+	assert.Equal(t, to.Number, src.Members[0].MovedToNumber, "the tombstone says where it went")
+	assert.Equal(t, "alice", src.Members[0].RemovedByLabel, "both halves are attributed")
+	assert.Equal(t, domain.StateQuiet, src.State(), "an Incident left with no members is quiet")
+
+	moved := r.timeline.of(kernel.EventIncidentCaseMoved)
+	require.Len(t, moved, 1, "one decision, one fact — not a removal and an add")
+	assert.EqualValues(t, from.Number, moved[0].Payload["from_number"])
+	assert.EqualValues(t, to.Number, moved[0].Payload["to_number"])
+	assert.Contains(t, moved[0].Summary, "Moved from Incident #1 to #2 by alice")
+
+	// The source is NAMED: the Case is no longer in #1, so moving it "from #1" again
+	// is a 404 rather than a move from somewhere it is not.
+	_, err = r.svc.Move(ctx, r.scope, from.Number, to.Number, moving, r.alice)
+	assert.Equal(t, "incident_member_not_found", errs.CodeOf(err))
+
+	_, err = r.svc.Move(ctx, r.scope, to.Number, to.Number, moving, r.alice)
+	assert.Equal(t, errs.KindValidation, errs.KindOf(err), "a move to itself is refused")
+}
+
+// TestAFailedMoveLeavesTheCaseWhereItWas — the tombstone, the new membership and
+// the narration commit together. When the last of the three fails, the first two
+// are rolled back: the Case is in its old Incident, current, and in no other.
+func TestAFailedMoveLeavesTheCaseWhereItWas(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := context.Background()
+
+	moving := r.openCase("HighErrorRate")
+	from, err := r.svc.Draw(ctx, r.scope, []uuid.UUID{moving}, r.alice)
+	require.NoError(t, err)
+	to, err := r.svc.Draw(ctx, r.scope, []uuid.UUID{r.openCase("KubePodCrashLooping")}, r.alice)
+	require.NoError(t, err)
+
+	r.timeline.failOn = kernel.EventIncidentCaseMoved
+	_, err = r.svc.Move(ctx, r.scope, from.Number, to.Number, moving, r.alice)
+	require.Error(t, err)
+
+	src, dst := r.get(from.Number), r.get(to.Number)
+	assert.Equal(t, []uuid.UUID{moving}, current(src), "the Case is still where it was")
+	assert.Len(t, src.Members, 1, "and no tombstone was left behind")
+	assert.NotContains(t, current(dst), moving, "and it never arrived")
+	assert.Len(t, dst.Members, 1)
+}
+
+// ------------------------------------------------------------------ tenancy
+
+func TestAnotherOrgsCasesAndIncidentsAreNotFound(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := context.Background()
+
+	mine, err := r.svc.Draw(ctx, r.scope, []uuid.UUID{r.openCase("HighErrorRate")}, r.alice)
+	require.NoError(t, err)
+
+	other := r.h.Org()
+	theirCluster := r.h.Cluster(other)
+	theirCase := r.h.Case(r.h.Alert(other, theirCluster)).ID
+
+	_, err = r.svc.Draw(ctx, r.scope, []uuid.UUID{theirCase}, r.alice)
+	assert.Equal(t, "case_not_found", errs.CodeOf(err), "another org's Case is a Case this org does not have")
+	_, err = r.svc.Add(ctx, r.scope, mine.Number, theirCase, r.alice)
+	assert.Equal(t, "case_not_found", errs.CodeOf(err))
+
+	// Every org counts from 1, so `#1` exists in both; theirs is not mine.
+	_, err = r.svc.Get(ctx, other.Scope, mine.Number)
+	assert.Equal(t, "incident_not_found", errs.CodeOf(err))
+}

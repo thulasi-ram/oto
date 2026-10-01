@@ -193,6 +193,58 @@ describe("holding the alert's notifications", () => {
 });
 
 /* -------------------------------------------------------------------------- */
+/* Drawing an Incident over this Case                                          */
+/* -------------------------------------------------------------------------- */
+
+describe("drawing an Incident", () => {
+  it("posts this one Case to createIncident and goes to the Incident it drew", async () => {
+    const net = mount();
+    net.on("POST /api/v1/incidents", () => ({
+      status: 201,
+      json: item({
+        id: "11111111-1111-4111-8111-111111111111",
+        number: 4,
+        state: "active",
+        drawn_at: "2026-08-09T09:05:00.000Z",
+        drawn_by: { kind: "human", label: "Priya R.", correlator_id: null },
+        member_count: 1,
+        open_member_count: 1,
+        alertnames: ["HighErrorRate"],
+        members: [],
+      }),
+    }));
+
+    fireEvent.click(await ready("Draw Incident"));
+
+    await until(() => expect(net.to("/api/v1/incidents")).toHaveLength(1));
+    const post = net.to("/api/v1/incidents")[0]!;
+    expect(post.method).toBe("POST");
+    // ⛔ ONLY CASE IDS. There is no status, lead or severity to send, and the
+    // contract has no field that would take one.
+    expect(post.body).toEqual({ case_ids: [ID] });
+    expect(post.headers["Idempotency-Key"]).toBeTruthy();
+  });
+
+  it("⛔ shows the server's own sentence when the Case is already in an Incident", async () => {
+    const net = mount();
+    net.on("POST /api/v1/incidents", () =>
+      problem(409, "case_in_incident", {
+        detail:
+          "Case #412 is already in Incident #3; move it with POST /api/v1/incidents/3/cases/" +
+          `${ID}/move.`,
+      }),
+    );
+
+    fireEvent.click(await ready("Draw Incident"));
+
+    // The detail IS the pointer to the move; rewording it would lose it.
+    await until(() =>
+      expect(screen.getByRole("alert").textContent).toMatch(/already in Incident #3.*\/move/),
+    );
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 /* The vocabulary the screen is allowed to use                                */
 /* -------------------------------------------------------------------------- */
 
@@ -209,7 +261,14 @@ describe("the word on screen", () => {
     // no longer exists, so neither the panel nor the word may come back.
     expect(text).not.toMatch(/\bgroup\b/i);
     expect(text).not.toMatch(/currently-joined/i);
-    expect(text).not.toMatch(/\bincident\b/i);
+    // ⭐ THE ONE PLACE THE WORD MAY APPEAR IS THE CONTROL THAT DRAWS ONE (ADR
+    // 0052), and its own `title`. An Incident is a different object — a set of
+    // Cases — so the button names it; what must never happen is the screen
+    // calling THIS FIRING an incident. So the assertion is made on the text with
+    // that control taken out.
+    const draw = barButton("Draw Incident");
+    const withoutDraw = text.replace(draw.textContent ?? "", "");
+    expect(withoutDraw).not.toMatch(/\bincident\b/i);
     expect(text).not.toMatch(/\bcorrelat/i);
   });
 });
