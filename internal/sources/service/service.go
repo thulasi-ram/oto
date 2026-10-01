@@ -299,12 +299,31 @@ func (s *Service) ResolveRule(ctx context.Context, scope db.TenantScope, id uuid
 	if !q.SkipPrometheus {
 		override := ""
 		if q.FollowGeneratorURL {
+			// vmalert's default link carries no expression, so it never parses;
+			// it still names the vmalert that evaluated the rule, and following
+			// it is what the operator opted into (git-bug 766709c).
 			if gen, gerr := rulematch.ParseGeneratorURL(q.GeneratorURL); gerr == nil {
 				override = gen.ExternalURL
+			} else if root, ok := rulematch.VmalertRoot(q.GeneratorURL); ok {
+				override = root
 			}
 		}
 		if src.HasPrometheus() || override != "" {
-			groups, purl, ferr := s.fetchRules(ctx, scope, src, override, q.Labels[rulematch.LabelAlertName])
+			name := q.Labels[rulematch.LabelAlertName]
+			groups, purl, ferr := s.fetchRules(ctx, scope, src, override, name)
+			// ⚠️ FOLLOWING IS ADDITIVE: IT MAY FIND MORE, NEVER LESS. The URL a
+			// generatorURL names is not always a rule evaluator. vmalert's
+			// recommended `vmui/#/?g0.expr=…` link names the VictoriaMetrics UI,
+			// whose /api/v1/rules is an empty stub unless it proxies to vmalert —
+			// so the moment that link parsed, it diverted every lookup away from
+			// the vmalert the operator configured as prometheus_url, and the
+			// snapshot lost `for` and keep_firing_for. A miss or a failure on the
+			// followed URL therefore falls back to the configured one, which is
+			// exactly what the lookup would have asked had it not followed.
+			if override != "" && src.HasPrometheus() && override != src.PrometheusURL &&
+				(ferr != nil || !holdsRules(groups)) {
+				groups, purl, ferr = s.fetchRules(ctx, scope, src, "", name)
+			}
 			if ferr != nil {
 				s.log.WarnContext(ctx, "sources: rule lookup degraded to generatorURL",
 					"source_id", src.ID, "code", errs.CodeOf(ferr), "error", ferr)
@@ -329,6 +348,17 @@ func (s *Service) ResolveRule(ctx context.Context, scope db.TenantScope, id uuid
 		}, nil
 	}
 	return m, nil
+}
+
+// holdsRules reports whether any group carries a rule. Rules are fetched filtered
+// by alertname, so an empty answer is a miss, whatever the group count.
+func holdsRules(groups []domain.RuleGroup) bool {
+	for _, g := range groups {
+		if len(g.Rules) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // fetchRules pulls the candidate rule groups for one alertname.

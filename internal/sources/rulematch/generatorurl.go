@@ -34,7 +34,8 @@ const (
 	// VariantConsole is a `<external>/consoles/…` console template link.
 	VariantConsole Variant = "consoles"
 	// VariantFragment is a form that carries the expression in the fragment
-	// rather than the query.
+	// rather than the query — including behind a hash router's `/?` prefix,
+	// which is vmui's form: `<vm>/vmui/#/?g0.expr=…`.
 	VariantFragment Variant = "fragment"
 	// VariantUnknown is anything else that still yielded an expression.
 	VariantUnknown Variant = "unknown"
@@ -111,8 +112,13 @@ func ParseGeneratorURL(raw string) (GeneratorURL, error) {
 	expr, idx, ok := pickExpr(u.Query())
 	if !ok {
 		// Some builds (and every hand-written link) put the panes in the
-		// fragment. url.Parse leaves it undecoded, so it is parsed as a query.
-		if frag, ferr := url.ParseQuery(u.Fragment); ferr == nil {
+		// fragment, so it is parsed as a query.
+		//
+		// ⚠️ THE ESCAPED FRAGMENT, NOT u.Fragment. url.Parse DECODES the fragment,
+		// and parsing an already-decoded string as a query decodes it a second
+		// time: an expression's `+` (sent as %2B by vmui's queryEscape) became a
+		// space and its `&` split it in two.
+		if frag, ferr := url.ParseQuery(hashRouterQuery(u.EscapedFragment())); ferr == nil {
 			if expr, idx, ok = pickExpr(frag); ok {
 				out.Variant = VariantFragment
 			}
@@ -140,6 +146,27 @@ func ParseGeneratorURL(raw string) (GeneratorURL, error) {
 	}
 	out.ExternalURL = externalURL(u)
 	return out, nil
+}
+
+// hashRouterQuery strips a hash router's route from a fragment, returning the
+// query that follows it: `/?g0.expr=…` becomes `g0.expr=…`.
+//
+// vmui is a single-page app routed in the fragment, and vmalert's documented
+// `-external.alert.source='vmui/#/?g0.expr={{.Expr|queryEscape}}'` therefore
+// puts the query AFTER a route. Parsed whole, the first key is `/?g0.expr`,
+// which exprParamRe rightly refuses — so this was a link carrying the exact
+// expression that oto reported as carrying none. Recovering it is an expression
+// recovered, and therefore a success like any other.
+//
+// The route is only what precedes the FIRST `?`, and only when that prefix holds
+// no `=` or `&`: a plain `g0.expr=a?b` fragment has no route, and its `?` is the
+// expression's.
+func hashRouterQuery(frag string) string {
+	i := strings.IndexByte(frag, '?')
+	if i < 0 || strings.ContainsAny(frag[:i], "=&") {
+		return frag
+	}
+	return frag[i+1:]
 }
 
 // pickExpr returns the lowest-indexed gN.expr in v.
@@ -200,18 +227,62 @@ func variantOf(path string) Variant {
 
 // externalURL strips the /graph or /consoles suffix to recover the Prometheus
 // root, preserving any routing prefix in between (`--web.external-url` is
-// routinely set to a subpath behind an ingress).
+// routinely set to a subpath behind an ingress). vmui's `/vmui` is the same kind
+// of suffix: it is the UI, and the rules API sits beside it at the root, never
+// under it.
 func externalURL(u *url.URL) string {
 	p := strings.TrimRight(u.EscapedPath(), "/")
 	switch {
 	case p == "/graph" || strings.HasSuffix(p, "/graph"):
 		p = strings.TrimSuffix(p, "/graph")
+	case p == "/vmui" || strings.HasSuffix(p, "/vmui"):
+		p = strings.TrimSuffix(p, "/vmui")
 	case strings.Contains(p, "/consoles/"), strings.HasSuffix(p, "/consoles"):
 		if i := strings.Index(p, "/consoles"); i >= 0 {
 			p = p[:i]
 		}
 	}
 	return u.Scheme + "://" + u.Host + strings.TrimRight(p, "/")
+}
+
+// vmalertAlertPath is the path of vmalert's own alert page, which is what its
+// generatorURL points at unless `-external.alert.source` says otherwise.
+const vmalertAlertPath = "/vmalert/alert"
+
+// VmalertRoot recognises vmalert's DEFAULT generatorURL —
+// `<external.url>/vmalert/alert?group_id=<id>&alert_id=<id>` — and returns the
+// vmalert root it names, with any routing prefix kept and no trailing slash.
+//
+// ⛔ IT IS NOT A PARSE, AND ParseGeneratorURL DOES NOT CALL IT. That link carries
+// no expression, so it is still CodeNoExpr there: success from
+// ParseGeneratorURL means an expression was recovered, and a vmalert link that
+// "parsed" with an empty Expr would hand Resolve a generatorURL strategy with
+// nothing in it. What the link DOES carry is where the rule was evaluated, which
+// is exactly what FollowGeneratorURL wants and could not get — the parse failed,
+// so the override was never derived and an operator who opted in got no lookup.
+// vmalert serves /api/v1/rules at the same root, so this is a rules-API root
+// in the same sense as GeneratorURL.ExternalURL.
+//
+// Both ids are required, because they are what makes the path vmalert's rather
+// than any server's `/vmalert/alert` page.
+func VmalertRoot(raw string) (string, bool) {
+	s := strings.TrimSpace(raw)
+	if s == "" || len(s) > MaxGeneratorURLBytes {
+		return "", false
+	}
+	u, err := url.Parse(s)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "", false
+	}
+	p := strings.TrimRight(u.EscapedPath(), "/")
+	if !strings.HasSuffix(p, vmalertAlertPath) {
+		return "", false
+	}
+	q := u.Query()
+	if q.Get("group_id") == "" || q.Get("alert_id") == "" {
+		return "", false
+	}
+	return u.Scheme + "://" + u.Host + strings.TrimSuffix(p, vmalertAlertPath), true
 }
 
 // orErr keeps errs.Wrap from swallowing a nil cause.
