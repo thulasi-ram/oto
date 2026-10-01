@@ -157,7 +157,10 @@ func TestTheRunningServerMatchesTheContract(t *testing.T) {
 // probes, and each of the six has at least one probe that answers 2xx — list,
 // draw, get, add, remove and move — so the floor rises by exactly six, the same
 // arithmetic as the last raise.
-const minimumSuccessfulOperations = 89
+//
+// ⬆️ 89 → 93 (ADR 0052 §2, git-bug 61eeddf). Four Correlator operations — list,
+// create, patch, delete — each with a probe that answers 2xx.
+const minimumSuccessfulOperations = 93
 
 /* -------------------------------------------------------------------------- */
 /* The three assertions                                                       */

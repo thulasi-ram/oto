@@ -74,6 +74,11 @@ type Deps struct {
 	// them (ADR 0052 §3, §5). Optional: unwired, a Case ending tells nobody but the
 	// timeline and `notify.evaluate`, which is what it did before Incidents existed.
 	CaseEndings CaseEndings
+	// CaseOpenings is told which Cases just OPENED, inside the transaction that
+	// opened them, so a Correlator can be asked about each (ADR 0052 §2). Optional
+	// for CaseEndings' reason: unwired, a Case opening does exactly what it did
+	// before Correlators existed.
+	CaseOpenings CaseOpenings
 
 	Clock  clock.Clock
 	Logger *slog.Logger
@@ -111,6 +116,7 @@ type Service struct {
 	enrichments   EnrichmentReader
 	notifications NotificationReader
 	caseEndings   CaseEndings
+	caseOpenings  CaseOpenings
 
 	clock clock.Clock
 	log   *slog.Logger
@@ -161,6 +167,7 @@ func New(d Deps) (*Service, error) {
 		enrichments:   d.Enrichments,
 		notifications: d.Notifications,
 		caseEndings:   d.CaseEndings,
+		caseOpenings:  d.CaseOpenings,
 		clock:         clk,
 		log:           logger,
 	}, nil
@@ -550,6 +557,21 @@ func (s *Service) announceEndings(ctx context.Context, scope db.TenantScope, req
 		return nil
 	}
 	return s.caseEndings.CasesEnded(ctx, scope, ended)
+}
+
+// announceOpenings tells the CaseOpenings port which Cases this batch opened,
+// inside the transaction that opened them.
+//
+// ⭐ IT TAKES THE SAME LIST `enqueueEnrich` TAKES, because that list is already
+// exactly "every episode this batch began": `applyOpen` appends to it once per T1
+// and T7, and those two rows are the whole population of "an episode begins"
+// since ADR 0040 retired T8. A second accumulator would be a second answer to the
+// same question.
+func (s *Service) announceOpenings(ctx context.Context, scope db.TenantScope, caseIDs []uuid.UUID) error {
+	if s.caseOpenings == nil || len(caseIDs) == 0 {
+		return nil
+	}
+	return s.caseOpenings.CasesOpened(ctx, scope, caseIDs)
 }
 
 // ------------------------------------------------------------- notify reasons

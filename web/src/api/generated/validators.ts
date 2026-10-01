@@ -687,6 +687,114 @@ export const MoveIncidentCaseRequestSchema = v.strictObject({
   ),
 });
 
+export const MatcherDTOSchema = v.looseObject({
+  "name": LabelNameSchema,
+  "op": MatcherOpSchema,
+  "value": v.pipe(
+    v.string(),
+    v.maxLength(4096),
+  ),
+});
+
+export const CorrelatorDTOSchema = v.looseObject({
+  "id": UuidSchema,
+  "name": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(120),
+  ),
+  "priority": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+    v.maxValue(10000),
+  ),
+  "enabled": v.boolean(),
+  "matchers": v.pipe(
+    v.array(MatcherDTOSchema),
+    v.maxLength(32),
+  ),
+  "count_min": v.nullable(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(2),
+    v.maxValue(10000),
+  )),
+  "count_window_seconds": v.nullable(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(60),
+    v.maxValue(86400),
+  )),
+  "created_at": TimestampSchema,
+  "updated_at": TimestampSchema,
+});
+
+export const CreateCorrelatorRequestSchema = v.strictObject({
+  "name": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(120),
+  ),
+  "priority": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+    v.maxValue(10000),
+  ), 100),
+  "enabled": v.exactOptional(v.boolean(), true),
+  "matchers": v.exactOptional(v.pipe(
+    v.array(MatcherDTOSchema),
+    v.maxLength(32),
+  )),
+  "count_min": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(2),
+    v.maxValue(10000),
+  )),
+  "count_window_seconds": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(60),
+    v.maxValue(86400),
+  )),
+});
+
+export const UpdateCorrelatorRequestSchema = v.pipe(
+  v.strictObject({
+    "name": v.exactOptional(v.pipe(
+      v.string(),
+      v.minLength(1),
+      v.maxLength(120),
+    )),
+    "priority": v.exactOptional(v.pipe(
+      v.number(),
+      v.integer(),
+      v.minValue(0),
+      v.maxValue(10000),
+    )),
+    "enabled": v.exactOptional(v.boolean()),
+    "matchers": v.exactOptional(v.pipe(
+      v.array(MatcherDTOSchema),
+      v.maxLength(32),
+    )),
+    "count_min": v.exactOptional(v.nullable(v.pipe(
+      v.number(),
+      v.integer(),
+      v.minValue(2),
+      v.maxValue(10000),
+    ))),
+    "count_window_seconds": v.exactOptional(v.nullable(v.pipe(
+      v.number(),
+      v.integer(),
+      v.minValue(60),
+      v.maxValue(86400),
+    ))),
+  }),
+  v.check((value) => Object.keys(value).length >= 1, "at least 1 property required"),
+);
+
 export const CasePolicyDTOSchema = v.looseObject({
   "id": UuidSchema,
   "namespace": v.pipe(
@@ -1411,15 +1519,6 @@ export const ChannelTestDTOSchema = v.looseObject({
   ))),
   "error_class": v.exactOptional(DeliveryErrorClassSchema),
   "checked_at": TimestampSchema,
-});
-
-export const MatcherDTOSchema = v.looseObject({
-  "name": LabelNameSchema,
-  "op": MatcherOpSchema,
-  "value": v.pipe(
-    v.string(),
-    v.maxLength(4096),
-  ),
 });
 
 export const ThrottleDTOSchema = v.looseObject({
@@ -3072,6 +3171,17 @@ export const IncidentListResponseSchema = v.looseObject({
 
 export const IncidentResponseSchema = v.looseObject({
   "data": IncidentDetailDTOSchema,
+  "meta": MetaSchema,
+});
+
+export const CorrelatorListResponseSchema = v.looseObject({
+  "data": v.array(CorrelatorDTOSchema),
+  "page": PageInfoSchema,
+  "meta": MetaSchema,
+});
+
+export const CorrelatorResponseSchema = v.looseObject({
+  "data": CorrelatorDTOSchema,
   "meta": MetaSchema,
 });
 

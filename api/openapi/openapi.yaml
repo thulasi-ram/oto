@@ -2306,6 +2306,171 @@ paths:
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
 
+  /api/v1/correlators:
+    get:
+      operationId: listCorrelators
+      summary: List Correlators
+      tags: [Incidents]
+      description: |
+        Every live Correlator in the org, disabled ones included, **in the order the evaluator walks
+        them**: `priority` ascending — lower first — then age, then id, exactly as notification policies
+        are walked. A settings list in any other order would make "why did that one draw it?"
+        unanswerable.
+
+        A Correlator is operator-written configuration that draws Incidents (ADR 0052 §2): matchers over
+        Cases in the notification-policy grammar, optionally a count over a window. It is **not** a
+        rule — in oto that word is the Prometheus alerting rule. The list is never paged: it is a
+        handful of hand-written rows, and `page.has_more` is always `false`.
+      responses:
+        '200':
+          description: Every live Correlator, in evaluation order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CorrelatorListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    post:
+      operationId: createCorrelator
+      summary: Write a Correlator
+      tags: [Incidents]
+      description: |
+        Every Case that opens from now on is run through the org's Correlators, **asynchronously** — a
+        job the Case's opening enqueues, never the ingest transaction, and on a queue no notification
+        waits on, so a Correlator can neither block nor delay one.
+
+        - The **first** Correlator, in `priority` order, whose matchers hold **claims** the Case. No later
+          Correlator is consulted — even when the first then declines to draw because its count is not
+          met yet. That is a notification policy's first-match semantics, unchanged.
+        - It **joins** that Correlator's latest Incident while that Incident is active. A human-drawn
+          Incident never grows by itself.
+        - Otherwise it **draws** a new Incident: over this Case alone with no count condition, or — once
+          at least `count_min` of this Correlator's free Cases opened inside one `count_window_seconds`
+          span through this Case — over all of them at once.
+        - A Case already in an Incident is skipped by every Correlator, and a Case a human ever removed
+          or moved out of an Incident is never put back by one.
+
+        A duplicate live name is a `409` naming `correlators_name_uniq`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCorrelatorRequest'
+      responses:
+        '201':
+          description: The Correlator.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CorrelatorResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/correlators/{id}:
+    patch:
+      operationId: updateCorrelator
+      summary: Update a Correlator
+      tags: [Incidents]
+      description: |
+        A partial update, validated against the **merged** Correlator. **Reordering is a `priority`
+        change**, as it is for notification policies. An explicit `null` on `count_min` and
+        `count_window_seconds` clears the count condition; clearing one half alone is a `422`.
+
+        A change applies to Cases that open after it. Incidents a Correlator already drew are not
+        redrawn.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateCorrelatorRequest'
+      responses:
+        '200':
+          description: The updated Correlator.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CorrelatorResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    delete:
+      operationId: deleteCorrelator
+      summary: Retire a Correlator
+      tags: [Incidents]
+      description: |
+        The Correlator draws nothing from now on. It is **soft-deleted**: every Incident it drew and every
+        membership it added keep naming it, so "why is this an Incident?" still has an answer.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   # =================================================================================================
   # Rules
   # =================================================================================================
@@ -7397,6 +7562,134 @@ components:
           description: The `number` of the Incident the Case is moving to. It must not be the one in the path.
           examples: [7]
       description: Move one Case from the Incident in the path to another, in one transaction.
+
+    CorrelatorDTO:
+      type: object
+      required: [id, name, priority, enabled, matchers, count_min, count_window_seconds, created_at, updated_at]
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+          description: Unique among the org's live Correlators, compared case-insensitively.
+          examples: ['payments storm']
+        priority:
+          type: integer
+          format: int32
+          minimum: 0
+          maximum: 10000
+          description: |
+            The operator's order. **Lower is evaluated first**, ties by age then id — a notification
+            policy's sentence. The first Correlator whose matchers hold claims the Case.
+          examples: [100]
+        enabled:
+          type: boolean
+        matchers:
+          type: array
+          maxItems: 32
+          items:
+            $ref: '#/components/schemas/MatcherDTO'
+          description: All must match the Case's labels. An empty list matches every Case.
+        count_min:
+          type: ['integer', 'null']
+          format: int32
+          minimum: 2
+          maximum: 10000
+          description: |
+            Draw only once at least this many of this Correlator's free Cases opened inside one
+            `count_window_seconds` span, the Case being evaluated included; the Incident is then drawn over
+            all of them. `null` means every matching Case draws or joins. It gates **drawing** only: a
+            matching Case joins this Correlator's active Incident whatever the count.
+          examples: [5]
+        count_window_seconds:
+          type: ['integer', 'null']
+          format: int32
+          minimum: 60
+          maximum: 86400
+          description: The span `count_min` is counted over. Both halves are set or neither.
+          examples: [600]
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        updated_at:
+          $ref: '#/components/schemas/Timestamp'
+      description: |
+        An operator-written definition that draws Incidents (ADR 0052 §2): matchers over Cases,
+        optionally a count over a window. Not a rule — in oto that word is the Prometheus alerting rule.
+
+    CreateCorrelatorRequest:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        priority:
+          type: integer
+          format: int32
+          minimum: 0
+          maximum: 10000
+          default: 100
+        enabled:
+          type: boolean
+          default: true
+        matchers:
+          type: array
+          maxItems: 32
+          items:
+            $ref: '#/components/schemas/MatcherDTO'
+        count_min:
+          type: integer
+          format: int32
+          minimum: 2
+          maximum: 10000
+          description: Requires `count_window_seconds`; omitting both means no count condition.
+        count_window_seconds:
+          type: integer
+          format: int32
+          minimum: 60
+          maximum: 86400
+          description: Requires `count_min`.
+      description: Write a Correlator.
+
+    UpdateCorrelatorRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        priority:
+          type: integer
+          format: int32
+          minimum: 0
+          maximum: 10000
+          description: How an operator reorders. Lower is evaluated first.
+        enabled:
+          type: boolean
+        matchers:
+          type: array
+          maxItems: 32
+          items:
+            $ref: '#/components/schemas/MatcherDTO'
+        count_min:
+          type: ['integer', 'null']
+          format: int32
+          minimum: 2
+          maximum: 10000
+          description: An explicit `null` clears the count condition; it must be cleared with its window.
+        count_window_seconds:
+          type: ['integer', 'null']
+          format: int32
+          minimum: 60
+          maximum: 86400
+          description: An explicit `null` clears the count condition; it must be cleared with `count_min`.
+      description: Change a Correlator. A change applies to Cases that open after it.
 
     CasePolicyDTO:
       type: object
@@ -12705,6 +12998,30 @@ components:
       properties:
         data:
           $ref: '#/components/schemas/IncidentDetailDTO'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    CorrelatorListResponse:
+      type: object
+      required: [data, page, meta]
+      additionalProperties: false
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/CorrelatorDTO'
+        page:
+          $ref: '#/components/schemas/PageInfo'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    CorrelatorResponse:
+      type: object
+      required: [data, meta]
+      additionalProperties: false
+      properties:
+        data:
+          $ref: '#/components/schemas/CorrelatorDTO'
         meta:
           $ref: '#/components/schemas/Meta'
 

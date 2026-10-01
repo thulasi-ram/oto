@@ -130,6 +130,14 @@ var bindings = []binding{
 	{"incidents", "CreateIncidentRequest", incidentsapi.CreateIncidentRequest{}},
 	{"incidents", "AddIncidentCaseRequest", incidentsapi.AddIncidentCaseRequest{}},
 	{"incidents", "MoveIncidentCaseRequest", incidentsapi.MoveIncidentCaseRequest{}},
+	// The Correlator (git-bug 61eeddf). `incidents.MatcherDTO` is the SAME contract
+	// component `notification.MatcherDTO` is bound to — one schema, two Go mirrors,
+	// because an api package may not import another module's — so G1 holds both to
+	// the one grammar.
+	{"incidents", "MatcherDTO", incidentsapi.MatcherDTO{}},
+	{"incidents", "CorrelatorDTO", incidentsapi.CorrelatorDTO{}},
+	{"incidents", "CreateCorrelatorRequest", incidentsapi.CreateCorrelatorRequest{}},
+	{"incidents", "UpdateCorrelatorRequest", incidentsapi.UpdateCorrelatorRequest{}},
 
 	// ------------------------------------------------------------ sources
 	{"sources", "ClusterDTO", sourcesapi.ClusterDTO{}},
@@ -360,6 +368,10 @@ var unenforceableRequired = map[string]string{
 	// stands as the obligation on the CLIENT that it is: every generated client
 	// sends the key.
 	"notification.MatcherDTO.value": "the empty string is a legal matcher value, " +
+		"so `required` would outlaw it to catch an absent key it cannot see",
+	// The Correlator's mirror of the same component, for the same reason: a
+	// Correlator's matcher is a policy's matcher.
+	"incidents.MatcherDTO.value": "the empty string is a legal matcher value, " +
 		"so `required` would outlaw it to catch an absent key it cannot see",
 }
 

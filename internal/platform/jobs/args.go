@@ -239,6 +239,46 @@ func (NotifyIncidentArgs) InsertOpts() river.InsertOpts {
 	}
 }
 
+// ------------------------------------------------------------------ incidents
+
+// IncidentsCorrelateArgs runs ONE freshly opened Case through the org's
+// Correlators: the first whose matchers hold claims it, and it joins that
+// Correlator's active Incident or, its count permitting, draws a new one (ADR 0052
+// §2, §4). It is enqueued inside the transaction that opened the Case, through
+// `alerts/service.CaseOpenings`, so the Case and the work to correlate it commit
+// together (ADR 0001's outbox) and nothing is EVALUATED on that transaction
+// (CONTEXT.md commitment 2).
+//
+// Queue: lifecycle · Priority: normal · Retry: retryable (12) · Payload v1
+//
+// ⛔ NOT THE `notify` QUEUE, AND THAT IS THE TICKET'S "EVALUATION FAILURE NEVER
+// BLOCKS OR DELAYS A NOTIFICATION" MADE STRUCTURAL. Sharing `notify` would let a
+// storm's worth of Correlator evaluations sit in front of the very `fired`
+// evaluations an operator is waiting on. On `lifecycle` they compete only with
+// sweeps, and a Correlator that fails retries on its own budget while every
+// notification about the Case goes out exactly as it would have.
+//
+// IDEMPOTENCY: by state. One evaluation is one transaction; a redelivery after a
+// commit finds the Case already in an Incident, or already claimed below its
+// Correlator's count, and changes nothing a second time.
+type IncidentsCorrelateArgs struct {
+	Payload
+	// CaseID is the Case that opened, and what the tenant is resolved through.
+	CaseID uuid.UUID `json:"case_id"`
+}
+
+// Kind implements db.JobArgs and river.JobArgs.
+func (IncidentsCorrelateArgs) Kind() string { return KindIncidentsCorrelate }
+
+// InsertOpts pins the queue, priority and retry ceiling of this job type.
+func (IncidentsCorrelateArgs) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue:       QueueLifecycle,
+		Priority:    PriorityNormal,
+		MaxAttempts: MaxAttemptsRetryable,
+	}
+}
+
 // DeliverDispatchArgs sends one NotificationDelivery on one Channel. It is the
 // ONLY job subject to the per-thread ordering gate (SPEC §G.7); see
 // platform/jobs/ordering.

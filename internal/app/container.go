@@ -164,7 +164,10 @@ type Container struct {
 	// Incidents is ADR 0052's grouping over Cases: drawn by a human here, by a
 	// Correlator later, with a state read off its Cases and never written.
 	Incidents *incidentsservice.Service
-	Ingestion *ingestion.Module
+	// Correlators is the machine author of Incidents (ADR 0052 §2): the
+	// operator's CRUD over them, and the evaluator `incidents.correlate` runs.
+	Correlators *incidentsservice.Correlators
+	Ingestion   *ingestion.Module
 	// Drills runs delivery drills: one synthetic alert pushed through the REAL
 	// pipeline. It is built AFTER ingestion because it drives ingestion — through
 	// the same `Accept` the webhook handler calls, which is the whole point.
@@ -223,19 +226,20 @@ type Container struct {
 
 // routerSet is every domain's HTTP surface, held so routes.go can mount them.
 type routerSet struct {
-	identity  *identityapi.Router
-	alerts    *alertsapi.Router
-	rules     *rulesapi.Router
-	sources   *sourcesapi.Router
-	channels  *channelsapi.Router
-	notifs    *notifapi.Router
-	silences  *silencesapi.Router
-	stats     *statsapi.Router
-	incidents *incidentsapi.Router
-	drills    *drillapi.Router
-	enrichers *enrichapi.Router
-	streaming *streamingapi.Router
-	ingestion *ingestion.Module
+	identity    *identityapi.Router
+	alerts      *alertsapi.Router
+	rules       *rulesapi.Router
+	sources     *sourcesapi.Router
+	channels    *channelsapi.Router
+	notifs      *notifapi.Router
+	silences    *silencesapi.Router
+	stats       *statsapi.Router
+	incidents   *incidentsapi.Router
+	correlators *incidentsapi.CorrelatorRouter
+	drills      *drillapi.Router
+	enrichers   *enrichapi.Router
+	streaming   *streamingapi.Router
+	ingestion   *ingestion.Module
 }
 
 // Options are what a process hands the composition root.
@@ -607,6 +611,11 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		Enrichments:      enrichmentReader{repo: enrichmentRepo},
 		Notifications:    notificationsPort,
 		CaseEndings:      endings,
+		// A Case opening enqueues one `incidents.correlate` job in the same
+		// transaction (ADR 0052 §2). Not late-bound: it needs only the outbox,
+		// which exists before any service, and it never calls `incidents` — the
+		// queue is the seam.
+		CaseOpenings: caseOpenings{enq: c.enqueuer},
 		// `commentOnAlert` and `snoozeAlert` take their claim inside the same
 		// transaction as the write, on the store every other guarded operation
 		// claims in. A comment is the one action a retry duplicates VISIBLY —
@@ -715,6 +724,16 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	// it when a Case ends, and the notification layer reads Incidents through it.
 	endings.svc = c.Incidents
 	c.incidentFacts.svc = c.Incidents
+
+	// ⭐ THE CORRELATORS BORROW THE INCIDENT SERVICE'S MEMBERSHIP VERBS rather than
+	// owning a second copy: a Correlator's draw and join are a human's with a
+	// different author, under the same locks, through the same announcer and the
+	// same timeline (ADR 0052 §2, §4).
+	c.Correlators, err = incidentsservice.NewCorrelators(c.Incidents,
+		incidentsrepo.NewCorrelatorRepository(general))
+	if err != nil {
+		return nil, err
+	}
 
 	// ---- ingestion: THE ONLY MODULE ON THE INGEST POOL -------------------
 	//
@@ -1146,11 +1165,12 @@ func (c *Container) buildRouters(
 			Clock:         clk,
 			BaseURL:       c.Config.HTTP.BaseURL,
 		}),
-		silences:  silencesapi.NewRouter(c.Silences, silenceBaseURLs{svc: c.Sources}, clk),
-		stats:     statsapi.NewRouter(c.Stats, clk),
-		incidents: incidentsapi.NewRouter(c.Incidents, clk),
-		drills:    drillRouter(c.Drills, clk),
-		enrichers: enrichapi.NewRouter(enricherRegistry, clk),
+		silences:    silencesapi.NewRouter(c.Silences, silenceBaseURLs{svc: c.Sources}, clk),
+		stats:       statsapi.NewRouter(c.Stats, clk),
+		incidents:   incidentsapi.NewRouter(c.Incidents, clk),
+		correlators: incidentsapi.NewCorrelatorRouter(c.Correlators, clk),
+		drills:      drillRouter(c.Drills, clk),
+		enrichers:   enrichapi.NewRouter(enricherRegistry, clk),
 		streaming: streamingapi.NewRouter(c.Streaming, c.StreamHub,
 			streamingapi.ScopeResolverFunc(func(ctx context.Context) (db.TenantScope, error) {
 				_, s, err := authn.Scope(ctx)

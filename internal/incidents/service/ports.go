@@ -49,6 +49,11 @@ type CaseFact struct {
 	Summary string
 	Payload map[string]any
 	By      domain.Attribution
+	// CorrelatorName is the deciding Correlator's name when By is a Correlator, so
+	// the timeline can say WHICH one — "drawn by Correlator payments-storm" — rather
+	// than "by a machine". Frozen into the event as its actor label, the way a
+	// human's display name is; empty for a human.
+	CorrelatorName string
 }
 
 // Timeline appends a CaseFact to `alert_events`, inside the caller's transaction.
@@ -83,4 +88,24 @@ type Announcement struct {
 // policy sends nothing.
 type Announcer interface {
 	Announce(ctx context.Context, s db.TenantScope, facts []Announcement) error
+}
+
+// CorrelatorStore is the storage the Correlator path reads and writes through,
+// satisfied by `incidents/repository.CorrelatorRepository` (migration 00085).
+// Membership itself is still written through Repository: one writer of
+// `incident_members`, whoever decided.
+type CorrelatorStore interface {
+	List(ctx context.Context, s db.TenantScope) ([]domain.Correlator, error)
+	Live(ctx context.Context, s db.TenantScope) ([]domain.Correlator, error)
+	Get(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Correlator, error)
+	Lock(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Correlator, error)
+	Create(ctx context.Context, s db.TenantScope, c domain.Correlator, at time.Time) (domain.Correlator, error)
+	Update(ctx context.Context, s db.TenantScope, c domain.Correlator, at time.Time) (domain.Correlator, error)
+	Delete(ctx context.Context, s db.TenantScope, id uuid.UUID, at time.Time) error
+
+	CorrelationCase(ctx context.Context, s db.TenantScope, caseID uuid.UUID) (domain.CorrelationCase, error)
+	RecordMatch(ctx context.Context, s db.TenantScope, correlatorID uuid.UUID, c domain.CorrelationCase, at time.Time) error
+	WindowCandidates(ctx context.Context, s db.TenantScope, correlatorID uuid.UUID,
+		from, to time.Time, except uuid.UUID) ([]domain.CaseAt, error)
+	LatestDrawn(ctx context.Context, s db.TenantScope, correlatorID uuid.UUID) (domain.CorrelatorIncident, bool, error)
 }

@@ -976,6 +976,83 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/correlators": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Correlators
+         * @description Every live Correlator in the org, disabled ones included, **in the order the evaluator walks
+         *     them**: `priority` ascending — lower first — then age, then id, exactly as notification policies
+         *     are walked. A settings list in any other order would make "why did that one draw it?"
+         *     unanswerable.
+         *
+         *     A Correlator is operator-written configuration that draws Incidents (ADR 0052 §2): matchers over
+         *     Cases in the notification-policy grammar, optionally a count over a window. It is **not** a
+         *     rule — in oto that word is the Prometheus alerting rule. The list is never paged: it is a
+         *     handful of hand-written rows, and `page.has_more` is always `false`.
+         */
+        get: operations["listCorrelators"];
+        put?: never;
+        /**
+         * Write a Correlator
+         * @description Every Case that opens from now on is run through the org's Correlators, **asynchronously** — a
+         *     job the Case's opening enqueues, never the ingest transaction, and on a queue no notification
+         *     waits on, so a Correlator can neither block nor delay one.
+         *
+         *     - The **first** Correlator, in `priority` order, whose matchers hold **claims** the Case. No later
+         *       Correlator is consulted — even when the first then declines to draw because its count is not
+         *       met yet. That is a notification policy's first-match semantics, unchanged.
+         *     - It **joins** that Correlator's latest Incident while that Incident is active. A human-drawn
+         *       Incident never grows by itself.
+         *     - Otherwise it **draws** a new Incident: over this Case alone with no count condition, or — once
+         *       at least `count_min` of this Correlator's free Cases opened inside one `count_window_seconds`
+         *       span through this Case — over all of them at once.
+         *     - A Case already in an Incident is skipped by every Correlator, and a Case a human ever removed
+         *       or moved out of an Incident is never put back by one.
+         *
+         *     A duplicate live name is a `409` naming `correlators_name_uniq`.
+         */
+        post: operations["createCorrelator"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/correlators/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Retire a Correlator
+         * @description The Correlator draws nothing from now on. It is **soft-deleted**: every Incident it drew and every
+         *     membership it added keep naming it, so "why is this an Incident?" still has an answer.
+         */
+        delete: operations["deleteCorrelator"];
+        options?: never;
+        head?: never;
+        /**
+         * Update a Correlator
+         * @description A partial update, validated against the **merged** Correlator. **Reordering is a `priority`
+         *     change**, as it is for notification policies. An explicit `null` on `count_min` and
+         *     `count_window_seconds` clears the count condition; clearing one half alone is a `422`.
+         *
+         *     A change applies to Cases that open after it. Incidents a Correlator already drew are not
+         *     redrawn.
+         */
+        patch: operations["updateCorrelator"];
+        trace?: never;
+    };
     "/api/v1/rule-snapshots": {
         parameters: {
             query?: never;
@@ -3521,6 +3598,88 @@ export interface components {
              * @example 7
              */
             to_number: number;
+        };
+        /**
+         * @description An operator-written definition that draws Incidents (ADR 0052 §2): matchers over Cases,
+         *     optionally a count over a window. Not a rule — in oto that word is the Prometheus alerting rule.
+         */
+        CorrelatorDTO: {
+            id: components["schemas"]["Uuid"];
+            /**
+             * @description Unique among the org's live Correlators, compared case-insensitively.
+             * @example payments storm
+             */
+            name: string;
+            /**
+             * Format: int32
+             * @description The operator's order. **Lower is evaluated first**, ties by age then id — a notification
+             *     policy's sentence. The first Correlator whose matchers hold claims the Case.
+             * @example 100
+             */
+            priority: number;
+            enabled: boolean;
+            /** @description All must match the Case's labels. An empty list matches every Case. */
+            matchers: components["schemas"]["MatcherDTO"][];
+            /**
+             * Format: int32
+             * @description Draw only once at least this many of this Correlator's free Cases opened inside one
+             *     `count_window_seconds` span, the Case being evaluated included; the Incident is then drawn over
+             *     all of them. `null` means every matching Case draws or joins. It gates **drawing** only: a
+             *     matching Case joins this Correlator's active Incident whatever the count.
+             * @example 5
+             */
+            count_min: number | null;
+            /**
+             * Format: int32
+             * @description The span `count_min` is counted over. Both halves are set or neither.
+             * @example 600
+             */
+            count_window_seconds: number | null;
+            created_at: components["schemas"]["Timestamp"];
+            updated_at: components["schemas"]["Timestamp"];
+        };
+        /** @description Write a Correlator. */
+        CreateCorrelatorRequest: {
+            name: string;
+            /**
+             * Format: int32
+             * @default 100
+             */
+            priority: number;
+            /** @default true */
+            enabled: boolean;
+            matchers?: components["schemas"]["MatcherDTO"][];
+            /**
+             * Format: int32
+             * @description Requires `count_window_seconds`; omitting both means no count condition.
+             */
+            count_min?: number;
+            /**
+             * Format: int32
+             * @description Requires `count_min`.
+             */
+            count_window_seconds?: number;
+        };
+        /** @description Change a Correlator. A change applies to Cases that open after it. */
+        UpdateCorrelatorRequest: {
+            name?: string;
+            /**
+             * Format: int32
+             * @description How an operator reorders. Lower is evaluated first.
+             */
+            priority?: number;
+            enabled?: boolean;
+            matchers?: components["schemas"]["MatcherDTO"][];
+            /**
+             * Format: int32
+             * @description An explicit `null` clears the count condition; it must be cleared with its window.
+             */
+            count_min?: number | null;
+            /**
+             * Format: int32
+             * @description An explicit `null` clears the count condition; it must be cleared with `count_min`.
+             */
+            count_window_seconds?: number | null;
         };
         /**
          * @description The **case retention window** for one `(namespace, alertname)` pair — the only per-pair shaping of
@@ -6999,6 +7158,15 @@ export interface components {
             data: components["schemas"]["IncidentDetailDTO"];
             meta: components["schemas"]["Meta"];
         };
+        CorrelatorListResponse: {
+            data: components["schemas"]["CorrelatorDTO"][];
+            page: components["schemas"]["PageInfo"];
+            meta: components["schemas"]["Meta"];
+        };
+        CorrelatorResponse: {
+            data: components["schemas"]["CorrelatorDTO"];
+            meta: components["schemas"]["Meta"];
+        };
         ClusterListResponse: {
             data: components["schemas"]["ClusterDTO"][];
             page: components["schemas"]["PageInfo"];
@@ -9848,6 +10016,126 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["IncidentResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    listCorrelators: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every live Correlator, in evaluation order. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CorrelatorListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    createCorrelator: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateCorrelatorRequest"];
+            };
+        };
+        responses: {
+            /** @description The Correlator. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CorrelatorResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    deleteCorrelator: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: components["responses"]["NoContent"];
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    updateCorrelator: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateCorrelatorRequest"];
+            };
+        };
+        responses: {
+            /** @description The updated Correlator. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CorrelatorResponse"];
                 };
             };
             400: components["responses"]["BadRequest"];

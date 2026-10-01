@@ -226,3 +226,21 @@ type SnoozeRepository interface {
 type CaseEndings interface {
 	CasesEnded(ctx context.Context, s db.TenantScope, caseIDs []uuid.UUID) error
 }
+
+// CaseOpenings is told, INSIDE the transaction that opened them, which Cases have
+// just begun (ADR 0052 §2; git-bug 61eeddf).
+//
+// It exists for one reader today: a Correlator decides which Incident a Case
+// belongs to, and the moment to ask is the moment the Case opens — which only this
+// module observes. It is CaseEndings' twin and is declared here for the same
+// reason: `internal/app` satisfies it over `incidents`, and alerts never imports
+// the module that groups its Cases (CONTEXT.md §4).
+//
+// ⛔ IT MUST ONLY ENQUEUE. The reader puts an `incidents.correlate` job into the
+// same outbox `enrich.run` and `notify.evaluate` ride, and evaluates nothing here:
+// a Correlator is never on the ingest transaction (CONTEXT.md commitment 2), and a
+// failure in one must never block or delay the Case's own notification. An
+// enqueue that fails fails the batch, exactly as the other two enqueues do.
+type CaseOpenings interface {
+	CasesOpened(ctx context.Context, s db.TenantScope, caseIDs []uuid.UUID) error
+}

@@ -35,9 +35,11 @@ import type {
   ChannelTest,
   ChannelTypeDescriptor,
   Cluster,
+  Correlator,
   CreateChannelConnectionRequest,
   CreateChannelRequest,
   CreateClusterRequest,
+  CreateCorrelatorRequest,
   CreatePolicyRequest,
   CreateSourceRequest,
   CreateTokenRequest,
@@ -85,6 +87,7 @@ import type {
   TimelineQuery,
   UpdateChannelConnectionRequest,
   UpdateChannelRequest,
+  UpdateCorrelatorRequest,
   UpdateOrgSettingsRequest,
   UpdatePolicyRequest,
   UpdateSourceRequest,
@@ -862,6 +865,38 @@ export function updatePolicy(id: Uuid, body: UpdatePolicyRequest): Promise<Polic
 
 export function deletePolicy(id: Uuid): Promise<void> {
   return del(`${V1}/notification-policies/${id}`);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Correlators                                                                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Every live Correlator, IN THE ORDER THE SERVER WALKS THEM — `priority`
+ * ascending, then age, then id. The settings list renders this order as-is; it
+ * must never re-sort, or "why did that one draw it?" stops being answerable from
+ * the screen. Never paged: `page.has_more` is always false.
+ */
+export function listCorrelators(c: Ctx = {}): Promise<ListEnvelope<Correlator>> {
+  return getList<Correlator>(`${V1}/correlators`, ctx(c));
+}
+
+/** Write a Correlator. A duplicate live name is a `409`. */
+export function createCorrelator(body: CreateCorrelatorRequest): Promise<Correlator> {
+  return postItem<Correlator>(`${V1}/correlators`, body);
+}
+
+/**
+ * Change a Correlator. REORDERING IS A `priority` CHANGE, as for a policy. A
+ * `null` count half clears it, and both halves must be cleared together.
+ */
+export function updateCorrelator(id: Uuid, body: UpdateCorrelatorRequest): Promise<Correlator> {
+  return patchItem<Correlator>(`${V1}/correlators/${id}`, body);
+}
+
+/** Retire a Correlator. The Incidents it drew keep naming it. */
+export function deleteCorrelator(id: Uuid): Promise<void> {
+  return del(`${V1}/correlators/${id}`);
 }
 
 /**
