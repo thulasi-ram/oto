@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 82 {
-		t.Fatalf("latest migration is %d, want 82 — this test pins the number so that a "+
+	if latest != 87 {
+		t.Fatalf("latest migration is %d, want 87 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1562,10 +1562,12 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 			"`refired` stays declared (that is a separate decision, not this one) and "+
 			"`all_resolved` stays because a Case resolving is a fact about the Case", def)
 	}
-	// The ceiling follows the enum, as it has in both directions since 00046.
-	if def := policyReasonsCheck(); !strings.Contains(def, "15") {
-		t.Fatalf("policies_reasons_ck does not bound reasons at 15 at the top of the stack: "+
-			"%s — the enum has fifteen values now, and sixteen is a cardinality no row can "+
+	// The ceiling follows the enum, as it has in both directions since 00046. 00069
+	// left it at fifteen; 00084 added the five Incident facts, so the top of the stack
+	// reads twenty, and fifteen is asserted again once 00084's Down has run.
+	if def := policyReasonsCheck(); !strings.Contains(def, "20") {
+		t.Fatalf("policies_reasons_ck does not bound reasons at 20 at the top of the stack: "+
+			"%s — the enum has twenty values now, and twenty-one is a cardinality no row can "+
 			"reach. ⛔ The ceiling moving is only half of it: the constraint does NOT test "+
 			"membership, so 00069 also has to strip the two values out of the arrays by hand",
 			def)
@@ -1629,6 +1631,160 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// accepts a kind the release below it cannot interpret. No column reading can
 	// see that, and it is the half most likely to be forgotten because nothing
 	// references it.
+	// ⭐ 00087 LETS AN INCIDENT BE A CONVERSATION, and its Down takes back three
+	// things: the Correlator's switch, `incident` from `threads_subjkind_ck`, and the
+	// index the Incident-thread lookup reads. The column comment is read as well,
+	// because the Down's COMMENT ON is a sentence copied from an older migration and
+	// a sentence copied from the wrong one passes every structural reading.
+	if n := countColumns("correlators", "incidents_are_conversations"); n != 1 {
+		t.Fatalf("correlators.incidents_are_conversations is absent at migration 87 (found %d)", n)
+	}
+	if def := constraintDef("threads_subjkind_ck", "channel_threads"); !strings.Contains(def, "'incident'") {
+		t.Fatalf("threads_subjkind_ck does not admit 'incident' at migration 87: %s — an "+
+			"Incident that is a conversation keys its thread by the Incident", def)
+	}
+	if n := countIndexes("threads_subject_idx"); n != 1 {
+		t.Fatalf("threads_subject_idx is absent at migration 87 (found %d)", n)
+	}
+
+	down(87)
+
+	if n := countColumns("correlators", "incidents_are_conversations"); n != 0 {
+		t.Fatalf("correlators.incidents_are_conversations survived 00087's Down (found %d)", n)
+	}
+	if def := constraintDef("threads_subjkind_ck", "channel_threads"); strings.Contains(def, "'incident'") {
+		t.Fatalf("threads_subjkind_ck still admits 'incident' after 00087's Down: %s", def)
+	} else if !strings.Contains(def, "'case'") || !strings.Contains(def, "'digest'") {
+		t.Fatalf("threads_subjkind_ck lost more than 'incident' in 00087's Down: %s", def)
+	}
+	if n := countIndexes("threads_subject_idx"); n != 0 {
+		t.Fatalf("threads_subject_idx survived 00087's Down (found %d)", n)
+	}
+	if c := columnComment("channel_threads", "subject_kind"); strings.Contains(c, "alert_group") ||
+		!strings.Contains(c, "keyed by the CASE") {
+		t.Fatalf("00087's Down did not restore 00069's comment on channel_threads.subject_kind: "+
+			"%q — the release below 00087 has no AlertGroup, and a comment describing one is "+
+			"the defect 00069 rewrote this same sentence to remove", c)
+	}
+	if c := columnComment("notifications", "conversation_id"); strings.Contains(c, "incidents.id") {
+		t.Fatalf("notifications.conversation_id still names incidents.id after 00087's Down: %q", c)
+	}
+
+	// 00086 gives a Correlator a quiet grace, bounded, and its Down takes both back.
+	if n := countColumns("correlators", "quiet_grace_s"); n != 1 {
+		t.Fatalf("correlators.quiet_grace_s is absent at migration 86 (found %d)", n)
+	}
+	if def := constraintDef("correlators_quiet_grace_ck", "correlators"); !strings.Contains(def, "60") ||
+		!strings.Contains(def, "86400") {
+		t.Fatalf("correlators_quiet_grace_ck is %q at migration 86 — it must bound the grace to "+
+			"60..86400 seconds", def)
+	}
+
+	down(86)
+
+	if n := countColumns("correlators", "quiet_grace_s"); n != 0 {
+		t.Fatalf("correlators.quiet_grace_s survived 00086's Down (found %d)", n)
+	}
+	if n := countConstraints("correlators_quiet_grace_ck"); n != 0 {
+		t.Fatalf("correlators_quiet_grace_ck survived 00086's Down (found %d)", n)
+	}
+
+	// ⭐ 00085 ADDS THE CORRELATOR AND POINTS 00083'S COLUMNS AT IT. Its Down must take
+	// the two foreign keys off `incidents` and `incident_members` BEFORE the table they
+	// reference goes, and must leave both of 00083's tables standing: a Down that
+	// dropped the Correlator with CASCADE would pass every reading of its own objects.
+	if n := countTables("correlators", "correlator_matches"); n != 2 {
+		t.Fatalf("correlators and correlator_matches are not both present at migration 85 (found %d)", n)
+	}
+	if n := countConstraints("incidents_correlator_fk", "incident_members_correlator_fk"); n != 2 {
+		t.Fatalf("%d of 00085's two foreign keys into correlators exist at migration 85, want 2", n)
+	}
+	if n := countIndexes("incidents_correlator_idx", "correlators_name_uniq", "correlators_eval_idx",
+		"correlator_matches_window_idx"); n != 4 {
+		t.Fatalf("%d of 00085's four indexes exist at migration 85, want 4", n)
+	}
+
+	down(85)
+
+	if n := countTables("correlators", "correlator_matches"); n != 0 {
+		t.Fatalf("%d of 00085's tables survived its Down", n)
+	}
+	if n := countConstraints("incidents_correlator_fk", "incident_members_correlator_fk"); n != 0 {
+		t.Fatalf("%d of 00085's foreign keys survived its Down", n)
+	}
+	if n := countIndexes("incidents_correlator_idx"); n != 0 {
+		t.Fatalf("incidents_correlator_idx survived 00085's Down (found %d)", n)
+	}
+	if n := countTables("incidents", "incident_members"); n != 2 {
+		t.Fatalf("00085's Down took %d of 00083's two tables with it — they are 00083's to drop", 2-n)
+	}
+
+	// ⭐ 00084 MAKES AN INCIDENT A NOTIFICATION SUBJECT, widening five constraints at
+	// once. Its Down NARROWS all five, which is the dangerous direction — a row the
+	// wide constraint admitted fails the narrow one — so it deletes and strips the
+	// Incident rows first. Each constraint is read on both sides, because a Down that
+	// narrowed four and forgot one exits 0.
+	incidentArms := []struct{ name, table string }{
+		{"notifications_subjkind_ck", "notifications"},
+		{"policies_subjkinds_ck", "notification_policies"},
+		{"notifications_convkind_ck", "notifications"},
+		{"notifications_subject_ck", "notifications"},
+	}
+	for _, c := range incidentArms {
+		if def := constraintDef(c.name, c.table); !strings.Contains(def, "'incident'") {
+			t.Fatalf("%s does not admit 'incident' at migration 84: %s", c.name, def)
+		}
+	}
+	if def := constraintDef("notifications_reason_ck", "notifications"); !strings.Contains(def, "'active_again'") {
+		t.Fatalf("notifications_reason_ck does not admit the Incident facts at migration 84: %s", def)
+	}
+
+	down(84)
+
+	for _, c := range incidentArms {
+		if def := constraintDef(c.name, c.table); def == "" || strings.Contains(def, "'incident'") {
+			t.Fatalf("%s after 00084's Down is %q — it must exist and no longer admit 'incident'",
+				c.name, def)
+		}
+	}
+	if def := constraintDef("notifications_reason_ck", "notifications"); strings.Contains(def, "'drawn'") ||
+		strings.Contains(def, "'active_again'") {
+		t.Fatalf("notifications_reason_ck still admits an Incident fact after 00084's Down: %s", def)
+	} else if !strings.Contains(def, "'digest'") || !strings.Contains(def, "'all_resolved'") {
+		t.Fatalf("notifications_reason_ck lost more than the Incident facts in 00084's Down: %s", def)
+	}
+	if def := policyReasonsCheck(); !strings.Contains(def, "15") || !strings.Contains(def, "oto_array_is_set") {
+		t.Fatalf("policies_reasons_ck did not go back to a set of 1..15 after 00084's Down: %s — "+
+			"the ceiling IS the enum size, and the set rule 00046 added must survive the swap", def)
+	}
+
+	// ⭐ 00083 DRAWS AN INCIDENT OVER CASES. Its at-most-one rule is a PARTIAL unique
+	// index, read as its definition: a full UNIQUE (case_id) would forbid the tombstone
+	// a removal leaves, and both spellings satisfy "the index exists".
+	if n := countTables("incidents", "incident_members", "org_incident_numbers"); n != 3 {
+		t.Fatalf("%d of 00083's three tables exist at migration 83, want 3", n)
+	}
+	if def := constraintDef("incidents_number_uniq", "incidents"); !strings.Contains(def, "org_id") {
+		t.Fatalf("incidents_number_uniq is %q at migration 83 — it must be UNIQUE (org_id, number), "+
+			"for the reason case_number_uniq is", def)
+	}
+	var liveUniq string
+	if err := env.pool.QueryRow(env.ctx,
+		`SELECT coalesce((SELECT indexdef FROM pg_indexes
+		                   WHERE indexname = 'incident_members_case_live_uniq'), '')`).Scan(&liveUniq); err != nil {
+		t.Fatalf("introspect incident_members_case_live_uniq: %v", err)
+	}
+	if !strings.Contains(liveUniq, "UNIQUE") || !strings.Contains(liveUniq, "removed_at IS NULL") {
+		t.Fatalf("incident_members_case_live_uniq is %q at migration 83 — a Case belongs to at "+
+			"most one Incident AT A TIME, so the uniqueness is over live memberships only", liveUniq)
+	}
+
+	down(83)
+
+	if n := countTables("incidents", "incident_members", "org_incident_numbers"); n != 0 {
+		t.Fatalf("%d of 00083's tables survived its Down", n)
+	}
+
 	// ⭐ 00082 GIVES A TEMPLATE A REPLY BODY, and its Down takes back the column and
 	// the floor on it. The floor is read as its DEFINITION, because "a constraint
 	// exists" reads the same whether `''` is refused or quietly becomes a second
