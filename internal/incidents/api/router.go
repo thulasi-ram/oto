@@ -27,6 +27,7 @@ import (
 // (ADR 0052 §3); its response is the incident tool's (§5).
 type IncidentService interface {
 	List(ctx context.Context, s db.TenantScope, p db.Keyset) ([]domain.Incident, db.Cursor, error)
+	HoldingCase(ctx context.Context, s db.TenantScope, caseID uuid.UUID) ([]domain.Incident, error)
 	Get(ctx context.Context, s db.TenantScope, number int64) (domain.Detail, error)
 	Draw(ctx context.Context, s db.TenantScope, caseIDs []uuid.UUID, by domain.Attribution) (domain.Detail, error)
 	Add(ctx context.Context, s db.TenantScope, number int64, caseID uuid.UUID, by domain.Attribution) (domain.Detail, error)
@@ -87,9 +88,25 @@ func (rt *Router) listIncidents(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
-	page, limit, err := simplePage(r)
+	page, limit, caseID, err := listPage(r)
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
+		return
+	}
+	if caseID != uuid.Nil {
+		// ⭐ "WHICH INCIDENT IS THIS CASE IN?" — none or one, so there is nothing
+		// to page. A Case this org does not have is simply in none: the answer is
+		// the same empty list another org's Case gets, and tells a caller nothing.
+		held, err := rt.svc.HoldingCase(r.Context(), scope, caseID)
+		if err != nil {
+			httpx.WriteProblem(w, r, err)
+			return
+		}
+		out := make([]IncidentDTO, 0, len(held))
+		for _, i := range held {
+			out = append(out, incidentDTO(i))
+		}
+		httpx.List(w, r, out, httpx.PageOf(db.Cursor{}, limit), started)
 		return
 	}
 	incs, next, err := rt.svc.List(r.Context(), scope, page)
@@ -299,20 +316,29 @@ func pathMember(r *http.Request) (int64, uuid.UUID, error) {
 	return number, caseID, nil
 }
 
-// simplePageParams is the allow-list of a plainly paginated list.
-var simplePageParams = []string{"limit", "cursor"}
+// listParams is the allow-list of `GET /incidents`.
+var listParams = []string{"limit", "cursor", "case_id"}
 
-// simplePage compiles a list query with no filters of its own. The cursor is
-// bound to the empty filter set, so there is nothing it could be replayed against.
-func simplePage(r *http.Request) (db.Keyset, int, error) {
-	p := httpx.NewParams(r, simplePageParams...)
+// listPage compiles the list query: a keyset page and, optionally, the one Case
+// whose current Incident is asked for.
+//
+// The cursor is bound to that filter, so a cursor minted by the unfiltered list
+// and replayed with `case_id` is the ordinary `cursor_filter_mismatch` — and the
+// filtered answer is at most one row, so it never mints one of its own.
+func listPage(r *http.Request) (db.Keyset, int, uuid.UUID, error) {
+	p := httpx.NewParams(r, listParams...)
 	limit := p.Limit()
+	caseID := p.UUID("case_id")
 	if err := p.Err(); err != nil {
-		return db.Keyset{}, 0, err
+		return db.Keyset{}, 0, uuid.Nil, err
 	}
-	cursor, err := httpx.DecodeCursor(p.Cursor(), httpx.FilterHash())
+	hash := httpx.FilterHash()
+	if caseID != uuid.Nil {
+		hash = httpx.FilterHash("case_id=" + caseID.String())
+	}
+	cursor, err := httpx.DecodeCursor(p.Cursor(), hash)
 	if err != nil {
-		return db.Keyset{}, 0, err
+		return db.Keyset{}, 0, uuid.Nil, err
 	}
-	return httpx.Keyset(limit, cursor), limit, nil
+	return httpx.Keyset(limit, cursor), limit, caseID, nil
 }

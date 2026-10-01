@@ -61,9 +61,10 @@ type fakeIncidents struct {
 	// refuse, when set, is what every write answers instead of succeeding.
 	refuse error
 
-	calls []string
-	by    []domain.Attribution
-	moves []int64
+	calls   []string
+	by      []domain.Attribution
+	moves   []int64
+	holding []uuid.UUID
 }
 
 func (f *fakeIncidents) record(call string, by domain.Attribution) {
@@ -128,6 +129,18 @@ func (f *fakeIncidents) List(_ context.Context, s db.TenantScope, _ db.Keyset) (
 		return nil, db.Cursor{}, nil
 	}
 	return []domain.Incident{contractDetail().Incident}, db.Cursor{}, nil
+}
+
+// HoldingCase answers #4 for the one current member the fake knows, and nothing
+// for any other Case or any other org.
+func (f *fakeIncidents) HoldingCase(_ context.Context, s db.TenantScope, caseID uuid.UUID) ([]domain.Incident, error) {
+	f.mu.Lock()
+	f.holding = append(f.holding, caseID)
+	f.mu.Unlock()
+	if s.OrgID() != apitest.OrgID || caseID != contractCaseID {
+		return []domain.Incident{}, nil
+	}
+	return []domain.Incident{contractDetail().Incident}, nil
 }
 
 func (f *fakeIncidents) Get(_ context.Context, s db.TenantScope, number int64) (domain.Detail, error) {
@@ -421,4 +434,59 @@ func TestAnUnknownQueryParameterIsRefused(t *testing.T) {
 		{Op: "moveIncidentCase", Method: http.MethodPost, Path: "/incidents/4/cases/" + caseID + "/move?force=true",
 			Body: `{"to_number":7}`},
 	})
+}
+
+// TestTheListAnswersWhichIncidentACaseIsIn — git-bug f89c9cc. `?case_id=` is how
+// a Case's screen, and a selection on the Cases list, learn BEFORE a draw that the
+// Case is already in a story and would be moved rather than drawn twice.
+//
+// ⭐ NONE OR ONE, AND NOTHING TO PAGE. A Case is in at most one Incident, so the
+// filtered answer is complete in one response; a Case in none — or another org's
+// Case, which is in none HERE — is the same empty list, never a 404 that would
+// confirm the id exists somewhere.
+func TestTheListAnswersWhichIncidentACaseIsIn(t *testing.T) {
+	t.Parallel()
+
+	f, c := newIncidentClient(t)
+
+	resp := c.GET("/incidents?case_id="+contractCaseID.String()).MustStatus(t, http.StatusOK)
+	schema.Assert(t, "listIncidents", http.StatusOK, resp.Body())
+	var held struct {
+		Data []struct {
+			Number int64 `json:"number"`
+		} `json:"data"`
+		Page struct {
+			HasMore bool `json:"has_more"`
+		} `json:"page"`
+	}
+	if err := json.Unmarshal(resp.Body(), &held); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(held.Data) != 1 || held.Data[0].Number != contractNumber || held.Page.HasMore {
+		t.Fatalf("a held Case answered %+v, want exactly #%d and no further page", held, contractNumber)
+	}
+
+	resp = c.GET("/incidents?case_id="+contractRemovedID.String()).MustStatus(t, http.StatusOK)
+	schema.Assert(t, "listIncidents", http.StatusOK, resp.Body())
+	if got := resp.JSON(t)["data"]; got == nil || len(got.([]any)) != 0 {
+		t.Fatalf("a Case in no Incident answered data=%v, want []", got)
+	}
+
+	resp = c.As(apitest.MemberOf(apitest.OtherOrgID)).
+		GET("/incidents?case_id="+contractCaseID.String()).MustStatus(t, http.StatusOK)
+	if got := resp.JSON(t)["data"]; got == nil || len(got.([]any)) != 0 {
+		t.Fatalf("another org's caller learned of this org's Incident: data=%v", got)
+	}
+
+	f.mu.Lock()
+	asked := append([]uuid.UUID(nil), f.holding...)
+	f.mu.Unlock()
+	if len(asked) != 3 || asked[0] != contractCaseID {
+		t.Fatalf("the service was asked about %v, want the Case in the query each time", asked)
+	}
+	if got := f.callCount(); got != 0 {
+		t.Fatalf("a read reached %d write(s)", got)
+	}
+
+	c.GET("/incidents?case_id=banana").MustViolate(t, "case_id")
 }

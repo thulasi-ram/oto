@@ -395,6 +395,7 @@ export const FRESHNESS: Readonly<Record<string, Freshness>> = {
   "incidents.all": { by: "live" },
   "incidents.list": { by: "live" },
   "incidents.detail": { by: "live" },
+  "incidents.holding": { by: "live" },
 
   // Health arrives as `source.health`; the rejection feed and the failed-batch
   // list hang under the same source prefix and ride the same frame.

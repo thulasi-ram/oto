@@ -2030,9 +2030,18 @@ paths:
         `state` is never stored and no endpoint sets it: an Incident is `active` while any member Case is
         open and `quiet` otherwise (ADR 0052 §3). It is read off the member Cases on every request, so it
         cannot disagree with them.
+
+        With `case_id`, the answer is the Incident that Case is in **now** — none or exactly one, because a
+        Case is in at most one — so a screen can say a Case would be moved before a draw or an add is
+        refused for it. A Case in no Incident, or one this org does not have, is the same empty list.
       parameters:
         - $ref: '#/components/parameters/LimitParam'
         - $ref: '#/components/parameters/CursorParam'
+        - name: case_id
+          in: query
+          description: Only the Incident this Case is a current member of (at most one). Nothing to page.
+          schema:
+            $ref: '#/components/schemas/Uuid'
       responses:
         '200':
           description: A page of Incidents.
