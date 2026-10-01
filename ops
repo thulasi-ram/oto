@@ -1,1 +1,1 @@
-{"author":{"id":"5698b6d16d951325374257d86a2e673da0e55970c3d21c0f7c6f49018f24e5bf"},"ops":[{"type":5,"timestamp":1790888570,"nonce":"SBqMzD2EZ6H+mH2GZOw2XI4m+vc=","added":["afk"],"removed":null}]}
+{"author":{"id":"5698b6d16d951325374257d86a2e673da0e55970c3d21c0f7c6f49018f24e5bf"},"ops":[{"type":3,"timestamp":1790895435,"nonce":"5rDFCt3ZHHn+bwd1oHJ7Ij1dyQk=","message":"Implemented in b963c07; untested pending orchestrator gate.","files":null}]}
