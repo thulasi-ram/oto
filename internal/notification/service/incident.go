@@ -518,11 +518,17 @@ func (v *ViewService) incidentCard(
 			Destination: o.ChannelName, URL: o.ExternalURL, ID: o.ExternalID,
 		})
 	}
-	return &NotificationView{
+	view := &NotificationView{
 		Reason:     string(n.Reason),
 		Incident:   iv,
 		RenderedAt: v.clk.Now().UTC(),
-	}, nil
+	}
+	// The envelope's `org` is on every message but a digest's (see `digest`); an
+	// Incident fact has no snapshot to carry it, so the reader does.
+	if f.Org.ID != uuid.Nil {
+		view.Org = OrgRef{ID: f.Org.ID.String(), Slug: f.Org.Slug, Name: f.Org.Name}
+	}
+	return view, nil
 }
 
 func incidentAuthor(label string, correlator uuid.UUID) IncidentAuthorView {

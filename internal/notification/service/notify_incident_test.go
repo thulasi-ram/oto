@@ -46,6 +46,7 @@ func incidentFixtureFacts(caseID, alertID uuid.UUID) domain.IncidentFacts {
 	drawn := time.Now().UTC().Add(-time.Minute)
 	return domain.IncidentFacts{
 		ID: id.New(), Number: 4, Active: true, DrawnAt: drawn, DrawnByLabel: "Priya R.",
+		Org: domain.OrgFacts{ID: id.New(), Slug: "acme", Name: "Acme"},
 		Members: []domain.IncidentMemberFacts{{
 			CaseID: caseID, CaseNumber: 412, CaseOpen: true, AlertID: alertID,
 			Alertname: "HighErrorRate",
@@ -239,6 +240,8 @@ func TestTheIncidentCardIsBuiltFromTheIncident(t *testing.T) {
 	assert.Nil(t, v.Digest)
 	assert.Nil(t, v.Case, "an Incident card names no single Case")
 	assert.Equal(t, "drawn", v.Reason)
+	// The envelope's `org` is on an Incident fact as on a Case fact: it was "", "", "".
+	assert.Equal(t, service.OrgRef{ID: r.facts.Org.ID.String(), Slug: "acme", Name: "Acme"}, v.Org)
 	assert.Equal(t, int64(4), v.Incident.Number)
 	assert.Equal(t, "active", v.Incident.State)
 	assert.Equal(t, "Priya R.", v.Incident.DrawnBy.Label)

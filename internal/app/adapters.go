@@ -377,6 +377,9 @@ func (a incidentAnnouncer) Announce(
 // positive false statement.
 type incidentFacts struct {
 	svc *incidentsservice.Service
+	// orgs names the tenant for the envelope's `org`. Bound at construction:
+	// identity is built before notification, unlike incidents.
+	orgs *identityservice.Service
 }
 
 func (r *incidentFacts) Incident(
@@ -422,6 +425,13 @@ func (r *incidentFacts) Incident(
 			ExternalURL: o.ExternalURL,
 			ExternalID:  o.ExternalID,
 		})
+	}
+	if r.orgs != nil {
+		org, err := r.orgs.GetOrg(ctx, s)
+		if err != nil {
+			return notifdomain.IncidentFacts{}, err
+		}
+		out.Org = notifdomain.OrgFacts{ID: org.ID, Slug: org.Slug, Name: org.Name}
 	}
 	return out, nil
 }
