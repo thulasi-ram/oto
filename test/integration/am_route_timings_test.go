@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 89 {
-		t.Fatalf("latest migration is %d, want 89 — this test pins the number so that a "+
+	if latest != 90 {
+		t.Fatalf("latest migration is %d, want 90 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1631,6 +1631,46 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// accepts a kind the release below it cannot interpret. No column reading can
 	// see that, and it is the half most likely to be forgotten because nothing
 	// references it.
+	// ⭐ 00090 LETS A WEBHOOK CONNECTION CARRY A PAYLOAD MAPPING (ADR 0055 §2, git-bug
+	// 2205620): three columns on `channel_connections` with their four CHECKs, and a
+	// widened `channel_credentials_kind_ck` admitting `webhook_mapping_secrets`. The kind
+	// CHECK is read separately from the columns for 00075's reason: a Down that dropped
+	// the columns and forgot the enum leaves a database accepting a kind the release
+	// below cannot interpret, and no column reading can see it.
+	//
+	// ⛔ ITS GUARD IS NOT EXERCISED HERE, for 00088's reason: it raises when a connection
+	// carries a mapping, and firing it would abort every step below. What runs is the
+	// clean path, which is where a misspelt column in the guard's SELECT would fail.
+	if n := countColumns("channel_connections", "payload_mapping", "mapping_credential_id",
+		"mapping_secret_names"); n != 3 {
+		t.Fatalf("%d of 00090's three channel_connections columns exist at migration 90, want 3", n)
+	}
+	if n := countConstraints("channel_connections_mapping_ck", "channel_connections_mapping_secrets_ck",
+		"channel_connections_mapping_distinct_ck", "channel_connections_mapping_names_ck"); n != 4 {
+		t.Fatalf("%d of 00090's four CHECKs exist at migration 90, want 4", n)
+	}
+	if def := constraintDef("channel_connections_mapping_ck", "channel_connections"); !strings.Contains(def, "webhook") {
+		t.Fatalf("channel_connections_mapping_ck does not confine a mapping to a webhook: %s", def)
+	}
+	if def := constraintDef("channel_credentials_kind_ck", "channel_credentials"); !strings.Contains(def, "webhook_mapping_secrets") {
+		t.Fatalf("channel_credentials_kind_ck at migration 90 does not admit webhook_mapping_secrets: %s", def)
+	}
+
+	down(90)
+
+	if n := countColumns("channel_connections", "payload_mapping", "mapping_credential_id",
+		"mapping_secret_names"); n != 0 {
+		t.Fatalf("%d of 00090's channel_connections columns survived its Down", n)
+	}
+	if n := countConstraints("channel_connections_mapping_ck", "channel_connections_mapping_secrets_ck",
+		"channel_connections_mapping_distinct_ck", "channel_connections_mapping_names_ck"); n != 0 {
+		t.Fatalf("%d of 00090's CHECKs survived its Down", n)
+	}
+	if def := constraintDef("channel_credentials_kind_ck", "channel_credentials"); strings.Contains(def, "webhook_mapping_secrets") ||
+		!strings.Contains(def, "webhook_signing_secret") {
+		t.Fatalf("00090's Down did not restore 00075's channel_credentials_kind_ck: %s", def)
+	}
+
 	// ⭐ 00089 RECORDS ADR 0052 §5'S OUTBOUND MAPPING AS A RECEIPT (git-bug 506ff21):
 	// one table, its four CHECKs and its tenant index, and a Down that drops the table.
 	// The URL CHECK is read for its prefix because it is the one bound the dispatcher's

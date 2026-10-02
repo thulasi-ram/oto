@@ -275,6 +275,13 @@ export type CreateChannelConnectionRequest = S["CreateChannelConnectionRequest"]
 export type UpdateChannelConnectionRequest = S["UpdateChannelConnectionRequest"];
 /** Exactly one of `name` or `conversation_id` — the response fills in the other. */
 export type ResolveConversationRequest = S["ResolveConversationRequest"];
+/**
+ * A webhook connection's payload mapping (ADR 0055 §2): destination setup, not a
+ * NotificationTemplate. It holds no secret — only `secrets.<name>` references.
+ */
+export type PayloadMapping = S["PayloadMapping"];
+/** One fact sent through a mapped connection by way of one of its channels. */
+export type TestConnectionMappingRequest = S["TestConnectionMappingRequest"];
 export type CreatePolicyRequest = S["CreatePolicyRequest"];
 export type UpdatePolicyRequest = S["UpdatePolicyRequest"];
 export type PolicyPreviewRequest = S["PolicyPreviewRequest"];

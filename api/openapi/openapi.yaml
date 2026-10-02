@@ -3738,6 +3738,71 @@ paths:
         '504':
           $ref: '#/components/responses/GatewayTimeout'
 
+  /api/v1/channel-connections/{id}/mapping/test:
+    post:
+      operationId: testChannelConnectionMapping
+      summary: Send one fact through a connection's payload mapping
+      tags: [Channels]
+      description: |
+        Render one fact you choose — an Incident fact among them — as the `oto.notification.v1` envelope,
+        map it through this webhook connection's **payload mapping** (ADR 0055 §2), fill the secrets it
+        names, sign it, and send it through `channel_id`, which must be a live channel of this connection:
+        the connection holds the mapping, the channel holds the URL. The same renderer, mapping, secrets,
+        signature and transport a real delivery uses, so a pass means the real path works.
+
+        **A test send to an incident tool may open a real incident there.** That is what a mapping does
+        with a fact; the view is the synthetic `OtoChannelTest` one, so whatever opens says so.
+
+        A mapping that does not render is reported as `ok: false` with `error_class: config_invalid` and
+        nothing is sent — never the plain envelope. A connection with no mapping is a `412`: its
+        channels send the plain envelope, which `POST /api/v1/channels/{id}/test` already covers.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TestConnectionMappingRequest'
+      responses:
+        '200':
+          description: |
+            The test result. A `200` with `ok: false` means the test ran and the mapping or the receiver
+            refused it — check `error_class` and `error`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelTestResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+
   # =================================================================================================
   # Notification
   # =================================================================================================
@@ -12035,7 +12100,7 @@ components:
 
     ChannelConnectionDTO:
       type: object
-      required: [id, type, name, config, created_at, updated_at]
+      required: [id, type, name, config, mapping_secret_names, created_at, updated_at]
       properties:
         id:
           $ref: '#/components/schemas/Uuid'
@@ -12087,6 +12152,28 @@ components:
             current one, and every request carries both signatures. Set to the rotation plus 24 hours;
             `null` when the signing secret has never been rotated. Once in the past, only the current
             secret signs.
+        payload_mapping:
+          oneOf:
+            - $ref: '#/components/schemas/PayloadMapping'
+            - type: 'null'
+          description: |
+            A webhook connection's payload mapping (ADR 0055 §2), or `null` when it sends the plain
+            `oto.notification.v1` envelope. It holds no secret — a secret is named in it as
+            `{{ secrets.<name> }}` — so it is returned whole.
+        mapping_secret_names:
+          type: array
+          maxItems: 16
+          items:
+            type: string
+            pattern: '^[a-z][a-z0-9_]{0,63}$'
+          description: |
+            The names of the secrets this connection seals for its payload mapping, sorted. **The values
+            are never returned.** Empty when it seals none.
+        mapping_secrets_rotated_at:
+          oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+          description: When the mapping secrets were last replaced; `null` when never.
         created_at:
           $ref: '#/components/schemas/Timestamp'
         updated_at:
@@ -12117,6 +12204,10 @@ components:
           $ref: '#/components/schemas/CredentialInput'
         signing_credential:
           $ref: '#/components/schemas/CredentialInput'
+        payload_mapping:
+          $ref: '#/components/schemas/PayloadMapping'
+        mapping_secrets:
+          $ref: '#/components/schemas/MappingSecretsInput'
       description: |
         Create a connection. A `slack` connection must carry a `slack_bot_token` credential. A `webhook`
         connection may carry a `basic`/`bearer` `credential` to authenticate outbound to a shared
@@ -12124,6 +12215,11 @@ components:
         receiver to verify, both, or neither. A `webhook_signing_secret` in `credential`, any other kind
         in `signing_credential`, or a `signing_credential` on a `slack` connection is a `422` naming the
         field.
+
+        A `webhook` connection may carry a `payload_mapping` and the `mapping_secrets` it names. The
+        mapping is rendered against an envelope for **every fact** before it is stored, and a mapping
+        that does not render — or that names a secret not in `mapping_secrets` — is a `422` whose
+        violation names the source (`payload_mapping/body`, `payload_mapping/facts/<fact>`) and the fact.
 
     UpdateChannelConnectionRequest:
       type: object
@@ -12141,6 +12237,13 @@ components:
           $ref: '#/components/schemas/CredentialInput'
         signing_credential:
           $ref: '#/components/schemas/CredentialInput'
+        payload_mapping:
+          oneOf:
+            - $ref: '#/components/schemas/PayloadMapping'
+            - type: 'null'
+          description: Replaces the payload mapping; `null` removes it and the plain envelope is sent.
+        mapping_secrets:
+          $ref: '#/components/schemas/MappingSecretsInput'
       description: |
         Partial update. `type` is absent because a connection's provider is its identity; supplying
         `credential` rotates the secret in place, so every channel referencing this connection never
@@ -12151,6 +12254,93 @@ components:
         request in that window carries both signatures, so a receiver still holding the old secret keeps
         verifying until it is given the new one. A second rotation inside the window retires the oldest
         secret at once. Kind `none` detaches the signing secret immediately, with no overlap.
+
+        Supplying `payload_mapping` or `mapping_secrets` re-checks the mapping the connection will have
+        against the secrets it will have, for every fact, so removing a secret the mapping still names is
+        a `422` here rather than a failed delivery later. `mapping_secrets` **replaces the whole set**
+        (oto cannot read the current values back to merge into); `{}` removes them.
+
+    PayloadMapping:
+      type: object
+      additionalProperties: false
+      required: [body]
+      properties:
+        body:
+          type: string
+          minLength: 1
+          maxLength: 16384
+          description: |
+            Liquid over the `oto.notification.v1` envelope, rendering ONE JSON object: the request body for
+            every fact `facts` does not name. Every interpolated value is JSON-escaped with no opt-out, so
+            write `"title": "{{ incident.number }}"` and a label holding a quote stays a string.
+        facts:
+          type: object
+          maxProperties: 20
+          propertyNames:
+            $ref: '#/components/schemas/NotificationReason'
+          additionalProperties:
+            type: string
+            minLength: 1
+            maxLength: 16384
+          description: A body per fact (the envelope's `reason`), overriding `body` for that fact.
+        headers:
+          type: object
+          maxProperties: 16
+          additionalProperties:
+            type: string
+            maxLength: 4096
+          description: |
+            Request headers, name to a Liquid value. `Authorization` and every `X-Oto-*` name are refused:
+            a vendor's token is this connection's sealed `credential`, and `X-Oto-*` is oto's framing.
+        response:
+          type: object
+          additionalProperties: false
+          minProperties: 1
+          properties:
+            external_url:
+              type: string
+              maxLength: 256
+              description: A gjson path to the incident's link in a 2xx JSON response, e.g. `data.url`.
+            external_id:
+              type: string
+              maxLength: 256
+              description: A gjson path to the incident's id in a 2xx JSON response.
+          description: |
+            Where an incident tool's 2xx response names the incident it opened. When present, ONLY these
+            paths are read and the default top-level `external_url` / `external_id` keys are not. What is
+            read is kept only if it is an absolute `https` URL / a printable id, exactly as for the default.
+      description: |
+        A webhook connection's **payload mapping** (ADR 0055 §2): destination setup, not wording. It is
+        not a NotificationTemplate, and a mapping that fails at send time is a failed delivery
+        (`dead`, `config_invalid`, retryable from the audit) — never the plain envelope instead. It holds
+        no secret: a vendor key is named as `{{ secrets.<name> }}` and filled in at the moment of sending
+        from the connection's sealed `mapping_secrets`.
+
+    MappingSecretsInput:
+      type: object
+      maxProperties: 16
+      propertyNames:
+        type: string
+        pattern: '^[a-z][a-z0-9_]{0,63}$'
+      additionalProperties:
+        type: string
+        minLength: 1
+        maxLength: 4096
+      description: |
+        The secrets a payload mapping names, name to value — sealed into one credential. **Write-only**:
+        only the names are ever returned (`mapping_secret_names`). Supplying it replaces the whole set.
+
+    TestConnectionMappingRequest:
+      type: object
+      required: [channel_id, fact]
+      additionalProperties: false
+      properties:
+        channel_id:
+          $ref: '#/components/schemas/Uuid'
+        fact:
+          $ref: '#/components/schemas/NotificationReason'
+      description: |
+        Which fact to send, and through which of this connection's channels.
 
     ResolveConversationRequest:
       type: object

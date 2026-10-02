@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,6 +20,8 @@ type channelRow struct {
 	config         []byte
 	credentialID   *uuid.UUID
 	signingID      *uuid.UUID
+	mapping        []byte
+	mappingID      *uuid.UUID
 	capabilities   int64
 	renderer       string
 	verbosity      string
@@ -39,6 +42,8 @@ func (r channelRow) toDomain() domain.Channel {
 		Config:              r.config,
 		CredentialID:        r.credentialID,
 		SigningCredentialID: r.signingID,
+		PayloadMapping:      nullableMapping(r.mapping),
+		MappingCredentialID: r.mappingID,
 		Capabilities:        domain.Capability(r.capabilities),
 		Renderer:            r.renderer,
 		Verbosity:           domain.Verbosity(r.verbosity),
@@ -96,7 +101,8 @@ func (r *ChannelRepository) db(ctx context.Context) db.Querier { return db.FromC
 const channelColumns = `
   c.id, c.org_id, c.type, c.name, c.config, cx.credential_id, c.capabilities,
   c.renderer, c.verbosity, c.thread_updates, c.show_field_emoji, c.enabled,
-  c.health_status, c.health_error, c.deleted_at, cx.signing_credential_id`
+  c.health_status, c.health_error, c.deleted_at, cx.signing_credential_id,
+  cx.payload_mapping, cx.mapping_credential_id`
 
 const channelFrom = `
   FROM channels c
@@ -133,7 +139,7 @@ func (r *ChannelRepository) ListByIDs(
 			&row.id, &row.orgID, &row.kind, &row.name, &row.config, &row.credentialID,
 			&row.capabilities, &row.renderer, &row.verbosity, &row.threadUpdates,
 			&row.showFieldEmoji, &row.enabled, &row.healthStatus, &row.healthError,
-			&row.deletedAt, &row.signingID,
+			&row.deletedAt, &row.signingID, &row.mapping, &row.mappingID,
 		); err != nil {
 			return nil, mapErr(err, "channel_not_found", "scan channel")
 		}
@@ -158,7 +164,7 @@ func (r *ChannelRepository) Get(
 		&row.id, &row.orgID, &row.kind, &row.name, &row.config, &row.credentialID,
 		&row.capabilities, &row.renderer, &row.verbosity, &row.threadUpdates,
 		&row.showFieldEmoji, &row.enabled, &row.healthStatus, &row.healthError,
-		&row.deletedAt, &row.signingID,
+		&row.deletedAt, &row.signingID, &row.mapping, &row.mappingID,
 	)
 	if err != nil {
 		return domain.Channel{}, mapErr(err, "channel_not_found", "channel")
@@ -242,4 +248,13 @@ func (r *ChannelRepository) Credential(
 		return SealedCredential{}, mapErr(err, "credential_not_found", "channel credential")
 	}
 	return c, nil
+}
+
+// nullableMapping is `payload_mapping` read back: nil for NULL, so "no mapping" has
+// one spelling in this module.
+func nullableMapping(b []byte) json.RawMessage {
+	if len(b) == 0 {
+		return nil
+	}
+	return json.RawMessage(b)
 }

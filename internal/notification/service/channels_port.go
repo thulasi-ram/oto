@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/google/uuid"
 
@@ -196,4 +197,23 @@ type TemplateRef = chdomain.TemplateRef
 // formatting table was unavailable is not.
 type TemplateResolver interface {
 	For(ctx context.Context, s db.TenantScope, policyID uuid.UUID) *TemplateRef
+}
+
+// PayloadMapper applies a webhook Connection's payload mapping to a rendered envelope
+// (ADR 0055 §2). It is satisfied by `internal/channels/service.Mapper`.
+//
+// ⭐ IT RUNS AT CLAIM TIME, BESIDE THE TEMPLATE LOOKUP, FOR THE TEMPLATE'S REASON: the
+// renderer stays a pure function, and `notification_deliveries.rendered` records the
+// bytes the destination is actually sent (C11) — the mapped body, with its secrets
+// still named rather than filled.
+//
+// ⛔ AN ERROR IS A FAILED DELIVERY, NEVER A FALLBACK. The dispatcher marks the row
+// dead `config_invalid` and sends nothing; the plain envelope never goes to a vendor
+// that was configured to receive something else. The RenderedMessage it returns
+// beside an error is the attempt, kept on the dead row.
+//
+// This module never reads inside the mapping and never asks which provider holds one:
+// a channel row carries a mapping or it does not.
+type PayloadMapper interface {
+	Map(ctx context.Context, mapping json.RawMessage, msg RenderedMessage) (RenderedMessage, error)
 }

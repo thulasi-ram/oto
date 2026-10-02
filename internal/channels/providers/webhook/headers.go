@@ -43,6 +43,12 @@ var forbiddenHeaders = map[string]string{
 // something else in somebody's channel.
 const reservedPrefix = "x-oto-"
 
+// forbiddenHeader reports whether name is one a config may never set.
+func forbiddenHeader(name string) bool {
+	_, bad := forbiddenHeaders[strings.ToLower(strings.TrimSpace(name))]
+	return bad
+}
+
 // reservedHeader reports whether name is in oto's namespace.
 func reservedHeader(name string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(name)), reservedPrefix)

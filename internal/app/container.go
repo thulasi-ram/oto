@@ -974,6 +974,10 @@ func (c *Container) buildNotification(
 		// ADR 0052 §5's outbound mapping (migration 00089): the external incident a
 		// receiver echoes for an Incident fact, kept once per (Incident, channel).
 		Receipts: notifrepo.NewIncidentReceiptRepository(general),
+		// ADR 0055 §2's payload mapping (migration 00090), applied at claim time beside
+		// the template lookup. A mapping that does not render is a dead
+		// `config_invalid` delivery, never the plain envelope.
+		Mapper: channelsservice.NewMapper(),
 	}); err != nil {
 		return err
 	}

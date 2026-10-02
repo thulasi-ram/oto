@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"time"
@@ -83,6 +84,7 @@ type DispatchService struct {
 	metrics       *Metrics
 	templates     TemplateResolver
 	receipts      IncidentReceipts
+	mapper        PayloadMapper
 }
 
 // DispatchConfig is everything NewDispatchService needs.
@@ -122,6 +124,10 @@ type DispatchConfig struct {
 	// delivery behaves exactly as it did before the echo existed — the echo is a
 	// courtesy a receiver extends, never part of whether a delivery succeeded.
 	Receipts IncidentReceipts
+	// Mapper applies a webhook Connection's payload mapping (ADR 0055 §2, migration
+	// 00090). Nil leaves every unmapped channel exactly as it was, and makes every
+	// MAPPED channel's delivery fail `config_invalid` — never the plain envelope.
+	Mapper PayloadMapper
 }
 
 // NewDispatchService builds the service.
@@ -143,6 +149,7 @@ func NewDispatchService(cfg DispatchConfig) (*DispatchService, error) {
 		metrics:   cfg.Metrics,
 		templates: cfg.Templates,
 		receipts:  cfg.Receipts,
+		mapper:    cfg.Mapper,
 	}
 	if s.maxInstances <= 0 {
 		s.maxInstances = DefaultMaxInstances
@@ -642,6 +649,30 @@ func (s *DispatchService) claim(
 		return out, nil, err
 	}
 
+	// ⭐ A PAYLOAD MAPPING TURNS THE ENVELOPE INTO THE VENDOR'S REQUEST HERE (ADR 0055
+	// §2, git-bug 2205620): after the renderer, so the renderer stays pure, and before
+	// PersistRendered, so the row records the mapped body — the bytes that are sent,
+	// less the secrets the provider fills in at the socket.
+	if len(channel.PayloadMapping) > 0 {
+		mapped, merr := s.mapPayload(ctx, channel.PayloadMapping, msg)
+		if merr != nil {
+			// ⛔ NOT THE RENDER-FAILURE BRANCH ABOVE, AND NOT ITS COUNTER. RenderInvalid
+			// and its "oto could not render a legal payload" line mean an oto bug fixed
+			// by shipping a new oto; a mapping that does not render is the operator's
+			// configuration, fixed in Settings and retried from the audit. The row goes
+			// dead `config_invalid` with the attempt on it, the channel is flagged, and
+			// NOTHING is sent — above all not the plain envelope, which the vendor could
+			// not parse (§2: "never falls back").
+			if len(mapped.Payload) > 0 {
+				_ = s.deliveries.PersistRendered(ctx, scope, d.ID,
+					mapped.Payload, mapped.Hash, msg.Fallback, now, attributionOf(opts.Template))
+			}
+			out, err := s.fail(ctx, scope, d, channel, merr, domain.ClassConfigInvalid, now)
+			return out, nil, err
+		}
+		msg = mapped
+	}
+
 	// §G.7.4 coalescing: a root update whose bytes match what the card already
 	// shows buys nothing. This is what turns a flapping alert's forty identical
 	// updates into one send and thirty-nine visible `skipped` rows.
@@ -1109,6 +1140,7 @@ func (s *DispatchService) open(
 		Verbosity:      RenderVerbosity(c.EffectiveVerbosity()),
 		ThreadUpdates:  c.ThreadUpdates,
 		ShowFieldEmoji: c.ShowFieldEmoji,
+		PayloadMapping: c.PayloadMapping,
 	}
 
 	var cred TargetCredential
@@ -1134,8 +1166,40 @@ func (s *DispatchService) open(
 		}
 		cred.Signing = signing
 	}
+	// The secrets a payload mapping names, unsealed for this Open and filled by the
+	// provider as it sends (migration 00090). The delivery row never sees them.
+	if c.MappingCredentialID != nil {
+		sealed, err := s.channels.Credential(ctx, scope, *c.MappingCredentialID)
+		if err != nil {
+			return nil, err
+		}
+		if s.unsealer == nil {
+			return nil, errs.New(errs.KindInternal, "no_credential_unsealer",
+				"this destination has sealed mapping secrets and no unsealer is configured")
+		}
+		values, err := s.unsealer.Unseal(ctx, sealed.Kind, sealed.Sealed, sealed.KeyVersion)
+		if err != nil {
+			return nil, err
+		}
+		cred.Secrets = values
+	}
 
 	return s.registry.Open(ctx, ProviderType(c.Type), cfg, cred)
+}
+
+// mapPayload applies the channel's payload mapping, refusing outright when this
+// deployment was built without a mapper: a mapped channel's delivery with no way to
+// map it is a configuration error, never a reason to send the envelope.
+func (s *DispatchService) mapPayload(
+	ctx context.Context, mapping json.RawMessage, msg RenderedMessage,
+) (RenderedMessage, error) {
+	if s.mapper == nil {
+		return RenderedMessage{}, &ProviderError{
+			Class: "config_invalid", Provider: "webhook", Code: "payload_mapping_unavailable",
+			Cause: errors.New("this channel's connection carries a payload mapping and this deployment has no mapper; the plain envelope is never sent in its place"),
+		}
+	}
+	return s.mapper.Map(ctx, mapping, msg)
 }
 
 // signingSecret unseals a connection's outbound signing secret and — while a

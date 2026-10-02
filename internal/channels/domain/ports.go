@@ -111,6 +111,13 @@ type ChannelConfig struct {
 
 	ThreadUpdates  bool
 	ShowFieldEmoji bool
+
+	// PayloadMapping is the destination's Connection's payload mapping (ADR 0055 §2,
+	// migration 00090), verbatim, or empty when it has none. It is non-secret — a
+	// mapping names its secrets and never holds them — and only the webhook provider
+	// reads it: to refuse an unmapped body, and for the response path it reads an
+	// incident tool's handle from.
+	PayloadMapping json.RawMessage
 }
 
 // Verbosity decides which thread replies a Channel receives (§H.6). Root updates
@@ -142,6 +149,12 @@ type Credential struct {
 	// and a receiver may want both. Zero when the connection does not sign. Only
 	// the webhook provider reads it.
 	Signing SigningSecret
+	// Secrets are the Connection's mapping secrets, name → value, unsealed from its
+	// `mapping_credential_id` slot (migration 00090): what a payload mapping's
+	// `{{ secrets.<name> }}` references are filled with at the moment of sending, and
+	// nowhere earlier. Nil when the Connection seals none. Only the webhook provider
+	// reads it.
+	Secrets map[string]string
 }
 
 // SigningSecretOverlap is how long a rotated-out signing secret keeps signing
@@ -415,6 +428,17 @@ type RenderedMessage struct {
 	Payload  json.RawMessage // channel-native (Slack: {text,attachments,unfurl_*})
 	Hash     string          // sha256 of Payload; skips no-op updates
 	Metadata map[string]string
+	// Mapped marks a Payload a Connection's payload mapping rendered (ADR 0055 §2)
+	// rather than the provider's own renderer. A provider whose Connection carries a
+	// mapping REFUSES a message without it: the plain envelope reaching a vendor that
+	// cannot parse it is the silent missing incident §2 forbids.
+	//
+	// ⚠️ A MAPPED PAYLOAD MAY HOLD SECRET REFERENCES, NEVER SECRETS. The provider fills
+	// them from Credential.Secrets as it sends; what is persisted is the reference.
+	Mapped bool
+	// Headers are the request headers a payload mapping rendered, by name, with the
+	// same secret references unfilled. Nil for every unmapped message.
+	Headers map[string]string
 }
 
 // ErrorClass drives retry policy (§G.6). THE CLASSIFICATION drives retry, never

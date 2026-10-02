@@ -234,7 +234,8 @@ Content-Type: application/json
 {"external_url": "https://tool.example/incidents/42", "external_id": "INC-42"}
 ```
 
-- Only a **2xx** response is read, only its **top-level** `external_url` and `external_id`, and only
+- Only a **2xx** response is read, only its **top-level** `external_url` and `external_id` — or,
+  when the connection's payload mapping names a `response` path (§7), **only** that path — and only
   on a delivery of one of the five Incident facts. Either key may be absent.
 - `external_url` is kept only if it is an absolute `https://` URL of at most 2048 characters (no
   credentials in it, no spaces); `external_id` only if it is a JSON string of at most 255 printable
@@ -275,3 +276,51 @@ can look the incident up and return it.
 
 What is *not* part of the promise: the wording of `summary` and `rendered`, the order of keys, and
 whitespace. Parse the JSON; never match on its text.
+
+---
+
+## 7. Reaching a tool that wants a different shape: the payload mapping
+
+A tool whose API wants its own JSON — incident.io's HTTP alert source requires top-level `title`
+and `status` — is reached without a bridge by putting a **payload mapping** on the webhook
+**connection** (Settings → Connections, [ADR 0055](../adr/0055-an-incident-tool-integration-is-data-or-a-bridge-never-code-in-oto.md)
+§2). Without one, the plain envelope above is sent, byte for byte.
+
+```json
+{
+  "body": "{\"title\": \"{{ summary }}\", \"status\": \"firing\", \"deduplication_key\": \"{{ incident.id }}\"}",
+  "facts": {
+    "quiet": "{\"title\": \"{{ summary }}\", \"status\": \"resolved\", \"deduplication_key\": \"{{ incident.id }}\"}"
+  },
+  "headers": { "X-Source": "oto" },
+  "response": { "external_url": "data.incident.url", "external_id": "data.incident.id" }
+}
+```
+
+- **`body`** (required) is Liquid over the envelope of §3 — `{{ summary }}`, `{{ incident.id }}`,
+  `{% for a in alerts %}…{% endfor %}` — and must render **one JSON object**. **`facts`** overrides it
+  for the facts it names (the envelope's `reason`). A mapping cannot decline a fact: every one renders.
+- **Every interpolated value is JSON-escaped, with no opt-out**, so write it inside quotes. A label
+  holding `"`, `\`, a newline or `</script>` lands as that string, never as structure.
+- **`headers`** are Liquid too. `Authorization` and every `X-Oto-*` name are refused: a vendor's
+  token is the connection's `credential`, and `X-Oto-*` is oto's framing, which still goes on every
+  request — the signature (§4) covers the mapped body.
+- **`response`** names, as [gjson](https://github.com/tidwall/gjson/blob/master/SYNTAX.md) paths,
+  where a 2xx answer carries the incident's link and id. When present it **replaces** the top-level
+  keys of §5; the values pass the same checks.
+- **A mapping never holds a secret.** A key that must travel in the body (PagerDuty's `routing_key`)
+  is a **mapping secret** sealed on the connection and written as `{{ secrets.routing_key }}`; oto
+  fills it in as the request leaves. The stored mapping, the delivery record and the catalog file
+  hold only the name. Mapping secrets are write-only and are replaced as a set.
+- **It is checked before it is saved**: rendered against an envelope for every fact, including
+  hostile and empty ones; a mapping that does not render, or names a secret the connection does not
+  hold, is refused with the fact named. **Test the mapping** on the connection sends one fact you
+  choose through one of its channels — **and may open a real incident in the tool.**
+- **A mapping that fails when sending is a failed delivery** — `dead`, `config_invalid`, with the
+  attempt on the record, retryable from the delivery audit once fixed. oto never sends the plain
+  envelope in its place: the tool could not parse it, and a missing incident is worse than a visible
+  failure.
+- **oto's own code sends no command.** A mapping that turns `quiet` into a resolve is a rule you
+  wrote; `quiet` is not `fixed` (§3), and resolving on it ends a response the moment the signals stop.
+- Add a mapping **after** upgrading every oto pod: a pod older than the mapping sends the plain
+  envelope.
