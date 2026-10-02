@@ -78,4 +78,5 @@ operator's, and editing it into a command is a rule the operator wrote (§4).
 One file. Verify every field name against the vendor's **current public docs**, cite the URLs in
 `docs` and in the header comment, set `checked_on`, declare the command fields, and put any key the
 body carries behind `{{ secrets.<name> }}`. A tool that needs OAuth, several calls per fact, or
-logic is not a mapping: it is a bridge you run yourself (ADR 0055 §3).
+logic is not a mapping: it is a bridge you run yourself (ADR 0055 §3, and
+[docs/setup/incident-tools.md](../docs/setup/incident-tools.md)).

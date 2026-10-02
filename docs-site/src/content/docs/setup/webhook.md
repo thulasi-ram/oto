@@ -1,19 +1,20 @@
-# The generic webhook and `oto.notification.v1`
-
+---
+title: The generic webhook and `oto.notification.v1`
+---
 The generic webhook is how anything that is not Slack hears from oto: an incident tool's alert
 source, a bridge you run yourself, a log pipeline. oto POSTs one JSON document per message, the
 **`oto.notification.v1` envelope**, and that envelope is the contract every integration builds on
-([ADR 0055](../adr/0055-an-incident-tool-integration-is-data-or-a-bridge-never-code-in-oto.md) §1).
+([ADR 0055](/oto/adr/0055-an-incident-tool-integration-is-data-or-a-bridge-never-code-in-oto/) §1).
 This page is the contract written down: what is sent, how to verify it came from oto, and what oto
 promises not to change. Whether a tool wants this envelope as it is, a payload mapping, or a bridge
-you run is [incident-tools.md](incident-tools.md).
+you run is [incident-tools.md](/oto/setup/incident-tools/).
 
 ---
 
 ## 1. Set it up
 
 A webhook destination is two things, the same split Slack has
-([ADR 0047](../adr/0047-a-channel-answers-to-a-connection.md)):
+([ADR 0047](/oto/adr/0047-a-channel-answers-to-a-connection/)):
 
 - A **Connection** — Settings → Connections → *Add a connection* → *Webhook*. It holds the secrets
   shared by every URL behind one receiver, in two independent slots:
@@ -105,7 +106,7 @@ which fields below you can rely on.
 ### Incident facts
 
 An Incident is a set of one or more Cases drawn as one story
-([ADR 0052](../adr/0052-an-incident-is-drawn-over-cases-and-its-response-is-handed-off.md)). An
+([ADR 0052](/oto/adr/0052-an-incident-is-drawn-over-cases-and-its-response-is-handed-off/)). An
 Incident fact carries `incident` and no `group`, `digest`, `occurrence` or `focus`; `reason` is one
 of exactly five:
 
@@ -256,8 +257,8 @@ receipt is not itself a fact oto posts about.
 
 PagerDuty's Events API and incident.io's HTTP alert source both answer with a dedup key and open the
 incident asynchronously, so they echo nothing; a small bridge you run in front of them
-([ADR 0055](../adr/0055-an-incident-tool-integration-is-data-or-a-bridge-never-code-in-oto.md) §3,
-and [incident-tools.md §3](incident-tools.md#3-the-bridge-pattern) for the pattern) can look the
+([ADR 0055](/oto/adr/0055-an-incident-tool-integration-is-data-or-a-bridge-never-code-in-oto/) §3,
+and [incident-tools.md §3](/oto/setup/incident-tools/#3-the-bridge-pattern) for the pattern) can look the
 incident up and return it.
 
 ---
@@ -285,7 +286,7 @@ whitespace. Parse the JSON; never match on its text.
 
 A tool whose API wants its own JSON — incident.io's HTTP alert source requires top-level `title`
 and `status` — is reached without a bridge by putting a **payload mapping** on the webhook
-**connection** (Settings → Connections, [ADR 0055](../adr/0055-an-incident-tool-integration-is-data-or-a-bridge-never-code-in-oto.md)
+**connection** (Settings → Connections, [ADR 0055](/oto/adr/0055-an-incident-tool-integration-is-data-or-a-bridge-never-code-in-oto/)
 §2). Without one, the plain envelope above is sent, byte for byte.
 
 ```json
@@ -324,7 +325,7 @@ and `status` — is reached without a bridge by putting a **payload mapping** on
   failure.
 - **oto's own code sends no command.** A mapping that turns `quiet` into a resolve is a rule you
   wrote; `quiet` is not `fixed` (§3), and resolving on it ends a response the moment the signals stop
-  — [incident-tools.md §2](incident-tools.md#2-quiet-is-not-fixed) says what that costs. The example
+  — [incident-tools.md §2](/oto/setup/incident-tools/#2-quiet-is-not-fixed) says what that costs. The example
   above keeps the alert firing on `quiet` and only says so.
 - Add a mapping **after** upgrading every oto pod: a pod older than the mapping sends the plain
   envelope.
