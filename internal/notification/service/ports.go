@@ -205,6 +205,15 @@ type EventSink interface {
 // there rather than here so that exactly one file in this module names
 // `internal/channels/domain`.
 
+// IncidentReceipts records ADR 0052 §5's outbound mapping: the external incident a
+// destination echoed back for an Incident fact (migration 00089, git-bug 506ff21).
+// Satisfied by `repository.IncidentReceiptRepository`. Record reports whether this
+// call wrote the receipt — false when one already existed for the (Incident,
+// channel), which is the idempotent retry and every later fact.
+type IncidentReceipts interface {
+	Record(ctx context.Context, s db.TenantScope, r domain.IncidentReceipt) (bool, error)
+}
+
 // CredentialUnsealer turns a sealed blob into provider credentials.
 //
 // This module holds the ciphertext and never the key. An unsealer that logged

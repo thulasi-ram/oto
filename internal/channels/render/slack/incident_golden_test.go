@@ -207,3 +207,35 @@ func TestAReplyInAnIncidentsThreadNamesItsCase(t *testing.T) {
 		t.Errorf("a reply in the Case's own thread names an Incident:\n%s", own)
 	}
 }
+
+// TestTheIncidentCardLinksTheExternalIncident is ADR 0052 §5's outbound mapping on
+// the card (git-bug 506ff21): an incident tool that echoed its own incident gets a
+// link in the context line beside oto's, labelled with the tool's id — and an id
+// with no link is still shown, because it is what a reader searches the tool for.
+// The card's state is not read off it: an Incident with an external link is still
+// active while a member Case is open.
+func TestTheIncidentCardLinksTheExternalIncident(t *testing.T) {
+	t.Parallel()
+	v := incidentView()
+	v.Incident.External = []domain.IncidentExternalView{
+		{Destination: "incident-tool", URL: "https://tool.example/incidents/42", ID: "INC-42"},
+		{Destination: "bridge", ID: "B-7"},
+	}
+	payload := string(renderView(t, v, domain.ModePostRoot).Payload)
+
+	for _, want := range []string{
+		":link: <https://tool.example/incidents/42|INC-42>",
+		":link: `B-7`",
+		"*Active*",
+	} {
+		if !strings.Contains(payload, want) {
+			t.Errorf("the Incident card does not carry %q:\n%s", want, payload)
+		}
+	}
+
+	// A tool that echoed nothing leaves the card byte-identical to its golden.
+	bare := renderView(t, incidentView(), domain.ModePostRoot)
+	if strings.Contains(string(bare.Payload), ":link:") {
+		t.Errorf("a card with no external incident grew a link:\n%s", bare.Payload)
+	}
+}

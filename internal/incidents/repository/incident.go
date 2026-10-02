@@ -312,7 +312,44 @@ func (r *IncidentRepository) Get(ctx context.Context, s db.TenantScope, number i
 	if err := rows.Err(); err != nil {
 		return domain.Detail{}, mapErr(err, "read an incident's members")
 	}
-	return domain.Detail{Incident: inc, Members: members}, nil
+	outbound, err := r.outbound(ctx, s, inc.ID)
+	if err != nil {
+		return domain.Detail{}, err
+	}
+	return domain.Detail{Incident: inc, Members: members, Outbound: outbound}, nil
+}
+
+// ⭐ THE RECEIPTS ARE READ HERE, NOT IN `notification`, which writes them: they hang
+// off the Incident and are shown wherever the Incident is — its page, and its card,
+// which the notification layer builds from this very Detail through
+// `IncidentReader`. One reader, so the page and the card cannot disagree about
+// which links an Incident has. The channel is INNER joined on the same org for the
+// name; a channel's hard delete cascades its receipts away (migration 00089).
+const outboundSQL = `
+SELECT o.channel_id, ch.name::text, COALESCE(o.external_url, ''), COALESCE(o.external_id, ''), o.recorded_at
+  FROM incident_outbound_mappings o
+  JOIN channels ch ON ch.id = o.channel_id AND ch.org_id = o.org_id
+ WHERE o.org_id = $1 AND o.incident_id = $2
+ ORDER BY o.recorded_at, o.channel_id`
+
+func (r *IncidentRepository) outbound(ctx context.Context, s db.TenantScope, incidentID uuid.UUID) ([]domain.Outbound, error) {
+	rows, err := r.db(ctx).Query(ctx, outboundSQL, s.OrgID(), incidentID)
+	if err != nil {
+		return nil, mapErr(err, "read an incident's external incidents")
+	}
+	defer rows.Close()
+	var out []domain.Outbound
+	for rows.Next() {
+		var o domain.Outbound
+		if err := rows.Scan(&o.ChannelID, &o.ChannelName, &o.ExternalURL, &o.ExternalID, &o.RecordedAt); err != nil {
+			return nil, mapErr(err, "read an incident's external incidents")
+		}
+		out = append(out, o)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapErr(err, "read an incident's external incidents")
+	}
+	return out, nil
 }
 
 // GetByID is Get addressed by id, for the readers that hold an id rather than a

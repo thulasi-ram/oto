@@ -416,6 +416,13 @@ func (r *incidentFacts) Incident(
 			MovedToNumber:     m.MovedToNumber,
 		})
 	}
+	for _, o := range d.Outbound {
+		out.Outbound = append(out.Outbound, notifdomain.IncidentOutbound{
+			ChannelName: o.ChannelName,
+			ExternalURL: o.ExternalURL,
+			ExternalID:  o.ExternalID,
+		})
+	}
 	return out, nil
 }
 

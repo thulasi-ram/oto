@@ -220,7 +220,42 @@ immediately, with no overlap.
 oto keeps the status code, the body's **size** and the round-trip time. It never stores, logs or
 displays the bytes of your response body: the webhook URL is operator-supplied and dialled from
 inside the operator's network, and handing a response back through oto's API would make every
-webhook a way to read an internal page.
+webhook a way to read an internal page. There is exactly one exception, below.
+
+### Echoing your incident back
+
+If your receiver opens (or finds) an incident in your tool for an **Incident fact**, it may say so
+in its response, and oto will link to it from the Incident's Slack card and its page in oto:
+
+```http
+HTTP/1.1 201 Created
+Content-Type: application/json
+
+{"external_url": "https://tool.example/incidents/42", "external_id": "INC-42"}
+```
+
+- Only a **2xx** response is read, only its **top-level** `external_url` and `external_id`, and only
+  on a delivery of one of the five Incident facts. Either key may be absent.
+- `external_url` is kept only if it is an absolute `https://` URL of at most 2048 characters (no
+  credentials in it, no spaces); `external_id` only if it is a JSON string of at most 255 printable
+  characters. A value that fails is treated as absent.
+- **Once per Incident per channel.** The first valid answer is kept; a retry of the same delivery,
+  or a later fact on the same Incident answered with a different value, changes nothing. Key your
+  receiver on `incident.id` and answer with the same incident every time.
+- Nothing else in the response is read, the values are never sent back to any receiver, and oto
+  never asks your tool about the incident again. It is a receipt — where the response is being
+  handled — not the incident's state.
+- A response without the keys, a non-JSON response, or a value that fails the checks is **not an
+  error**: the delivery is `sent`, exactly as it would have been.
+
+The link appears on the Incident's page at once. On the Slack card it appears the next time the
+card is updated — the next fact about the Incident or one of its Cases — because recording the
+receipt is not itself a fact oto posts about.
+
+PagerDuty's Events API and incident.io's HTTP alert source both answer with a dedup key and open the
+incident asynchronously, so they echo nothing; a small bridge you run in front of them
+([ADR 0055](../adr/0055-an-incident-tool-integration-is-data-or-a-bridge-never-code-in-oto.md) §3)
+can look the incident up and return it.
 
 ---
 

@@ -101,6 +101,8 @@ type (
 	IncidentAuthorView = chdomain.IncidentAuthorView
 	// IncidentMemberView is one spell of one Case inside an Incident.
 	IncidentMemberView = chdomain.IncidentMemberView
+	// IncidentExternalView is one external incident a destination echoed back.
+	IncidentExternalView = chdomain.IncidentExternalView
 	// InIncidentView names the Incident conversation a Case fact is posted into
 	// (ADR 0052 §6).
 	InIncidentView = chdomain.InIncidentView

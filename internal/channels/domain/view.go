@@ -208,6 +208,20 @@ type IncidentView struct {
 	// conversation: the "now part of Incident #N" reply posted into a member Case's
 	// own thread (ADR 0052 §6). It is that Case's id; "" everywhere else.
 	PointsFrom string
+	// External is every incident a destination's tool echoed back for this Incident
+	// (ADR 0052 §5's outbound mapping, git-bug 506ff21), oldest first — the link a
+	// reader follows to where the response is being handled. Empty when no tool
+	// echoed anything. A RECEIPT, NOT STATE: no renderer may read active or quiet,
+	// or anything else, off it.
+	External []IncidentExternalView
+}
+
+// IncidentExternalView is one external incident: which destination it came back
+// from, and the tool's own link and id. Either of URL and ID may be "".
+type IncidentExternalView struct {
+	Destination string
+	URL         string
+	ID          string
 }
 
 // InIncidentView names the Incident conversation a Case fact is posted into, and

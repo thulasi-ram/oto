@@ -58,9 +58,11 @@ const timestampHeader = "X-Oto-Timestamp"
 const signatureScheme = "v1"
 
 // maxResponseBytes bounds what oto reads back before giving up on draining the
-// body. The bytes are COUNTED AND DISCARDED, never kept — an unbounded read is a
-// denial-of-service against oto by its own configuration, and a kept one is
-// worse (see recordResponse).
+// body. The bytes are COUNTED, PARSED FOR AN ECHO ON A 2xx, AND DISCARDED — never
+// recorded: an unbounded read is a denial-of-service against oto by its own
+// configuration, and a recorded one is worse (see recordResponse). The one thing
+// that may survive the read is an incident tool's validated `external_url` /
+// `external_id` (see echo.go), and nothing else of it.
 const maxResponseBytes = 4096
 
 // maxRetryAfter caps what a receiver may ask oto to wait.
@@ -82,6 +84,8 @@ type Channel struct {
 	client *http.Client
 	guard  *netguard.Guard
 	clock  clock.Clock
+	// echo reads an incident tool's handle out of a 2xx response (echo.go).
+	echo responseEcho
 }
 
 // Capabilities reports CapRichLayout and nothing else (§H.10).
@@ -175,13 +179,16 @@ func (c *Channel) send(
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	// ⛔ THE BODY IS COUNTED AND DISCARDED. It is drained (bounded) so the
-	// connection can be reused, and then it is gone. See recordResponse for why
-	// not one byte of it may be kept.
-	bodyBytes, _ := io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponseBytes))
+	// ⛔ THE BODY IS NEVER RECORDED. It is read (bounded) so the connection can be
+	// reused and so a 2xx can be asked for an echo, and then it is gone. See
+	// recordResponse for why not one byte of it may reach `provider_response`.
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	bodyBytes := int64(len(body))
 	elapsed := c.clock.Now().Sub(started)
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// A refusal's body is not read for an echo: an incident the receiver
+		// refused to open has no handle worth keeping.
 		return domain.DeliverResult{}, classifyStatus(resp, bodyBytes)
 	}
 
@@ -194,6 +201,7 @@ func (c *Channel) send(
 		},
 		DeliveredAt: c.clock.Now().UTC(),
 		Raw:         recordResponse(resp.StatusCode, bodyBytes, elapsed),
+		External:    c.readEcho(body),
 	}, nil
 }
 

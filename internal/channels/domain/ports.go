@@ -3,7 +3,11 @@ package domain
 import (
 	"context"
 	"encoding/json"
+	"net/url"
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
@@ -313,6 +317,91 @@ type DeliverResult struct {
 	Ref         MessageRef
 	DeliveredAt time.Time
 	Raw         json.RawMessage
+	// External is the incident a receiver says it opened or updated for this
+	// delivery, echoed back in its 2xx response (ADR 0052 §5, git-bug 506ff21) —
+	// zero when it said nothing, which is the ordinary case. It is ALREADY
+	// VALIDATED (ValidExternalIncident) by the provider that read it; the
+	// dispatcher records it once per (Incident, channel) and reads nothing else of
+	// the response. Raw above still carries no receiver byte.
+	External ExternalIncident
+}
+
+// ExternalIncident is an incident tool's own handle on the incident a delivery
+// opened: its link, its id, or both. It is the receipt of a delivery — the way a
+// Slack `ts` is — never the external incident's state.
+type ExternalIncident struct {
+	URL string
+	ID  string
+}
+
+// IsZero reports that the receiver echoed nothing usable.
+func (e ExternalIncident) IsZero() bool { return e.URL == "" && e.ID == "" }
+
+// Bounds on an echoed handle, restated by incident_outbound_mappings' CHECKs.
+const (
+	// MaxExternalURLLength is incident_outbound_mappings_url_ck's length bound.
+	MaxExternalURLLength = 2048
+	// MaxExternalIDLength is incident_outbound_mappings_id_ck's length bound.
+	MaxExternalIDLength = 255
+)
+
+// ValidExternalIncident keeps what a receiver echoed only if it is safe to store
+// and to put in front of a human as a link, and drops each half that is not.
+//
+// ⛔ THESE ARE RECEIVER BYTES, SO NOTHING HERE IS A FAILURE. A receiver that
+// answers with a relative URL, an `http://` one, a `javascript:` one, a 10 kB id
+// or an id with a newline in it gets the delivery recorded `sent` exactly as
+// before, and the bad half is treated as absent — the delivery succeeded, and the
+// echo is a courtesy, not part of the contract. The rules:
+//
+//   - the URL is an ABSOLUTE `https` URL with a host, at most
+//     MaxExternalURLLength bytes, no userinfo and no control characters. `https`
+//     only, because this link is rendered on a Slack card and an oto page for
+//     people to click, and a receiver must not be able to put a `javascript:` or
+//     plaintext link in front of them;
+//   - the id is at most MaxExternalIDLength bytes of printable, valid UTF-8 with
+//     no surrounding space.
+//
+// It is the ONE validator for every source of an echo — the default top-level
+// keys today, and a payload mapping's response path (git-bug 2205620) — so a
+// mapping cannot widen what oto keeps.
+func ValidExternalIncident(rawURL, rawID string) ExternalIncident {
+	return ExternalIncident{URL: validExternalURL(rawURL), ID: validExternalID(rawID)}
+}
+
+func validExternalURL(raw string) string {
+	if raw == "" || len(raw) > MaxExternalURLLength || !printable(raw) || strings.ContainsAny(raw, " \t") {
+		return ""
+	}
+	// The literal, lowercase prefix as well as the parsed scheme: url.Parse folds
+	// `HTTPS://` to `https`, and incident_outbound_mappings_url_ck compares the
+	// stored bytes, so a value that passed here must pass there too.
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || !strings.HasPrefix(raw, "https://") ||
+		u.Host == "" || u.User != nil || u.Opaque != "" {
+		return ""
+	}
+	return raw
+}
+
+func validExternalID(raw string) string {
+	if raw == "" || len(raw) > MaxExternalIDLength || raw != strings.TrimSpace(raw) || !printable(raw) {
+		return ""
+	}
+	return raw
+}
+
+// printable reports valid UTF-8 with no control or otherwise unprintable rune.
+func printable(s string) bool {
+	if !utf8.ValidString(s) {
+		return false
+	}
+	for _, r := range s {
+		if !unicode.IsPrint(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // RenderedMessage is provider-native bytes plus the two strings every provider

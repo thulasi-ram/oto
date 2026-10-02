@@ -3578,6 +3578,31 @@ export interface components {
              *     order they joined.
              */
             members: components["schemas"]["IncidentMemberDTO"][];
+            /**
+             * @description Every external incident a destination's tool echoed back for this Incident — one per
+             *     channel, oldest first, `[]` when none did. Recorded from the tool's own 2xx response to
+             *     an Incident fact (`external_url` / `external_id`), once per channel, never overwritten
+             *     and never re-read from the tool.
+             */
+            outbound: components["schemas"]["IncidentOutboundDTO"][];
+        };
+        /**
+         * @description ADR 0052 §5's outbound mapping: the incident an incident tool opened for this Incident, as the
+         *     tool named it in its response. It is the receipt of a delivery, not the external incident's
+         *     state — oto never reads the tool back, and nothing about this Incident derives from it.
+         */
+        IncidentOutboundDTO: {
+            channel_id: components["schemas"]["Uuid"];
+            /** @description The destination whose receiver echoed it. */
+            channel_name: string;
+            /**
+             * Format: uri
+             * @description The tool's own link to its incident — always an absolute `https` URL, or `null` when the tool echoed only an id.
+             */
+            external_url: string | null;
+            /** @description The tool's own id for its incident, or `null` when it echoed only a link. */
+            external_id: string | null;
+            recorded_at: components["schemas"]["Timestamp"];
         };
         /** @description Draw an Incident. The caller is recorded as the human who drew it. */
         CreateIncidentRequest: {

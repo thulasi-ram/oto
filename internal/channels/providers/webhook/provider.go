@@ -229,6 +229,12 @@ func (p *Provider) Open(
 		client: p.httpClient(parsed, cred),
 		guard:  p.guard,
 		clock:  p.clock,
+		// ⭐ THE SEAM FOR A PAYLOAD MAPPING'S RESPONSE PATH (ADR 0055 §2, git-bug
+		// 2205620). A Connection with no mapping reads the top-level keys; one whose
+		// mapping names where in the response the handle is found will set its own
+		// responseEcho here, and the default keys are then not looked at at all.
+		// Either way the result passes the same domain.ValidExternalIncident.
+		echo: topLevelEcho{},
 	}, nil
 }
 

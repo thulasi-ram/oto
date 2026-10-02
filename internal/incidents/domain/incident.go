@@ -252,6 +252,25 @@ func (m Member) Current() bool { return m.RemovedAt.IsZero() }
 type Detail struct {
 	Incident
 	Members []Member
+	// Outbound is every external incident a destination's tool echoed back for this
+	// Incident — ADR 0052 §5's outbound mapping, recorded by the notification layer
+	// as the receipt of a delivery (migration 00089, git-bug 506ff21). One per
+	// channel, oldest first; empty when no receiver echoed anything.
+	//
+	// ⛔ IT IS NOT STATE AND NOTHING HERE DERIVES FROM IT. `State()` reads the member
+	// Cases and only them; an external incident's link says where the response is
+	// being handled, never whether it is over.
+	Outbound []Outbound
+}
+
+// Outbound is one receipt: a destination, and the incident its tool opened for
+// this Incident, as the tool named it.
+type Outbound struct {
+	ChannelID   uuid.UUID
+	ChannelName string
+	ExternalURL string
+	ExternalID  string
+	RecordedAt  time.Time
 }
 
 // ------------------------------------------------------------------- refusals
