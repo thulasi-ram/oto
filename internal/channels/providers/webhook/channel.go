@@ -215,8 +215,16 @@ func (c *Channel) send(
 	return domain.DeliverResult{
 		Ref: domain.MessageRef{
 			// A webhook returns no message identity, so there is nothing to
-			// thread from and nothing to amend. ProviderKey carries the delivery
-			// id purely so a Deliveries row has something to show a human.
+			// thread from and nothing to amend. The delivery id — the
+			// X-Oto-Delivery-Id the receiver was handed — stands in for one.
+			//
+			// ⛔ MessageID MUST BE SET, NOT ONLY ProviderKey. A sent delivery must
+			// carry a provider handle (deliveries_sent_ck), so MarkSent refuses an
+			// empty one: with ProviderKey alone every webhook delivery landed, then
+			// failed to record, stayed `sending` and was sent again, and an
+			// incident tool's echo — recorded in the same transaction — was never
+			// kept.
+			MessageID:   deliveryID,
 			ProviderKey: deliveryID,
 		},
 		DeliveredAt: c.clock.Now().UTC(),

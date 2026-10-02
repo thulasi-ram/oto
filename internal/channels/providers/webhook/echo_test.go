@@ -66,6 +66,27 @@ func TestAReceiverThatEchoesItsIncidentIsHeard(t *testing.T) {
 	}
 }
 
+// TestADeliveredWebhookCarriesAMessageID: a 2xx answers with the delivery id as the
+// message id, because the dispatcher refuses to record a `sent` delivery without one
+// (MarkSent, deliveries_sent_ck). With only ProviderKey set, every webhook delivery
+// was sent, failed to record, and was sent again — and its echo was never kept.
+func TestADeliveredWebhookCarriesAMessageID(t *testing.T) {
+	t.Parallel()
+	deliveryID := uuid.New()
+	ch := openSigned(t, clock.New(), rawConfig(t, echoReceiver(t, http.StatusOK, `{}`)),
+		domain.Credential{Kind: CredNone})
+	res, err := ch.Deliver(context.Background(), domain.DeliverRequest{
+		Message: testMessage(), Mode: domain.ModePostRoot, DeliveryID: deliveryID,
+	})
+	if err != nil {
+		t.Fatalf("Deliver: %v", err)
+	}
+	if res.Ref.MessageID != deliveryID.String() {
+		t.Fatalf("Ref.MessageID = %q, want the delivery id %q: MarkSent refuses an empty one",
+			res.Ref.MessageID, deliveryID)
+	}
+}
+
 // TestAReceiverThatEchoesNothingBehavesExactlyAsBefore: every way of saying nothing
 // usable is a `sent` delivery with no echo — never a failure.
 func TestAReceiverThatEchoesNothingBehavesExactlyAsBefore(t *testing.T) {
