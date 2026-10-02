@@ -1,6 +1,7 @@
 # 0053 — An Investigator reads, proposes, and never decides delivery
 
-**Status:** Proposed · 2026-10-02 — settled in a design session with the owner.
+**Status:** Accepted · 2026-10-02 — settled in a design session with the owner, who authorised
+building it the same day (git-bug `8f1f071` carries the model-provider ruling recorded in §3).
 **Builds on:** [0016](0016-mcp-enrichment-no-firehose.md) — cluster context through MCP, on demand,
 async only, recorded as a snapshot. An Investigator is that decision with a model in the loop.
 **Supersedes in part:** CONTEXT.md's module map, which lists *"anything AI"* as DEFERRED-POST-V1.
@@ -51,6 +52,19 @@ one adapter configured by base URL, model name and a sealed key reaches any prov
 that serves it. No provider's name appears in domain code. The port must report token usage — the
 §6 budgets are enforced from it — and a turn without usage fails the run rather than running
 unbudgeted. A native adapter for one vendor is a later widening behind the same port.
+
+**What the port is built from** (owner's rulings, 2026-10-02, on accepting this ADR):
+
+- **One adapter, on the official `github.com/openai/openai-go` SDK**, speaking Chat Completions with
+  tool calling and configured by exactly three things: a base URL, a model name and a sealed API
+  key (sealed like a channel credential). The SDK is a transport; its types stop at the adapter.
+- **A provider that does not speak that API is reached through the operator's gateway** (LiteLLM,
+  Bifrost, or any other that serves it), never by a second adapter in oto — until a tool-calling
+  fidelity gap is shown in a test, which is the only argument for a native one.
+- **No agent framework** (langchaingo, eino, genkit and the like). oto's own loop calls the port,
+  records every turn, Tool call and result as a Step, and enforces every §6 budget itself, because
+  a framework that owns the loop owns exactly the two things this ADR exists to make readable.
+- **ToolServers are reached with the official MCP client, `github.com/modelcontextprotocol/go-sdk`.**
 
 ### 4. Subjects and triggers
 

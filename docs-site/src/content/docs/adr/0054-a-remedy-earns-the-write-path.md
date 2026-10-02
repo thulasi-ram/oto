@@ -1,8 +1,8 @@
 ---
 title: 0054 — A Remedy earns the write path
 ---
-**Status:** Proposed · 2026-10-02 — settled in a design session with the owner. **Blocked on** the
-one `authz` grant in §4.
+**Status:** Accepted · 2026-10-02 — settled in a design session with the owner, who authorised
+building it the same day. **Depends on** the one `authz` grant in §4: no Remedy ships before it.
 **Earns:** SCOPE-BOUNDARY **H-3** for cluster writes — verdict **#23** (auto-remediation) — on the
 terms SS-4 set for any write path: an audit trail and a confirmation UX.
 **Supersedes in part:** [0013](/oto/adr/0013-alert-first-scope-boundary/) FR-1's refusal of facts about a
