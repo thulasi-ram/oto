@@ -30,8 +30,14 @@ This ADR is therefore mostly about the controls that make that breadth survivabl
 A change to a cluster that an Investigator proposes and oto executes only after a human approves it:
 `proposed → approved → executed | failed`, or `declined`, or `expired`, each by a named actor. Only an
 Investigator proposes (a human-proposed Remedy would make oto a shared kubectl console — a separate
-product, addable later as a widening). It may only propose a Remedy that a configured write Tool can
-execute. Responsibility rests with the approvers and with the ToolServer's permissions.
+product, addable later as a widening). Responsibility rests with the approvers and with the
+ToolServer's permissions.
+
+**A Remedy names the write Tool that would carry it out, or says that none can** (owner's ruling,
+2026-10-02). The Investigator proposes what it judges the right change whether or not a configured
+Tool can make it; a Remedy with no Tool says so plainly — *"no configured Tool can carry this
+out"* — and **cannot be approved**. It can still be declined, and it expires like any other. Its
+value is the Finding it stands on: a person can make the change by hand, or configure a Tool.
 
 ### 2. Approval happens in oto; everything goes outbound
 
@@ -60,11 +66,16 @@ it routes nothing to anyone and creates no queue (H-1).
 ### 5. Where it runs
 
 In the **ToolServer**, under the ServiceAccount and RBAC its operator gave it. oto holds no cluster
-credential, which keeps 0016's trust boundary. oto ships a **reference ToolServer** as an optional
-subchart: one short-lived pod per command, read-only root filesystem, no privileges, network limited
-to the API server, and it runs only commands carrying an approved Remedy id, checked back against
-oto. The write Tool is never in the Investigator's hands; execution is a separate step that sends the
-approved arguments exactly.
+credential, which keeps 0016's trust boundary. The write Tool is never in the Investigator's hands;
+execution is a separate step that sends the approved arguments exactly.
+
+**oto ships no ToolServer** (owner's ruling, 2026-10-02). Every Tool, read or write, is an MCP server
+the operator configures; a reference subchart was considered and refused. Where a command runs, and
+how it is sandboxed, is therefore the operator's ToolServer's business, and the trust boundary is
+that server's authentication of oto: a ToolServer that accepts oto's credential will run whatever
+oto sends it, so oto's approval and risk rules (§3, §4) are the only gate oto owns. The docs must
+say this, and must recommend that a write ToolServer run commands under RBAC narrower than the
+read one.
 
 ### 6. After it runs
 
@@ -78,5 +89,5 @@ it helped.
   change a production cluster, bounded by approval, the risk rules and the ToolServer's RBAC — in
   that order of failure.
 - The `authz` grant becomes a dependency of a feature, not a deferred module.
-- A self-hosted security review now has a write path to assess; the reference ToolServer is the
-  answer it should be shown first.
+- A self-hosted security review now has a write path to assess. oto's part of it is approval, risk
+  and audit; the sandbox is the operator's ToolServer, which oto neither ships nor inspects.
