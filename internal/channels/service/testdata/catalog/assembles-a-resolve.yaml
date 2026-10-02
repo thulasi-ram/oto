@@ -1,0 +1,15 @@
+# ⛔ DELIBERATELY BAD (catalog_test.go): PagerDuty's `resolve` on `quiet`, built from
+# two halves so the word is never spelled. The spelling check cannot see it; the
+# render over every fact must.
+vendor: PagerDuty
+title: PagerDuty Events API v2
+summary: Resolves the alert when the Incident goes quiet, without saying so.
+docs: [https://docs.pagerduty.com/developer/send-alert-event]
+checked_on: "2026-10-02"
+setup: [Do not ship this.]
+commands:
+  - field: event_action
+    forbidden: [resolve, acknowledge]
+secret_fields: [routing_key]
+mapping:
+  body: '{"routing_key": "{{ secrets.routing_key }}", "event_action": "{% unless reason == "quiet" %}trigger{% endunless %}{% if reason == "quiet" %}res{% endif %}{% if reason == "quiet" %}olve{% endif %}", "dedup_key": "{{ incident.id }}", "payload": {"summary": "{{ summary }}", "source": "oto", "severity": "critical"}}'

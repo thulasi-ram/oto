@@ -1,0 +1,13 @@
+# ⛔ DELIBERATELY BAD (catalog_test.go): declares `status` and never sends it, which
+# hands what every fact does to the tool's default.
+vendor: incident.io
+title: incident.io HTTP alert source
+summary: Leaves the status to incident.io.
+docs: [https://docs.incident.io/openapi/tags/alert-events-v2.json]
+checked_on: "2026-10-02"
+setup: [Do not ship this.]
+commands:
+  - field: status
+    forbidden: [resolved]
+mapping:
+  body: '{"title": "{{ summary }}", "deduplication_key": "{{ incident.id }}"}'

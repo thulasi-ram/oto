@@ -26,6 +26,12 @@
  * for every fact before it saves it, so its refusals arrive as per-fact 422
  * violations and are listed under the editor. Its secrets are write-only like
  * every other credential: only their names come back.
+ *
+ * ⭐ A MAPPING MAY BE IMPORTED FROM THE CATALOG (git-bug 2b5eecc), and importing is
+ * COPYING: the entry's document lands in the editor above, and Save stores it as
+ * this connection's own, through the same per-fact gate. Nothing links the
+ * connection back to the catalog afterwards, and the catalog carries no secret —
+ * the operator seals the ones it names here, as for any mapping.
  */
 import {
   For,
@@ -47,13 +53,19 @@ import {
   updateChannelConnection,
 } from "~/api/endpoints";
 import { qk } from "~/api/keys";
-import { channelConnectionsQuery, channelsQuery, channelTypesQuery } from "~/api/queries";
+import {
+  channelConnectionsQuery,
+  channelsQuery,
+  channelTypesQuery,
+  mappingCatalogQuery,
+} from "~/api/queries";
 import type {
   ChannelConnection,
   ChannelType,
   ChannelTypeDescriptor,
   NotificationReason,
   PayloadMapping,
+  PayloadMappingCatalogEntry,
 } from "~/api/types";
 import { REASON_LABEL } from "~/features/notifications/vocabulary";
 
@@ -397,6 +409,112 @@ const MappingTest: Component<{ readonly connection: ChannelConnection }> = (prop
 
 /* -------------------------------------------------------------------------- */
 
+/**
+ * The payload-mapping catalog (ADR 0055 §2): pick a tool, read what the mapping
+ * does and what it never sends, and copy it into the editor. Nothing is saved
+ * until the dialog is — the copy goes through the same gate as a mapping typed by
+ * hand, and it needs whatever secrets it names sealed beside it.
+ */
+const MappingCatalog: Component<{
+  readonly sealed: readonly string[];
+  readonly onImport: (entry: PayloadMappingCatalogEntry) => void;
+}> = (props) => {
+  const catalog = useQuery(() => mappingCatalogQuery());
+  const entries = (): readonly PayloadMappingCatalogEntry[] => catalog.data ?? [];
+  const [chosenId, setChosenId] = createSignal<string | null>(null);
+  const chosen = (): PayloadMappingCatalogEntry | undefined => {
+    const id = chosenId();
+    return id === null ? undefined : entries().find((e) => e.id === id);
+  };
+  const labelOf = (id: string): string => {
+    const e = entries().find((x) => x.id === id);
+    return e === undefined ? id : `${e.vendor} — ${e.title}`;
+  };
+  const missing = (): readonly string[] =>
+    (chosen()?.secrets ?? []).filter((n) => !props.sealed.includes(n));
+
+  return (
+    <Show when={entries().length > 0}>
+      <div class="flex flex-col gap-sm">
+        <div class="flex flex-wrap items-end gap-sm">
+          <Select<string>
+            class={FIELD}
+            options={entries().map((e) => e.id)}
+            value={chosenId()}
+            onChange={(next) => setChosenId(next)}
+            placeholder="Choose a tool"
+            itemComponent={(itemProps) => (
+              <SelectItem item={itemProps.item}>{labelOf(itemProps.item.rawValue)}</SelectItem>
+            )}
+          >
+            <SelectLabel>Import from the catalog</SelectLabel>
+            <SelectTrigger id="conn-mapping-catalog">
+              <SelectValue<string>>{(state) => labelOf(state.selectedOption())}</SelectValue>
+            </SelectTrigger>
+            <SelectHiddenSelect />
+            <SelectContent />
+          </Select>
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={chosen() === undefined}
+            onClick={() => {
+              const entry = chosen();
+              if (entry !== undefined) props.onImport(entry);
+            }}
+          >
+            Copy into the mapping
+          </Button>
+        </div>
+        <Show when={chosen()}>
+          {(entry) => (
+            <div class={cn(HELP, "flex flex-col gap-xs")}>
+              <p>{entry().summary}</p>
+              <For each={entry().commands}>
+                {(cmd) => (
+                  <p>
+                    Never sends <code>{cmd.field}</code> as{" "}
+                    {cmd.forbidden.map((v) => `"${v}"`).join(" or ")} — not even on{" "}
+                    <code>quiet</code>, which means the signals stopped, not that anything is
+                    fixed.
+                  </p>
+                )}
+              </For>
+              <ol class="list-decimal pl-md">
+                <For each={entry().setup}>{(step) => <li>{step}</li>}</For>
+              </ol>
+              <Show when={missing().length > 0}>
+                <p class="text-error-foreground">
+                  It reads {missing().map((n) => `secrets.${n}`).join(", ")}: add{" "}
+                  {missing().length === 1 ? "it" : "each"} under mapping secrets as{" "}
+                  <code>name=value</code> before saving, or the save is refused.
+                </p>
+              </Show>
+              <p>
+                Field names checked on {entry().checked_on} against{" "}
+                <For each={entry().docs}>
+                  {(url, i) => (
+                    <>
+                      {i() > 0 ? ", " : ""}
+                      <a class="underline" href={url} target="_blank" rel="noopener noreferrer">
+                        {new URL(url).hostname}
+                      </a>
+                    </>
+                  )}
+                </For>
+                . Copying replaces what is in the editor; nothing is saved until you save, and the
+                copy is this connection's own from then on.
+              </p>
+            </div>
+          )}
+        </Show>
+      </div>
+    </Show>
+  );
+};
+
+/* -------------------------------------------------------------------------- */
+
 const ConnectionDialog: Component<{
   readonly open: boolean;
   readonly connection: ChannelConnection | null;
@@ -719,6 +837,10 @@ const ConnectionDialog: Component<{
           <Show when={isWebhook()}>
             <fieldset class="flex flex-col gap-sm">
               <legend class={LEGEND}>Payload mapping</legend>
+              <MappingCatalog
+                sealed={sealedNames()}
+                onImport={(entry) => setMappingText(JSON.stringify(entry.mapping, null, 2))}
+              />
               <TextField
                 class={FIELD}
                 validationState={

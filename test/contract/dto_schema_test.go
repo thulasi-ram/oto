@@ -181,6 +181,10 @@ var bindings = []binding{
 	// `POST /channel-connections/{id}/mapping/test` — one chosen fact through a
 	// webhook connection's payload mapping (ADR 0055 §2).
 	{"channels", "TestConnectionMappingRequest", channelsapi.TestConnectionMappingRequest{}},
+	// `GET /payload-mapping-catalog` — the catalog Settings → Connections imports a
+	// mapping from by copying it (ADR 0055 §2, git-bug 2b5eecc).
+	{"channels", "PayloadMappingCatalogEntryDTO", channelsapi.PayloadMappingCatalogEntryDTO{}},
+	{"channels", "PayloadMappingCommandDTO", channelsapi.PayloadMappingCommandDTO{}},
 	// NotificationTemplates: one whole message an operator wrote, in Markdown-plus
 	// (`card`), one flat string (`text`) or literal Block Kit JSON (`raw`). There is
 	// no MatcherDTO here any more — a template carries no `when` clause, because

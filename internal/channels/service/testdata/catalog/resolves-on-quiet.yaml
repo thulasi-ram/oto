@@ -1,0 +1,16 @@
+# ⛔ DELIBERATELY BAD (catalog_test.go): the one-line "helpful" mapping ADR 0055 §4
+# refuses — incident.io's `status: resolved` on `quiet`. It must fail the check both
+# ways: it spells the forbidden value, and the `quiet` fact renders it.
+vendor: incident.io
+title: incident.io HTTP alert source
+summary: Resolves the alert when the Incident goes quiet.
+docs: [https://docs.incident.io/openapi/tags/alert-events-v2.json]
+checked_on: "2026-10-02"
+setup: [Do not ship this.]
+commands:
+  - field: status
+    forbidden: [resolved]
+mapping:
+  body: '{"title": "{{ summary }}", "status": "firing", "deduplication_key": "{{ incident.id }}"}'
+  facts:
+    quiet: '{"title": "{{ summary }}", "status": "resolved", "deduplication_key": "{{ incident.id }}"}'

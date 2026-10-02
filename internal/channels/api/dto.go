@@ -238,6 +238,34 @@ func (r UpdateChannelConnectionRequest) IsEmpty() bool {
 		len(r.PayloadMapping) == 0 && r.MappingSecrets == nil
 }
 
+// PayloadMappingCatalogEntryDTO is one file of the payload-mapping catalog (ADR
+// 0055 §2): a tool's mapping, the docs its field names were checked against, and
+// what an importer must do. Importing COPIES `mapping` into a webhook connection's
+// own `payload_mapping`; nothing links the two afterwards.
+type PayloadMappingCatalogEntryDTO struct {
+	ID        string   `json:"id"`
+	Vendor    string   `json:"vendor"`
+	Title     string   `json:"title"`
+	Summary   string   `json:"summary"`
+	Docs      []string `json:"docs"`
+	CheckedOn string   `json:"checked_on"`
+	Setup     []string `json:"setup"`
+	// Commands are the tool's command fields and the values the catalog never sends
+	// in them (ADR 0055 §4) — what the import tells the operator they are NOT getting.
+	Commands []PayloadMappingCommandDTO `json:"commands"`
+	// Secrets are the mapping secrets the connection must seal before the copy can
+	// be saved, by name. Never a value: a catalog file holds none.
+	Secrets []string        `json:"secrets"`
+	Mapping json.RawMessage `json:"mapping"`
+}
+
+// PayloadMappingCommandDTO is one command field of a tool's request body and the
+// values of it that would turn a fact into a command.
+type PayloadMappingCommandDTO struct {
+	Field     string   `json:"field"`
+	Forbidden []string `json:"forbidden"`
+}
+
 // TestConnectionMappingRequest asks for one fact to be sent through a mapped
 // connection, by way of one of its channels — the connection holds the mapping and
 // the channel holds the URL.

@@ -1,0 +1,11 @@
+# ⛔ DELIBERATELY BAD (catalog_test.go): a harmless mapping that names no command
+# field. It is refused rather than passed, so a contributor has to name the field
+# and a reviewer has to agree it is the right one.
+vendor: incident.io
+title: incident.io HTTP alert source
+summary: Never says which field is the command.
+docs: [https://docs.incident.io/openapi/tags/alert-events-v2.json]
+checked_on: "2026-10-02"
+setup: [Do not ship this.]
+mapping:
+  body: '{"title": "{{ summary }}", "status": "firing", "deduplication_key": "{{ incident.id }}"}'

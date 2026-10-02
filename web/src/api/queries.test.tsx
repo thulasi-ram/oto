@@ -46,6 +46,7 @@ import {
   channelTypesQuery,
   clustersQuery,
   labelNamesQuery,
+  mappingCatalogQuery,
   recentAlertsQuery,
   ruleSnapshotsQuery,
   type Freshness,
@@ -387,6 +388,7 @@ describe("every key names one source of freshness", () => {
     const declared: Readonly<Record<string, number | undefined>> = {
       "labels.names": labelNamesQuery().staleTime,
       "settings.channelTypes": channelTypesQuery().staleTime,
+      "settings.mappingCatalog": mappingCatalogQuery().staleTime,
       // Read off the query the drift panel actually mounts. It used to be the
       // literal `DEFAULT_STALE_MS`, which compared the table to itself: the
       // panel could have declared any number, or none, and this still passed.

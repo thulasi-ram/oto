@@ -1,0 +1,82 @@
+# PagerDuty — Events API v2.
+#
+# Field names checked on 2026-10-02 against PagerDuty's public developer docs:
+#
+#   https://docs.pagerduty.com/developer/send-alert-event
+#     POST https://events.pagerduty.com/v2/enqueue
+#     body: `routing_key` (required, the integration key), `event_action` (required,
+#           `trigger` | `acknowledge` | `resolve`), `dedup_key` (max 255 characters),
+#           `payload.summary` (required, max 1024 characters), `payload.source`
+#           (required), `payload.severity` (required, `critical` | `error` |
+#           `warning` | `info`), `payload.timestamp`, `payload.class`,
+#           `payload.custom_details` (object), `links` (array of objects)
+#
+#   https://docs.pagerduty.com/developer/api/reference/events-v2/send-event/create-v2-event
+#     202: `status`, `message`, `dedup_key`; no Authorization header — the
+#     `routing_key` in the body is the credential
+#
+# ⛔ `event_action` IS ALWAYS `trigger`, ON EVERY FACT, `quiet` INCLUDED. `quiet` says
+# every member Case has closed; it does not say anything is fixed (ADR 0055 §4, and
+# ADR 0052 §5 before it: oto never sends PagerDuty's other two actions). The catalog
+# check (`commands` below) fails this file if any fact renders either of them.
+#
+# ⛔ THE ROUTING KEY IS A MAPPING SECRET, NEVER TEXT IN THIS FILE. It travels in the
+# body, so it is sealed on the connection as `routing_key` and written here as
+# `{{ secrets.routing_key }}`; oto fills it in as the request leaves, after the
+# delivery record has stored the body with the reference in it. The catalog check
+# (`secret_fields` below) fails this file if `routing_key` renders anything else.
+#
+# Severity is never a value oto invents (ADR 0052 §5): it is the `severity` label of
+# the Incident's FIRST member — the Case the Incident was drawn over, even if it has
+# since left — or of the conversation (`group.severity`) on a Case fact, used as is
+# when it is one of PagerDuty's four values. ⚠️ WHEN THERE IS NONE, OR IT IS ANY
+# OTHER VALUE (`page`, `P1`, `high`), THIS MAPPING SENDS `critical`: an Incident is
+# drawn because somebody decided a response was needed, and an unlabelled one paging
+# too loudly is the safer error. Edit it after importing if you disagree.
+#
+# Nothing to echo: the 202 names only the `dedup_key` oto sent, so there is no
+# `response` path and the Incident page shows no external link for this tool.
+
+vendor: PagerDuty
+title: PagerDuty Events API v2
+summary: >-
+  Triggers one PagerDuty alert per oto Incident, keyed on the Incident's id, and never
+  sends PagerDuty's other event actions: later facts about the same Incident are further
+  triggers on the same dedup key.
+docs:
+  - https://docs.pagerduty.com/developer/send-alert-event
+  - https://docs.pagerduty.com/developer/api/reference/events-v2/send-event/create-v2-event
+checked_on: "2026-10-02"
+setup:
+  - In PagerDuty, add an Events API v2 integration to a service and copy its integration key.
+  - Give this webhook connection a mapping secret named `routing_key` holding that key. It needs no credential and no signing secret.
+  - Point a channel of the connection at `https://events.pagerduty.com/v2/enqueue`.
+  - Route Incident facts to that channel. Case facts and digests render too, because a mapping cannot decline a fact; each becomes its own alert, keyed on its conversation.
+commands:
+  - field: event_action
+    forbidden: [resolve, acknowledge]
+secret_fields: [routing_key]
+mapping:
+  body: |-
+    {
+      "routing_key": "{{ secrets.routing_key }}",
+      "event_action": "trigger",
+      "dedup_key": "{% if incident %}{{ incident.id }}{% endif %}{% unless incident %}{% if group %}{{ group.id }}{% endif %}{% unless group %}oto-{{ reason }}-{{ delivered_at }}{% endunless %}{% endunless %}",
+      "client": "oto",
+      {% if incident.link %}"links": [{"href": "{{ incident.link }}", "text": "oto Incident #{{ incident.number }}"}],
+      {% endif %}"payload": {
+        "summary": "{{ summary }}",
+        "source": "oto",
+        "severity": "{% if incident %}{% if incident.members.first.labels.severity == "critical" or incident.members.first.labels.severity == "error" or incident.members.first.labels.severity == "warning" or incident.members.first.labels.severity == "info" %}{{ incident.members.first.labels.severity }}{% endif %}{% unless incident.members.first.labels.severity == "critical" or incident.members.first.labels.severity == "error" or incident.members.first.labels.severity == "warning" or incident.members.first.labels.severity == "info" %}critical{% endunless %}{% endif %}{% unless incident %}{% if group.severity == "critical" or group.severity == "error" or group.severity == "warning" or group.severity == "info" %}{{ group.severity }}{% endif %}{% unless group.severity == "critical" or group.severity == "error" or group.severity == "warning" or group.severity == "info" %}critical{% endunless %}{% endunless %}",
+        "timestamp": "{{ delivered_at }}",
+        "class": "{{ reason }}",
+        "custom_details": {
+          "oto_reason": "{{ reason }}",
+          "oto_org": "{{ org.slug }}"{% if incident %},
+          "oto_incident_id": "{{ incident.id }}",
+          "oto_incident_number": "{{ incident.number }}",
+          "oto_incident_state": "{{ incident.state }}",
+          "oto_incident_members": [{% for m in incident.members %}{% unless forloop.first %}, {% endunless %}{"case_number": "{{ m.case_number }}", "alert_name": "{{ m.alert_name }}", "case_state": "{{ m.case_state }}", "severity": "{{ m.labels.severity }}"{% if m.removed_at %}, "removed_at": "{{ m.removed_at }}"{% endif %}}{% endfor %}]{% endif %}
+        }
+      }
+    }

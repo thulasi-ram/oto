@@ -1,0 +1,14 @@
+# ⛔ DELIBERATELY BAD (catalog_test.go): PagerDuty's routing key written into the
+# mapping. A mapping never holds a secret (ADR 0055 §2). The value is not a real key.
+vendor: PagerDuty
+title: PagerDuty Events API v2
+summary: Carries its key in the file.
+docs: [https://docs.pagerduty.com/developer/send-alert-event]
+checked_on: "2026-10-02"
+setup: [Do not ship this.]
+commands:
+  - field: event_action
+    forbidden: [resolve, acknowledge]
+secret_fields: [routing_key]
+mapping:
+  body: '{"routing_key": "not-a-real-key", "event_action": "trigger", "dedup_key": "{{ incident.id }}", "payload": {"summary": "{{ summary }}", "source": "oto", "severity": "critical"}}'

@@ -282,6 +282,11 @@ export type ResolveConversationRequest = S["ResolveConversationRequest"];
 export type PayloadMapping = S["PayloadMapping"];
 /** One fact sent through a mapped connection by way of one of its channels. */
 export type TestConnectionMappingRequest = S["TestConnectionMappingRequest"];
+/**
+ * One entry of the payload-mapping catalog (ADR 0055 §2). Importing it COPIES its
+ * `mapping` into a webhook connection's own mapping; it carries no secret value.
+ */
+export type PayloadMappingCatalogEntry = S["PayloadMappingCatalogEntryDTO"];
 export type CreatePolicyRequest = S["CreatePolicyRequest"];
 export type UpdatePolicyRequest = S["UpdatePolicyRequest"];
 export type PolicyPreviewRequest = S["PolicyPreviewRequest"];
