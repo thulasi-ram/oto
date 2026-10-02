@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"unicode"
 
 	"github.com/osteele/liquid"
 
@@ -209,8 +210,11 @@ func mappingEngineOf() *liquid.Engine {
 		e := liquid.NewBasicEngine()
 		registerFilters(e)
 		registerTags(e)
-		e.RegisterFilter("upper", func(v any) any { return onJSONText(str(v), upperText) })
-		e.RegisterFilter("lower", func(v any) any { return onJSONText(str(v), lowerText) })
+		// ⛔ strings.ToUpper, NOT upperText: onJSONText hands over the UNESCAPED text,
+		// and upperText steps around escapes that are no longer there — the `\` of a
+		// value's own backslash would carry the rune after it through unmapped.
+		e.RegisterFilter("upper", func(v any) any { return onJSONText(str(v), strings.ToUpper) })
+		e.RegisterFilter("lower", func(v any) any { return onJSONText(str(v), strings.ToLower) })
 		e.RegisterFilter("capitalise", func(v any) any { return onJSONText(str(v), capitaliseText) })
 		e.RegisterFilter("truncate_runes", func(v any, n int) any {
 			return onJSONText(str(v), func(s string) string { return truncateRunes(s, n) })
@@ -363,7 +367,12 @@ func renderMapping(t *liquid.Template, env map[string]any) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("the mapping did not render: %s", liquidMessage(err))
 	}
-	return strings.TrimSpace(stripMarks(string(raw))), nil
+	// ⛔ NOT strings.TrimSpace: U+2028 and U+2029 are Unicode spaces, and they are the
+	// secret sentinels. A header that is `{{ secrets.key }}` alone would lose both and
+	// send the secret's NAME, with nothing left for FillSecrets or checkSentinels to see.
+	return strings.TrimFunc(stripMarks(string(raw)), func(r rune) bool {
+		return r != secretOpen && r != secretShut && unicode.IsSpace(r)
+	}), nil
 }
 
 func stripMarks(s string) string {

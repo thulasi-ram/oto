@@ -71,7 +71,10 @@ import (
 // coverage test above is what noticed. One file is not a reason to leave a tree
 // unscanned — `api/` and `db/` are barely larger, and the point of the gate is
 // that nobody has to remember.
-var eventTypeTrees = []string{"internal", "cmd", "tools", "api", "db", "web"}
+//
+// `mappings/` joined for web/'s reason: the payload-mapping catalog (ADR 0055 §2)
+// is a folder of YAML whose one Go file embeds it, and it ships in the binary.
+var eventTypeTrees = []string{"internal", "cmd", "tools", "api", "db", "web", "mappings"}
 
 // eventTypeExempt names the packages allowed to hold an `alert_events.type`
 // literal, and returns "" for everything else.
