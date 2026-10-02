@@ -1072,8 +1072,49 @@ func (s *DispatchService) open(
 		}
 		cred = TargetCredential{Kind: sealed.Kind, Values: values}
 	}
+	if c.SigningCredentialID != nil {
+		signing, err := s.signingSecret(ctx, scope, *c.SigningCredentialID)
+		if err != nil {
+			return nil, err
+		}
+		cred.Signing = signing
+	}
 
 	return s.registry.Open(ctx, ProviderType(c.Type), cfg, cred)
+}
+
+// signingSecret unseals a connection's outbound signing secret and — while a
+// rotation's overlap lasts — the one it replaced (migration 00088, ADR 0055 §1).
+//
+// ⭐ A PREDECESSOR PAST ITS OVERLAP IS NEVER UNSEALED. Whether it still signs is
+// decided twice: here, so the plaintext of a retired secret does not exist even
+// briefly, and again by the provider at the send instant (`SigningSecret.Secrets`),
+// because a slow retry can cross the boundary between this read and the POST.
+func (s *DispatchService) signingSecret(
+	ctx context.Context, scope db.TenantScope, id uuid.UUID,
+) (SigningSecret, error) {
+	sealed, err := s.channels.Credential(ctx, scope, id)
+	if err != nil {
+		return SigningSecret{}, err
+	}
+	if s.unsealer == nil {
+		return SigningSecret{}, errs.New(errs.KindInternal, "no_credential_unsealer",
+			"this destination has a sealed signing secret and no unsealer is configured")
+	}
+	values, err := s.unsealer.Unseal(ctx, sealed.Kind, sealed.Sealed, sealed.KeyVersion)
+	if err != nil {
+		return SigningSecret{}, err
+	}
+	out := SigningSecret{Current: SigningValue(values)}
+	if sealed.PreviousSealed != nil && sealed.PreviousKeyVersion != nil && sealed.PreviousUntil != nil &&
+		s.clk.Now().Before(*sealed.PreviousUntil) {
+		prev, err := s.unsealer.Unseal(ctx, sealed.Kind, sealed.PreviousSealed, *sealed.PreviousKeyVersion)
+		if err != nil {
+			return SigningSecret{}, err
+		}
+		out.Previous, out.PreviousUntil = SigningValue(prev), sealed.PreviousUntil.UTC()
+	}
+	return out, nil
 }
 
 // classOf maps a provider failure onto oto's retry taxonomy.

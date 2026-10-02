@@ -34,22 +34,31 @@ type connectionRow struct {
 	// Joined from channel_credentials. Never the sealed blob.
 	credKind      *string
 	credRotatedAt *time.Time
+
+	// The signing slot (00088), joined the same way and just as blind: when it was
+	// last rotated and when its predecessor stops signing, never either secret.
+	signingID            *uuid.UUID
+	signingRotatedAt     *time.Time
+	signingPreviousUntil *time.Time
 }
 
 const connectionColumns = `
 	cx.id, cx.org_id, cx.type, cx.name::text, cx.config, cx.credential_id,
 	cx.created_at, cx.updated_at, cx.deleted_at,
-	cc.kind, cc.rotated_at`
+	cc.kind, cc.rotated_at,
+	cx.signing_credential_id, cs.rotated_at, cs.previous_until`
 
 const connectionFrom = `
   FROM channel_connections cx
-  LEFT JOIN channel_credentials cc ON cc.id = cx.credential_id AND cc.org_id = cx.org_id`
+  LEFT JOIN channel_credentials cc ON cc.id = cx.credential_id AND cc.org_id = cx.org_id
+  LEFT JOIN channel_credentials cs ON cs.id = cx.signing_credential_id AND cs.org_id = cx.org_id`
 
 func (r *connectionRow) scanDest() []any {
 	return []any{
 		&r.id, &r.orgID, &r.kind, &r.name, &r.config, &r.credID,
 		&r.createdAt, &r.updatedAt, &r.deletedAt,
 		&r.credKind, &r.credRotatedAt,
+		&r.signingID, &r.signingRotatedAt, &r.signingPreviousUntil,
 	}
 }
 
@@ -72,9 +81,14 @@ func (r *connectionRow) toDomain() (domain.Connection, error) {
 		CredentialID:        r.credID,
 		CredentialKind:      strOrEmpty(r.credKind),
 		CredentialRotatedAt: r.credRotatedAt,
-		CreatedAt:           r.createdAt,
-		UpdatedAt:           r.updatedAt,
-		DeletedAt:           r.deletedAt,
+
+		SigningCredentialID:  r.signingID,
+		SigningRotatedAt:     r.signingRotatedAt,
+		SigningPreviousUntil: r.signingPreviousUntil,
+
+		CreatedAt: r.createdAt,
+		UpdatedAt: r.updatedAt,
+		DeletedAt: r.deletedAt,
 	}, nil
 }
 
@@ -176,8 +190,8 @@ func (r *ConnectionRepository) List(
 }
 
 const insertConnectionSQL = `
-INSERT INTO channel_connections (id, org_id, type, name, config, credential_id, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+INSERT INTO channel_connections (id, org_id, type, name, config, credential_id, signing_credential_id, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $8, $7, $7)
 RETURNING id`
 
 // Create inserts a connection and returns it as stored.
@@ -213,6 +227,7 @@ func (r *ConnectionRepository) Create(
 	var stored uuid.UUID
 	err := r.db(ctx).QueryRow(ctx, insertConnectionSQL,
 		newID, s.OrgID(), string(in.Type), in.Name, []byte(cfg), in.CredentialID, now,
+		in.SigningCredentialID,
 	).Scan(&stored)
 	if err != nil {
 		return domain.Connection{}, mapErr(err, "connection_not_found", "create a connection")
@@ -225,6 +240,7 @@ UPDATE channel_connections SET
     name          = COALESCE($3, name),
     config        = COALESCE($4, config),
     credential_id = CASE WHEN $5 THEN $6 ELSE credential_id END,
+    signing_credential_id = CASE WHEN $8 THEN $9 ELSE signing_credential_id END,
     updated_at    = GREATEST(updated_at, $7)
  WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL
 RETURNING id`
@@ -256,10 +272,18 @@ func (r *ConnectionRepository) Update(
 	if p.CredentialID != nil {
 		setCred, credVal = true, *p.CredentialID
 	}
+	var (
+		setSigning bool
+		signingVal *uuid.UUID
+	)
+	if p.SigningCredentialID != nil {
+		setSigning, signingVal = true, *p.SigningCredentialID
+	}
 
 	var stored uuid.UUID
 	err := r.db(ctx).QueryRow(ctx, updateConnectionSQL,
 		s.OrgID(), connectionID, p.Name, cfg, setCred, credVal, r.clock.Now().UTC(),
+		setSigning, signingVal,
 	).Scan(&stored)
 	if err != nil {
 		if isNoRows(err) {

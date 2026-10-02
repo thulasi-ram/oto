@@ -41,6 +41,12 @@ import {
 import { qk } from "~/api/keys";
 import { channelConnectionsQuery, channelTypesQuery } from "~/api/queries";
 import type { ChannelConnection, ChannelType, ChannelTypeDescriptor } from "~/api/types";
+
+/** A credential kind, as the descriptor lists it. */
+type CredentialKind = ChannelTypeDescriptor["connection_credential_kinds"][number];
+
+/** The one kind the signing slot holds (migration 00088). */
+const SIGNING_KIND = "webhook_signing_secret" as const;
 import { RelativeTime } from "~/components/Time";
 import { Button } from "~/components/ui/Button";
 import {
@@ -161,6 +167,13 @@ const ConnectionRow: Component<{
   const client = useQueryClient();
   const c = (): ChannelConnection => props.connection;
 
+  // Only a FUTURE overlap end is worth a line: once it has passed, the previous
+  // secret no longer signs and saying when it stopped tells nobody anything.
+  const overlapUntil = (): string | null => {
+    const until = c().signing_overlap_until;
+    return until !== null && until !== undefined && Date.parse(until) > Date.now() ? until : null;
+  };
+
   const remove = useMutation(() => ({
     mutationFn: () => deleteChannelConnection(c().id),
     onSuccess: () => void client.invalidateQueries({ queryKey: qk.settings.channelConnections() }),
@@ -201,6 +214,26 @@ const ConnectionRow: Component<{
             </span>
           )}
         </Show>
+        <Show when={c().signing_credential_kind}>
+          <span>signs requests (X-Oto-Signature)</span>
+        </Show>
+        <Show when={c().signing_credential_rotated_at}>
+          {(at) => (
+            <span>
+              signing secret rotated <RelativeTime value={at()} label="Signing secret rotated" /> ago
+            </span>
+          )}
+        </Show>
+        {/* The overlap is the one fact about rotation whoever runs the receiver has to act on:
+            until it ends, their old copy of the secret still verifies. */}
+        <Show when={overlapUntil()}>
+          {(until) => (
+            <span>
+              previous signing secret still signs for{" "}
+              <RelativeTime value={until()} label="Previous signing secret retires" />
+            </span>
+          )}
+        </Show>
       </div>
 
       <Show when={remove.error !== null}>
@@ -225,6 +258,9 @@ const ConnectionDialog: Component<{
   const [name, setName] = createSignal("");
   const [config, setConfig] = createSignal<Record<string, JsonValue>>({});
   const [secret, setSecret] = createSignal("");
+  const [username, setUsername] = createSignal("");
+  const [authKind, setAuthKind] = createSignal<CredentialKind | null>(null);
+  const [signingSecret, setSigningSecret] = createSignal("");
   const [showErrors, setShowErrors] = createSignal(false);
   const [dirty, setDirty] = createSignal(false);
 
@@ -233,6 +269,30 @@ const ConnectionDialog: Component<{
   );
 
   const fields = createMemo(() => readFields(descriptor()?.connection_config_schema));
+
+  // ⭐ TWO SLOTS, NOT ONE (migration 00088). The kinds a connection accepts are split
+  // by WHERE they go: `webhook_signing_secret` is the signing slot, every other
+  // non-`none` kind authenticates. This used to send `connection_credential_kinds[0]`
+  // for every connection — which is `none` for a webhook — so no webhook credential
+  // or signing secret could be saved from this form at all.
+  const authKinds = createMemo<readonly CredentialKind[]>(() =>
+    (descriptor()?.connection_credential_kinds ?? []).filter(
+      (k) => k !== "none" && k !== SIGNING_KIND,
+    ),
+  );
+  const signs = createMemo(() =>
+    (descriptor()?.connection_credential_kinds ?? []).includes(SIGNING_KIND),
+  );
+  const chosenAuthKind = (): CredentialKind | undefined => authKind() ?? authKinds()[0];
+
+  // A basic credential is two values; every other kind this form offers is one.
+  const credential = (): { kind: CredentialKind; values: Record<string, string> } | undefined => {
+    const kind = chosenAuthKind();
+    if (kind === undefined || secret().trim() === "") return undefined;
+    return kind === "basic"
+      ? { kind, values: { username: username().trim(), password: secret() } }
+      : { kind, values: { token: secret().trim() } };
+  };
 
   // Seed once per *opening*, the same reasoning ChannelDialog used: the dialog
   // element stays mounted, so this has to be an effect keyed on `open`.
@@ -247,6 +307,9 @@ const ConnectionDialog: Component<{
       setConfig(initialConfig(fields()));
     }
     setSecret("");
+    setUsername("");
+    setAuthKind(null);
+    setSigningSecret("");
     setShowErrors(false);
   };
 
@@ -263,14 +326,16 @@ const ConnectionDialog: Component<{
 
   const mutation = useMutation(() => ({
     mutationFn: () => {
+      const cred = credential();
       const body = {
         name: name().trim(),
         config: cleanConfig(fields(), config()),
-        ...(secret().trim() !== "" && descriptor() !== undefined
+        ...(cred !== undefined ? { credential: cred } : {}),
+        ...(signs() && signingSecret().trim() !== ""
           ? {
-              credential: {
-                kind: descriptor()?.connection_credential_kinds[0] ?? ("none" as const),
-                values: { token: secret().trim() },
+              signing_credential: {
+                kind: SIGNING_KIND,
+                values: { secret: signingSecret().trim() },
               },
             }
           : {}),
@@ -394,7 +459,35 @@ const ConnectionDialog: Component<{
             </fieldset>
           </Show>
 
-          <Show when={(descriptor()?.connection_credential_kinds ?? []).some((k) => k !== "none")}>
+          <Show when={authKinds().length > 1}>
+            <Select<CredentialKind>
+              class={FIELD}
+              options={[...authKinds()]}
+              value={chosenAuthKind() ?? null}
+              onChange={(next) => {
+                if (next !== null) setAuthKind(next);
+              }}
+              itemComponent={(itemProps) => (
+                <SelectItem item={itemProps.item}>{itemProps.item.rawValue}</SelectItem>
+              )}
+            >
+              <SelectLabel>Authentication</SelectLabel>
+              <SelectTrigger id="conn-auth-kind">
+                <SelectValue<CredentialKind>>{(state) => state.selectedOption()}</SelectValue>
+              </SelectTrigger>
+              <SelectHiddenSelect />
+              <SelectContent />
+            </Select>
+          </Show>
+
+          <Show when={chosenAuthKind() === "basic"}>
+            <TextField class={FIELD} value={username()} onChange={setUsername}>
+              <TextFieldLabel>Username</TextFieldLabel>
+              <TextFieldInput id="conn-username" autocomplete="off" />
+            </TextField>
+          </Show>
+
+          <Show when={authKinds().length > 0}>
             <TextField
               class={FIELD}
               value={secret()}
@@ -408,10 +501,35 @@ const ConnectionDialog: Component<{
               <TextFieldDescription class={HELP}>
                 {editing()
                   ? "Leave blank to keep the current one. oto can never show you the existing value — only a hash is kept."
-                  : `This provider accepts: ${(descriptor()?.connection_credential_kinds ?? []).join(", ")}. It is sealed before it touches disk and no endpoint ever returns it.`}
+                  : `This provider accepts: ${authKinds().join(", ")}. It is sealed before it touches disk and no endpoint ever returns it.`}
               </TextFieldDescription>
               <TextFieldErrorMessage role="alert">
-                {violations().get("credential.values.token")}
+                {violations().get("credential.values.token") ?? violations().get("credential.kind")}
+              </TextFieldErrorMessage>
+            </TextField>
+          </Show>
+
+          <Show when={signs()}>
+            <TextField
+              class={FIELD}
+              value={signingSecret()}
+              validationState={violations().get("signing_credential") ? "invalid" : "valid"}
+              onChange={setSigningSecret}
+            >
+              <TextFieldLabel>
+                {editing() && props.connection?.signing_credential_kind
+                  ? "Rotate signing secret (optional)"
+                  : "Signing secret (optional)"}
+              </TextFieldLabel>
+              <TextFieldInput id="conn-signing-secret" type="password" autocomplete="off" />
+              <TextFieldDescription class={HELP}>
+                {editing() && props.connection?.signing_credential_kind
+                  ? "Leave blank to keep the current one. A new secret signs at once, and the current one keeps signing beside it for 24 hours, so receivers can switch without rejecting a delivery."
+                  : "oto signs every request with it (X-Oto-Signature), beside any credential above, so the receiver can verify the request came from oto."}
+              </TextFieldDescription>
+              <TextFieldErrorMessage role="alert">
+                {violations().get("signing_credential") ??
+                  violations().get("signing_credential.kind")}
               </TextFieldErrorMessage>
             </TextField>
           </Show>

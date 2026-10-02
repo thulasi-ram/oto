@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -94,6 +95,10 @@ func (rt *Router) createConnection(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
+	if err := checkCredentialSlots(kind, dto.Credential, dto.SigningCredential); err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
 
 	credentialID, err := rt.sealCredential(r.Context(), scope, dto.Credential)
 	if err != nil {
@@ -113,7 +118,13 @@ func (rt *Router) createConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn, err := rt.connections.Create(r.Context(), scope, dto.toNewConnection(credentialID))
+	signingID, err := rt.sealCredential(r.Context(), scope, dto.SigningCredential)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+
+	conn, err := rt.connections.Create(r.Context(), scope, dto.toNewConnection(credentialID, signingID))
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
@@ -190,6 +201,10 @@ func (rt *Router) updateConnection(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if err := checkCredentialSlots(existing.Type, dto.Credential, dto.SigningCredential); err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
 
 	// A supplied credential ROTATES the existing secret in place, so the
 	// connection — and every channel referencing it — never spends a moment
@@ -213,7 +228,22 @@ func (rt *Router) updateConnection(w http.ResponseWriter, r *http.Request) {
 		credential = &newID
 	}
 
-	conn, err := rt.connections.Update(r.Context(), scope, id, dto.toPatch(credential))
+	// ⭐ A SUPPLIED SIGNING SECRET ROTATES WITH AN OVERLAP. The re-seal is the same
+	// in-place UPDATE the credential above gets, and that UPDATE is what keeps the
+	// outgoing secret signing beside the new one for domain.SigningSecretOverlap
+	// (CredentialRepository.Rotate) — so a receiver that has not been told the new
+	// secret yet keeps verifying, rather than rejecting the next delivery.
+	var signing **uuid.UUID
+	if dto.SigningCredential != nil {
+		newID, cerr := rt.rotateCredential(r.Context(), scope, existing.SigningCredentialID, dto.SigningCredential)
+		if cerr != nil {
+			httpx.WriteProblem(w, r, cerr)
+			return
+		}
+		signing = &newID
+	}
+
+	conn, err := rt.connections.Update(r.Context(), scope, id, dto.toPatch(credential, signing))
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
@@ -313,6 +343,47 @@ func (rt *Router) resolveSlackConversation(w http.ResponseWriter, r *http.Reques
 }
 
 // ------------------------------------------------------------------- helpers
+
+// signingCredentialKind is the only kind the signing slot holds (migration 00088).
+const signingCredentialKind = "webhook_signing_secret"
+
+// checkCredentialSlots refuses a secret in the wrong one of a connection's two
+// slots, BEFORE anything is sealed.
+//
+// ⛔ NO CHECK CONSTRAINT CAN SEE THIS, so it is here or nowhere. Both slots
+// reference the same `channel_credentials` table, and its kind lives on the row,
+// not on the reference. A bearer token in the signing slot would become an HMAC
+// key the receiver is also sent as `Authorization`; a signing secret in the
+// credential slot would sign nothing and authenticate nothing — the silent
+// unsigned connection this split exists to end. Each is a 422 naming the field.
+func checkCredentialSlots(t domain.Type, credential, signing *CredentialInputDTO) error {
+	var violations []errs.Violation
+	if credential != nil && credential.Kind == signingCredentialKind {
+		violations = append(violations, errs.Violation{
+			Field: "credential/kind", Code: "enum",
+			Message: "a signing secret goes in signing_credential, beside this credential, not in it",
+		})
+	}
+	if signing != nil && signing.Kind != "none" {
+		switch {
+		case signing.Kind != signingCredentialKind:
+			violations = append(violations, errs.Violation{
+				Field: "signing_credential/kind", Code: "enum",
+				Message: "signing_credential holds a webhook_signing_secret, or none to detach it",
+			})
+		case t != domain.TypeWebhook:
+			violations = append(violations, errs.Violation{
+				Field: "signing_credential", Code: "forbidden",
+				Message: "only a webhook connection signs its outbound requests",
+			})
+		}
+	}
+	if len(violations) == 0 {
+		return nil
+	}
+	return errs.Validation("validation_failed",
+		strconv.Itoa(len(violations))+" field(s) failed validation.", violations...)
+}
 
 func (rt *Router) requireConnectionWriteDeps() error {
 	if err := requireDependency(rt.connections != nil, "channels_connections_store_unavailable",

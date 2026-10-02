@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 87 {
-		t.Fatalf("latest migration is %d, want 87 — this test pins the number so that a "+
+	if latest != 88 {
+		t.Fatalf("latest migration is %d, want 88 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1631,6 +1631,53 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// accepts a kind the release below it cannot interpret. No column reading can
 	// see that, and it is the half most likely to be forgotten because nothing
 	// references it.
+	// ⭐ 00088 GIVES A WEBHOOK CONNECTION A SECOND SLOT FOR ITS SIGNING SECRET, AND A
+	// SIGNING SECRET AN OVERLAP (ADR 0055 §1, git-bug 2765f74). Its Down has two halves
+	// that cannot be read off each other: the connection's column with its two CHECKs,
+	// and the credential row's three `previous_*` columns with theirs. A Down that
+	// dropped one and forgot the other leaves a schema no release ran against. The
+	// `credential_id` comment is read too, because the Up rewrote it to say a signing
+	// secret no longer lives there, and the release below 00088 keeps it there.
+	//
+	// ⛔ ITS GUARD IS NOT EXERCISED HERE, for 00075's reason: it raises when a connection
+	// holds both slots, and firing it would abort every step below. What runs is the
+	// clean path — no connection exists at this height — which is where a misspelt
+	// column in the guard's own SELECT would fail.
+	if n := countColumns("channel_connections", "signing_credential_id"); n != 1 {
+		t.Fatalf("channel_connections.signing_credential_id is absent at migration 88 (found %d)", n)
+	}
+	if n := countColumns("channel_credentials", "previous_sealed", "previous_key_version", "previous_until"); n != 3 {
+		t.Fatalf("%d of channel_credentials' three previous_* columns exist at migration 88, want 3", n)
+	}
+	if n := countConstraints("channel_connections_signing_ck", "channel_connections_signing_distinct_ck",
+		"channel_credentials_previous_ck"); n != 3 {
+		t.Fatalf("%d of 00088's three CHECKs exist at migration 88, want 3", n)
+	}
+	if def := constraintDef("channel_credentials_previous_ck", "channel_credentials"); !strings.Contains(def, "webhook_signing_secret") {
+		t.Fatalf("channel_credentials_previous_ck does not confine the overlap to a signing secret: %s — "+
+			"an overlap on a bearer token is a revoked token that keeps working", def)
+	}
+	if c := columnComment("channel_connections", "credential_id"); !strings.Contains(c, "signing_credential_id") {
+		t.Fatalf("channel_connections.credential_id's comment at migration 88 does not send a signing "+
+			"secret to its own slot: %q", c)
+	}
+
+	down(88)
+
+	if n := countColumns("channel_connections", "signing_credential_id"); n != 0 {
+		t.Fatalf("channel_connections.signing_credential_id survived 00088's Down (found %d)", n)
+	}
+	if n := countColumns("channel_credentials", "previous_sealed", "previous_key_version", "previous_until"); n != 0 {
+		t.Fatalf("%d of channel_credentials' previous_* columns survived 00088's Down", n)
+	}
+	if n := countConstraints("channel_connections_signing_ck", "channel_connections_signing_distinct_ck",
+		"channel_credentials_previous_ck"); n != 0 {
+		t.Fatalf("%d of 00088's CHECKs survived its Down", n)
+	}
+	if c := columnComment("channel_connections", "credential_id"); !strings.Contains(c, "basic/bearer credential or signing secret") {
+		t.Fatalf("00088's Down did not restore 00075's comment on channel_connections.credential_id: %q", c)
+	}
+
 	// ⭐ 00087 LETS AN INCIDENT BE A CONVERSATION, and its Down takes back three
 	// things: the Correlator's switch, `incident` from `threads_subjkind_ck`, and the
 	// index the Incident-thread lookup reads. The column comment is read as well,

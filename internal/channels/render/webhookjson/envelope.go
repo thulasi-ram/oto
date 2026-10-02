@@ -11,7 +11,14 @@ import (
 //
 // It is versioned in the payload rather than in the URL because the URL belongs
 // to the operator, not to oto. When the shape changes incompatibly, this becomes
-// oto.notification.v2 and both are emitted for a release.
+// oto.notification.v2 and both are emitted side by side for 180 days.
+//
+// ⛔ THAT SENTENCE IS A PUBLISHED PROMISE NOW, NOT A PLAN (ADR 0055 §1, git-bug
+// 2765f74). docs/setup/webhook.md §6 states it to receivers in ADR 0055's words —
+// additive changes only within v1; a removal or a change of meaning is v2, sent
+// side by side for a stated period — with the period as a number. It used to live
+// only here, as "for a release", which is not a period anybody outside this repo
+// could hold oto to. Changing the number is changing the docs page first.
 const Schema = "oto.notification.v1"
 
 // Envelope is the generic webhook payload (§H.10).

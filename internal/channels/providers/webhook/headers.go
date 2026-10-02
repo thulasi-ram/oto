@@ -31,8 +31,43 @@ var forbiddenHeaders = map[string]string{
 	"connection":          "oto sets this header",
 }
 
-// CheckHeaders rejects the headers a config may not carry.
+// reservedPrefix is the namespace oto's own request framing lives in.
+//
+// ⛔ EVERY `X-Oto-*` NAME IS OTO'S, INCLUDING ONES THAT DO NOT EXIST YET (ADR 0055
+// §1, git-bug 2765f74). The map above named six headers and none of oto's, while
+// Channel.send's comment claimed this check "already refused the reserved names" —
+// so a channel configured with its own `X-Oto-Delivery-Id` replaced oto's
+// idempotency handle with a constant, and every retry of every delivery looked to
+// the receiver like the same one. Reserving the prefix rather than listing today's
+// four names means a header oto adds next release cannot already be configured to
+// something else in somebody's channel.
+const reservedPrefix = "x-oto-"
+
+// reservedHeader reports whether name is in oto's namespace.
+func reservedHeader(name string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(name)), reservedPrefix)
+}
+
+// CheckHeaders rejects the headers a config may not carry. It is the SAVE-TIME
+// rule: every refusal here is a 422 an operator reads while the form is open.
 func CheckHeaders(headers map[string]string) error {
+	return checkHeaders(headers, true)
+}
+
+// checkStoredHeaders is CheckHeaders for a config that is ALREADY STORED, at Open.
+//
+// ⭐ IT DOES NOT REFUSE THE `X-Oto-*` PREFIX, AND THAT IS NOT LENIENCY. A channel
+// saved before the prefix was reserved may carry one, and refusing to open it would
+// turn a hardening change into silent non-delivery — the argument `skipVerify`
+// makes for a stored `insecure_skip_verify`. Such a header is not refused here; it
+// is DROPPED at send (Channel.send skips every reserved name), so oto's framing
+// wins without the channel going dark. Every other rule — credentials in headers,
+// a newline — was refused at save from the start and is refused here too.
+func checkStoredHeaders(headers map[string]string) error {
+	return checkHeaders(headers, false)
+}
+
+func checkHeaders(headers map[string]string, reserve bool) error {
 	var violations []errs.Violation
 	for name := range headers {
 		if reason, bad := forbiddenHeaders[strings.ToLower(strings.TrimSpace(name))]; bad {
@@ -40,6 +75,13 @@ func CheckHeaders(headers map[string]string) error {
 				Field:   "headers/" + name,
 				Code:    "forbidden",
 				Message: reason,
+			})
+		}
+		if reserve && reservedHeader(name) {
+			violations = append(violations, errs.Violation{
+				Field:   "headers/" + name,
+				Code:    "forbidden",
+				Message: "X-Oto-* headers are oto's own request framing (delivery id, signature, timestamp) and cannot be configured",
 			})
 		}
 		if strings.ContainsAny(name, "\r\n") {

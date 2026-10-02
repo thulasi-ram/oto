@@ -23,11 +23,39 @@ import (
 
 const providerName = "webhook"
 
-// signatureHeader carries the HMAC-SHA256 of the outbound body, when the
-// channel's connection has a CredSigningSecret. It is set only when there is
-// a secret to sign with — an unsigned request carries no header at all, never
+// signatureHeader carries the HMAC-SHA256 signatures of the outbound request,
+// when the channel's connection has a signing secret. It is set only when there
+// is a secret to sign with — an unsigned request carries no header at all, never
 // an empty one, so a receiver checking for its presence gets an honest answer.
+//
+// ⛔ ITS FORMAT IS A PUBLISHED PROMISE (docs/setup/webhook.md), WRITTEN DOWN FOR
+// THE FIRST TIME BY git-bug 2765f74. Until then it was `sha256=<hex>` over the body
+// alone, undocumented — which is the only reason it could change once, to the
+// shape below, without breaking anybody who had been told. From here it moves
+// only the way the envelope does: a new scheme is a new `v2=` entry sent beside
+// `v1=`, never a change to what `v1=` means.
+//
+//	X-Oto-Timestamp: 1696240000
+//	X-Oto-Signature: v1=<hex>[, v1=<hex>]
+//
+// where each <hex> is HMAC-SHA256(secret, "v1:" + timestamp + ":" + body). Two
+// entries appear only during a rotation's overlap, the current secret's first.
 const signatureHeader = "X-Oto-Signature"
+
+// timestampHeader is the signed send instant, in Unix seconds.
+//
+// ⭐ IT IS INSIDE THE SIGNATURE, WHICH IS ITS WHOLE POINT. A signature over the
+// body alone verifies forever: a captured request replayed next month passes. With
+// the timestamp in the signed base a receiver rejects anything older than its
+// tolerance (the docs say five minutes), and cannot be fooled by an edited header
+// because editing it breaks the signature. It is stamped per ATTEMPT, not per
+// delivery: a retry three hours later is a fresh request and must verify as one.
+// `X-Oto-Delivery-Id` is what stays the same across retries, for de-duplication.
+const timestampHeader = "X-Oto-Timestamp"
+
+// signatureScheme is the version tag on every signature entry and the first field
+// of the signed base string. See signatureHeader.
+const signatureScheme = "v1"
 
 // maxResponseBytes bounds what oto reads back before giving up on draining the
 // body. The bytes are COUNTED AND DISCARDED, never kept — an unbounded read is a
@@ -112,6 +140,21 @@ func (c *Channel) send(
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "oto/1")
 	req.Header.Set("Accept", "application/json")
+	for k, v := range c.cfg.Headers {
+		// ⛔ AN `X-Oto-*` NAME IS SKIPPED, NOT SET. CheckHeaders refuses the whole
+		// prefix at save, but a channel stored before it did may still carry one,
+		// and Open deliberately does not refuse it (checkStoredHeaders). The comment
+		// that used to sit here claimed the save-time check made this safe while
+		// that check named none of oto's headers — so this loop, which ran LAST,
+		// was free to replace oto's idempotency handle with a constant.
+		if reservedHeader(k) {
+			continue
+		}
+		req.Header.Set(k, v)
+	}
+	// ⭐ OTO'S FRAMING IS SET AFTER THE CONFIGURED HEADERS, so it wins by order as
+	// well as by the rule above: two independent reasons a receiver's idempotency
+	// and signature checks can never be shadowed by a static header.
 	if deliveryID != "" {
 		// The receiver's own idempotency handle. oto's queue is at-least-once, so
 		// a receiver that wants exactly-once has what it needs to get there.
@@ -120,15 +163,8 @@ func (c *Channel) send(
 	if msg.Hash != "" {
 		req.Header.Set("X-Oto-Content-Hash", msg.Hash)
 	}
-	for k, v := range c.cfg.Headers {
-		// Config headers are applied last but can never override oto's framing:
-		// CheckHeaders already refused the reserved names at configuration time.
-		req.Header.Set(k, v)
-	}
-	if signature := c.signaturePayload(msg.Payload); signature != "" {
-		// Set AFTER the configured headers, same as the framing headers above: a
-		// receiver's own signature check must never be shadowable by a typo'd
-		// static header.
+	if ts, signature := c.sign(msg.Payload, c.clock.Now()); signature != "" {
+		req.Header.Set(timestampHeader, ts)
 		req.Header.Set(signatureHeader, signature)
 	}
 
@@ -161,19 +197,38 @@ func (c *Channel) send(
 	}, nil
 }
 
-// signaturePayload returns the header value to sign body with, or "" when the
-// channel's connection carries no signing secret at all.
-func (c *Channel) signaturePayload(body json.RawMessage) string {
-	if c.cred.Kind != CredSigningSecret {
-		return ""
+// sign returns the timestamp and signature headers for a body sent at `at`, or two
+// empty strings when the connection carries no signing secret.
+//
+// One entry per live secret — the current one, and its predecessor while the
+// rotation overlap lasts (domain.SigningSecret.Secrets decides that against THIS
+// send's instant) — joined as an RFC 9110 list. A receiver splits on commas and
+// accepts the request if ANY `v1=` entry matches what it computes with the secret
+// it holds, which is what lets an operator rotate without a flag day.
+func (c *Channel) sign(body []byte, at time.Time) (timestamp, signature string) {
+	secrets := c.cred.Signing.Secrets(at)
+	if len(secrets) == 0 {
+		return "", ""
 	}
-	secret := firstValue(c.cred.Values, "secret", "value")
-	if secret == "" {
-		return ""
+	timestamp = strconv.FormatInt(at.Unix(), 10)
+	entries := make([]string, 0, len(secrets))
+	for _, secret := range secrets {
+		entries = append(entries, signatureScheme+"="+signatureHex(secret, timestamp, body))
 	}
+	return timestamp, strings.Join(entries, ", ")
+}
+
+// signatureHex is HMAC-SHA256(secret, "v1:" + timestamp + ":" + body), hex-encoded.
+//
+// ⛔ THIS LINE IS THE PUBLISHED ALGORITHM. docs/setup/webhook.md states the base
+// string byte for byte and verifies a worked example against it; changing either
+// side without the other is a broken promise to every receiver, and changing
+// both is a `v2=` scheme, not an edit.
+func signatureHex(secret, timestamp string, body []byte) string {
 	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(signatureScheme + ":" + timestamp + ":"))
 	mac.Write(body)
-	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 // Probe checks the destination without delivering an alert.

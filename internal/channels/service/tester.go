@@ -32,6 +32,9 @@ type InstanceStore interface {
 // errs.Message.
 type CredentialResolver interface {
 	Resolve(ctx context.Context, s db.TenantScope, credentialID uuid.UUID) (kind string, values map[string]string, err error)
+	// ResolveSigning unseals a connection's outbound signing secret and, while a
+	// rotation's overlap lasts, its predecessor (migration 00088).
+	ResolveSigning(ctx context.Context, s db.TenantScope, credentialID uuid.UUID) (domain.SigningSecret, error)
 }
 
 // Registry is the subset of `channels/registry` this service uses.
@@ -205,18 +208,33 @@ func (t *Tester) credential(ctx context.Context, scope db.TenantScope, inst doma
 	if err != nil {
 		return domain.Credential{}, err
 	}
-	if conn.CredentialID == nil {
+	if conn.CredentialID == nil && conn.SigningCredentialID == nil {
 		return domain.Credential{}, nil
 	}
 	if t.creds == nil {
 		return domain.Credential{}, errs.New(errs.KindInternal, "credential_resolver_missing",
 			"this deployment cannot unseal channel credentials")
 	}
-	kind, values, err := t.creds.Resolve(ctx, scope, *conn.CredentialID)
-	if err != nil {
-		return domain.Credential{}, err
+	var cred domain.Credential
+	if conn.CredentialID != nil {
+		kind, values, err := t.creds.Resolve(ctx, scope, *conn.CredentialID)
+		if err != nil {
+			return domain.Credential{}, err
+		}
+		cred.Kind, cred.Values = kind, values
 	}
-	return domain.Credential{Kind: kind, Values: values}, nil
+	// ⭐ A TEST SEND IS SIGNED EXACTLY AS A REAL ONE, both signatures during an
+	// overlap included. "Send a test" is how an operator checks a receiver's
+	// verification after a rotation, and a test that skipped the signature would
+	// pass against a receiver that rejects every real delivery.
+	if conn.SigningCredentialID != nil {
+		signing, err := t.creds.ResolveSigning(ctx, scope, *conn.SigningCredentialID)
+		if err != nil {
+			return domain.Credential{}, err
+		}
+		cred.Signing = signing
+	}
+	return cred, nil
 }
 
 // recordHealth writes what this attempt learned about the destination.

@@ -2698,6 +2698,9 @@ export const ChannelConnectionDTOSchema = v.looseObject({
   "config": v.record(v.string(), v.unknown()),
   "credential_kind": v.exactOptional(v.nullable(v.picklist(["slack_bot_token", "slack_app_token", "slack_signing_secret", "basic", "bearer", "webhook_signing_secret", "none"]))),
   "credential_rotated_at": v.exactOptional(v.nullable(TimestampSchema)),
+  "signing_credential_kind": v.exactOptional(v.nullable(v.picklist(["webhook_signing_secret"]))),
+  "signing_credential_rotated_at": v.exactOptional(v.nullable(TimestampSchema)),
+  "signing_overlap_until": v.exactOptional(v.nullable(TimestampSchema)),
   "created_at": TimestampSchema,
   "updated_at": TimestampSchema,
 });
@@ -2711,6 +2714,7 @@ export const CreateChannelConnectionRequestSchema = v.strictObject({
   ),
   "config": v.record(v.string(), v.unknown()),
   "credential": v.exactOptional(CredentialInputSchema),
+  "signing_credential": v.exactOptional(CredentialInputSchema),
 });
 
 export const UpdateChannelConnectionRequestSchema = v.pipe(
@@ -2722,6 +2726,7 @@ export const UpdateChannelConnectionRequestSchema = v.pipe(
     )),
     "config": v.exactOptional(v.record(v.string(), v.unknown())),
     "credential": v.exactOptional(CredentialInputSchema),
+    "signing_credential": v.exactOptional(CredentialInputSchema),
   }),
   v.check((value) => Object.keys(value).length >= 1, "at least 1 property required"),
 );
