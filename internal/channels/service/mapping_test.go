@@ -147,6 +147,26 @@ func TestAMappingMayNotCarryACredentialHeaderOrOtosFraming(t *testing.T) {
 	}
 }
 
+// TestAHeaderNamedLikeACredentialMustReadASecret: `X-Api-Key: abc123` written into a
+// mapping is a credential stored in the clear; it must be `{{ secrets.<name> }}`.
+func TestAHeaderNamedLikeACredentialMustReadASecret(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"X-Api-Key", "X-Routing-Token", "X-Client-Secret", "X-Password"} {
+		err := ValidateMapping(mappingDoc(t, domain.PayloadMapping{
+			Body: `{}`, Headers: map[string]string{name: "abc123"},
+		}), nil)
+		vs := violationsOf(t, err)
+		if len(vs) == 0 || vs[0].Field != "payload_mapping/headers/"+name || vs[0].Code != "secret_required" {
+			t.Errorf("%s with a literal value: violations = %+v", name, vs)
+		}
+	}
+	if err := ValidateMapping(mappingDoc(t, domain.PayloadMapping{
+		Body: `{}`, Headers: map[string]string{"X-Api-Key": "{{ secrets.api_key }}"},
+	}), []string{"api_key"}); err != nil {
+		t.Fatalf("a credential header reading a secret was refused: %v", err)
+	}
+}
+
 // TestAMappingDocumentIsReadStrictly: a misspelt key is refused, not ignored.
 func TestAMappingDocumentIsReadStrictly(t *testing.T) {
 	t.Parallel()

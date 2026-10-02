@@ -1216,6 +1216,13 @@ func (s *DispatchService) signingSecret(
 	if err != nil {
 		return SigningSecret{}, err
 	}
+	// ⛔ THE ROW MUST BE A SIGNING SECRET. SigningValue reads a `token` too, so a
+	// signing reference pointed at the Connection's bearer credential would sign
+	// every request with the bearer token and publish an HMAC keyed by it.
+	if sealed.Kind != "webhook_signing_secret" {
+		return SigningSecret{}, errs.Newf(errs.KindInternal, "signing_credential_kind",
+			"this destination's signing credential is a %q credential, not a webhook_signing_secret", sealed.Kind)
+	}
 	if s.unsealer == nil {
 		return SigningSecret{}, errs.New(errs.KindInternal, "no_credential_unsealer",
 			"this destination has a sealed signing secret and no unsealer is configured")

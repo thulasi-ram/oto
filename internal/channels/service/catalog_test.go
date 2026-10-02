@@ -122,6 +122,17 @@ func TestTheCatalogCheckRefusesACommand(t *testing.T) {
 			file: "holds-a-literal-key.yaml",
 			want: []string{`routing_key is not a`},
 		},
+		{
+			// The command field twice: the check would read one, the tool the other.
+			file: "repeats-the-command.yaml",
+			want: []string{`the body repeats the key "event_action"`},
+		},
+		{
+			// The command field interpolated from the envelope: the corpus never
+			// renders a forbidden value, and a real alert could.
+			file: "takes-the-command-from-data.yaml",
+			want: []string{`fixture "fired" (body): status is "fired"`, "comes from the envelope's data"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.file, func(t *testing.T) {

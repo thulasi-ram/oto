@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"regexp"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -32,6 +34,13 @@ import (
 // maxMappingViolations caps how many refusals one save reports. Twenty facts times
 // three shapes of one typo is sixty copies of the same sentence.
 const maxMappingViolations = 10
+
+// credentialHeaderName is a header name that reads as a credential (provisional,
+// pending an owner decision on the exact list).
+var credentialHeaderName = regexp.MustCompile(`(?i)key|token|secret|auth|password`)
+
+// headerSecretRef is a `secrets.<name>` read inside a Liquid output.
+var headerSecretRef = regexp.MustCompile(`\{\{[^}]*\bsecrets\s*\.\s*[a-z]`)
 
 // mappingField roots a mapping problem under the request field it came in on.
 const mappingField = "payload_mapping"
@@ -74,6 +83,16 @@ func ValidateMapping(raw json.RawMessage, secretNames []string) error {
 			for _, v := range e.Violations {
 				add(v.Field, v.Code, v.Message)
 			}
+		}
+	}
+	// A header NAMED like a credential carries one, and a credential is sealed: one
+	// written into the mapping as text is stored in the clear, returned by every read
+	// of the Connection and copied into every delivery row.
+	for _, name := range slices.Sorted(maps.Keys(doc.Headers)) {
+		if credentialHeaderName.MatchString(name) && !headerSecretRef.MatchString(doc.Headers[name]) {
+			add("headers/"+name, "secret_required", fmt.Sprintf(
+				"%s reads as a credential, so its value must be a sealed secret: write "+
+					"`{{ secrets.<name> }}` and add the value under mapping_secrets", name))
 		}
 	}
 	if r := doc.Response; r != nil {

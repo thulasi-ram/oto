@@ -1,0 +1,14 @@
+# ⛔ DELIBERATELY BAD (catalog_test.go): the command field is interpolated. No
+# fixture renders `resolved`, so the render alone passes it — and then an alert
+# whose `reason` (or label) says `resolved` sends one.
+vendor: incident.io
+title: incident.io HTTP alert source
+summary: Lets the envelope choose the status.
+docs: [https://docs.incident.io/openapi/tags/alert-events-v2.json]
+checked_on: "2026-10-02"
+setup: [Do not ship this.]
+commands:
+  - field: status
+    forbidden: [resolved]
+mapping:
+  body: '{"title": "{{ summary }}", "status": "{{ reason }}", "deduplication_key": "{{ incident.id }}"}'

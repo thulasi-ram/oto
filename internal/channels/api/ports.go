@@ -73,6 +73,9 @@ type ChannelStore interface {
 type CredentialWriter interface {
 	CreateCredential(ctx context.Context, s db.TenantScope, kind string, values map[string]string) (uuid.UUID, error)
 	RotateCredential(ctx context.Context, s db.TenantScope, id uuid.UUID, kind string, values map[string]string) error
+	// DeleteCredential removes a sealed secret a Connection has detached, so a
+	// detached signing key or mapping secret does not outlive the slot that held it.
+	DeleteCredential(ctx context.Context, s db.TenantScope, id uuid.UUID) error
 }
 
 // ChannelWriter owns the two operations whose side effect is worth claiming, and

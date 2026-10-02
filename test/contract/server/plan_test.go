@@ -234,6 +234,15 @@ func plan() []probe {
 			want: http.StatusOK,
 		},
 		{
+			method: http.MethodPost, tmpl: "/api/v1/channel-connections/{id}/mapping/test",
+			url:  "/api/v1/channel-connections/{{connection}}/mapping/test",
+			body: map[string]any{"channel_id": "00000000-0000-4000-8000-000000000001", "fact": "drawn"},
+			want: http.StatusPreconditionFailed,
+			why: "the fixture connection carries no payload mapping, and the tester refuses that " +
+				"before it looks the channel up — so the 412 is reached without a channel, and " +
+				"without sending anything to a tool this gate has no business reaching",
+		},
+		{
 			method: http.MethodPost, tmpl: "/api/v1/channel-connections/{id}/slack/resolve",
 			url:  "/api/v1/channel-connections/{{connection}}/slack/resolve",
 			body: map[string]any{"name": "sre-alerts"},
