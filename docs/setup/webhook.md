@@ -65,6 +65,16 @@ Authorization: Bearer …
 An unsigned connection sends **neither** `X-Oto-Timestamp` nor `X-Oto-Signature` — never an empty
 one.
 
+> ⚠️ **BREAKING, once: the signature header changed shape.** Before this release a signed
+> connection sent `X-Oto-Signature: sha256=<hex>`, an HMAC-SHA256 of the **body alone**, with no
+> timestamp. That header was never documented, and it is gone: oto now sends `X-Oto-Timestamp` and
+> `X-Oto-Signature: v1=<hex>` over `"v1:" + timestamp + ":" + body`, as
+> [section 4](#4-verify-that-a-request-came-from-oto) describes, and never sends `sha256=` again. A
+> receiver written against the old header rejects every signed request until it verifies `v1=`
+> instead. This is the one change of its kind: from here the format moves only as
+> [section 6](#6-the-compatibility-promise) promises
+> ([ADR 0055](../adr/0055-an-incident-tool-integration-is-data-or-a-bridge-never-code-in-oto.md) §1).
+
 ---
 
 ## 3. The envelope
@@ -128,7 +138,7 @@ The `incident` object:
 
 | Key | Meaning |
 |---|---|
-| `id` | The Incident's id. **Stable for the Incident's whole life — this is your de-duplication key.** Key your external incident on it: every later fact about the same Incident carries the same `id`, so a receiver that upserts on it gets one external incident whose later facts are updates, not new incidents. |
+| `id` | The Incident's id. **Stable for the Incident's whole life — this is your de-duplication key.** Key your external incident on it: every later fact about the same Incident carries the same `id`, so a receiver that upserts on it gets one external incident whose later facts are updates, not new incidents. A tool that opens a **new** incident for an event on a key whose incident was resolved — PagerDuty and incident.io do — is the exception: see §7 for routing it only `drawn` and `active_again`. |
 | `number` | The number humans quote (`#12`). Unique per org; prefer `id` as a key. |
 | `state` | `active` (some current member Case is open) or `quiet` (none is). Derived by oto from the Cases; nobody sets it. |
 | `drawn_at` | When it was drawn. |
@@ -141,7 +151,10 @@ Each member: `case_id`, `case_number`, `case_state` (`open`/`closed`), `alert_id
 it was moved — `moved_to_number`; `link` to the Case.
 
 **Severity.** oto holds none for an Incident and invents none. If your tool needs one, map it from
-the member alerts' own labels (`members[].labels.severity`, typically) in your receiver.
+the member alerts' own labels (`members[].labels.severity`, typically) in your receiver or mapping.
+For an Incident whose labels give none, the value is yours to choose, not oto's: a catalog starter
+that needs one — PagerDuty's — asks you to pick it when you import it (§7), and the copy holds your
+pick.
 
 A full `case_added` envelope is checked in at
 [`internal/channels/render/webhookjson/testdata/incident_case_added.golden.json`](../../internal/channels/render/webhookjson/testdata/incident_case_added.golden.json).
@@ -314,6 +327,18 @@ and `status` — is reached without a bridge by putting a **payload mapping** on
   is a **mapping secret** sealed on the connection and written as `{{ secrets.routing_key }}`; oto
   fills it in as the request leaves. The stored mapping, the delivery record and the catalog file
   hold only the name. Mapping secrets are write-only and are replaced as a set.
+- **The mapping itself is not secret.** `payload_mapping` is returned by every read of the
+  connection, to **every member of the org**, and copied into every delivery record. So a header
+  whose name reads like a credential — anything containing `key`, `token`, `secret`, `auth` or
+  `password` — must take its value from `{{ secrets.<name> }}`; a mapping that writes one as text is
+  refused at save (`secret_required`).
+- **Write-only means unreadable, not unredirectable.** No endpoint returns a credential or a mapping
+  secret. But oto fills them into whatever request the connection sends, to whatever URL its
+  channels point at — so **any org member who can change a channel's URL or the connection's
+  mapping can send those secrets somewhere else**, and read them there. Who may edit a connection or
+  its channels is not yet narrower than "a member of the org": role-based access is deferred
+  ([SPEC](../design/SPEC.md) R2 — "every authenticated principal has full access to its own org"). Until it lands, treat edit access to an org's
+  connections as access to their secrets.
 - **It is checked before it is saved**: rendered against an envelope for every fact, including
   hostile and empty ones; a mapping that does not render, or names a secret the connection does not
   hold, is refused with the fact named. **Test the mapping** on the connection sends one fact you
@@ -339,6 +364,23 @@ and the setup it needs, and **copies** it into the mapping editor. Save stores t
 connection's own, through the same check as above; a later catalog change never touches it. The
 catalog holds no secret: a mapping that reads `{{ secrets.routing_key }}` is saved only once you add
 that mapping secret beside it.
+
+A starter may also leave a value to you. PagerDuty's needs a severity even when the Incident's
+labels give none (no `severity` label, or one that is not `critical`, `error`, `warning` or
+`info`), and oto invents none: the import asks you to pick a **default severity** from those four,
+and writes your pick into the copy as plain text. A label that is one of the four still passes
+through. The copy then holds no question — a mapping that still holds the catalog's
+`<<choose:…>>` placeholder is refused at save — and the catalog check refuses a starter that answers
+such a question itself.
+
+**Route only `drawn` and `active_again` to a starter's channel.** Both starters key the tool's alert
+on `incident.id` and send every fact as a further trigger, never a resolve. Once a human has
+resolved the incident in the tool, a later trigger on that key — a `case_added`, a `case_removed`, a
+`quiet` — **opens a new incident and pages again**, for a response somebody has just ended. A
+mapping cannot decline a fact, so the fix is the policy: add a notification policy for the
+channel whose reasons are **only** `drawn` and `active_again` (policies already filter by reason).
+The tool then hears when an Incident needs a response and when it needs one again, and nothing in
+between.
 
 No catalog mapping turns a fact into a resolve, close, acknowledge or status change — a test holds
 every file to that, for every fact. Edit the copy into one if you choose; it is then your rule.

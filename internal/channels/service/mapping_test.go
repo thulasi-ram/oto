@@ -167,6 +167,25 @@ func TestAHeaderNamedLikeACredentialMustReadASecret(t *testing.T) {
 	}
 }
 
+// TestACatalogChoiceNobodyMadeCannotBeSaved: a catalog copy stored without its
+// choice answered would send `<<choose:default_severity>>` to the tool on every
+// delivery; the save refuses it, and the copy with the pick written in is saved.
+func TestACatalogChoiceNobodyMadeCannotBeSaved(t *testing.T) {
+	t.Parallel()
+	err := ValidateMapping(mappingDoc(t, domain.PayloadMapping{
+		Body: `{"severity": "<<choose:default_severity>>"}`,
+	}), nil)
+	vs := violationsOf(t, err)
+	if len(vs) != 1 || vs[0].Field != "payload_mapping/body" || vs[0].Code != "choice_unfilled" {
+		t.Fatalf("violations = %+v, want one choice_unfilled on payload_mapping/body", vs)
+	}
+	if err := ValidateMapping(mappingDoc(t, domain.PayloadMapping{
+		Body: `{"severity": "warning"}`,
+	}), nil); err != nil {
+		t.Fatalf("the filled copy was refused: %v", err)
+	}
+}
+
 // TestAMappingDocumentIsReadStrictly: a misspelt key is refused, not ignored.
 func TestAMappingDocumentIsReadStrictly(t *testing.T) {
 	t.Parallel()

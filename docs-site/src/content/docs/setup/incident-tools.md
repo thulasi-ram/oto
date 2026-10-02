@@ -62,6 +62,18 @@ your tool has already closed. What the tool does with a new event for a closed i
 open a fresh one, or nothing) is the tool's behaviour, not oto's; either way the people working the
 response were already told it was over.
 
+The other direction costs too. A human **resolving** the incident in the tool is the right way to
+end a response, and oto is never told about it — so oto keeps stating facts about the Incident. The
+starter mappings send every fact as a further trigger on the Incident's key, and both PagerDuty and
+incident.io answer a trigger on the key of a resolved incident by **opening a new one and paging
+again**. A `case_added`, a `case_removed` or a `quiet` minutes after somebody ended the response
+would start it over. A mapping cannot decline a fact, so the fix is the routing: give the tool's
+channel a notification policy whose reasons are **only `drawn` and `active_again`**. Those are the
+two facts that mean "a response is needed" and "it is needed again"; the starters' setup steps say
+so, and [webhook.md §7](/oto/setup/webhook/#starting-from-the-catalog) has the detail. A bridge that keeps
+state can do better — ignore a fact for an incident it knows a human resolved — and that logic is
+the reason it is a bridge.
+
 oto's own code never sends that command, and no mapping in oto's catalog does — a test refuses one
 ([mappings/README.md](../../mappings/README.md)). You may write it yourself: it is then a rule you
 wrote, keyed on a fact oto stated, and the cost above is yours to accept. Ending a response is

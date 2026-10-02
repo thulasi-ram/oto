@@ -185,6 +185,7 @@ var bindings = []binding{
 	// mapping from by copying it (ADR 0055 §2, git-bug 2b5eecc).
 	{"channels", "PayloadMappingCatalogEntryDTO", channelsapi.PayloadMappingCatalogEntryDTO{}},
 	{"channels", "PayloadMappingCommandDTO", channelsapi.PayloadMappingCommandDTO{}},
+	{"channels", "PayloadMappingChoiceDTO", channelsapi.PayloadMappingChoiceDTO{}},
 	// NotificationTemplates: one whole message an operator wrote, in Markdown-plus
 	// (`card`), one flat string (`text`) or literal Block Kit JSON (`raw`). There is
 	// no MatcherDTO here any more — a template carries no `when` clause, because

@@ -26,13 +26,21 @@
 # delivery record has stored the body with the reference in it. The catalog check
 # (`secret_fields` below) fails this file if `routing_key` renders anything else.
 #
-# Severity is never a value oto invents (ADR 0052 §5): it is the `severity` label of
-# the Incident's FIRST member — the Case the Incident was drawn over, even if it has
+# Severity is never a value oto invents (ADR 0052 §5), and never one this file
+# invents either (owner ruling, 2026-10-02): it is the `severity` label of the
+# Incident's FIRST member — the Case the Incident was drawn over, even if it has
 # since left — or of the conversation (`group.severity`) on a Case fact, used as is
 # when it is one of PagerDuty's four values. ⚠️ WHEN THERE IS NONE, OR IT IS ANY
-# OTHER VALUE (`page`, `P1`, `high`), THIS MAPPING SENDS `critical`: an Incident is
-# drawn because somebody decided a response was needed, and an unlabelled one paging
-# too loudly is the safer error. Edit it after importing if you disagree.
+# OTHER VALUE (`page`, `P1`, `high`), THE OPERATOR DECIDES: `default_severity` under
+# `choices` is asked at import, and the pick is written into the connection's copy
+# where `<<choose:default_severity>>` stands below. The catalog check refuses this
+# file if it answers that question itself.
+#
+# ⚠️ ROUTE ONLY `drawn` AND `active_again` HERE. Every trigger on a dedup key whose
+# PagerDuty incident a human has already resolved opens a NEW incident, so a later
+# `case_added`, `case_removed` or `quiet` would page again for a response somebody
+# just ended. The notification policy for this channel names those two reasons and
+# no others (setup, below).
 #
 # Nothing to echo: the 202 names only the `dedup_key` oto sent, so there is no
 # `response` path and the Incident page shows no external link for this tool.
@@ -40,9 +48,10 @@
 vendor: PagerDuty
 title: PagerDuty Events API v2
 summary: >-
-  Triggers one PagerDuty alert per oto Incident, keyed on the Incident's id, and never
-  sends PagerDuty's other event actions: later facts about the same Incident are further
-  triggers on the same dedup key.
+  Triggers one PagerDuty alert per oto Incident, keyed on the Incident's id, when it is
+  drawn and when it is active again, and never sends PagerDuty's other event actions.
+  Route only those two facts to it: a trigger after a human resolved the incident in
+  PagerDuty opens a new one.
 docs:
   - https://docs.pagerduty.com/developer/send-alert-event
   - https://docs.pagerduty.com/developer/api/reference/events-v2/send-event/create-v2-event
@@ -51,10 +60,18 @@ setup:
   - In PagerDuty, add an Events API v2 integration to a service and copy its integration key.
   - Give this webhook connection a mapping secret named `routing_key` holding that key. It needs no credential and no signing secret.
   - Point a channel of the connection at `https://events.pagerduty.com/v2/enqueue`.
-  - Route Incident facts to that channel. Case facts and digests render too, because a mapping cannot decline a fact; each becomes its own alert, keyed on its conversation.
+  - Add a notification policy for that channel whose reasons are ONLY `drawn` and `active_again`. Any other fact would be a further trigger on the same dedup key, and once a human has resolved the incident in PagerDuty that trigger opens a new one and pages again. A mapping cannot decline a fact, so the policy is what keeps them out.
 commands:
   - field: event_action
     forbidden: [resolve, acknowledge]
+choices:
+  - name: default_severity
+    question: >-
+      Which severity PagerDuty gets when the Incident's first member (or the conversation,
+      on a Case fact) has no `severity` label, or one that is not critical, error, warning
+      or info.
+    field: payload.severity
+    options: [critical, error, warning, info]
 secret_fields: [routing_key]
 mapping:
   body: |-
@@ -67,7 +84,7 @@ mapping:
       {% endif %}"payload": {
         "summary": "{{ summary }}",
         "source": "oto",
-        "severity": "{% if incident %}{% if incident.members.first.labels.severity == "critical" or incident.members.first.labels.severity == "error" or incident.members.first.labels.severity == "warning" or incident.members.first.labels.severity == "info" %}{{ incident.members.first.labels.severity }}{% endif %}{% unless incident.members.first.labels.severity == "critical" or incident.members.first.labels.severity == "error" or incident.members.first.labels.severity == "warning" or incident.members.first.labels.severity == "info" %}critical{% endunless %}{% endif %}{% unless incident %}{% if group.severity == "critical" or group.severity == "error" or group.severity == "warning" or group.severity == "info" %}{{ group.severity }}{% endif %}{% unless group.severity == "critical" or group.severity == "error" or group.severity == "warning" or group.severity == "info" %}critical{% endunless %}{% endunless %}",
+        "severity": "{% if incident %}{% if incident.members.first.labels.severity == "critical" or incident.members.first.labels.severity == "error" or incident.members.first.labels.severity == "warning" or incident.members.first.labels.severity == "info" %}{{ incident.members.first.labels.severity }}{% endif %}{% unless incident.members.first.labels.severity == "critical" or incident.members.first.labels.severity == "error" or incident.members.first.labels.severity == "warning" or incident.members.first.labels.severity == "info" %}<<choose:default_severity>>{% endunless %}{% endif %}{% unless incident %}{% if group.severity == "critical" or group.severity == "error" or group.severity == "warning" or group.severity == "info" %}{{ group.severity }}{% endif %}{% unless group.severity == "critical" or group.severity == "error" or group.severity == "warning" or group.severity == "info" %}<<choose:default_severity>>{% endunless %}{% endunless %}",
         "timestamp": "{{ delivered_at }}",
         "class": "{{ reason }}",
         "custom_details": {

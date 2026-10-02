@@ -49,6 +49,15 @@ func catalogEntryDTO(e domain.CatalogMapping) PayloadMappingCatalogEntryDTO {
 			Forbidden: append(make([]string, 0, len(c.Forbidden)), c.Forbidden...),
 		})
 	}
+	choices := make([]PayloadMappingChoiceDTO, 0, len(e.Choices))
+	for _, c := range e.Choices {
+		choices = append(choices, PayloadMappingChoiceDTO{
+			Name:     c.Name,
+			Question: c.Question,
+			Field:    c.Field,
+			Options:  append(make([]string, 0, len(c.Options)), c.Options...),
+		})
+	}
 	return PayloadMappingCatalogEntryDTO{
 		ID:        e.ID,
 		Vendor:    e.Vendor,
@@ -58,6 +67,7 @@ func catalogEntryDTO(e domain.CatalogMapping) PayloadMappingCatalogEntryDTO {
 		CheckedOn: e.CheckedOn,
 		Setup:     append(make([]string, 0, len(e.Setup)), e.Setup...),
 		Commands:  commands,
+		Choices:   choices,
 		Secrets:   append(make([]string, 0, len(e.Secrets)), e.Secrets...),
 		Mapping:   e.Mapping,
 	}

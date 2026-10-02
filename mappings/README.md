@@ -32,6 +32,7 @@ same `body`, `facts`, `headers` and `response` keys, nothing more — and the re
 | `checked_on` | yes | When they were checked, `YYYY-MM-DD`. Re-check and bump it whenever you edit a field name. |
 | `setup` | yes | What the operator does in the tool and on the connection, in order. |
 | `commands` | yes, at least one | The tool's **command fields** and the values that would make a fact a command. See below. |
+| `choices` | no | Values the tool requires that only the operator may choose. Each has a `name`, a `question` the import asks, the body `field` it decides (a gjson path) and at least two `options` (plain tokens). The mapping writes `<<choose:<name>>>` where the pick goes; see below. |
 | `secret_fields` | no | Body fields that carry a vendor key and must render as a `{{ secrets.<name> }}` reference. |
 | `mapping` | yes | The payload mapping itself. |
 
@@ -66,12 +67,36 @@ down, so the rule is checked by a test,
    mapping does, given the secrets it names.
 5. **A key is a reference.** Each `secret_fields` entry renders as exactly the secret it names, and
    nothing else, on every fact.
+6. **A choice is the operator's, and the file does not answer it.** A file with `choices` is
+   checked once per option — every copy an import could store passes 3 to 5 — and on every fact the
+   choice's `field` must be one of its options and must either **follow the pick** or **pass through
+   a value the fact itself carries**, the same whatever is picked. A value that is the same whatever
+   is picked and that the fact does not carry is a fallback the file chose, and is refused; so is a
+   choice no fact ever sends, and one that decides a command field.
 
 The check is the same for every vendor — it knows nothing about PagerDuty or incident.io beyond what
 the file declares. What it cannot know is whether the declaration is complete: that is the review.
 
 Importing does not re-run the check. Once a mapping is copied onto a connection it is the
 operator's, and editing it into a command is a rule the operator wrote (§4).
+
+## Choices: what the catalog may not decide
+
+PagerDuty requires a severity, and an Incident's labels do not always give one. oto invents none,
+and neither may a catalog file (owner ruling, 2026-10-02): `pagerduty.yaml` passes a member's
+`severity` label through when it is one of PagerDuty's four values and otherwise writes
+`<<choose:default_severity>>`. *Import from the catalog* asks the operator to pick a default
+severity and writes the **literal** pick in place of every placeholder, so the connection's copy is
+plain text with no question left in it. A copy that still holds a placeholder — say, one stored
+over the API without asking — is refused at save (`choice_unfilled`).
+
+## Which facts a starter should hear
+
+Both starters key the tool's alert on `incident.id` and send every fact as a further trigger. Once a
+human has resolved the incident in the tool, a later trigger on that key opens a new incident and
+pages again. A mapping cannot decline a fact, so each starter's `setup` says to add a notification
+policy for its channel whose reasons are **only** `drawn` and `active_again`. A new starter for a
+tool that behaves the same way says the same.
 
 ## Adding a tool
 
