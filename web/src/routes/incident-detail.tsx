@@ -160,6 +160,38 @@ export default function IncidentDetailRoute() {
                   <RelativeTime value={inc().drawn_at} label="Drawn" /> ago
                 </p>
 
+                {/* ⭐ WHERE THE RESPONSE IS BEING HANDLED, AS THE TOOL ITSELF SAID (ADR 0052
+                    §5, git-bug 506ff21). Each entry is the incident a destination's tool
+                    echoed back when oto delivered a fact to it — a receipt, recorded
+                    once, never re-read from the tool. It says nothing about whether the
+                    response is over; the chip above is still read off the Cases alone. */}
+                <Show when={(inc().outbound ?? []).length > 0}>
+                  <ul class="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-body text-ink-muted">
+                    <For each={inc().outbound ?? []}>
+                      {(o) => (
+                        <li>
+                          <span class="text-ink-subtle">in {o.channel_name}:</span>{" "}
+                          <Show
+                            when={o.external_url}
+                            fallback={<span class="font-mono">{o.external_id}</span>}
+                          >
+                            {(url) => (
+                              <a
+                                href={url()}
+                                target="_blank"
+                                rel="noreferrer noopener"
+                                class="text-ink-muted underline decoration-line-strong underline-offset-2 hover:text-ink"
+                              >
+                                {o.external_id ?? "external incident"}
+                              </a>
+                            )}
+                          </Show>
+                        </li>
+                      )}
+                    </For>
+                  </ul>
+                </Show>
+
                 <Show when={refusal()}>
                   {(err) => <ErrorBanner class="mt-2" error={err()} />}
                 </Show>

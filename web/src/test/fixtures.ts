@@ -133,7 +133,7 @@ export function incidentMember(patch: Partial<IncidentMember> = {}): IncidentMem
 
 /** One Incident with its membership history, as `GET /api/v1/incidents/{number}` serves it. */
 export function incidentDetail(patch: Partial<IncidentDetail> = {}): IncidentDetail {
-  return { ...incident(), members: [incidentMember()], ...patch } as IncidentDetail;
+  return { ...incident(), members: [incidentMember()], outbound: [], ...patch } as IncidentDetail;
 }
 
 export function ruleSnapshot(patch: Partial<RuleSnapshot> = {}): RuleSnapshot {

@@ -35,6 +35,30 @@ type IncidentFacts struct {
 	// Incidents are conversations (ADR 0052 §6). Read when the fact is evaluated, as
 	// everything else here is; a human-drawn Incident is never one.
 	Conversation bool
+	// Outbound is every external incident a destination echoed back for this
+	// Incident (ADR 0052 §5's outbound mapping, git-bug 506ff21), one per channel,
+	// oldest first. Empty when no receiver echoed anything — the ordinary case.
+	Outbound []IncidentOutbound
+}
+
+// IncidentOutbound is one receipt: the incident a destination's tool opened for
+// this Incident, as that tool named it in its 2xx response.
+type IncidentOutbound struct {
+	ChannelName string
+	ExternalURL string
+	ExternalID  string
+}
+
+// IncidentReceipt is what the dispatcher records when an Incident fact's delivery
+// is answered with an echo (migration 00089). The two external values are already
+// validated by the provider that read them.
+type IncidentReceipt struct {
+	IncidentID  uuid.UUID
+	ChannelID   uuid.UUID
+	DeliveryID  uuid.UUID
+	ExternalURL string
+	ExternalID  string
+	RecordedAt  time.Time
 }
 
 // IncidentRef names the Incident conversation a Case's fact belongs in (ADR 0052

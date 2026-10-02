@@ -57,6 +57,20 @@ type IncidentMemberDTO struct {
 type IncidentDetailDTO struct {
 	IncidentDTO
 	Members []IncidentMemberDTO `json:"members"`
+	// Outbound is every external incident a destination echoed back for this
+	// Incident (ADR 0052 §5, migration 00089). `[]`, never null, when there is none.
+	Outbound []IncidentOutboundDTO `json:"outbound"`
+}
+
+// IncidentOutboundDTO renders `IncidentOutboundDTO`: one destination and the
+// incident its tool opened for this Incident — the receipt of a delivery, never
+// the external incident's state.
+type IncidentOutboundDTO struct {
+	ChannelID   uuid.UUID `json:"channel_id"`
+	ChannelName string    `json:"channel_name"`
+	ExternalURL *string   `json:"external_url"`
+	ExternalID  *string   `json:"external_id"`
+	RecordedAt  time.Time `json:"recorded_at"`
 }
 
 // CreateIncidentRequest is the body of `POST /api/v1/incidents`.
@@ -138,5 +152,22 @@ func detailDTO(d domain.Detail) IncidentDetailDTO {
 	for _, m := range d.Members {
 		members = append(members, memberDTO(m))
 	}
-	return IncidentDetailDTO{IncidentDTO: incidentDTO(d.Incident), Members: members}
+	outbound := make([]IncidentOutboundDTO, 0, len(d.Outbound))
+	for _, o := range d.Outbound {
+		outbound = append(outbound, IncidentOutboundDTO{
+			ChannelID:   o.ChannelID,
+			ChannelName: o.ChannelName,
+			ExternalURL: nonEmpty(o.ExternalURL),
+			ExternalID:  nonEmpty(o.ExternalID),
+			RecordedAt:  o.RecordedAt.UTC(),
+		})
+	}
+	return IncidentDetailDTO{IncidentDTO: incidentDTO(d.Incident), Members: members, Outbound: outbound}
+}
+
+func nonEmpty(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }

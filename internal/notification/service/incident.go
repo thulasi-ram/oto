@@ -513,6 +513,11 @@ func (v *ViewService) incidentCard(
 		}
 		iv.Members = append(iv.Members, mv)
 	}
+	for _, o := range f.Outbound {
+		iv.External = append(iv.External, IncidentExternalView{
+			Destination: o.ChannelName, URL: o.ExternalURL, ID: o.ExternalID,
+		})
+	}
 	return &NotificationView{
 		Reason:     string(n.Reason),
 		Incident:   iv,

@@ -443,3 +443,22 @@ func golden(t *testing.T, name string, payload []byte) {
 		t.Errorf("%s changed.\n--- want ---\n%s\n--- got ---\n%s", name, want, pretty.String())
 	}
 }
+
+// TestAnEchoedIncidentIsNotSentBackToAnyReceiver: the external incident a tool
+// echoed (ADR 0052 §5, git-bug 506ff21) is a receipt oto keeps for its own card and
+// page. It is not a key on oto.notification.v1 — the envelope an Incident fact
+// carries is byte-identical with or without one — so no receiver ever learns
+// another receiver's incident from oto, and putting it on the wire would be an
+// additive v1 change that has to argue for itself (docs/setup/webhook.md §6).
+func TestAnEchoedIncidentIsNotSentBackToAnyReceiver(t *testing.T) {
+	t.Parallel()
+	for _, reason := range []string{"drawn", "case_added", "case_removed", "quiet", "active_again"} {
+		with := incidentView(reason)
+		with.Incident.External = []domain.IncidentExternalView{
+			{Destination: "incident-tool", URL: "https://tool.example/incidents/42", ID: "INC-42"},
+		}
+		if got, want := render(t, with).Payload, render(t, incidentView(reason)).Payload; string(got) != string(want) {
+			t.Errorf("%s: an echoed external incident changed the envelope:\n%s", reason, got)
+		}
+	}
+}

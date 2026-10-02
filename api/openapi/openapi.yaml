@@ -7514,7 +7514,7 @@ components:
       allOf:
         - $ref: '#/components/schemas/IncidentDTO'
         - type: object
-          required: [members]
+          required: [members, outbound]
           properties:
             members:
               type: array
@@ -7523,7 +7523,42 @@ components:
               description: |
                 Every spell of every Case that has been in this Incident, current and removed, in the
                 order they joined.
+            outbound:
+              type: array
+              maxItems: 1000
+              items:
+                $ref: '#/components/schemas/IncidentOutboundDTO'
+              description: |
+                Every external incident a destination's tool echoed back for this Incident — one per
+                channel, oldest first, `[]` when none did. Recorded from the tool's own 2xx response to
+                an Incident fact (`external_url` / `external_id`), once per channel, never overwritten
+                and never re-read from the tool.
       description: One Incident with its full membership history.
+
+    IncidentOutboundDTO:
+      type: object
+      required: [channel_id, channel_name, external_url, external_id, recorded_at]
+      properties:
+        channel_id:
+          $ref: '#/components/schemas/Uuid'
+        channel_name:
+          type: string
+          description: The destination whose receiver echoed it.
+        external_url:
+          type: ['string', 'null']
+          format: uri
+          maxLength: 2048
+          description: The tool's own link to its incident — always an absolute `https` URL, or `null` when the tool echoed only an id.
+        external_id:
+          type: ['string', 'null']
+          maxLength: 255
+          description: The tool's own id for its incident, or `null` when it echoed only a link.
+        recorded_at:
+          $ref: '#/components/schemas/Timestamp'
+      description: |
+        ADR 0052 §5's outbound mapping: the incident an incident tool opened for this Incident, as the
+        tool named it in its response. It is the receipt of a delivery, not the external incident's
+        state — oto never reads the tool back, and nothing about this Incident derives from it.
 
     CreateIncidentRequest:
       type: object

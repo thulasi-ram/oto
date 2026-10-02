@@ -33,10 +33,14 @@ import (
 // the story, and a button on it would have to pick one of its Cases. Each member
 // links to its own Case, which is where the buttons are.
 //
-// ⚠️ NO OUTBOUND LINK, BECAUSE THERE IS NONE TO DRAW. ADR 0052 §5's outbound mapping
-// — `(destination, external incident id)` — is not stored by any table yet, so the
-// card has no URL into the incident tool to offer. When the mapping lands, its link
-// belongs in the context line beside oto's own, and nowhere a template cannot see.
+// ⭐ THE OUTBOUND LINK SITS IN THE CONTEXT LINE, BESIDE OTO'S OWN (git-bug 506ff21).
+// ADR 0052 §5's outbound mapping is recorded when an incident tool echoes its own
+// incident back in a 2xx response (migration 00089), and the card links it from the
+// footer — the provenance line, which says where things are, not what they are. It
+// is a receipt and the card reads nothing else off it: active and quiet are still
+// the member Cases' alone. Incident cards take no template, so the view's
+// `External` is the one place it is drawn. A tool that echoed nothing leaves the
+// footer exactly as it was.
 
 // incidentEmoji leads every Incident surface. A jigsaw because an Incident is pieces
 // drawn into one picture — and because it is not any of §H.2's state emoji, which a
@@ -248,10 +252,33 @@ func incidentMembers(iv domain.IncidentView, o domain.RenderOptions) string {
 // when it was last true.
 func incidentFooter(iv domain.IncidentView, o domain.RenderOptions, now time.Time) string {
 	parts := []string{"oto", "_" + incidentName(iv) + "_", "updated " + slackDate(now)}
+	parts = append(parts, incidentExternal(iv)...)
 	if o.Continued {
 		parts = append(parts, continuedMarker)
 	}
 	return strings.Join(parts, "  ·  ")
+}
+
+// incidentExternal is one footer entry per external incident a tool echoed back:
+// the tool's link, labelled with its own id when it gave one and with the
+// destination's name when it did not. An id with no link is still worth showing —
+// it is what a reader searches the tool for — so it is drawn as code.
+//
+// The URL is already an absolute https URL (domain.ValidExternalIncident); safeURL
+// is asked anyway, because this is the renderer and mrkdwn is its problem: a `|` or
+// `>` that is legal in a URL would end the link early here.
+func incidentExternal(iv domain.IncidentView) []string {
+	out := make([]string, 0, len(iv.External))
+	for _, e := range iv.External {
+		label := firstNonEmpty(e.ID, e.Destination, "external incident")
+		switch u := safeURL(e.URL); {
+		case u != "":
+			out = append(out, ":link: "+link(u, label))
+		case e.ID != "":
+			out = append(out, ":link: "+code(e.ID))
+		}
+	}
+	return out
 }
 
 // incidentText is the card's top-level text (S5): one sentence, no `<!date>` token,

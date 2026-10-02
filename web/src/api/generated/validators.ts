@@ -659,10 +659,29 @@ export const IncidentMemberDTOSchema = v.looseObject({
   ))),
 });
 
+export const IncidentOutboundDTOSchema = v.looseObject({
+  "channel_id": UuidSchema,
+  "channel_name": v.string(),
+  "external_url": v.nullable(v.pipe(
+    v.string(),
+    v.url(),
+    v.maxLength(2048),
+  )),
+  "external_id": v.nullable(v.pipe(
+    v.string(),
+    v.maxLength(255),
+  )),
+  "recorded_at": TimestampSchema,
+});
+
 export const IncidentDetailDTOSchema = v.intersect([
   IncidentDTOSchema,
   v.looseObject({
     "members": v.array(IncidentMemberDTOSchema),
+    "outbound": v.pipe(
+      v.array(IncidentOutboundDTOSchema),
+      v.maxLength(1000),
+    ),
   }),
 ]);
 

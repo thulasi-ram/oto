@@ -971,6 +971,9 @@ func (c *Container) buildNotification(
 		// keep meaning something. A deployment whose policies name no template
 		// resolves none and every card reads in oto's own voice.
 		Templates: channelsservice.NewTemplates(c.templates),
+		// ADR 0052 §5's outbound mapping (migration 00089): the external incident a
+		// receiver echoes for an Incident fact, kept once per (Incident, channel).
+		Receipts: notifrepo.NewIncidentReceiptRepository(general),
 	}); err != nil {
 		return err
 	}

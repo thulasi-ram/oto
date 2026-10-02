@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 88 {
-		t.Fatalf("latest migration is %d, want 88 — this test pins the number so that a "+
+	if latest != 89 {
+		t.Fatalf("latest migration is %d, want 89 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1631,6 +1631,35 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// accepts a kind the release below it cannot interpret. No column reading can
 	// see that, and it is the half most likely to be forgotten because nothing
 	// references it.
+	// ⭐ 00089 RECORDS ADR 0052 §5'S OUTBOUND MAPPING AS A RECEIPT (git-bug 506ff21):
+	// one table, its four CHECKs and its tenant index, and a Down that drops the table.
+	// The URL CHECK is read for its prefix because it is the one bound the dispatcher's
+	// write restates in SQL — a CHECK that drifted from that restatement would make a
+	// receipt raise inside TX 2 and roll back a `sent` row.
+	if n := countTables("incident_outbound_mappings"); n != 1 {
+		t.Fatalf("incident_outbound_mappings is absent at migration 89 (found %d)", n)
+	}
+	if n := countConstraints("incident_outbound_mappings_some_ck", "incident_outbound_mappings_url_ck",
+		"incident_outbound_mappings_id_ck", "incident_outbound_mappings_pkey"); n != 4 {
+		t.Fatalf("%d of 00089's four constraints exist at migration 89, want 4", n)
+	}
+	if def := constraintDef("incident_outbound_mappings_url_ck", "incident_outbound_mappings"); !strings.Contains(def, "https://") ||
+		!strings.Contains(def, "2048") {
+		t.Fatalf("incident_outbound_mappings_url_ck is %q — it must hold an echoed link to https and 2048 characters", def)
+	}
+	if n := countIndexes("incident_outbound_mappings_org_idx"); n != 1 {
+		t.Fatalf("incident_outbound_mappings_org_idx is absent at migration 89 (found %d)", n)
+	}
+
+	down(89)
+
+	if n := countTables("incident_outbound_mappings"); n != 0 {
+		t.Fatalf("incident_outbound_mappings survived 00089's Down (found %d)", n)
+	}
+	if n := countIndexes("incident_outbound_mappings_org_idx"); n != 0 {
+		t.Fatalf("incident_outbound_mappings_org_idx survived 00089's Down (found %d)", n)
+	}
+
 	// ⭐ 00088 GIVES A WEBHOOK CONNECTION A SECOND SLOT FOR ITS SIGNING SECRET, AND A
 	// SIGNING SECRET AN OVERLAP (ADR 0055 §1, git-bug 2765f74). Its Down has two halves
 	// that cannot be read off each other: the connection's column with its two CHECKs,

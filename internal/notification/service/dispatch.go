@@ -82,6 +82,7 @@ type DispatchService struct {
 	log           *slog.Logger
 	metrics       *Metrics
 	templates     TemplateResolver
+	receipts      IncidentReceipts
 }
 
 // DispatchConfig is everything NewDispatchService needs.
@@ -116,6 +117,11 @@ type DispatchConfig struct {
 	// reads in oto's own voice, which is the correct behaviour for a deployment
 	// that has never configured one.
 	Templates TemplateResolver
+	// Receipts records the external incident a destination echoes back for an
+	// Incident fact (ADR 0052 §5, migration 00089). Nil records nothing, and every
+	// delivery behaves exactly as it did before the echo existed — the echo is a
+	// courtesy a receiver extends, never part of whether a delivery succeeded.
+	Receipts IncidentReceipts
 }
 
 // NewDispatchService builds the service.
@@ -136,6 +142,7 @@ func NewDispatchService(cfg DispatchConfig) (*DispatchService, error) {
 		lease: cfg.StaleClaimLease, clk: cfg.Clock, log: cfg.Logger,
 		metrics:   cfg.Metrics,
 		templates: cfg.Templates,
+		receipts:  cfg.Receipts,
 	}
 	if s.maxInstances <= 0 {
 		s.maxInstances = DefaultMaxInstances
@@ -186,6 +193,10 @@ type sendPlan struct {
 	msg    RenderedMessage
 	target Target
 	gate   *ordering.Gate
+	// incidentID is the Incident this delivery is a fact about, or uuid.Nil. It is
+	// what an echoed external incident is recorded against, carried here so TX 2
+	// does not have to read the notification again to learn it.
+	incidentID uuid.UUID
 }
 
 // Dispatch is `deliver.dispatch`.
@@ -654,6 +665,9 @@ func (s *DispatchService) claim(
 	plan := &sendPlan{
 		delivery: d, thread: th, channel: channel, mode: mode, msg: msg, gate: gate,
 	}
+	if n.SubjectKind == domain.SubjectIncident {
+		plan.incidentID = n.SubjectID
+	}
 
 	target, err := s.open(ctx, scope, channel)
 	if err != nil {
@@ -718,9 +732,50 @@ func (s *DispatchService) record(
 			out, err = s.fail(ctx, scope, d, p.channel, sendErr, classOf(sendErr), now)
 			return err
 		}
-		return s.succeed(ctx, scope, d, p.thread, p.channel, p.mode, result, now)
+		if err := s.succeed(ctx, scope, d, p.thread, p.channel, p.mode, result, now); err != nil {
+			return err
+		}
+		return s.recordReceipt(ctx, scope, p, result, now)
 	})
 	return out, err
+}
+
+// recordReceipt keeps the external incident a destination echoed for an Incident
+// fact — ADR 0052 §5's outbound mapping, as the receipt of this delivery (git-bug
+// 506ff21). It runs in TX 2, beside the `sent` row it is a receipt of, so a crash
+// cannot keep one without the other.
+//
+// ⭐ ONLY AN INCIDENT FACT, AND ONLY WHAT THE PROVIDER ALREADY VALIDATED. A Case
+// fact's echo is ignored: the outbound mapping binds an INCIDENT to its external
+// one, and a receiver that names something for a Case fact has named something oto
+// has no place for. The values arrive through `DeliverResult.External` already
+// passed through `ValidExternalIncident`; nothing else of the response ever
+// reached this module.
+//
+// ⭐ IDEMPOTENT BY CONSTRUCTION. The writer inserts ON CONFLICT DO NOTHING on
+// (Incident, channel), so the retry of a delivery the receiver already answered,
+// and every later fact on the same Incident, records nothing new.
+//
+// ⚠️ THE SLACK CARD SHOWS THE LINK ON ITS NEXT RENDER, NOT THIS INSTANT. The card is
+// built at claim time from the Incident as it is then (C11), and recording a receipt
+// is not an Incident fact — so nothing re-renders the card for it. The next fact
+// that touches the Incident's conversation amends the card, and the link is on it
+// from then on; the Incident's page reads it on every load.
+func (s *DispatchService) recordReceipt(
+	ctx context.Context, scope db.TenantScope, p *sendPlan, result DeliverResult, now time.Time,
+) error {
+	if s.receipts == nil || p.incidentID == uuid.Nil || result.External.IsZero() {
+		return nil
+	}
+	_, err := s.receipts.Record(ctx, scope, domain.IncidentReceipt{
+		IncidentID:  p.incidentID,
+		ChannelID:   p.channel.ID,
+		DeliveryID:  p.delivery.ID,
+		ExternalURL: result.External.URL,
+		ExternalID:  result.External.ID,
+		RecordedAt:  now,
+	})
+	return err
 }
 
 // recordTimeout bounds TX 2. It is generous because the alternative to writing
