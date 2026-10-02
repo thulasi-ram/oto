@@ -85,6 +85,17 @@ func TestADeliveredWebhookCarriesAMessageID(t *testing.T) {
 		t.Fatalf("Ref.MessageID = %q, want the delivery id %q: MarkSent refuses an empty one",
 			res.Ref.MessageID, deliveryID)
 	}
+
+	// A channel test sends with no delivery, and so names no message.
+	res, err = ch.Deliver(context.Background(), domain.DeliverRequest{
+		Message: testMessage(), Mode: domain.ModePostRoot, DeliveryID: uuid.Nil,
+	})
+	if err != nil {
+		t.Fatalf("Deliver: %v", err)
+	}
+	if res.Ref.MessageID != "" {
+		t.Fatalf("a channel test's Ref.MessageID = %q, want none", res.Ref.MessageID)
+	}
 }
 
 // TestAReceiverThatEchoesNothingBehavesExactlyAsBefore: every way of saying nothing
