@@ -912,7 +912,7 @@ func (c *Container) buildNotification(
 	// The Incident reader both halves need (ADR 0052 §5): the evaluation reads an
 	// Incident to route its fact, the view reads it again at claim time (C11). One
 	// late-bound holder, filled once `c.Incidents` exists.
-	c.incidentFacts = &incidentFacts{}
+	c.incidentFacts = &incidentFacts{orgs: c.Identity}
 
 	if c.Views, err = notifservice.NewViewService(notifservice.ViewConfig{
 		Snapshots: snapshots,

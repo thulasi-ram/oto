@@ -256,12 +256,13 @@ func TestADigestAssertsNoGroup(t *testing.T) {
 }
 
 // incidentView is what `notification/service.ViewService.incidentCard` builds, field
-// for field: a Reason, an `IncidentView` and a render time, and NOTHING else (ADR
-// 0052 §5). Two current members — one open, one closed — and one tombstone that was
+// for field: a Reason, the Org, an `IncidentView` and a render time, and NOTHING else
+// (ADR 0052 §5). Two current members — one open, one closed — and one tombstone that was
 // moved away, so every member key, set and absent, is on the wire.
 func incidentView(reason string) *domain.NotificationView {
 	drawn := renderedAt.Add(-20 * time.Minute)
 	return &domain.NotificationView{
+		Org:    domain.OrgRef{ID: "o1", Slug: "acme", Name: "Acme"},
 		Reason: reason,
 		Incident: &domain.IncidentView{
 			ID:      "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",

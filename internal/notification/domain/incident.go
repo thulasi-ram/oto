@@ -21,6 +21,10 @@ import (
 type IncidentFacts struct {
 	ID     uuid.UUID
 	Number int64
+	// Org is the tenant the Incident belongs to, for the envelope's `org`, which
+	// docs/setup/webhook.md §3 promises on every message. A Case fact reads it
+	// through its snapshot; an Incident fact has no snapshot, so it travels here.
+	Org OrgFacts
 	// Active is true while any CURRENT member Case is open (ADR 0052 §3).
 	Active  bool
 	DrawnAt time.Time
