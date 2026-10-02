@@ -40,6 +40,9 @@ import (
 	incidentsservice "github.com/thulasiram/oto/internal/incidents/service"
 	"github.com/thulasiram/oto/internal/ingestion"
 	ingestionservice "github.com/thulasiram/oto/internal/ingestion/service"
+	"github.com/thulasiram/oto/internal/investigator/models/openaicompat"
+	investigatorrepo "github.com/thulasiram/oto/internal/investigator/repository"
+	investigatorservice "github.com/thulasiram/oto/internal/investigator/service"
 	notifapi "github.com/thulasiram/oto/internal/notification/api"
 	notifrepo "github.com/thulasiram/oto/internal/notification/repository"
 	notifservice "github.com/thulasiram/oto/internal/notification/service"
@@ -169,7 +172,10 @@ type Container struct {
 	// Correlators is the machine author of Incidents (ADR 0052 §2): the
 	// operator's CRUD over them, and the evaluator `incidents.correlate` runs.
 	Correlators *incidentsservice.Correlators
-	Ingestion   *ingestion.Module
+	// Investigator holds the model endpoints an org's Investigators use (ADR 0053 §3,
+	// git-bug 8f1f071). The Investigation loop (git-bug 180a525) is its first reader.
+	Investigator *investigatorservice.Service
+	Ingestion    *ingestion.Module
 	// Drills runs delivery drills: one synthetic alert pushed through the REAL
 	// pipeline. It is built AFTER ingestion because it drives ingestion — through
 	// the same `Accept` the webhook handler calls, which is the whole point.
@@ -733,6 +739,33 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	// same timeline (ADR 0052 §2, §4).
 	c.Correlators, err = incidentsservice.NewCorrelators(c.Incidents,
 		incidentsrepo.NewCorrelatorRepository(general))
+	if err != nil {
+		return nil, err
+	}
+
+	// ---- investigator: model endpoints (ADR 0053 §3, git-bug 8f1f071) ------
+	//
+	// ⭐ THE KEY IS SEALED BY THE CHANNELS CREDENTIAL REPOSITORY, the one writer of
+	// the one sealed-secret store (SPEC §D.8), and unsealed only by the investigator's
+	// KeyStore, as a `model_api_key` and nothing else.
+	//
+	// ⭐ THE ADAPTER DIALS THROUGH THE SSRF GUARD. A model base URL is operator-
+	// supplied like every other URL oto dials, so its transport is the guard's; a
+	// self-hosted endpoint on the cluster network needs `allow_private_targets`, the
+	// same switch an in-cluster Alertmanager does. The client timeout is a backstop
+	// only — the Investigation's wall-time budget is the real bound, through ctx —
+	// and retries re-send only a request that got no answer, so they never pay twice.
+	c.Investigator, err = investigatorservice.New(investigatorservice.Deps{
+		Providers:   investigatorrepo.NewProviderRepository(general),
+		Credentials: credentialRepo,
+		Keys:        investigatorrepo.NewKeyStore(general, investigatorUnsealer(c.Keyring)),
+		Dialer: openaicompat.Dialer{
+			HTTPClient: &http.Client{Transport: c.NetGuard.Transport(nil), Timeout: modelCallBackstop},
+			MaxRetries: modelCallRetries,
+		},
+		Tx:    investigatorrepo.NewTxRunner(general),
+		Clock: clk,
+	})
 	if err != nil {
 		return nil, err
 	}

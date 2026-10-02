@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 90 {
-		t.Fatalf("latest migration is %d, want 90 — this test pins the number so that a "+
+	if latest != 91 {
+		t.Fatalf("latest migration is %d, want 91 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1631,6 +1631,43 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// accepts a kind the release below it cannot interpret. No column reading can
 	// see that, and it is the half most likely to be forgotten because nothing
 	// references it.
+	// ⭐ 00091 CONFIGURES A MODEL ENDPOINT WITH A SEALED KEY (ADR 0053 §3, git-bug 8f1f071):
+	// one table with its five CHECKs and its per-org name index, and a widened
+	// `channel_credentials_kind_ck` admitting `model_api_key`. The kind CHECK is read on
+	// both sides for 00075's reason — a Down that dropped the table and forgot the enum
+	// leaves a database accepting a kind the release below cannot interpret — and the
+	// TLS CHECK is read for its body because it is the rule domain.KeyNeedsHTTPS
+	// restates: a key bound for plaintext is refused at both layers or at neither.
+	if n := countTables("model_providers"); n != 1 {
+		t.Fatalf("model_providers is absent at migration 91 (found %d)", n)
+	}
+	if n := countConstraints("model_providers_name_ck", "model_providers_base_url_ck",
+		"model_providers_model_ck", "model_providers_key_tls_ck", "model_providers_time_ck"); n != 5 {
+		t.Fatalf("%d of 00091's five CHECKs exist at migration 91, want 5", n)
+	}
+	if def := constraintDef("model_providers_key_tls_ck", "model_providers"); !strings.Contains(def, "https://") {
+		t.Fatalf("model_providers_key_tls_ck does not confine a key to https: %s", def)
+	}
+	if n := countIndexes("model_providers_org_name_uniq"); n != 1 {
+		t.Fatalf("model_providers_org_name_uniq is absent at migration 91 (found %d)", n)
+	}
+	if def := constraintDef("channel_credentials_kind_ck", "channel_credentials"); !strings.Contains(def, "model_api_key") {
+		t.Fatalf("channel_credentials_kind_ck at migration 91 does not admit model_api_key: %s", def)
+	}
+
+	down(91)
+
+	if n := countTables("model_providers"); n != 0 {
+		t.Fatalf("model_providers survived 00091's Down (found %d)", n)
+	}
+	if n := countIndexes("model_providers_org_name_uniq"); n != 0 {
+		t.Fatalf("model_providers_org_name_uniq survived 00091's Down (found %d)", n)
+	}
+	if def := constraintDef("channel_credentials_kind_ck", "channel_credentials"); strings.Contains(def, "model_api_key") ||
+		!strings.Contains(def, "webhook_mapping_secrets") {
+		t.Fatalf("00091's Down did not restore 00090's channel_credentials_kind_ck: %s", def)
+	}
+
 	// ⭐ 00090 LETS A WEBHOOK CONNECTION CARRY A PAYLOAD MAPPING (ADR 0055 §2, git-bug
 	// 2205620): three columns on `channel_connections` with their four CHECKs, and a
 	// widened `channel_credentials_kind_ck` admitting `webhook_mapping_secrets`. The kind

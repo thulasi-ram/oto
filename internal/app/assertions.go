@@ -15,6 +15,9 @@ import (
 	incidentsrepo "github.com/thulasiram/oto/internal/incidents/repository"
 	incidentsservice "github.com/thulasiram/oto/internal/incidents/service"
 	ingestservice "github.com/thulasiram/oto/internal/ingestion/service"
+	"github.com/thulasiram/oto/internal/investigator/models/openaicompat"
+	investigatorrepo "github.com/thulasiram/oto/internal/investigator/repository"
+	investigatorservice "github.com/thulasiram/oto/internal/investigator/service"
 	notifapi "github.com/thulasiram/oto/internal/notification/api"
 	notifrepo "github.com/thulasiram/oto/internal/notification/repository"
 	notifservice "github.com/thulasiram/oto/internal/notification/service"
@@ -64,14 +67,21 @@ var (
 	_ alertsservice.CaseOpenings       = caseOpenings{}
 	_ incidentsservice.Announcer       = incidentAnnouncer{}
 	_ incidentsservice.CorrelatorStore = (*incidentsrepo.CorrelatorRepository)(nil)
-	_ notifservice.IncidentReader      = (*incidentFacts)(nil)
-	_ alertsservice.SourceHealth       = sourceHealth{}
-	_ alertsservice.SettingsReader     = orgSettings{}
-	_ notifservice.SettingsReader      = orgSettings{}
-	_ rulesservice.RuleLookup          = ruleLookup{}
-	_ enrichservice.SubjectLoader      = subjectLoader{}
-	_ enrichworker.ScopeResolver       = caseScopes{}
-	_ ingestservice.AlertObserver      = alertObserver{}
+	// ADR 0053 §3: the model endpoint's row, its sealed key and the one adapter.
+	_ investigatorservice.ProviderStore    = (*investigatorrepo.ProviderRepository)(nil)
+	_ investigatorservice.CredentialWriter = (*channelsrepo.CredentialRepository)(nil)
+	_ investigatorservice.KeyResolver      = (*investigatorrepo.KeyStore)(nil)
+	_ investigatorservice.ModelDialer      = openaicompat.Dialer{}
+	_ investigatorservice.TxRunner         = (*investigatorrepo.TxRunner)(nil)
+	_ investigatorrepo.Unsealer            = (*secrets.Keyring)(nil)
+	_ notifservice.IncidentReader          = (*incidentFacts)(nil)
+	_ alertsservice.SourceHealth           = sourceHealth{}
+	_ alertsservice.SettingsReader         = orgSettings{}
+	_ notifservice.SettingsReader          = orgSettings{}
+	_ rulesservice.RuleLookup              = ruleLookup{}
+	_ enrichservice.SubjectLoader          = subjectLoader{}
+	_ enrichworker.ScopeResolver           = caseScopes{}
+	_ ingestservice.AlertObserver          = alertObserver{}
 	// The ingest-token mint moved INTO identity (relocation, not a merge with the
 	// PAT mint): the identity service satisfies the sources-side port directly,
 	// and this line is what breaks if either side of that seam drifts.

@@ -160,11 +160,14 @@ linters:
             - "**/internal/stats/api/**"
             - "**/internal/drill/api/**"
             - "**/internal/incidents/api/**"
+            - "**/internal/investigator/api/**"
           deny:
             - pkg: github.com/thulasiram/oto/internal/drill/repository
               desc: "api MUST NOT import repository (drill); call the service"
             - pkg: github.com/thulasiram/oto/internal/incidents/repository
               desc: "api MUST NOT import repository (incidents); call the service"
+            - pkg: github.com/thulasiram/oto/internal/investigator/repository
+              desc: "api MUST NOT import repository (investigator); call the service"
             - pkg: github.com/thulasiram/oto/internal/identity/repository
               desc: "api MUST NOT import repository (identity); call the service"
             - pkg: github.com/thulasiram/oto/internal/sources/repository
@@ -209,11 +212,14 @@ linters:
             - "**/internal/stats/repository/**"
             - "**/internal/drill/repository/**"
             - "**/internal/incidents/repository/**"
+            - "**/internal/investigator/repository/**"
           deny:
             - pkg: github.com/thulasiram/oto/internal/drill/api
               desc: "repository MUST NOT import api (drill)"
             - pkg: github.com/thulasiram/oto/internal/incidents/api
               desc: "repository MUST NOT import api (incidents)"
+            - pkg: github.com/thulasiram/oto/internal/investigator/api
+              desc: "repository MUST NOT import api (investigator)"
             - pkg: github.com/thulasiram/oto/internal/identity/api
               desc: "repository MUST NOT import api (identity)"
             - pkg: github.com/thulasiram/oto/internal/sources/api
@@ -258,6 +264,7 @@ linters:
             - "**/internal/stats/domain/**"
             - "**/internal/drill/domain/**"
             - "**/internal/incidents/domain/**"
+            - "**/internal/investigator/domain/**"
           allow:
             # THE SHARED DOMAIN KERNEL (rule K below). A domain package may name the
             # kernel's value objects; it may name nothing else outside platform.
@@ -970,6 +977,8 @@ linters:
               desc: "platform MUST NOT import the stats domain"
             - pkg: github.com/thulasiram/oto/internal/incidents
               desc: "platform MUST NOT import the incidents domain"
+            - pkg: github.com/thulasiram/oto/internal/investigator
+              desc: "platform MUST NOT import the investigator domain"
             - pkg: github.com/thulasiram/oto/internal/app
               desc: "platform MUST NOT import the wiring layer"
 
@@ -986,6 +995,19 @@ linters:
           deny:
             - pkg: github.com/slack-go/slack
               desc: "the Slack SDK is confined to channels/providers/slack and channels/render/slack (R5)"
+
+        # ADR 0053 §3 — the model SDK is a transport behind ONE port. Its types stop at
+        # the one adapter, so no vendor's name or shape reaches the Investigation loop,
+        # and a second adapter is a new package here, never a second import elsewhere.
+        model-sdk-is-adapter-only:
+          list-mode: lax
+          files:
+            - "**/internal/**"
+            - "**/cmd/**"
+            - "!**/internal/investigator/models/openaicompat/**"
+          deny:
+            - pkg: github.com/openai/openai-go
+              desc: "the model SDK is confined to investigator/models/openaicompat (ADR 0053 §3); speak investigator/domain.ModelProvider"
 
         # Global state, weak randomness and print debugging do not survive review.
         banned-packages:
