@@ -92,8 +92,8 @@ one is a number an operator wrote, which is the test 0044 set.
   This is 0013's rule run the other way: the incident tool does not resolve oto's alert, and oto
   does not resolve the incident tool's incident. ⚠️ *Narrowed by
   [0055](/oto/adr/0055-an-incident-tool-integration-is-data-or-a-bridge-never-code-in-oto/) §4: oto's own
-  code and oto's template catalog never send a command, but an operator-written `json` template
-  may map a fact to one — the operator's rule, not oto's.*
+  code and oto's mapping catalog never send a command, but an operator-written payload mapping
+  on a webhook Connection may turn a fact into one — the operator's rule, not oto's.*
 - **Nothing is read back.** Two-way sync is not considered.
 
 ### 6. An Incident may be a conversation
