@@ -25,9 +25,8 @@ vendor whose API wants a different JSON shape, without writing a service.
 
 ### 1. The event contract is the plugin API
 
-`oto.notification.v1` is the surface every integration builds on. It gains what an API needs to be
-built on by strangers: a **signature header** (HMAC over the body with a per-channel secret, so a
-receiver can tell oto sent it), and a written **compatibility promise** — additive changes only
+`oto.notification.v1` is the surface every integration builds on. It already signs each body (`X-Oto-Signature`, HMAC with the Connection's secret); it gains what an
+API built on by strangers needs on top: **secret rotation, a signed timestamp** against replay, and a written **compatibility promise** — additive changes only
 within `v1`; a removal or a change of meaning is `v2`, sent side by side for a stated period.
 
 ### 2. A plugin is data: a payload mapping on the webhook Connection
@@ -46,6 +45,9 @@ to that surface's stakes, not a template's:
   visible and retryable in the delivery audit. It never falls back to the plain envelope, which the
   vendor could not parse — that would turn a broken mapping into a missing incident.
 - Every interpolated value is JSON-escaped, with no opt-out.
+- **A mapping never holds a secret.** A vendor key that must travel in the body (PagerDuty's
+  `routing_key`) is a sealed credential on the Connection, which the mapping refers to by name and
+  oto fills in at send time; a mapping file is safe to share in the catalog because it carries none.
 
 A **catalog** of community mappings is a folder of files — contributed, reviewed and imported onto a
 Connection; no code ships with one.
