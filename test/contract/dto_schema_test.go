@@ -127,6 +127,9 @@ var bindings = []binding{
 	{"incidents", "IncidentDTO", incidentsapi.IncidentDTO{}},
 	{"incidents", "IncidentMemberDTO", incidentsapi.IncidentMemberDTO{}},
 	{"incidents", "IncidentDetailDTO", incidentsapi.IncidentDetailDTO{}},
+	// ADR 0052 §5's outbound mapping (migration 00089): the receipt a tool's echo
+	// left, one per destination, carried on `IncidentDetailDTO.outbound`.
+	{"incidents", "IncidentOutboundDTO", incidentsapi.IncidentOutboundDTO{}},
 	{"incidents", "CreateIncidentRequest", incidentsapi.CreateIncidentRequest{}},
 	{"incidents", "AddIncidentCaseRequest", incidentsapi.AddIncidentCaseRequest{}},
 	{"incidents", "MoveIncidentCaseRequest", incidentsapi.MoveIncidentCaseRequest{}},

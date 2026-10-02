@@ -324,6 +324,32 @@ type chanTester struct {
 	// scoped makes Test behave like the real query and refuse an id the caller
 	// does not own, which is what the tenant probe drives.
 	store *chanStore
+	// connections scopes TestMapping the same way: the real Tester reads the
+	// connection under the caller's tenant before it reads the channel.
+	connections *chanConnStore
+	// mapped records every TestMapping that got past the scope, so a cross-tenant
+	// probe can prove nothing was sent.
+	mapped []uuid.UUID
+}
+
+func (f *chanTester) TestMapping(
+	ctx context.Context, s db.TenantScope, connectionID, channelID uuid.UUID, _ string,
+) (domain.TestResult, error) {
+	if f.connections != nil {
+		if _, err := f.connections.Get(ctx, s, connectionID); err != nil {
+			return domain.TestResult{}, err
+		}
+	}
+	if f.store != nil {
+		if _, err := f.store.Get(ctx, s, channelID); err != nil {
+			return domain.TestResult{}, err
+		}
+	}
+	f.mapped = append(f.mapped, connectionID)
+	if f.err != nil {
+		return domain.TestResult{}, f.err
+	}
+	return f.result, nil
 }
 
 func (f *chanTester) Test(
@@ -491,8 +517,9 @@ func newChanWorld(t *testing.T) *chanWorld {
 			answer: domain.ConversationResult{ID: "C7F2X9QLM", Name: "sre-alerts"},
 		},
 		tester: &chanTester{
-			store:  store,
-			result: domain.TestResult{OK: true, ProviderConversationID: "C7F2X9QLM", ProviderMessageID: "1723023262.114300", CheckedAt: chanNow},
+			store:       store,
+			connections: connStore,
+			result:      domain.TestResult{OK: true, ProviderConversationID: "C7F2X9QLM", ProviderMessageID: "1723023262.114300", CheckedAt: chanNow},
 		},
 	}
 	// The REAL write facade over the fake store and the fake tester: the claim
@@ -945,6 +972,13 @@ func TestAnotherTenantsChannelIdIsAlwaysA404(t *testing.T) {
 			Op: "resolveSlackConversation", Method: http.MethodPost,
 			Path: "/channel-connections/" + conn + "/slack/resolve", Body: `{"name":"sre-alerts"}`,
 		},
+		// The mapping test opens the connection's sealed mapping secrets and may
+		// open a real incident in the tool — the worst route here to leak across.
+		{
+			Op: "testChannelConnectionMapping", Method: http.MethodPost,
+			Path: "/channel-connections/" + conn + "/mapping/test",
+			Body: `{"channel_id":"` + stranger + `","fact":"drawn"}`,
+		},
 	}
 
 	apitest.AssertCrossTenant404(t, func(t *testing.T) (*apitest.Client, apitest.RouteCheck) {
@@ -964,6 +998,9 @@ func TestAnotherTenantsChannelIdIsAlwaysA404(t *testing.T) {
 			}
 			if len(w.resolver.queries) != 0 {
 				t.Fatal("⛔ a cross-tenant resolve reached the resolver, and so would have opened a token")
+			}
+			if len(w.tester.mapped) != 0 {
+				t.Fatal("⛔ a cross-tenant mapping test reached the sender, and so would have opened its secrets")
 			}
 		}
 	}, routes)
@@ -1519,4 +1556,32 @@ func TestASlackConnectionCarriesNoPayloadMapping(t *testing.T) {
 	}
 	resp := w.client.POST(t, "/channel-connections", body).MustStatus(t, http.StatusUnprocessableEntity)
 	resp.MustViolate(t, "payload_mapping")
+}
+
+// TestAMappingTestSendsTheChosenFactThroughTheConnection: the happy path of
+// `POST /channel-connections/{id}/mapping/test`. The request is the contract's,
+// the answer is the channel test's shape, and the send went through the
+// connection in the path — not some other one the body could name.
+func TestAMappingTestSendsTheChosenFactThroughTheConnection(t *testing.T) {
+	t.Parallel()
+
+	w := newChanWorld(t)
+	body := map[string]any{"channel_id": chanMine.String(), "fact": "drawn"}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+	schema.AssertRequest(t, "testChannelConnectionMapping", raw)
+
+	resp := w.client.POST(t, "/channel-connections/"+chanConnMine.String()+"/mapping/test", body).
+		MustStatus(t, http.StatusOK)
+	schema.Assert(t, "testChannelConnectionMapping", http.StatusOK, resp.Body())
+
+	if len(w.tester.mapped) != 1 || w.tester.mapped[0] != chanConnMine {
+		t.Fatalf("the mapping test was sent through %v, want exactly [%s]", w.tester.mapped, chanConnMine)
+	}
+	data, _ := resp.JSON(t)["data"].(map[string]any)
+	if data["ok"] != true {
+		t.Fatalf("ok = %v, want true", data["ok"])
+	}
 }
