@@ -295,6 +295,7 @@ func (f *chanResolver) ResolveConversation(
 type chanCreds struct {
 	sealed  []map[string]string
 	rotated []map[string]string
+	deleted []uuid.UUID
 }
 
 func (f *chanCreds) CreateCredential(
@@ -308,6 +309,11 @@ func (f *chanCreds) RotateCredential(
 	_ context.Context, _ db.TenantScope, _ uuid.UUID, _ string, values map[string]string,
 ) error {
 	f.rotated = append(f.rotated, values)
+	return nil
+}
+
+func (f *chanCreds) DeleteCredential(_ context.Context, _ db.TenantScope, id uuid.UUID) error {
+	f.deleted = append(f.deleted, id)
 	return nil
 }
 

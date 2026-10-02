@@ -16,6 +16,7 @@ import (
 	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/httpx"
 	"github.com/thulasiram/oto/internal/platform/idempotency"
+	"github.com/thulasiram/oto/internal/platform/log"
 )
 
 // listConnections serves GET /api/v1/channel-connections.
@@ -305,6 +306,27 @@ func (rt *Router) updateConnection(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
+	}
+
+	// ⛔ A DETACHED SECRET IS DELETED, NOT ORPHANED. Detaching only nulls the slot;
+	// the sealed row would otherwise sit in channel_credentials with nothing pointing
+	// at it, holding a signing key or a vendor's routing key nobody can see or rotate.
+	// The connection has already changed, so a failed delete is logged, not answered.
+	var detached []*uuid.UUID
+	if dto.MappingSecrets != nil && len(dto.MappingSecrets) == 0 {
+		detached = append(detached, existing.MappingCredentialID)
+	}
+	if dto.SigningCredential != nil && dto.SigningCredential.Kind == "none" {
+		detached = append(detached, existing.SigningCredentialID)
+	}
+	for _, cid := range detached {
+		if cid == nil || rt.creds == nil {
+			continue
+		}
+		if derr := rt.creds.DeleteCredential(r.Context(), scope, *cid); derr != nil {
+			log.From(r.Context()).Error("channels: could not delete a detached connection credential",
+				"connection_id", id, "credential_id", *cid, "error", derr)
+		}
 	}
 	httpx.Data(w, r, http.StatusOK, connectionDTO(conn), started)
 }

@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/osteele/liquid"
 
@@ -175,11 +176,60 @@ func compileMappingSource(src string) (*liquid.Template, []string, error) {
 	}
 	// The SOURCE is sanitised, as Compile does for a template: a private-use
 	// codepoint typed into a mapping would otherwise reach the vendor raw.
-	t, err := engineOf().ParseString(sanitise(src))
+	t, err := mappingEngineOf().ParseString(sanitise(src))
 	if err != nil {
 		return nil, nil, fmt.Errorf("this source does not parse: %s", liquidMessage(err))
 	}
 	return t, names, nil
+}
+
+// mappingEngine is the engine a payload mapping renders on, built once.
+var (
+	mappingOnce   sync.Once
+	mappingEngine *liquid.Engine
+)
+
+// mappingEngineOf is engineOf with the four TEXT filters taught that a mapping's
+// values are JSON string CONTENT.
+//
+// ⛔ A BOUND VALUE IS ALREADY ESCAPED, AND A FILTER THAT CUTS OR CASE-MAPS THE ESCAPED
+// FORM CAN BREAK IT. `truncate_runes: 3` over `ab\"cd` stops after the backslash and
+// leaves a lone `\` that escapes the mapping's own closing quote — the body is no
+// longer JSON, or worse, is different JSON. So each filter unescapes the value,
+// applies the template engine's own transform to the TEXT, and escapes the result
+// again. A value that does not unescape (a literal the mapping typed with a bare
+// quote in it) gets the transform as it stands, which is what the author wrote.
+//
+// ⛔ A SECRET SENTINEL IS NOT ROUND-TRIPPED. Its separators would come back escaped
+// as `\u2028`, the reference would silently become text and no secret would be sent,
+// so a value carrying one gets the transform raw — which bends the name, and
+// checkSentinels then refuses `{{ secrets.key | upper }}` as it always has.
+func mappingEngineOf() *liquid.Engine {
+	mappingOnce.Do(func() {
+		e := liquid.NewBasicEngine()
+		registerFilters(e)
+		registerTags(e)
+		e.RegisterFilter("upper", func(v any) any { return onJSONText(str(v), upperText) })
+		e.RegisterFilter("lower", func(v any) any { return onJSONText(str(v), lowerText) })
+		e.RegisterFilter("capitalise", func(v any) any { return onJSONText(str(v), capitaliseText) })
+		e.RegisterFilter("truncate_runes", func(v any, n int) any {
+			return onJSONText(str(v), func(s string) string { return truncateRunes(s, n) })
+		})
+		mappingEngine = e
+	})
+	return mappingEngine
+}
+
+// onJSONText applies f to the text a piece of JSON string content spells.
+func onJSONText(s string, f func(string) string) string {
+	if strings.ContainsRune(s, secretOpen) || strings.ContainsRune(s, secretShut) {
+		return f(s)
+	}
+	var text string
+	if err := json.Unmarshal([]byte(`"`+s+`"`), &text); err != nil {
+		return f(s)
+	}
+	return jsonStringContent(f(text))
 }
 
 // liquidSegments returns the inside of every `{{ }}` and `{% %}` in a source that
@@ -257,6 +307,9 @@ func (m *Mapping) Render(envelope json.RawMessage) (MappingOutput, error) {
 	if err := checkSentinels(body); err != nil {
 		return out, err
 	}
+	if err := m.ownRefs(SecretRefs(body)); err != nil {
+		return out, err
+	}
 
 	for _, h := range m.headers {
 		v, err := renderMapping(h.value, env)
@@ -274,12 +327,30 @@ func (m *Mapping) Render(envelope json.RawMessage) (MappingOutput, error) {
 		if err := checkSentinels(v); err != nil {
 			return out, fmt.Errorf("header %s: %w", h.name, err)
 		}
+		if err := m.ownRefs(SecretRefs(v)); err != nil {
+			return out, fmt.Errorf("header %s: %w", h.name, err)
+		}
 		if out.Headers == nil {
 			out.Headers = map[string]string{}
 		}
 		out.Headers[h.name] = v
 	}
 	return out, nil
+}
+
+// ownRefs refuses a rendered reference the mapping's SOURCE never wrote. The escape
+// already makes a value-forged sentinel impossible; this is the second wall, so that a
+// reference reaching FillSecrets is always one the operator typed as
+// `secrets.<name>`, whatever a future binder or filter lets through.
+func (m *Mapping) ownRefs(refs []string) error {
+	for _, n := range refs {
+		i := sort.SearchStrings(m.secrets, n)
+		if i >= len(m.secrets) || m.secrets[i] != n {
+			return fmt.Errorf("the rendered request references secrets.%s, which the mapping does not read; "+
+				"a secret reference can only come from the mapping itself", n)
+		}
+	}
+	return nil
 }
 
 // renderMapping runs one source and strips oto's private-use marks from the output:
@@ -342,8 +413,12 @@ func bindValue(v any) any {
 		return out
 	case map[string]any:
 		out := make(map[string]any, len(t))
+		// ⛔ KEYS ARE ESCAPED TOO. `{{ alert.annotations }}` renders a map's keys
+		// into the body as well as its values, and an annotation's NAME is as
+		// writable as its value: an unescaped key holding `","event_action":"x` would
+		// be structure, and one spelling the sentinel separators a forged reference.
 		for k, e := range t {
-			out[k] = bindValue(e)
+			out[mappingText(k)] = bindValue(e)
 		}
 		return out
 	default:
@@ -451,8 +526,31 @@ func FillSecrets(
 }
 
 // compiledMappings keeps parsed mappings across deliveries, keyed by the stored
-// bytes. Bounded by what an org has SAVED, for the reason compiledCache is.
-var compiledMappings sync.Map // string(raw) -> *Mapping or error
+// bytes.
+//
+// ⚠️ IT IS CAPPED, NOT "BOUNDED BY WHAT AN ORG HAS SAVED". Nothing evicts an entry:
+// every edit leaves its predecessor's bytes behind, and a parse that failed is cached
+// as its error, so the key space only grows. Past maxCompiledMappings entries the
+// whole cache is dropped and refilled on demand — recompiling is cheap, and an
+// unbounded map keyed by bytes is not.
+var (
+	compiledMappings     sync.Map // string(raw) -> *Mapping or error
+	compiledMappingCount atomic.Int64
+)
+
+const maxCompiledMappings = 1024
+
+// storeCompiledMapping caches v under key, emptying the cache first when it is full.
+func storeCompiledMapping(key string, v any) {
+	if compiledMappingCount.Add(1) > maxCompiledMappings {
+		compiledMappings.Range(func(k, _ any) bool {
+			compiledMappings.Delete(k)
+			return true
+		})
+		compiledMappingCount.Store(1)
+	}
+	compiledMappings.Store(key, v)
+}
 
 // CompiledMapping parses and compiles a stored mapping, reusing the work across
 // deliveries.
@@ -468,7 +566,7 @@ func CompiledMapping(raw json.RawMessage) (*Mapping, error) {
 	}
 	doc, err := domain.ParsePayloadMapping(raw)
 	if err != nil {
-		compiledMappings.Store(key, err)
+		storeCompiledMapping(key, err)
 		return nil, err
 	}
 	m, probs := CompileMapping(doc)
@@ -478,9 +576,9 @@ func CompiledMapping(raw json.RawMessage) (*Mapping, error) {
 			msgs = append(msgs, p.Field+": "+p.Message)
 		}
 		err := errors.New("the payload mapping does not compile: " + strings.Join(msgs, "; "))
-		compiledMappings.Store(key, err)
+		storeCompiledMapping(key, err)
 		return nil, err
 	}
-	compiledMappings.Store(key, m)
+	storeCompiledMapping(key, m)
 	return m, nil
 }

@@ -1,0 +1,14 @@
+# ⛔ DELIBERATELY BAD (catalog_test.go): `event_action` twice. The check reads the
+# first, `trigger`; a tool that keeps the last reads whatever the second one says.
+vendor: PagerDuty
+title: PagerDuty Events API v2
+summary: Sends the command twice and lets the tool pick.
+docs: [https://docs.pagerduty.com/developer/send-alert-event]
+checked_on: "2026-10-02"
+setup: [Do not ship this.]
+commands:
+  - field: event_action
+    forbidden: [resolve, acknowledge]
+secret_fields: [routing_key]
+mapping:
+  body: '{"routing_key": "{{ secrets.routing_key }}", "event_action": "trigger", "dedup_key": "{{ incident.id }}", "payload": {"summary": "{{ summary }}", "source": "oto", "severity": "critical"}, "event_action": "{{ reason }}"}'

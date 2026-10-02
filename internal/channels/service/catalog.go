@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"maps"
 	"net/url"
@@ -207,6 +208,11 @@ func catalogCanary(name string) string { return "oto-catalog-canary-" + name }
 //  4. A CONNECTION WOULD ACCEPT IT: ValidateMapping, given the secrets it names.
 //  5. A KEY IS A REFERENCE. Each secret field renders as exactly one secret the
 //     mapping names, on every fact — never a literal key, never empty.
+//  6. ONE ANSWER PER KEY. No object in a rendered body repeats a key: the check
+//     reads the first and a tool may read the last.
+//  7. A COMMAND IS WRITTEN, NOT INTERPOLATED. Each command field's rendered value
+//     appears as a literal in some mapping source; otherwise it comes from the
+//     envelope's data, and an alert the corpus does not contain could set it.
 func CheckCatalogMapping(c domain.CatalogMapping) []string {
 	var probs []string
 	add := func(format string, args ...any) {
@@ -269,6 +275,8 @@ func CheckCatalogMapping(c domain.CatalogMapping) []string {
 		add("the mapping does not compile")
 		return probs
 	}
+	sources := mappingSources(doc)
+	fromData := map[string]bool{}
 	canaries := make(map[string]string, len(c.Secrets))
 	for _, n := range c.Secrets {
 		canaries[n] = catalogCanary(n)
@@ -289,6 +297,15 @@ func CheckCatalogMapping(c domain.CatalogMapping) []string {
 			add("fixture %q: %s", fx.Name, err.Error())
 			continue
 		}
+		// A repeated key is two answers to one question, and gjson reads the first
+		// while a tool may read the last: the check would pass a `trigger` the tool
+		// never sees.
+		if k, err := repeatedKey(body); err != nil {
+			add("fixture %q (%s): the body does not decode: %s", fx.Name, out.Field, err.Error())
+		} else if k != "" {
+			add("fixture %q (%s): the body repeats the key %q; which of the two a tool reads is its choice, "+
+				"not the catalog's", fx.Name, out.Field, k)
+		}
 		for _, cmd := range c.Commands {
 			got := gjson.GetBytes(body, cmd.Field)
 			if !got.Exists() {
@@ -302,6 +319,16 @@ func CheckCatalogMapping(c domain.CatalogMapping) []string {
 						fx.Name, out.Field, cmd.Field, got.String(), out.Fact)
 				}
 			}
+			// The corpus is finite and an alert is not: a command field whose value
+			// is interpolated passes every fixture and sends whatever a label says.
+			// So the value must be one the mapping itself writes, as a literal.
+			// Reported once per field: twenty copies would crowd out the rest.
+			if !fromData[cmd.Field] && !writtenLiterally(got, sources) {
+				fromData[cmd.Field] = true
+				add("fixture %q (%s): %s is %q, which no mapping source writes as a literal; "+
+					"it comes from the envelope's data, so an alert would decide the command",
+					fx.Name, out.Field, cmd.Field, got.String())
+			}
 		}
 		for _, sf := range c.SecretFields {
 			got := gjson.GetBytes(body, sf)
@@ -312,6 +339,79 @@ func CheckCatalogMapping(c domain.CatalogMapping) []string {
 		}
 	}
 	return probs
+}
+
+// writtenLiterally reports whether a rendered command value appears in some mapping
+// source as the JSON literal it is — `"trigger"` for a string, the bare token for a
+// number or a boolean.
+func writtenLiterally(got gjson.Result, sources []mappingSource) bool {
+	literal := got.Raw
+	if got.Type == gjson.String {
+		var b bytes.Buffer
+		enc := json.NewEncoder(&b)
+		enc.SetEscapeHTML(false)
+		if err := enc.Encode(got.Str); err != nil {
+			return false
+		}
+		literal = strings.TrimSuffix(b.String(), "\n")
+	}
+	for _, src := range sources {
+		if strings.Contains(src.text, literal) {
+			return true
+		}
+	}
+	return false
+}
+
+// repeatedKey walks a JSON document token by token and returns the first key any
+// one object holds twice, or "".
+func repeatedKey(body []byte) (string, error) {
+	type frame struct {
+		keys    map[string]bool // nil for an array
+		wantKey bool
+	}
+	var stack []*frame
+	// valueDone marks the enclosing object as ready for its next key.
+	valueDone := func() {
+		if n := len(stack); n > 0 && stack[n-1].keys != nil {
+			stack[n-1].wantKey = true
+		}
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	for {
+		tok, err := dec.Token()
+		if errors.Is(err, io.EOF) {
+			return "", nil
+		}
+		if err != nil {
+			return "", err
+		}
+		if n := len(stack); n > 0 && stack[n-1].keys != nil && stack[n-1].wantKey {
+			if d, ok := tok.(json.Delim); ok && d == '}' {
+				stack = stack[:n-1]
+				valueDone()
+				continue
+			}
+			k, _ := tok.(string)
+			if stack[n-1].keys[k] {
+				return k, nil
+			}
+			stack[n-1].keys[k] = true
+			stack[n-1].wantKey = false
+			continue
+		}
+		switch tok {
+		case json.Delim('{'):
+			stack = append(stack, &frame{keys: map[string]bool{}, wantKey: true})
+		case json.Delim('['):
+			stack = append(stack, &frame{})
+		case json.Delim(']'), json.Delim('}'):
+			stack = stack[:len(stack)-1]
+			valueDone()
+		default:
+			valueDone()
+		}
+	}
 }
 
 // isCanary reports whether a rendered field is exactly one secret's canary.

@@ -304,6 +304,12 @@ func MappingFixtures() []Fixture {
 		"alertname": "quote\" backslash\\ newline\n </script> \u2028sep\u2029",
 		"severity":  "critical",
 	}
+	// Hostile annotation KEYS, which a mapping binds as well as values: an alert's
+	// annotation names are as writable as its labels, and `{{ alert.annotations }}`
+	// renders them. One tries to close the string and add a command field; the other
+	// spells a secret reference out of the sentinel separators.
+	hostileCase.Alerts[0].Annotations["\",\"event_action\":\"resolve\",\"x\":\""] = "v"
+	hostileCase.Alerts[0].Annotations["\u2028routing_key\u2029"] = "v"
 	hostileIncident := incidentFixtureView("drawn")
 	hostileIncident.Incident.DrawnBy.Label = "</script>\"\\\n<!channel>"
 	hostileIncident.Incident.Members[0].AlertName = "a\"b\\c\nd\u2028e"

@@ -195,3 +195,87 @@ func TestABodyThatIsNotOneJSONObjectIsRefused(t *testing.T) {
 		}
 	}
 }
+
+// TestAHostileAnnotationKeyCannotBecomeStructureOrASecret: a map renders its KEYS
+// into the body too, and an annotation's name is as writable as its value. One key
+// tries to close the string and add a command field; the other spells a secret
+// reference out of the sentinel separators. Both must land as text.
+func TestAHostileAnnotationKeyCannotBecomeStructureOrASecret(t *testing.T) {
+	t.Parallel()
+	raw, err := json.Marshal(map[string]any{
+		"schema": "oto.notification.v1",
+		"reason": "fired",
+		"alert": map[string]any{"annotations": map[string]any{
+			"\",\"event_action\":\"resolve\",\"x\":\"": "v",
+			" routing_key ":                            "v",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := compileMapping(t, domain.PayloadMapping{Body: `{"a":"{{ alert.annotations }}"}`})
+	out, err := m.Render(raw)
+	if err != nil {
+		t.Fatalf("Render: %v\n%s", err, out.Body)
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(out.Body), &body); err != nil {
+		t.Fatalf("a hostile annotation key broke the JSON: %v\n%s", err, out.Body)
+	}
+	if len(body) != 1 {
+		t.Fatalf("an annotation key became structure: %v", body)
+	}
+	if strings.ContainsRune(out.Body, ' ') || strings.ContainsRune(out.Body, ' ') {
+		t.Fatalf("⛔ an annotation key put a sentinel into the body: %q", out.Body)
+	}
+	if refs := template.SecretRefs(out.Body); len(refs) != 0 {
+		t.Fatalf("⛔ an annotation key forged a secret reference: %v", refs)
+	}
+}
+
+// TestATextFilterCutsTheTextAndNotItsEscape: a bound value is JSON string content,
+// so `truncate_runes` over its escaped form could stop between a backslash and what
+// it escapes and leave the body broken. The filter cuts the TEXT and re-escapes it.
+func TestATextFilterCutsTheTextAndNotItsEscape(t *testing.T) {
+	t.Parallel()
+	m := compileMapping(t, domain.PayloadMapping{
+		Body: `{"title": "{{ alerts[0].labels.alertname | truncate_runes: 3 }}"}`,
+	})
+	for _, c := range []struct{ label, want string }{
+		{`ab"cd`, `ab"…`},
+		{`ab\cd`, `ab\…`},
+		{"ab\ncd", "ab\n…"},
+		// A control character is dropped at binding, so it is not counted.
+		{"a\x07bcd", "abc…"},
+	} {
+		out, err := m.Render(envelopeWith(t, c.label))
+		if err != nil {
+			t.Errorf("%q: Render: %v\n%s", c.label, err, out.Body)
+			continue
+		}
+		var body map[string]string
+		if err := json.Unmarshal([]byte(out.Body), &body); err != nil {
+			t.Errorf("%q: truncating broke the JSON: %v\n%s", c.label, err, out.Body)
+			continue
+		}
+		if body["title"] != c.want {
+			t.Errorf("%q truncated to %q, want %q", c.label, body["title"], c.want)
+		}
+	}
+}
+
+// TestUpperCaseMapsTheTextAndNotItsEscape: `\n` must not become `\N`.
+func TestUpperCaseMapsTheTextAndNotItsEscape(t *testing.T) {
+	t.Parallel()
+	m := compileMapping(t, domain.PayloadMapping{
+		Body: `{"title": "{{ alerts[0].labels.alertname | upper }}"}`,
+	})
+	out, err := m.Render(envelopeWith(t, "a\"b\\c\nd"))
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	var body map[string]string
+	if err := json.Unmarshal([]byte(out.Body), &body); err != nil || body["title"] != "A\"B\\C\nD" {
+		t.Fatalf("upper rendered %s (%v)", out.Body, err)
+	}
+}

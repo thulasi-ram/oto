@@ -424,3 +424,8 @@ func (r *CredentialRepository) RotateCredential(
 	_, err := r.Rotate(ctx, s, credentialID, kind, values)
 	return err
 }
+
+// DeleteCredential removes a credential row, by its plain-typed id.
+func (r *CredentialRepository) DeleteCredential(ctx context.Context, s db.TenantScope, credentialID uuid.UUID) error {
+	return r.Delete(ctx, s, credentialID)
+}
