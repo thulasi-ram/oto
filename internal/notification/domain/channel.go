@@ -78,6 +78,10 @@ type Channel struct {
 	// keeps the same meaning to every reader in this module without them
 	// needing to know the join exists.
 	CredentialID *uuid.UUID
+	// SigningCredentialID names the connection's outbound signing secret, when it
+	// has one (migration 00088) — joined from `channel_connections` exactly as
+	// CredentialID is, and just as sealed: this module hands it to the same port.
+	SigningCredentialID *uuid.UUID
 
 	Capabilities Capability
 	// Renderer is `channels.renderer`; "default" resolves to the provider's own.

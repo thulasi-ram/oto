@@ -224,7 +224,8 @@ func (f *chanConnStore) Create(
 	}
 	return domain.Connection{
 		ID: id, OrgID: s.OrgID(), Type: in.Type, Name: in.Name, Config: in.Config,
-		CredentialID: in.CredentialID, CreatedAt: now, UpdatedAt: now,
+		CredentialID: in.CredentialID, SigningCredentialID: in.SigningCredentialID,
+		CreatedAt: now, UpdatedAt: now,
 	}, nil
 }
 
@@ -1298,4 +1299,105 @@ func TestAnUnknownQueryParameterOnAChannelEndpointIsADeclared400(t *testing.T) {
 		{Op: "deleteChannel", Method: http.MethodDelete, Path: "/channels/" + chanMine.String() + "?foo=bar"},
 		{Op: "testChannel", Method: http.MethodPost, Path: "/channels/" + chanMine.String() + "/test?foo=bar"},
 	})
+}
+
+// TestAWebhookConnectionCarriesABearerTokenAndASigningSecret is the second slot
+// (migration 00088, ADR 0055 §1): a receiver that requires a bearer token AND
+// verifies X-Oto-Signature is configured with one connection, both secrets are
+// sealed, and neither comes back.
+func TestAWebhookConnectionCarriesABearerTokenAndASigningSecret(t *testing.T) {
+	t.Parallel()
+
+	w := newChanWorld(t)
+	const (
+		token  = "tok-not-a-real-token"    //nolint:gosec // a fixture, not a credential
+		secret = "whsec-not-a-real-secret" //nolint:gosec // a fixture, not a credential
+	)
+	body := map[string]any{
+		"type":   "webhook",
+		"name":   "incident tool",
+		"config": map[string]any{},
+		"credential": map[string]any{
+			"kind": "bearer", "values": map[string]string{"token": token},
+		},
+		"signing_credential": map[string]any{
+			"kind": "webhook_signing_secret", "values": map[string]string{"secret": secret},
+		},
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+	schema.AssertRequest(t, "createChannelConnection", raw)
+
+	resp := w.client.POST(t, "/channel-connections", body).MustStatus(t, http.StatusCreated)
+	schema.Assert(t, "createChannelConnection", http.StatusCreated, resp.Body())
+
+	if len(w.creds.sealed) != 2 || w.creds.sealed[0]["token"] != token || w.creds.sealed[1]["secret"] != secret {
+		t.Fatalf("both secrets must reach the sealer, credential first: %#v", w.creds.sealed)
+	}
+	if len(w.connections.created) != 1 ||
+		w.connections.created[0].CredentialID == nil || w.connections.created[0].SigningCredentialID == nil {
+		t.Fatalf("the connection was not created with both slots filled: %#v", w.connections.created)
+	}
+	for _, leaked := range []string{token, secret} {
+		if strings.Contains(string(resp.Body()), leaked) {
+			t.Fatalf("⛔ a secret came back in the response body:\n%s", resp.Body())
+		}
+	}
+	data, _ := resp.JSON(t)["data"].(map[string]any)
+	if got := data["signing_credential_kind"]; got != "webhook_signing_secret" {
+		t.Fatalf("signing_credential_kind = %v, want webhook_signing_secret", got)
+	}
+}
+
+// TestASecretInTheWrongSlotIsRefusedBeforeAnythingIsSealed. No CHECK constraint can
+// see which kind a slot points at — both reference one table — so the API is the
+// only place this is caught, and it is caught BEFORE the sealer runs.
+func TestASecretInTheWrongSlotIsRefusedBeforeAnythingIsSealed(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		body  map[string]any
+		field string
+	}{
+		{
+			name: "a signing secret in the credential slot",
+			body: map[string]any{
+				"type": "webhook", "name": "wrong slot", "config": map[string]any{},
+				"credential": map[string]any{"kind": "webhook_signing_secret", "values": map[string]string{"secret": "x"}},
+			},
+			field: "credential/kind",
+		},
+		{
+			name: "a bearer token in the signing slot",
+			body: map[string]any{
+				"type": "webhook", "name": "wrong slot", "config": map[string]any{},
+				"signing_credential": map[string]any{"kind": "bearer", "values": map[string]string{"token": "x"}},
+			},
+			field: "signing_credential/kind",
+		},
+		{
+			name: "a signing secret on a slack connection",
+			body: map[string]any{
+				"type": "slack", "name": "wrong provider", "config": map[string]any{"team_id": "T9TK3CUKW"},
+				"credential":         map[string]any{"kind": "slack_bot_token", "values": map[string]string{"token": "x"}},
+				"signing_credential": map[string]any{"kind": "webhook_signing_secret", "values": map[string]string{"secret": "x"}},
+			},
+			field: "signing_credential",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			w := newChanWorld(t)
+			resp := w.client.POST(t, "/channel-connections", tc.body).MustStatus(t, http.StatusUnprocessableEntity)
+			schema.AssertProblem(t, "createChannelConnection", http.StatusUnprocessableEntity, resp.Body())
+			resp.MustViolate(t, tc.field)
+			if len(w.creds.sealed) != 0 || len(w.connections.created) != 0 {
+				t.Fatal("a refused create still sealed a secret or wrote a connection")
+			}
+		})
+	}
 }

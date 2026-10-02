@@ -132,6 +132,68 @@ const (
 type Credential struct {
 	Kind   string
 	Values map[string]string
+	// Signing is the connection's OUTBOUND signing secret, carried BESIDE the
+	// credential above and never instead of it (migration 00088): Kind/Values get
+	// oto into the receiver, Signing lets the receiver prove a body came from oto,
+	// and a receiver may want both. Zero when the connection does not sign. Only
+	// the webhook provider reads it.
+	Signing SigningSecret
+}
+
+// SigningSecretOverlap is how long a rotated-out signing secret keeps signing
+// beside its successor (ADR 0055 §1). It is a stated number because the docs
+// promise it to receivers (docs/setup/webhook.md): a receiver has this long to
+// swap its copy after an operator rotates, and during it every body carries both
+// signatures. 24 hours spans a working day in any timezone and a deploy freeze
+// night, which is what "swap the secret in the receiver's config" actually takes.
+const SigningSecretOverlap = 24 * time.Hour
+
+// SigningSecret is an unsealed outbound signing secret and, for the overlap after a
+// rotation, the one it replaced.
+//
+// ⛔ PLAINTEXT, SAME RULES AS Credential: never rendered, logged or persisted.
+type SigningSecret struct {
+	Current string
+	// Previous is the secret Current replaced, or "" when there has been no
+	// rotation (or the row predates 00088). It signs only while the send instant
+	// is before PreviousUntil — the PROVIDER decides that, against its own clock at
+	// send time, so a Channel opened a second before the overlap ends cannot keep
+	// signing with a retired secret for the life of a slow retry.
+	Previous      string
+	PreviousUntil time.Time
+}
+
+// SigningValue reads the secret out of a `webhook_signing_secret`'s unsealed values.
+//
+// ⚠️ THREE SPELLINGS, BECAUSE THREE WRITERS EXISTED. The provider read `secret` or
+// `value`; the settings form sent every connection credential as `token`, so a
+// signing secret saved from the UI sealed under a key nothing read and the
+// channel went out silently unsigned. All three are honoured, in that order, by
+// both unsealing paths — `channels/repository` for a test send and the
+// notification dispatcher for a real one — through this one copy.
+func SigningValue(values map[string]string) string {
+	for _, k := range []string{"secret", "value", "token"} {
+		if v := values[k]; v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// IsZero reports that there is nothing to sign with.
+func (s SigningSecret) IsZero() bool { return s.Current == "" }
+
+// Secrets returns the secrets that sign a body sent at `at`: the current one first,
+// then the previous one while its overlap lasts.
+func (s SigningSecret) Secrets(at time.Time) []string {
+	if s.Current == "" {
+		return nil
+	}
+	out := []string{s.Current}
+	if s.Previous != "" && s.Previous != s.Current && at.Before(s.PreviousUntil) {
+		out = append(out, s.Previous)
+	}
+	return out
 }
 
 // Provider is registered once at boot and mints Channels from stored config.

@@ -170,6 +170,13 @@ type ChannelConnectionDTO struct {
 	CredentialKind      *string    `json:"credential_kind"`
 	CredentialRotatedAt *time.Time `json:"credential_rotated_at"`
 
+	// The signing slot (migration 00088), said about the same way: whether one is
+	// attached, when it was last rotated, and until when the secret that rotation
+	// replaced keeps signing beside it. Never the secret.
+	SigningCredentialKind      *string    `json:"signing_credential_kind"`
+	SigningCredentialRotatedAt *time.Time `json:"signing_credential_rotated_at"`
+	SigningOverlapUntil        *time.Time `json:"signing_overlap_until"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -181,6 +188,9 @@ type CreateChannelConnectionRequest struct {
 	Config json.RawMessage `json:"config" validate:"required"`
 
 	Credential *CredentialInputDTO `json:"credential,omitempty"`
+	// SigningCredential is a webhook connection's outbound signing secret, kind
+	// `webhook_signing_secret`, beside — never instead of — `credential`.
+	SigningCredential *CredentialInputDTO `json:"signing_credential,omitempty"`
 }
 
 // UpdateChannelConnectionRequest is the partial update. `type` is absent for
@@ -191,11 +201,14 @@ type UpdateChannelConnectionRequest struct {
 	Config *json.RawMessage `json:"config,omitempty"`
 
 	Credential *CredentialInputDTO `json:"credential,omitempty"`
+	// SigningCredential rotates the signing secret, keeping the old one signing
+	// beside it for domain.SigningSecretOverlap; kind `none` detaches it.
+	SigningCredential *CredentialInputDTO `json:"signing_credential,omitempty"`
 }
 
 // IsEmpty reports whether the request asks for nothing.
 func (r UpdateChannelConnectionRequest) IsEmpty() bool {
-	return r.Name == nil && r.Config == nil && r.Credential == nil
+	return r.Name == nil && r.Config == nil && r.Credential == nil && r.SigningCredential == nil
 }
 
 // ResolveConversationRequest asks "what is the other half of this Slack

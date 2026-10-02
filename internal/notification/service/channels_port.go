@@ -60,6 +60,9 @@ type (
 	TargetConfig = chdomain.ChannelConfig
 	// TargetCredential is an already-unsealed secret.
 	TargetCredential = chdomain.Credential
+	// SigningSecret is an unsealed outbound signing secret and, for a rotation's
+	// overlap, its predecessor (migration 00088).
+	SigningSecret = chdomain.SigningSecret
 	// ProviderType is the provider discriminator.
 	ProviderType = chdomain.Type
 	// RendererID names a Renderer in the registry.
@@ -71,6 +74,10 @@ type (
 	// ProviderError is a classified provider failure.
 	ProviderError = chdomain.Error
 )
+
+// SigningValue reads the secret out of a `webhook_signing_secret`'s unsealed
+// values — the one copy both unsealing paths share (chdomain.SigningValue).
+var SigningValue = chdomain.SigningValue
 
 // The view's sub-types, under local names.
 type (

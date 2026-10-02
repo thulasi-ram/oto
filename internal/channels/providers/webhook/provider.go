@@ -29,13 +29,16 @@ const capabilities = domain.CapRichLayout
 // CredSigningSecret is a different kind of credential from the other three: it
 // authenticates oto TO the receiver in the OTHER direction — every one of the
 // other kinds gets oto INTO the receiver, while this one lets the receiver
-// PROVE a payload came from oto. It signs the outbound JSON body with
-// HMAC-SHA256 and sets the result on `X-Oto-Signature` (see Channel.send in
-// channel.go). A connection may carry both a signing secret and a basic/bearer
-// credential — they answer different questions — but `channel_credentials` has
-// one row per kind, so a connection needing both seals two credentials and this
-// provider is only ever handed one Credential at a time; v1 does not need that
-// combination and does not implement it.
+// PROVE a payload came from oto. It signs a timestamp and the outbound JSON body
+// with HMAC-SHA256 and sets the result on `X-Oto-Signature` (see Channel.sign in
+// channel.go).
+//
+// ⭐ A CONNECTION CARRIES BOTH, IN TWO SLOTS (migration 00088). The basic/bearer
+// credential is `channel_connections.credential_id` and arrives here as
+// Credential.Kind/Values; the signing secret is `signing_credential_id` and
+// arrives as Credential.Signing. This kind is still listed in the descriptor's
+// ConnectionCredentialKinds because it is a kind a webhook connection may hold —
+// but channels/api accepts it only in `signing_credential`, never in `credential`.
 const (
 	CredNone          = "none"
 	CredBasic         = "basic"
@@ -213,7 +216,7 @@ func (p *Provider) Open(
 	if err != nil {
 		return nil, err
 	}
-	if err := CheckHeaders(parsed.Headers); err != nil {
+	if err := checkStoredHeaders(parsed.Headers); err != nil {
 		return nil, err
 	}
 	if err := p.checkTarget(ctx, parsed.URL); err != nil {

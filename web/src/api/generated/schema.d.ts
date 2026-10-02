@@ -5074,7 +5074,11 @@ export interface components {
             connection_config_schema: {
                 [key: string]: unknown;
             };
-            /** @description Which credential kinds a **connection** of this type accepts. */
+            /**
+             * @description Which credential kinds a **connection** of this type accepts, across both of its slots.
+             *     `webhook_signing_secret`, where listed, goes in `signing_credential`; every other kind goes in
+             *     `credential`.
+             */
             connection_credential_kinds: ("slack_bot_token" | "slack_app_token" | "slack_signing_secret" | "basic" | "bearer" | "webhook_signing_secret" | "none")[];
             /**
              * @description What the provider can do. Capabilities are negotiated centrally by oto's dispatcher, never
@@ -6607,7 +6611,7 @@ export interface components {
         };
         /**
          * @description One **org-wide provider setup** — a Slack workspace's bot token, or a webhook receiver family's
-         *     shared credential — set up once and referenced by several channels.
+         *     shared credential and/or signing secret — set up once and referenced by several channels.
          */
         ChannelConnectionDTO: {
             id: components["schemas"]["Uuid"];
@@ -6635,13 +6639,32 @@ export interface components {
              */
             credential_kind?: "slack_bot_token" | "slack_app_token" | "slack_signing_secret" | "basic" | "bearer" | "webhook_signing_secret" | "none" | null;
             credential_rotated_at?: components["schemas"]["Timestamp"] | null;
+            /**
+             * @description `webhook_signing_secret` when this webhook connection signs its outbound requests
+             *     (`X-Oto-Signature`, docs/setup/webhook.md), `null` when it does not. Carried beside
+             *     `credential_kind`, never in it, so one receiver can require a bearer token and verify a
+             *     signature at once. **The secret itself is never returned.**
+             * @enum {string|null}
+             */
+            signing_credential_kind?: "webhook_signing_secret" | null;
+            signing_credential_rotated_at?: components["schemas"]["Timestamp"] | null;
+            /**
+             * @description Until this instant the signing secret the last rotation REPLACED keeps signing beside the
+             *     current one, and every request carries both signatures. Set to the rotation plus 24 hours;
+             *     `null` when the signing secret has never been rotated. Once in the past, only the current
+             *     secret signs.
+             */
+            signing_overlap_until?: components["schemas"]["Timestamp"] | null;
             created_at: components["schemas"]["Timestamp"];
             updated_at: components["schemas"]["Timestamp"];
         };
         /**
-         * @description Create a connection. A `slack` connection must carry a `slack_bot_token` credential; a `webhook`
-         *     connection may have none, a `basic`/`bearer` credential to authenticate outbound to a shared
-         *     receiver, or a `webhook_signing_secret` to sign the outbound payload for the receiver to verify.
+         * @description Create a connection. A `slack` connection must carry a `slack_bot_token` credential. A `webhook`
+         *     connection may carry a `basic`/`bearer` `credential` to authenticate outbound to a shared
+         *     receiver, a `webhook_signing_secret` in `signing_credential` to sign every request for the
+         *     receiver to verify, both, or neither. A `webhook_signing_secret` in `credential`, any other kind
+         *     in `signing_credential`, or a `signing_credential` on a `slack` connection is a `422` naming the
+         *     field.
          */
         CreateChannelConnectionRequest: {
             type: components["schemas"]["ChannelType"];
@@ -6655,11 +6678,18 @@ export interface components {
                 [key: string]: unknown;
             };
             credential?: components["schemas"]["CredentialInput"];
+            signing_credential?: components["schemas"]["CredentialInput"];
         };
         /**
          * @description Partial update. `type` is absent because a connection's provider is its identity; supplying
          *     `credential` rotates the secret in place, so every channel referencing this connection never
          *     spends a moment pointing at nothing.
+         *
+         *     Supplying `signing_credential` rotates the signing secret **with an overlap**: the secret it
+         *     replaces keeps signing beside the new one for 24 hours (`signing_overlap_until`), and every
+         *     request in that window carries both signatures, so a receiver still holding the old secret keeps
+         *     verifying until it is given the new one. A second rotation inside the window retires the oldest
+         *     secret at once. Kind `none` detaches the signing secret immediately, with no overlap.
          */
         UpdateChannelConnectionRequest: {
             name?: string;
@@ -6667,6 +6697,7 @@ export interface components {
                 [key: string]: unknown;
             };
             credential?: components["schemas"]["CredentialInput"];
+            signing_credential?: components["schemas"]["CredentialInput"];
         };
         /**
          * @description Ask for the other half of one Slack channel. Supply exactly one of `name` or `conversation_id` —
