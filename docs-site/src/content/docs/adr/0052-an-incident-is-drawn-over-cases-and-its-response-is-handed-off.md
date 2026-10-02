@@ -79,6 +79,13 @@ one is a number an operator wrote, which is the test 0044 set.
 - The **outbound mapping** binds an Incident to `(destination, external incident id)`, the way a
   ChannelThread binds a Conversation to a Slack root, so later facts become updates on the same
   external incident.
+- **The provider is generic** (owner's ruling, 2026-10-02). No vendor-specific incident provider
+  ships. The generic webhook's `incident.id` is stable for the Incident's life and is the
+  de-duplication key a receiver keys on, so **oto's own key is the mapping**. If a receiver's 2xx
+  response carries `external_url` / `external_id`, oto records them once as the receipt of a
+  delivery — the way it records a Slack `ts` — and shows the link; that is not reading the incident
+  back. Severity, where a tool needs one, is the receiver's mapping from the member alerts' own
+  labels, never a value oto invents. Recipes for specific tools are documentation, not code.
 - oto sends **facts, never commands**: drawn, member added or removed, quiet, active again, new
   Finding, and Remedy transitions (0054). It **never** sends PagerDuty's `resolve` or any close or
   status change. An org that wants auto-resolve writes it in its own tool, keyed on oto's metadata.

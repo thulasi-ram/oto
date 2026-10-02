@@ -46,6 +46,13 @@ read-only Tools. **Memory is not a new store**: it is oto's own history — prio
 `alert_key`, the Case timeline, the rule as it stood at fire time — offered as built-in Tools. The
 Steps are kept, so "why did it say that?" always has an answer.
 
+**The model provider is generic** (owner's ruling, 2026-10-02). Models are reached through one
+port, and the first adapter speaks the OpenAI-compatible Chat Completions API with tool calling, so
+one adapter configured by base URL, model name and a sealed key reaches any provider or gateway
+that serves it. No provider's name appears in domain code. The port must report token usage — the
+§6 budgets are enforced from it — and a turn without usage fails the run rather than running
+unbudgeted. A native adapter for one vendor is a later widening behind the same port.
+
 ### 4. Subjects and triggers
 
 Subjects are `case | incident | digest | policy`. A subject may have many Investigations over time,
