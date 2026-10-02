@@ -39,8 +39,9 @@
  * ⛔ THE RECEIPT HERE HAS ITS WAY BACK, and that is a rule rather than a
  * coincidence. A gesture that writes a record and cannot unwrite it leaves the
  * operator with nothing to do but be wrong in public — so the receipt is a
- * TOGGLE: one control, reading `Acknowledge` while this firing carries none and
- * the withdrawal's own words once it does.
+ * TOGGLE: one control, reading `Ack` while this firing carries none and `Unack`
+ * once it does — the same two words as the row on `/cases`, so the verb an
+ * operator presses there is the verb they press here.
  *
  * The same timeline component the alert detail uses, reading this episode's own
  * events (`GET /cases/{id}/events`) rather than the identity's whole history:
@@ -353,7 +354,7 @@ export default function CaseDetailRoute() {
                             : "Record that a human has seen this firing. It stays firing, at the same severity."
                       }
                     >
-                      {acked() ? "Withdraw acknowledgement" : "Acknowledge"}
+                      {acked() ? "Unack" : "Ack"}
                     </Button>
                     {/* ⭐ THE MEMBERSHIP CONTROLS FOLLOW WHICH INCIDENT THIS CASE
                         IS IN, and wait for the answer. Offered on an ended firing

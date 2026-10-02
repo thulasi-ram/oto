@@ -43,6 +43,21 @@ function mount(search = "", rows = [caseListItem()]): FetchStub {
   return net;
 }
 
+/**
+ * The ack control's buttons, by their exact visible word, among the ROWS only —
+ * the toolbar's `Ack` filter menu is a different control with its own name.
+ */
+function rowButtons(name: string): readonly HTMLElement[] {
+  return screen
+    .queryAllByRole("button", { name })
+    .filter((el) => el.closest("li") !== null);
+}
+
+async function rowButton(name: string): Promise<HTMLElement> {
+  await until(() => expect(rowButtons(name)).toHaveLength(1));
+  return rowButtons(name)[0]!;
+}
+
 /** The query string of the last list request the screen made. */
 async function lastQuery(net: FetchStub): Promise<URLSearchParams> {
   await until(() => expect(net.to(PATH).length).toBeGreaterThan(0));
@@ -160,35 +175,42 @@ describe("a row", () => {
     const net = mount("", [caseListItem({ id: "case-1" })]);
     net.on("POST /api/v1/cases/case-1/ack", () => ({ json: item(caseListItem()) }));
 
-    await until(() =>
-      expect(screen.getByRole("button", { name: "Acknowledge HighErrorRate" })).toBeTruthy(),
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Acknowledge HighErrorRate" }));
+    fireEvent.click(await rowButton("Ack"));
 
     await until(() => expect(net.to("/ack")).toHaveLength(1));
     expect(net.to("/ack")[0]?.path).toBe("/api/v1/cases/case-1/ack");
     expect(net.to("/ack")[0]?.headers["Idempotency-Key"]).toBeTruthy();
   });
 
-  it("⭐ turns into the way back once the firing carries a receipt", async () => {
-    // ONE control with two words. `ack_state` has two values, so a separate
-    // Acknowledge and Withdraw would leave one of the two dead on every row —
-    // and the dead one was the enabled-looking half of the pair a tired operator
-    // reads first.
+  it("⭐ says `Ack` in words, and the word IS its accessible name", async () => {
+    // The owner's report: the row used to carry a tick in BOTH directions, told
+    // apart only by an `aria-label` nobody sighted ever reads — ack and unack
+    // were the same picture. The verb is printed now, and nothing renames it.
+    mount("", [caseListItem({ ack_state: "unacked" })]);
+    const ack = await rowButton("Ack");
+    expect(ack.textContent?.trim()).toBe("Ack");
+    expect(ack.getAttribute("aria-label")).toBeNull();
+    expect(ack.querySelector("svg")).toBeNull();
+    expect(rowButtons("Unack")).toHaveLength(0);
+  });
+
+  it("⭐ turns into `Unack` once the firing carries a receipt", async () => {
+    // ONE control with two words. `ack_state` has two values, so a separate Ack
+    // and Unack would leave one of the two dead on every row — and the dead one
+    // was the enabled-looking half of the pair a tired operator reads first.
     mount("", [caseListItem({ ack_state: "acked" })]);
-    const name = "Withdraw the acknowledgement of HighErrorRate";
-    await until(() => expect(screen.getByRole("button", { name })).toBeTruthy());
-    expect(screen.getByRole("button", { name })).not.toBeDisabled();
-    expect(screen.queryByRole("button", { name: "Acknowledge HighErrorRate" })).toBeNull();
+    const unack = await rowButton("Unack");
+    expect(unack).not.toBeDisabled();
+    expect(unack.textContent?.trim()).toBe("Unack");
+    expect(unack.getAttribute("aria-label")).toBeNull();
+    expect(rowButtons("Ack")).toHaveLength(0);
   });
 
   it("withdraws through the CASE's own unack when that is the direction it is in", async () => {
     const net = mount("", [caseListItem({ id: "case-1", ack_state: "acked" })]);
     net.on("POST /api/v1/cases/case-1/unack", () => ({ json: item(caseListItem()) }));
 
-    const name = "Withdraw the acknowledgement of HighErrorRate";
-    await until(() => expect(screen.getByRole("button", { name })).toBeTruthy());
-    fireEvent.click(screen.getByRole("button", { name }));
+    fireEvent.click(await rowButton("Unack"));
 
     await until(() => expect(net.to("/unack")).toHaveLength(1));
     expect(net.to("/unack")[0]?.path).toBe("/api/v1/cases/case-1/unack");
@@ -210,10 +232,7 @@ describe("a row", () => {
         resolve_reason: "upstream",
       }),
     ]);
-    await until(() =>
-      expect(screen.getByRole("button", { name: "Acknowledge HighErrorRate" })).toBeTruthy(),
-    );
-    expect(screen.getByRole("button", { name: "Acknowledge HighErrorRate" })).toBeDisabled();
+    expect(await rowButton("Ack")).toBeDisabled();
   });
 });
 
