@@ -324,3 +324,17 @@ and `status` — is reached without a bridge by putting a **payload mapping** on
   wrote; `quiet` is not `fixed` (§3), and resolving on it ends a response the moment the signals stop.
 - Add a mapping **after** upgrading every oto pod: a pod older than the mapping sends the plain
   envelope.
+
+### Starting from the catalog
+
+oto ships a small **catalog** of mappings, one file per tool, in
+[`mappings/`](../../mappings/README.md) — today incident.io's HTTP alert source and PagerDuty's
+Events API v2, each with the vendor docs its field names were checked against and the date. On a
+webhook connection, *Import from the catalog* shows what a mapping does, what it **never** sends,
+and the setup it needs, and **copies** it into the mapping editor. Save stores the copy as the
+connection's own, through the same check as above; a later catalog change never touches it. The
+catalog holds no secret: a mapping that reads `{{ secrets.routing_key }}` is saved only once you add
+that mapping secret beside it.
+
+No catalog mapping turns a fact into a resolve, close, acknowledge or status change — a test holds
+every file to that, for every fact. Edit the copy into one if you choose; it is then your rule.

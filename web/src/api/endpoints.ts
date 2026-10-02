@@ -65,6 +65,7 @@ import type {
   IncidentDetail,
   IncidentListQuery,
   OrgSettingsView,
+  PayloadMappingCatalogEntry,
   Policy,
   PolicyPreview,
   PolicyPreviewRequest,
@@ -851,6 +852,17 @@ export function testChannelConnectionMapping(
   return postItem<ChannelTest>(`${V1}/channel-connections/${id}/mapping/test`, body, {
     idempotencyKey: key,
   });
+}
+
+/**
+ * The payload-mapping catalog embedded in this oto (ADR 0055 §2). There is no
+ * import call: importing is copying an entry's `mapping` into a connection's own
+ * through the ordinary connection update.
+ */
+export function listPayloadMappingCatalog(
+  c: Ctx = {},
+): Promise<readonly PayloadMappingCatalogEntry[]> {
+  return getUnpagedList<PayloadMappingCatalogEntry>(`${V1}/payload-mapping-catalog`, ctx(c));
 }
 
 /**

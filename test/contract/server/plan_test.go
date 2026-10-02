@@ -207,6 +207,10 @@ func plan() []probe {
 		// the schema enforces, and the `{{connection}}` fixture below is what
 		// `createChannel` spends.
 		{method: http.MethodGet, tmpl: "/api/v1/channel-connections", want: http.StatusOK},
+		// The payload-mapping catalog embedded in the binary (ADR 0055 §2). It reads no
+		// row, so it needs no fixture; what it proves is that every embedded file
+		// serialises to the contract's entry shape.
+		{method: http.MethodGet, tmpl: "/api/v1/payload-mapping-catalog", want: http.StatusOK},
 		{
 			method: http.MethodPost, tmpl: "/api/v1/channel-connections",
 			body: map[string]any{

@@ -16,6 +16,7 @@ import (
 	alertsrepo "github.com/thulasiram/oto/internal/alerts/repository"
 	alertsservice "github.com/thulasiram/oto/internal/alerts/service"
 	channelsapi "github.com/thulasiram/oto/internal/channels/api"
+	channelsdomain "github.com/thulasiram/oto/internal/channels/domain"
 	slackprovider "github.com/thulasiram/oto/internal/channels/providers/slack"
 	channelsregistry "github.com/thulasiram/oto/internal/channels/registry"
 	channelsrepo "github.com/thulasiram/oto/internal/channels/repository"
@@ -68,6 +69,7 @@ import (
 	streamingapi "github.com/thulasiram/oto/internal/streaming/api"
 	streamingrepo "github.com/thulasiram/oto/internal/streaming/repository"
 	streamingservice "github.com/thulasiram/oto/internal/streaming/service"
+	"github.com/thulasiram/oto/mappings"
 )
 
 // declarativeTuning resolves this process's declarative tuning layer.
@@ -848,7 +850,15 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	}
 	c.enqueuer.set(c.Jobs)
 
-	c.buildRouters(channelRepo, connectionRepo, credentialRepo, channelResolver, clusterRepo, identityTx, enricherRegistry, clk)
+	// The payload-mapping catalog (ADR 0055 §2) is embedded data, read once. A file
+	// that does not parse is a broken build, and fails the boot rather than shrinking
+	// the list Settings shows.
+	catalog, err := channelsservice.LoadCatalog(mappings.FS)
+	if err != nil {
+		return nil, err
+	}
+
+	c.buildRouters(channelRepo, connectionRepo, credentialRepo, channelResolver, clusterRepo, identityTx, enricherRegistry, catalog, clk)
 	return c, nil
 }
 
@@ -1077,6 +1087,7 @@ func (c *Container) buildRouters(
 	clusterRepo *sourcesrepo.ClusterRepository,
 	identityTx *identityrepo.TxRunner,
 	enricherRegistry *enrichservice.Registry,
+	catalog []channelsdomain.CatalogMapping,
 	clk clock.Clock,
 ) {
 	c.routers = routerSet{
@@ -1156,7 +1167,9 @@ func (c *Container) buildRouters(
 			// the preview that renders a candidate template against the shipped
 			// fixture corpus in every Dialect and saves nothing.
 			Templates: c.templates,
-			Clock:     clk,
+			// The payload-mapping catalog Settings → Connections imports from.
+			Catalog: catalog,
+			Clock:   clk,
 		}),
 		notifs: notifapi.NewRouter(notifapi.Options{
 			Policies: c.notifConfigRepo,

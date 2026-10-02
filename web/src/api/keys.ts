@@ -175,6 +175,7 @@ export const qk = {
     channelTypes: () => ["settings", "channel-types"] as const,
     channels: () => ["settings", "channels"] as const,
     channelConnections: () => ["settings", "channel-connections"] as const,
+    mappingCatalog: () => ["settings", "payload-mapping-catalog"] as const,
     policies: () => ["settings", "policies"] as const,
     /**
      * The org's Correlators (ADR 0052 §2), in evaluation order. Only this

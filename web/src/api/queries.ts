@@ -46,6 +46,7 @@ import {
   listClusters,
   listLabelNames,
   listNotifications,
+  listPayloadMappingCatalog,
   listPolicies,
   listRuleSnapshots,
   listSources,
@@ -177,6 +178,15 @@ export function channelTypesQuery() {
   return {
     queryKey: qk.settings.channelTypes(),
     queryFn: ({ signal }: { signal: AbortSignal }) => listChannelTypes({ signal }),
+    staleTime: CAPABILITY_STALE_MS,
+  };
+}
+
+/** The payload-mapping catalog, fixed at build time — so it is as stable as the descriptors. */
+export function mappingCatalogQuery() {
+  return {
+    queryKey: qk.settings.mappingCatalog(),
+    queryFn: ({ signal }: { signal: AbortSignal }) => listPayloadMappingCatalog({ signal }),
     staleTime: CAPABILITY_STALE_MS,
   };
 }
@@ -432,6 +442,11 @@ export const FRESHNESS: Readonly<Record<string, Freshness>> = {
     by: "bounded",
     ms: CAPABILITY_STALE_MS,
     why: "the server's capability list for this build, which changes on deploy and not on any action an operator can take here",
+  },
+  "settings.mappingCatalog": {
+    by: "bounded",
+    ms: CAPABILITY_STALE_MS,
+    why: "the payload-mapping catalog embedded in this build, which changes on deploy and not on any action an operator can take here — importing an entry writes the connection, never the catalog",
   },
   "labels.names": {
     by: "bounded",

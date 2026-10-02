@@ -2808,6 +2808,38 @@ export const UpdateChannelConnectionRequestSchema = v.pipe(
   v.check((value) => Object.keys(value).length >= 1, "at least 1 property required"),
 );
 
+export const PayloadMappingCommandDTOSchema = v.looseObject({
+  "field": v.string(),
+  "forbidden": v.array(v.string()),
+});
+
+export const PayloadMappingCatalogEntryDTOSchema = v.looseObject({
+  "id": v.pipe(
+    v.string(),
+    v.regex(/^[a-z0-9][a-z0-9-]{0,62}$/),
+  ),
+  "vendor": v.string(),
+  "title": v.string(),
+  "summary": v.string(),
+  "docs": v.array(v.pipe(
+    v.string(),
+    v.url(),
+  )),
+  "checked_on": v.string(),
+  "setup": v.array(v.string()),
+  "commands": v.array(PayloadMappingCommandDTOSchema),
+  "secrets": v.array(v.pipe(
+    v.string(),
+    v.regex(/^[a-z][a-z0-9_]{0,63}$/),
+  )),
+  "mapping": PayloadMappingSchema,
+});
+
+export const PayloadMappingCatalogResponseSchema = v.looseObject({
+  "data": v.array(PayloadMappingCatalogEntryDTOSchema),
+  "meta": MetaSchema,
+});
+
 export const TestConnectionMappingRequestSchema = v.strictObject({
   "channel_id": UuidSchema,
   "fact": NotificationReasonSchema,

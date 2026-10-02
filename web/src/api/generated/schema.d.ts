@@ -1666,6 +1666,39 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/payload-mapping-catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the payload-mapping catalog
+         * @description The **catalog** of payload mappings embedded in this oto binary (ADR 0055 §2): one entry per
+         *     incident tool, each with the mapping document whole, the vendor docs its field names were
+         *     checked against and the date they were checked.
+         *
+         *     There is no import endpoint. Importing an entry is copying its `mapping` into a webhook
+         *     connection's own `payload_mapping` with `PATCH /api/v1/channel-connections/{id}` — through the
+         *     same save-time gate as any mapping — and nothing on the connection refers back to the catalog,
+         *     so a later catalog change never alters a live connection. A mapping that names a secret
+         *     (`secrets`) is accepted only once the connection seals a mapping secret of that name; the
+         *     catalog carries no secret value.
+         *
+         *     **No catalog mapping turns a fact into a resolve, close or status change** (ADR 0055 §4).
+         *     `commands` names each entry's command fields and the values it never sends in them; a test over
+         *     the catalog holds every entry to that declaration for every fact.
+         */
+        get: operations["listPayloadMappingCatalog"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/notification-templates": {
         parameters: {
             query?: never;
@@ -6826,6 +6859,50 @@ export interface components {
          */
         MappingSecretsInput: {
             [key: string]: string;
+        };
+        /**
+         * @description One entry of the payload-mapping catalog (ADR 0055 §2). Importing it copies `mapping` into a
+         *     webhook connection's `payload_mapping`.
+         */
+        PayloadMappingCatalogEntryDTO: {
+            /** @description The catalog file's name without its extension, e.g. `pagerduty`. */
+            id: string;
+            /** @description The tool, as its vendor writes it. */
+            vendor: string;
+            /** @description The API the mapping speaks to. */
+            title: string;
+            /** @description What the mapping does with oto's facts. */
+            summary: string;
+            /** @description The vendor's public docs the mapping's field names were checked against. */
+            docs: string[];
+            /**
+             * Format: date
+             * @description When the field names were checked against `docs`.
+             */
+            checked_on: string;
+            /** @description What the operator does in the tool and on the connection, in order. */
+            setup: string[];
+            /**
+             * @description The tool's command fields and the values the catalog never sends in them (ADR 0055 §4) — so
+             *     an importer knows, for example, that this mapping never resolves an incident on `quiet`.
+             */
+            commands: components["schemas"]["PayloadMappingCommandDTO"][];
+            /**
+             * @description The mapping secrets the connection must seal, by name, before the copied mapping can be
+             *     saved. Never a value: a catalog entry holds none.
+             */
+            secrets: string[];
+            mapping: components["schemas"]["PayloadMapping"];
+        };
+        PayloadMappingCommandDTO: {
+            /** @description A gjson path into the request body the mapping renders, e.g. `event_action`. */
+            field: string;
+            /** @description The values of `field` that would turn a fact into a command; the catalog sends none. */
+            forbidden: string[];
+        };
+        PayloadMappingCatalogResponse: {
+            data: components["schemas"]["PayloadMappingCatalogEntryDTO"][];
+            meta: components["schemas"]["Meta"];
         };
         /** @description Which fact to send, and through which of this connection's channels. */
         TestConnectionMappingRequest: {
@@ -12128,6 +12205,31 @@ export interface operations {
             502: components["responses"]["BadGateway"];
             503: components["responses"]["ServiceUnavailable"];
             504: components["responses"]["GatewayTimeout"];
+        };
+    };
+    listPayloadMappingCatalog: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The catalog, in file-name order. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PayloadMappingCatalogResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
         };
     };
     listNotificationTemplates: {

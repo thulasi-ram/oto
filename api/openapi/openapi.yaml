@@ -3803,6 +3803,44 @@ paths:
         '504':
           $ref: '#/components/responses/GatewayTimeout'
 
+  /api/v1/payload-mapping-catalog:
+    get:
+      operationId: listPayloadMappingCatalog
+      summary: List the payload-mapping catalog
+      tags: [Channels]
+      description: |
+        The **catalog** of payload mappings embedded in this oto binary (ADR 0055 §2): one entry per
+        incident tool, each with the mapping document whole, the vendor docs its field names were
+        checked against and the date they were checked.
+
+        There is no import endpoint. Importing an entry is copying its `mapping` into a webhook
+        connection's own `payload_mapping` with `PATCH /api/v1/channel-connections/{id}` — through the
+        same save-time gate as any mapping — and nothing on the connection refers back to the catalog,
+        so a later catalog change never alters a live connection. A mapping that names a secret
+        (`secrets`) is accepted only once the connection seals a mapping secret of that name; the
+        catalog carries no secret value.
+
+        **No catalog mapping turns a fact into a resolve, close or status change** (ADR 0055 §4).
+        `commands` names each entry's command fields and the values it never sends in them; a test over
+        the catalog holds every entry to that declaration for every fact.
+      responses:
+        '200':
+          description: The catalog, in file-name order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PayloadMappingCatalogResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   # =================================================================================================
   # Notification
   # =================================================================================================
@@ -12329,6 +12367,86 @@ components:
       description: |
         The secrets a payload mapping names, name to value — sealed into one credential. **Write-only**:
         only the names are ever returned (`mapping_secret_names`). Supplying it replaces the whole set.
+
+    PayloadMappingCatalogEntryDTO:
+      type: object
+      additionalProperties: false
+      required: [id, vendor, title, summary, docs, checked_on, setup, commands, secrets, mapping]
+      properties:
+        id:
+          type: string
+          pattern: '^[a-z0-9][a-z0-9-]{0,62}$'
+          description: The catalog file's name without its extension, e.g. `pagerduty`.
+        vendor:
+          type: string
+          description: The tool, as its vendor writes it.
+        title:
+          type: string
+          description: The API the mapping speaks to.
+        summary:
+          type: string
+          description: What the mapping does with oto's facts.
+        docs:
+          type: array
+          items:
+            type: string
+            format: uri
+          description: The vendor's public docs the mapping's field names were checked against.
+        checked_on:
+          type: string
+          format: date
+          description: When the field names were checked against `docs`.
+        setup:
+          type: array
+          items:
+            type: string
+          description: What the operator does in the tool and on the connection, in order.
+        commands:
+          type: array
+          items:
+            $ref: '#/components/schemas/PayloadMappingCommandDTO'
+          description: |
+            The tool's command fields and the values the catalog never sends in them (ADR 0055 §4) — so
+            an importer knows, for example, that this mapping never resolves an incident on `quiet`.
+        secrets:
+          type: array
+          items:
+            type: string
+            pattern: '^[a-z][a-z0-9_]{0,63}$'
+          description: |
+            The mapping secrets the connection must seal, by name, before the copied mapping can be
+            saved. Never a value: a catalog entry holds none.
+        mapping:
+          $ref: '#/components/schemas/PayloadMapping'
+      description: |
+        One entry of the payload-mapping catalog (ADR 0055 §2). Importing it copies `mapping` into a
+        webhook connection's `payload_mapping`.
+
+    PayloadMappingCommandDTO:
+      type: object
+      additionalProperties: false
+      required: [field, forbidden]
+      properties:
+        field:
+          type: string
+          description: A gjson path into the request body the mapping renders, e.g. `event_action`.
+        forbidden:
+          type: array
+          items:
+            type: string
+          description: The values of `field` that would turn a fact into a command; the catalog sends none.
+
+    PayloadMappingCatalogResponse:
+      type: object
+      required: [data, meta]
+      additionalProperties: false
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/PayloadMappingCatalogEntryDTO'
+        meta:
+          $ref: '#/components/schemas/Meta'
 
     TestConnectionMappingRequest:
       type: object
