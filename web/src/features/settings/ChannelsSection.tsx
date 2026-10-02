@@ -19,6 +19,13 @@
  * one. So the credential control only ever *sets* a value, and an existing
  * connection shows the credential's **kind and rotation date** rather than
  * pretending to show a masked secret it does not have.
+ *
+ * ⭐ A WEBHOOK CONNECTION MAY CARRY A PAYLOAD MAPPING (ADR 0055 §2), and it is set
+ * up HERE, with the connection, because it is destination setup — never on the
+ * templates screen, which is wording. The server renders it against an envelope
+ * for every fact before it saves it, so its refusals arrive as per-fact 422
+ * violations and are listed under the editor. Its secrets are write-only like
+ * every other credential: only their names come back.
  */
 import {
   For,
@@ -36,17 +43,62 @@ import { violationsByField } from "~/api/client";
 import {
   createChannelConnection,
   deleteChannelConnection,
+  testChannelConnectionMapping,
   updateChannelConnection,
 } from "~/api/endpoints";
 import { qk } from "~/api/keys";
-import { channelConnectionsQuery, channelTypesQuery } from "~/api/queries";
-import type { ChannelConnection, ChannelType, ChannelTypeDescriptor } from "~/api/types";
+import { channelConnectionsQuery, channelsQuery, channelTypesQuery } from "~/api/queries";
+import type {
+  ChannelConnection,
+  ChannelType,
+  ChannelTypeDescriptor,
+  NotificationReason,
+  PayloadMapping,
+} from "~/api/types";
+import { REASON_LABEL } from "~/features/notifications/vocabulary";
 
 /** A credential kind, as the descriptor lists it. */
 type CredentialKind = ChannelTypeDescriptor["connection_credential_kinds"][number];
 
 /** The one kind the signing slot holds (migration 00088). */
 const SIGNING_KIND = "webhook_signing_secret" as const;
+
+/** Every fact a payload mapping renders, in the contract's order. */
+const FACTS = Object.keys(REASON_LABEL) as NotificationReason[];
+
+/**
+ * Reads the mapping editor: `undefined` for "unchanged", `null` for "remove it",
+ * the document otherwise — or a sentence saying why it is not a document.
+ */
+function readMapping(
+  text: string,
+  initial: string,
+): { mapping?: PayloadMapping | null; error?: string } {
+  if (text.trim() === initial.trim()) return {};
+  if (text.trim() === "") return { mapping: null };
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { error: "A mapping is one JSON object with at least a `body`." };
+    }
+    return { mapping: parsed as PayloadMapping };
+  } catch {
+    return { error: "This is not valid JSON." };
+  }
+}
+
+/** Reads `name=value` lines; `undefined` when blank, which keeps the current secrets. */
+function readSecrets(text: string): { secrets?: Record<string, string>; error?: string } {
+  if (text.trim() === "") return {};
+  const out: Record<string, string> = {};
+  for (const line of text.split("\n")) {
+    if (line.trim() === "") continue;
+    const at = line.indexOf("=");
+    if (at <= 0) return { error: "Write one secret per line, as name=value." };
+    out[line.slice(0, at).trim()] = line.slice(at + 1).trim();
+  }
+  return { secrets: out };
+}
 import { RelativeTime } from "~/components/Time";
 import { Button } from "~/components/ui/Button";
 import {
@@ -74,6 +126,7 @@ import {
   TextFieldErrorMessage,
   TextFieldInput,
   TextFieldLabel,
+  TextFieldTextArea,
 } from "~/components/ui/TextField";
 import { cn } from "~/lib/cn";
 import { idempotencyKey } from "~/lib/format";
@@ -236,10 +289,109 @@ const ConnectionRow: Component<{
         </Show>
       </div>
 
+      <Show when={c().payload_mapping}>
+        <MappingTest connection={c()} />
+      </Show>
+
       <Show when={remove.error !== null}>
         <ErrorBanner error={remove.error} />
       </Show>
     </li>
+  );
+};
+
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The payload mapping's test send (ADR 0055 §2): one fact, chosen here, through
+ * one of this connection's channels — the connection holds the mapping and the
+ * channel holds the URL. It goes the whole real way, so it says plainly that the
+ * tool at the other end may open a real incident.
+ */
+const MappingTest: Component<{ readonly connection: ChannelConnection }> = (props) => {
+  const channels = useQuery(() => channelsQuery());
+  const mine = createMemo(() =>
+    (channels.data?.data ?? []).filter((ch) => ch.connection_id === props.connection.id),
+  );
+  const nameOf = (id: string): string => mine().find((ch) => ch.id === id)?.name ?? id;
+  const [channelId, setChannelId] = createSignal<string | null>(null);
+  const [fact, setFact] = createSignal<NotificationReason>("drawn");
+  const chosen = (): string | undefined => channelId() ?? mine()[0]?.id;
+
+  const test = useMutation(() => ({
+    mutationFn: () =>
+      testChannelConnectionMapping(
+        props.connection.id,
+        { channel_id: chosen() ?? "", fact: fact() },
+        idempotencyKey(),
+      ),
+  }));
+
+  return (
+    <div class="flex flex-col gap-sm">
+      <div class="flex flex-wrap items-end gap-sm">
+        <Select<string>
+          class={FIELD}
+          options={mine().map((ch) => ch.id)}
+          value={chosen() ?? null}
+          onChange={(next) => {
+            if (next !== null) setChannelId(next);
+          }}
+          itemComponent={(itemProps) => (
+            <SelectItem item={itemProps.item}>{nameOf(itemProps.item.rawValue)}</SelectItem>
+          )}
+        >
+          <SelectLabel>Send through</SelectLabel>
+          <SelectTrigger id={`mapping-test-channel-${props.connection.id}`}>
+            <SelectValue<string>>{(state) => nameOf(state.selectedOption())}</SelectValue>
+          </SelectTrigger>
+          <SelectHiddenSelect />
+          <SelectContent />
+        </Select>
+        <Select<NotificationReason>
+          class={FIELD}
+          options={FACTS}
+          value={fact()}
+          onChange={(next) => {
+            if (next !== null) setFact(next);
+          }}
+          itemComponent={(itemProps) => (
+            <SelectItem item={itemProps.item}>{itemProps.item.rawValue}</SelectItem>
+          )}
+        >
+          <SelectLabel>Fact</SelectLabel>
+          <SelectTrigger id={`mapping-test-fact-${props.connection.id}`}>
+            <SelectValue<NotificationReason>>{(state) => state.selectedOption()}</SelectValue>
+          </SelectTrigger>
+          <SelectHiddenSelect />
+          <SelectContent />
+        </Select>
+        <Button
+          size="sm"
+          variant="secondary"
+          busy={test.isPending}
+          disabled={chosen() === undefined}
+          onClick={() => test.mutate()}
+        >
+          Test the mapping
+        </Button>
+      </div>
+      <p class={HELP}>
+        Sends the chosen fact through the mapping, its secrets and this channel, exactly as a real
+        delivery would. <strong>The tool at the other end may open a real incident.</strong>
+        <Show when={mine().length === 0}> This connection has no channel to send through yet.</Show>
+      </p>
+      <Show when={test.data}>
+        {(res) => (
+          <p class={cn(HELP, res().ok ? "text-ink" : "text-error-foreground")} role="status">
+            {res().ok ? "Sent, and the receiver accepted it." : (res().error ?? "The test failed.")}
+          </p>
+        )}
+      </Show>
+      <Show when={test.error !== null}>
+        <ErrorBanner error={test.error} />
+      </Show>
+    </div>
   );
 };
 
@@ -261,6 +413,9 @@ const ConnectionDialog: Component<{
   const [username, setUsername] = createSignal("");
   const [authKind, setAuthKind] = createSignal<CredentialKind | null>(null);
   const [signingSecret, setSigningSecret] = createSignal("");
+  const [mappingText, setMappingText] = createSignal("");
+  const [initialMapping, setInitialMapping] = createSignal("");
+  const [secretsText, setSecretsText] = createSignal("");
   const [showErrors, setShowErrors] = createSignal(false);
   const [dirty, setDirty] = createSignal(false);
 
@@ -284,6 +439,11 @@ const ConnectionDialog: Component<{
     (descriptor()?.connection_credential_kinds ?? []).includes(SIGNING_KIND),
   );
   const chosenAuthKind = (): CredentialKind | undefined => authKind() ?? authKinds()[0];
+  // Only a webhook connection carries a payload mapping (ADR 0055 §2).
+  const isWebhook = (): boolean => (props.connection?.type ?? type()) === "webhook";
+  const mappingInput = createMemo(() => readMapping(mappingText(), initialMapping()));
+  const secretsInput = createMemo(() => readSecrets(secretsText()));
+  const sealedNames = (): readonly string[] => props.connection?.mapping_secret_names ?? [];
 
   // A basic credential is two values; every other kind this form offers is one.
   const credential = (): { kind: CredentialKind; values: Record<string, string> } | undefined => {
@@ -310,6 +470,11 @@ const ConnectionDialog: Component<{
     setUsername("");
     setAuthKind(null);
     setSigningSecret("");
+    const mapping = connection?.payload_mapping;
+    const text = mapping ? JSON.stringify(mapping, null, 2) : "";
+    setMappingText(text);
+    setInitialMapping(text);
+    setSecretsText("");
     setShowErrors(false);
   };
 
@@ -327,6 +492,8 @@ const ConnectionDialog: Component<{
   const mutation = useMutation(() => ({
     mutationFn: () => {
       const cred = credential();
+      const mapping = isWebhook() ? mappingInput().mapping : undefined;
+      const secrets = isWebhook() ? secretsInput().secrets : undefined;
       const body = {
         name: name().trim(),
         config: cleanConfig(fields(), config()),
@@ -339,11 +506,18 @@ const ConnectionDialog: Component<{
               },
             }
           : {}),
+        ...(secrets !== undefined ? { mapping_secrets: secrets } : {}),
       };
       const connection = props.connection;
       return connection !== null
-        ? updateChannelConnection(connection.id, body)
-        : createChannelConnection({ ...body, type: type() }, idempotencyKey());
+        ? updateChannelConnection(connection.id, {
+            ...body,
+            ...(mapping !== undefined ? { payload_mapping: mapping } : {}),
+          })
+        : createChannelConnection(
+            { ...body, ...(mapping ? { payload_mapping: mapping } : {}), type: type() },
+            idempotencyKey(),
+          );
     },
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: qk.settings.channelConnections() });
@@ -352,6 +526,14 @@ const ConnectionDialog: Component<{
   }));
 
   const violations = (): ReadonlyMap<string, string> => violationsByField(mutation.error);
+  // A mapping is refused per fact, so its refusals are listed rather than pinned to
+  // one control: "drawn (fixture …): the mapping did not render one JSON object".
+  const mappingViolations = (): readonly string[] =>
+    [...violations()]
+      .filter(
+        ([field]) => field.startsWith("payload_mapping") || field.startsWith("mapping_secrets"),
+      )
+      .map(([field, message]) => `${field}: ${message}`);
 
   return (
     <Modal
@@ -533,6 +715,76 @@ const ConnectionDialog: Component<{
               </TextFieldErrorMessage>
             </TextField>
           </Show>
+
+          <Show when={isWebhook()}>
+            <fieldset class="flex flex-col gap-sm">
+              <legend class={LEGEND}>Payload mapping</legend>
+              <TextField
+                class={FIELD}
+                validationState={
+                  mappingInput().error !== undefined || mappingViolations().length > 0
+                    ? "invalid"
+                    : "valid"
+                }
+              >
+                <TextFieldLabel>Mapping (optional)</TextFieldLabel>
+                <TextFieldTextArea
+                  id="conn-payload-mapping"
+                  class="min-h-48 font-mono text-meta"
+                  spellcheck={false}
+                  value={mappingText()}
+                  placeholder={'{\n  "body": "{ \\"title\\": \\"{{ summary }}\\" }"\n}'}
+                  onInput={(e) => setMappingText(e.currentTarget.value)}
+                />
+                <TextFieldDescription class={HELP}>
+                  Turns oto's envelope into the request an incident tool expects: a{" "}
+                  <code>body</code> for every fact, optional per-fact <code>facts</code>,{" "}
+                  <code>headers</code>, and a <code>response</code> path to the tool's incident
+                  link. Every value is JSON-escaped for you. It is checked against every fact before
+                  it is saved, and a mapping that fails when sending fails the delivery — the plain
+                  envelope is never sent instead. Leave blank to send the plain envelope.
+                </TextFieldDescription>
+                <TextFieldErrorMessage role="alert">{mappingInput().error}</TextFieldErrorMessage>
+              </TextField>
+
+              <TextField
+                class={FIELD}
+                validationState={secretsInput().error !== undefined ? "invalid" : "valid"}
+              >
+                <TextFieldLabel>
+                  {sealedNames().length > 0
+                    ? "Replace mapping secrets (optional)"
+                    : "Mapping secrets (optional)"}
+                </TextFieldLabel>
+                <TextFieldTextArea
+                  id="conn-mapping-secrets"
+                  class="min-h-16 font-mono text-meta"
+                  spellcheck={false}
+                  autocomplete="off"
+                  value={secretsText()}
+                  placeholder="routing_key=…"
+                  onInput={(e) => setSecretsText(e.currentTarget.value)}
+                />
+                <TextFieldDescription class={HELP}>
+                  One <code>name=value</code> per line, referenced in the mapping as{" "}
+                  <code>{"{{ secrets.name }}"}</code> and filled in only as the request is sent — a
+                  mapping never holds a secret.
+                  <Show when={sealedNames().length > 0}>
+                    {" "}
+                    Sealed now: {sealedNames().join(", ")}. Leave blank to keep them; anything
+                    written here replaces the whole set.
+                  </Show>
+                </TextFieldDescription>
+                <TextFieldErrorMessage role="alert">{secretsInput().error}</TextFieldErrorMessage>
+              </TextField>
+
+              <Show when={mappingViolations().length > 0}>
+                <ul class={cn(HELP, "text-error-foreground")} role="alert">
+                  <For each={mappingViolations()}>{(v) => <li>{v}</li>}</For>
+                </ul>
+              </Show>
+            </fieldset>
+          </Show>
         </div>
 
         <ModalFooter>
@@ -546,6 +798,8 @@ const ConnectionDialog: Component<{
             onClick={() => {
               setShowErrors(true);
               if (localErrors().size > 0 || name().trim() === "") return;
+              const unreadable = mappingInput().error ?? secretsInput().error;
+              if (isWebhook() && unreadable !== undefined) return;
               mutation.mutate();
             }}
           >

@@ -147,6 +147,15 @@ func connectionDTO(c domain.Connection) ChannelConnectionDTO {
 		out.SigningCredentialRotatedAt = utcPtr(c.SigningRotatedAt)
 		out.SigningOverlapUntil = utcPtr(c.SigningPreviousUntil)
 	}
+	// Never `null`: an empty list is the truthful "this connection seals none".
+	out.MappingSecretNames = []string{}
+	if c.MappingCredentialID != nil {
+		out.MappingSecretNames = append(out.MappingSecretNames, c.MappingSecretNames...)
+		out.MappingSecretsRotatedAt = utcPtr(c.MappingRotatedAt)
+	}
+	if !domain.IsNullMapping(c.PayloadMapping) {
+		out.PayloadMapping = c.PayloadMapping
+	}
 	return out
 }
 

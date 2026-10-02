@@ -273,6 +273,7 @@ export function channelConnection(patch: Partial<ChannelConnection> = {}): Chann
     config: { team_id: "T9TK3CUKW" },
     credential_kind: "slack_bot_token",
     credential_rotated_at: T0,
+    mapping_secret_names: [],
     created_at: T0,
     updated_at: T0,
     ...patch,

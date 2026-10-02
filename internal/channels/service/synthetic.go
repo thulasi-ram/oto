@@ -164,3 +164,54 @@ func syntheticLinks(base string) domain.Links {
 		Timeline: base + "/groups/00000000-0000-7000-8000-000000000002/timeline",
 	}
 }
+
+// SyntheticFactView is SyntheticView told as one chosen fact, for a payload
+// mapping's test send (ADR 0055 §2). A mapping renders a different body per fact, so
+// the operator picks which one to send — an Incident fact among them — and whatever
+// the incident tool opens is unmistakably `OtoChannelTest`.
+//
+// A Case fact is the synthetic card with its reason changed; `digest` is a window of
+// one; an Incident fact is a synthetic Incident whose one member is the synthetic
+// Case, shaped the way `ViewService.incidentCard` builds one (a Reason, an
+// IncidentView and a render time, and nothing else).
+func SyntheticFactView(inst domain.Instance, now time.Time, baseURL, fact string) *domain.NotificationView {
+	v := SyntheticView(inst, now, baseURL)
+	v.Reason = fact
+	switch {
+	case fact == "digest":
+		from := now.Add(-time.Hour)
+		return &domain.NotificationView{
+			Org: v.Org, Reason: fact, RenderedAt: now,
+			Digest: &domain.DigestView{Count: 1, CoveredFrom: from, CoveredTo: now},
+		}
+	case domain.IncidentFact(fact):
+		base := strings.TrimRight(baseURL, "/")
+		drawn := now.Add(-10 * time.Minute)
+		state, caseState := "active", "open"
+		if fact == "quiet" {
+			state, caseState = "quiet", "closed"
+		}
+		member := domain.IncidentMemberView{
+			CaseID: v.Case.ID, CaseNumber: 1, CaseState: caseState,
+			AlertID: v.Alerts[0].ID, AlertName: SyntheticAlertName,
+			Labels:  v.Alerts[0].Labels,
+			AddedAt: drawn, AddedBy: domain.IncidentAuthorView{Label: "oto channel test"},
+		}
+		if fact == "case_removed" {
+			member.RemovedAt, member.RemovedByLabel = now, "oto channel test"
+		}
+		incident := &domain.IncidentView{
+			ID:      "00000000-0000-7000-8000-000000000005",
+			Number:  1,
+			State:   state,
+			DrawnAt: drawn,
+			DrawnBy: domain.IncidentAuthorView{Label: "oto channel test"},
+			Members: []domain.IncidentMemberView{member},
+		}
+		if base != "" {
+			incident.Link = base + "/incidents/1"
+		}
+		return &domain.NotificationView{Org: v.Org, Reason: fact, Incident: incident, RenderedAt: now}
+	}
+	return v
+}

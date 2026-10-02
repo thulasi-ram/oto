@@ -129,6 +129,7 @@ func (rt *Router) Register(r chi.Router) {
 			r.Patch("/", rt.updateConnection)
 			r.Delete("/", rt.deleteConnection)
 			r.Post("/slack/resolve", rt.resolveSlackConversation)
+			r.Post("/mapping/test", rt.testConnectionMapping)
 		})
 	})
 }

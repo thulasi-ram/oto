@@ -88,16 +88,20 @@ type target struct {
 	amends   int
 	delivers int
 	closed   int
+	// sent is every message Deliver was handed, so a test can read what reached
+	// the destination rather than only how often.
+	sent []chdomain.RenderedMessage
 }
 
 func (t *target) Capabilities() chdomain.Capability { return t.caps }
 
 func (t *target) Deliver(
-	context.Context, chdomain.DeliverRequest,
+	_ context.Context, req chdomain.DeliverRequest,
 ) (chdomain.DeliverResult, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.delivers++
+	t.sent = append(t.sent, req.Message)
 	return chdomain.DeliverResult{
 		Ref: chdomain.MessageRef{ConversationID: "C123", MessageID: "1700000000.00020" + itoa(t.delivers)},
 	}, nil
@@ -155,7 +159,9 @@ type dispatchRig struct {
 	metrics    *service.Metrics
 }
 
-func newDispatchRig(t *testing.T, tgt *target) dispatchRig {
+// newDispatchRig wires the pair. Each opt edits the DispatchConfig before it is
+// built — the payload-mapping tests add a Mapper this way.
+func newDispatchRig(t *testing.T, tgt *target, opts ...func(*service.DispatchConfig)) dispatchRig {
 	t.Helper()
 
 	fx := newFixture(t, domain.CapThreading|domain.CapAmend)
@@ -196,7 +202,7 @@ func newDispatchRig(t *testing.T, tgt *target) dispatchRig {
 	})
 	require.NoError(t, err)
 
-	dispatcher, err := service.NewDispatchService(service.DispatchConfig{
+	cfg := service.DispatchConfig{
 		Tx:            txRunner{pool: fx.pool},
 		Notifications: repository.NewNotificationRepository(fx.pool),
 		Deliveries:    deliveries,
@@ -212,7 +218,11 @@ func newDispatchRig(t *testing.T, tgt *target) dispatchRig {
 		BaseURL:  "https://oto.example.com",
 		Clock:    clk,
 		Metrics:  metrics,
-	})
+	}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	dispatcher, err := service.NewDispatchService(cfg)
 	require.NoError(t, err)
 
 	return dispatchRig{

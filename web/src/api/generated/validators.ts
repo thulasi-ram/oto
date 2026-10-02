@@ -2706,6 +2706,42 @@ export const UpdateChannelRequestSchema = v.pipe(
   v.check((value) => Object.keys(value).length >= 1, "at least 1 property required"),
 );
 
+export const PayloadMappingSchema = v.looseObject({
+  "body": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(16384),
+  ),
+  "facts": v.exactOptional(v.pipe(
+    v.record(v.string(), v.pipe(
+      v.string(),
+      v.minLength(1),
+      v.maxLength(16384),
+    )),
+    v.check((value) => Object.keys(value).length <= 20, "at most 20 properties allowed"),
+  )),
+  "headers": v.exactOptional(v.pipe(
+    v.record(v.string(), v.pipe(
+      v.string(),
+      v.maxLength(4096),
+    )),
+    v.check((value) => Object.keys(value).length <= 16, "at most 16 properties allowed"),
+  )),
+  "response": v.exactOptional(v.pipe(
+    v.looseObject({
+      "external_url": v.exactOptional(v.pipe(
+        v.string(),
+        v.maxLength(256),
+      )),
+      "external_id": v.exactOptional(v.pipe(
+        v.string(),
+        v.maxLength(256),
+      )),
+    }),
+    v.check((value) => Object.keys(value).length >= 1, "at least 1 property required"),
+  )),
+});
+
 export const ChannelConnectionDTOSchema = v.looseObject({
   "id": UuidSchema,
   "type": ChannelTypeSchema,
@@ -2720,9 +2756,27 @@ export const ChannelConnectionDTOSchema = v.looseObject({
   "signing_credential_kind": v.exactOptional(v.nullable(v.picklist(["webhook_signing_secret"]))),
   "signing_credential_rotated_at": v.exactOptional(v.nullable(TimestampSchema)),
   "signing_overlap_until": v.exactOptional(v.nullable(TimestampSchema)),
+  "payload_mapping": v.exactOptional(v.nullable(PayloadMappingSchema)),
+  "mapping_secret_names": v.pipe(
+    v.array(v.pipe(
+      v.string(),
+      v.regex(/^[a-z][a-z0-9_]{0,63}$/),
+    )),
+    v.maxLength(16),
+  ),
+  "mapping_secrets_rotated_at": v.exactOptional(v.nullable(TimestampSchema)),
   "created_at": TimestampSchema,
   "updated_at": TimestampSchema,
 });
+
+export const MappingSecretsInputSchema = v.pipe(
+  v.record(v.string(), v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(4096),
+  )),
+  v.check((value) => Object.keys(value).length <= 16, "at most 16 properties allowed"),
+);
 
 export const CreateChannelConnectionRequestSchema = v.strictObject({
   "type": ChannelTypeSchema,
@@ -2734,6 +2788,8 @@ export const CreateChannelConnectionRequestSchema = v.strictObject({
   "config": v.record(v.string(), v.unknown()),
   "credential": v.exactOptional(CredentialInputSchema),
   "signing_credential": v.exactOptional(CredentialInputSchema),
+  "payload_mapping": v.exactOptional(PayloadMappingSchema),
+  "mapping_secrets": v.exactOptional(MappingSecretsInputSchema),
 });
 
 export const UpdateChannelConnectionRequestSchema = v.pipe(
@@ -2746,9 +2802,16 @@ export const UpdateChannelConnectionRequestSchema = v.pipe(
     "config": v.exactOptional(v.record(v.string(), v.unknown())),
     "credential": v.exactOptional(CredentialInputSchema),
     "signing_credential": v.exactOptional(CredentialInputSchema),
+    "payload_mapping": v.exactOptional(v.nullable(PayloadMappingSchema)),
+    "mapping_secrets": v.exactOptional(MappingSecretsInputSchema),
   }),
   v.check((value) => Object.keys(value).length >= 1, "at least 1 property required"),
 );
+
+export const TestConnectionMappingRequestSchema = v.strictObject({
+  "channel_id": UuidSchema,
+  "fact": NotificationReasonSchema,
+});
 
 export const ResolveConversationRequestSchema = v.strictObject({
   "name": v.exactOptional(v.pipe(

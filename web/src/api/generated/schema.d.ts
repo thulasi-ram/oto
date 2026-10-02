@@ -1635,6 +1635,37 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/channel-connections/{id}/mapping/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Send one fact through a connection's payload mapping
+         * @description Render one fact you choose — an Incident fact among them — as the `oto.notification.v1` envelope,
+         *     map it through this webhook connection's **payload mapping** (ADR 0055 §2), fill the secrets it
+         *     names, sign it, and send it through `channel_id`, which must be a live channel of this connection:
+         *     the connection holds the mapping, the channel holds the URL. The same renderer, mapping, secrets,
+         *     signature and transport a real delivery uses, so a pass means the real path works.
+         *
+         *     **A test send to an incident tool may open a real incident there.** That is what a mapping does
+         *     with a fact; the view is the synthetic `OtoChannelTest` one, so whatever opens says so.
+         *
+         *     A mapping that does not render is reported as `ok: false` with `error_class: config_invalid` and
+         *     nothing is sent — never the plain envelope. A connection with no mapping is a `412`: its
+         *     channels send the plain envelope, which `POST /api/v1/channels/{id}/test` already covers.
+         */
+        post: operations["testChannelConnectionMapping"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/notification-templates": {
         parameters: {
             query?: never;
@@ -6680,6 +6711,19 @@ export interface components {
              *     secret signs.
              */
             signing_overlap_until?: components["schemas"]["Timestamp"] | null;
+            /**
+             * @description A webhook connection's payload mapping (ADR 0055 §2), or `null` when it sends the plain
+             *     `oto.notification.v1` envelope. It holds no secret — a secret is named in it as
+             *     `{{ secrets.<name> }}` — so it is returned whole.
+             */
+            payload_mapping?: components["schemas"]["PayloadMapping"] | null;
+            /**
+             * @description The names of the secrets this connection seals for its payload mapping, sorted. **The values
+             *     are never returned.** Empty when it seals none.
+             */
+            mapping_secret_names: string[];
+            /** @description When the mapping secrets were last replaced; `null` when never. */
+            mapping_secrets_rotated_at?: components["schemas"]["Timestamp"] | null;
             created_at: components["schemas"]["Timestamp"];
             updated_at: components["schemas"]["Timestamp"];
         };
@@ -6690,6 +6734,11 @@ export interface components {
          *     receiver to verify, both, or neither. A `webhook_signing_secret` in `credential`, any other kind
          *     in `signing_credential`, or a `signing_credential` on a `slack` connection is a `422` naming the
          *     field.
+         *
+         *     A `webhook` connection may carry a `payload_mapping` and the `mapping_secrets` it names. The
+         *     mapping is rendered against an envelope for **every fact** before it is stored, and a mapping
+         *     that does not render — or that names a secret not in `mapping_secrets` — is a `422` whose
+         *     violation names the source (`payload_mapping/body`, `payload_mapping/facts/<fact>`) and the fact.
          */
         CreateChannelConnectionRequest: {
             type: components["schemas"]["ChannelType"];
@@ -6704,6 +6753,8 @@ export interface components {
             };
             credential?: components["schemas"]["CredentialInput"];
             signing_credential?: components["schemas"]["CredentialInput"];
+            payload_mapping?: components["schemas"]["PayloadMapping"];
+            mapping_secrets?: components["schemas"]["MappingSecretsInput"];
         };
         /**
          * @description Partial update. `type` is absent because a connection's provider is its identity; supplying
@@ -6715,6 +6766,11 @@ export interface components {
          *     request in that window carries both signatures, so a receiver still holding the old secret keeps
          *     verifying until it is given the new one. A second rotation inside the window retires the oldest
          *     secret at once. Kind `none` detaches the signing secret immediately, with no overlap.
+         *
+         *     Supplying `payload_mapping` or `mapping_secrets` re-checks the mapping the connection will have
+         *     against the secrets it will have, for every fact, so removing a secret the mapping still names is
+         *     a `422` here rather than a failed delivery later. `mapping_secrets` **replaces the whole set**
+         *     (oto cannot read the current values back to merge into); `{}` removes them.
          */
         UpdateChannelConnectionRequest: {
             name?: string;
@@ -6723,6 +6779,58 @@ export interface components {
             };
             credential?: components["schemas"]["CredentialInput"];
             signing_credential?: components["schemas"]["CredentialInput"];
+            /** @description Replaces the payload mapping; `null` removes it and the plain envelope is sent. */
+            payload_mapping?: components["schemas"]["PayloadMapping"] | null;
+            mapping_secrets?: components["schemas"]["MappingSecretsInput"];
+        };
+        /**
+         * @description A webhook connection's **payload mapping** (ADR 0055 §2): destination setup, not wording. It is
+         *     not a NotificationTemplate, and a mapping that fails at send time is a failed delivery
+         *     (`dead`, `config_invalid`, retryable from the audit) — never the plain envelope instead. It holds
+         *     no secret: a vendor key is named as `{{ secrets.<name> }}` and filled in at the moment of sending
+         *     from the connection's sealed `mapping_secrets`.
+         */
+        PayloadMapping: {
+            /**
+             * @description Liquid over the `oto.notification.v1` envelope, rendering ONE JSON object: the request body for
+             *     every fact `facts` does not name. Every interpolated value is JSON-escaped with no opt-out, so
+             *     write `"title": "{{ incident.number }}"` and a label holding a quote stays a string.
+             */
+            body: string;
+            /** @description A body per fact (the envelope's `reason`), overriding `body` for that fact. */
+            facts?: {
+                [key: string]: string;
+            };
+            /**
+             * @description Request headers, name to a Liquid value. `Authorization` and every `X-Oto-*` name are refused:
+             *     a vendor's token is this connection's sealed `credential`, and `X-Oto-*` is oto's framing.
+             */
+            headers?: {
+                [key: string]: string;
+            };
+            /**
+             * @description Where an incident tool's 2xx response names the incident it opened. When present, ONLY these
+             *     paths are read and the default top-level `external_url` / `external_id` keys are not. What is
+             *     read is kept only if it is an absolute `https` URL / a printable id, exactly as for the default.
+             */
+            response?: {
+                /** @description A gjson path to the incident's link in a 2xx JSON response, e.g. `data.url`. */
+                external_url?: string;
+                /** @description A gjson path to the incident's id in a 2xx JSON response. */
+                external_id?: string;
+            };
+        };
+        /**
+         * @description The secrets a payload mapping names, name to value — sealed into one credential. **Write-only**:
+         *     only the names are ever returned (`mapping_secret_names`). Supplying it replaces the whole set.
+         */
+        MappingSecretsInput: {
+            [key: string]: string;
+        };
+        /** @description Which fact to send, and through which of this connection's channels. */
+        TestConnectionMappingRequest: {
+            channel_id: components["schemas"]["Uuid"];
+            fact: components["schemas"]["NotificationReason"];
         };
         /**
          * @description Ask for the other half of one Slack channel. Supply exactly one of `name` or `conversation_id` —
@@ -11911,6 +12019,109 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            502: components["responses"]["BadGateway"];
+            503: components["responses"]["ServiceUnavailable"];
+            504: components["responses"]["GatewayTimeout"];
+        };
+    };
+    testChannelConnectionMapping: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
+                 *     body within the retention window returns the original result rather than acting twice; replaying
+                 *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
+                 *
+                 *     ### The second carve-out: endpoints that are idempotent by state machine
+                 *
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     a key, because the state after N calls equals the state after one. They are therefore **not**
+                 *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
+                 *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
+                 *     `delivery_not_dead` — rather than a replay of the original response.
+                 *
+                 *     **Treat those four codes as success-equivalent when you are retrying the same key.** They mean
+                 *     "the thing you asked for is already true", which is what a replayed `200` would have told you.
+                 *
+                 *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
+                 *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
+                 *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
+                 *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
+                 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
+            };
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TestConnectionMappingRequest"];
+            };
+        };
+        responses: {
+            /**
+             * @description The test result. A `200` with `ok: false` means the test ran and the mapping or the receiver
+             *     refused it — check `error_class` and `error`.
+             */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChannelTestResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            412: components["responses"]["PreconditionFailed"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
             422: components["responses"]["UnprocessableContent"];
             429: components["responses"]["RateLimited"];
             500: components["responses"]["InternalError"];

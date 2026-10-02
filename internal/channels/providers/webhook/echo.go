@@ -3,6 +3,8 @@ package webhook
 import (
 	"encoding/json"
 
+	"github.com/tidwall/gjson"
+
 	"github.com/thulasiram/oto/internal/channels/domain"
 )
 
@@ -41,6 +43,46 @@ func (topLevelEcho) read(body []byte) (string, string) {
 		return "", ""
 	}
 	return jsonString(v.URL), jsonString(v.ID)
+}
+
+// pathEcho is a payload mapping's response path (ADR 0055 §2): each half is read at
+// the gjson path the mapping names (`data.incident.url`, `incidents.0.id`) and nowhere
+// else. A path left empty reads nothing; a value that is not a JSON string, a body
+// that is not valid JSON, or one cut off at maxResponseBytes reads as absent — the
+// same rules as the default, and then the same validator.
+type pathEcho struct {
+	url, id string
+}
+
+func (p pathEcho) read(body []byte) (string, string) {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return "", ""
+	}
+	return gjsonString(body, p.url), gjsonString(body, p.id)
+}
+
+func gjsonString(body []byte, path string) string {
+	if path == "" {
+		return ""
+	}
+	if r := gjson.GetBytes(body, path); r.Type == gjson.String {
+		return r.Str
+	}
+	return ""
+}
+
+// echoFor is the echo a Channel reads with: the mapping's response path when it
+// names one, and the default top-level keys otherwise.
+//
+// ⛔ THE PATH WINS OUTRIGHT, IT DOES NOT FALL BACK. 506ff21's governing comment: "oto
+// reads only where the mapping's path points, and does not also look for the default
+// keys". A tool whose answer carries a top-level `external_url` that means something
+// else is exactly the tool an operator wrote a path for.
+func echoFor(r *domain.MappingResponse) responseEcho {
+	if r == nil || (r.ExternalURL == "" && r.ExternalID == "") {
+		return topLevelEcho{}
+	}
+	return pathEcho{url: r.ExternalURL, id: r.ExternalID}
 }
 
 // jsonString is a JSON string's value, or "" for anything that is not one. A

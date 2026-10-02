@@ -178,6 +178,9 @@ var bindings = []binding{
 	// reopened two Slack scopes for. Settings-time only, never on the send path.
 	{"channels", "ResolveConversationRequest", channelsapi.ResolveConversationRequest{}},
 	{"channels", "ResolveConversationDTO", channelsapi.ResolveConversationDTO{}},
+	// `POST /channel-connections/{id}/mapping/test` — one chosen fact through a
+	// webhook connection's payload mapping (ADR 0055 §2).
+	{"channels", "TestConnectionMappingRequest", channelsapi.TestConnectionMappingRequest{}},
 	// NotificationTemplates: one whole message an operator wrote, in Markdown-plus
 	// (`card`), one flat string (`text`) or literal Block Kit JSON (`raw`). There is
 	// no MatcherDTO here any more — a template carries no `when` clause, because

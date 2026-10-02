@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/thulasiram/oto/internal/channels/domain"
+	"github.com/thulasiram/oto/internal/channels/template"
 	"github.com/thulasiram/oto/internal/platform/clock"
 	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/netguard"
@@ -86,6 +87,9 @@ type Channel struct {
 	clock  clock.Clock
 	// echo reads an incident tool's handle out of a 2xx response (echo.go).
 	echo responseEcho
+	// mapped is set when the channel's Connection carries a payload mapping (ADR 0055
+	// §2): only a mapped message may then be sent (see send).
+	mapped bool
 }
 
 // Capabilities reports CapRichLayout and nothing else (§H.10).
@@ -130,10 +134,15 @@ func (c *Channel) send(
 		}
 	}
 
+	wire, mappedHeaders, err := c.request(msg)
+	if err != nil {
+		return domain.DeliverResult{}, err
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, c.cfg.Timeout())
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, c.cfg.Method, c.cfg.URL, bytes.NewReader(msg.Payload))
+	req, err := http.NewRequestWithContext(ctx, c.cfg.Method, c.cfg.URL, bytes.NewReader(wire))
 	if err != nil {
 		return domain.DeliverResult{}, &domain.Error{
 			Class: domain.ClassConfigInvalid, Provider: providerName,
@@ -156,6 +165,15 @@ func (c *Channel) send(
 		}
 		req.Header.Set(k, v)
 	}
+	// A payload mapping's headers come after the channel's static ones, under the
+	// same two rules: an `X-Oto-*` name is skipped, and so is a credential header —
+	// both are refused when the mapping is saved, and skipped here regardless.
+	for k, v := range mappedHeaders {
+		if reservedHeader(k) || forbiddenHeader(k) {
+			continue
+		}
+		req.Header.Set(k, v)
+	}
 	// ⭐ OTO'S FRAMING IS SET AFTER THE CONFIGURED HEADERS, so it wins by order as
 	// well as by the rule above: two independent reasons a receiver's idempotency
 	// and signature checks can never be shadowed by a static header.
@@ -167,7 +185,9 @@ func (c *Channel) send(
 	if msg.Hash != "" {
 		req.Header.Set("X-Oto-Content-Hash", msg.Hash)
 	}
-	if ts, signature := c.sign(msg.Payload, c.clock.Now()); signature != "" {
+	// The signature covers the bytes on the wire: a mapped body, with its secrets
+	// filled, is what the receiver verifies.
+	if ts, signature := c.sign(wire, c.clock.Now()); signature != "" {
 		req.Header.Set(timestampHeader, ts)
 		req.Header.Set(signatureHeader, signature)
 	}
@@ -203,6 +223,40 @@ func (c *Channel) send(
 		Raw:         recordResponse(resp.StatusCode, bodyBytes, elapsed),
 		External:    c.readEcho(body),
 	}, nil
+}
+
+// request is the body and mapped headers this message is sent as.
+//
+// ⛔ A MAPPED CONNECTION SENDS A MAPPED BODY OR NOTHING (ADR 0055 §2). A message
+// that did not go through the Connection's payload mapping is refused as
+// `config_invalid` rather than sent: the plain envelope reaching a vendor that
+// cannot parse it is a missing incident, and "never a fallback" has to hold even
+// for a caller that forgot to map.
+//
+// ⭐ A MAPPED BODY'S SECRETS ARE FILLED HERE, AT THE MOMENT OF SENDING. The
+// delivery row recorded the body with `secrets.<name>` references in it, so the
+// stored request never holds a secret; the values come from the Connection's sealed
+// mapping-secret slot, unsealed into Credential.Secrets for this Open only. A
+// reference to a secret the Connection no longer holds fails the delivery.
+func (c *Channel) request(msg domain.RenderedMessage) ([]byte, map[string]string, error) {
+	if !msg.Mapped {
+		if c.mapped {
+			return nil, nil, &domain.Error{
+				Class: domain.ClassConfigInvalid, Provider: providerName,
+				Code:  "payload_mapping_not_applied",
+				Cause: errors.New("this connection carries a payload mapping and the message was not mapped; the plain envelope is never sent in its place"),
+			}
+		}
+		return msg.Payload, nil, nil
+	}
+	body, headers, err := template.FillSecrets(msg.Payload, msg.Headers, c.cred.Secrets)
+	if err != nil {
+		return nil, nil, &domain.Error{
+			Class: domain.ClassConfigInvalid, Provider: providerName,
+			Code: "payload_mapping_secret", Cause: err,
+		}
+	}
+	return body, headers, nil
 }
 
 // sign returns the timestamp and signature headers for a body sent at `at`, or two

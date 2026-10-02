@@ -223,18 +223,34 @@ func (p *Provider) Open(
 		return nil, err
 	}
 
+	// ⛔ A STORED MAPPING THAT NO LONGER PARSES DOES NOT OPEN AN UNMAPPED CHANNEL. It
+	// was checked when it was saved; if it is unreadable now, the honest answer is a
+	// config error on every delivery — visible, retryable once fixed — and not the
+	// plain envelope to a receiver that was configured never to get one.
+	mapped := !domain.IsNullMapping(cfg.PayloadMapping)
+	var mapping domain.PayloadMapping
+	if mapped {
+		if mapping, err = domain.ParsePayloadMapping(cfg.PayloadMapping); err != nil {
+			return nil, &domain.Error{
+				Class: domain.ClassConfigInvalid, Provider: providerName,
+				Code: "payload_mapping_invalid", Cause: err,
+			}
+		}
+	}
+
 	return &Channel{
 		cfg:    parsed,
 		cred:   cred,
 		client: p.httpClient(parsed, cred),
 		guard:  p.guard,
 		clock:  p.clock,
-		// ⭐ THE SEAM FOR A PAYLOAD MAPPING'S RESPONSE PATH (ADR 0055 §2, git-bug
-		// 2205620). A Connection with no mapping reads the top-level keys; one whose
-		// mapping names where in the response the handle is found will set its own
-		// responseEcho here, and the default keys are then not looked at at all.
-		// Either way the result passes the same domain.ValidExternalIncident.
-		echo: topLevelEcho{},
+		mapped: mapped,
+		// ⭐ THE SEAM 35c3f46 LEFT, FILLED (ADR 0055 §2, git-bug 2205620 and 506ff21's
+		// governing comment). A Connection with no mapping, or a mapping that names no
+		// response path, reads the top-level keys; a mapping that names one is read
+		// ONLY there, and the default keys are not looked at at all. Either way the
+		// result passes the same domain.ValidExternalIncident.
+		echo: echoFor(mapping.Response),
 	}, nil
 }
 

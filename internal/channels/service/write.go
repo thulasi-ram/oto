@@ -36,6 +36,7 @@ import (
 var (
 	opCreateChannel = idempotency.MustOperation("createChannel")
 	opTestChannel   = idempotency.MustOperation("testChannel")
+	opTestMapping   = idempotency.MustOperation("testChannelConnectionMapping")
 )
 
 // The codes this write path mints. Each is a DEPLOYMENT fact — a collaborator
@@ -80,6 +81,15 @@ type ChannelTester interface {
 
 // Compile-time proof that the tester satisfies the port this file declares.
 var _ ChannelTester = (*Tester)(nil)
+
+// MappingTester sends one chosen fact through a mapped Connection (ADR 0055 §2). It
+// is a separate port so a ChannelTester that predates mappings still satisfies the
+// one above; *Tester is both.
+type MappingTester interface {
+	TestMapping(ctx context.Context, s db.TenantScope, connectionID, channelID uuid.UUID, fact string) (domain.TestResult, error)
+}
+
+var _ MappingTester = (*Tester)(nil)
 
 // Idempotency is the caller's `Idempotency-Key` intent for one write — the
 // platform's own Intent under the name this module's ports cross it as. What
@@ -229,6 +239,37 @@ func (w *Writer) TestChannel(
 		}
 	}
 	return w.tester.Test(ctx, scope, channelID)
+}
+
+// TestMapping sends one fact through a mapped Connection, at most once per key —
+// TestChannel's claim-then-send ordering, for TestChannel's reason, and sharper: the
+// act may be an incident opened in somebody's incident tool.
+func (w *Writer) TestMapping(
+	ctx context.Context, scope db.TenantScope, connectionID, channelID uuid.UUID, fact string, idem Idempotency,
+) (domain.TestResult, error) {
+	tester, ok := w.tester.(MappingTester)
+	if !ok {
+		return domain.TestResult{}, errs.Unavailable(CodeTesterUnavailable,
+			"payload mapping testing is not configured in this deployment", 0)
+	}
+	if err := idempotency.Require(idem, w.claims, w.tx); err != nil {
+		return domain.TestResult{}, err
+	}
+	if idem.Keyed {
+		idem.Operation = opTestMapping
+		err := w.inTx(ctx, func(ctx context.Context) error {
+			_, err := idempotency.Resolve(ctx, w.claims, scope, idem,
+				idempotency.Replay, uuid.Nil, w.clk.Now().UTC())
+			return err
+		})
+		if errors.Is(err, idempotency.ErrReplay) {
+			return w.lastTestResult(ctx, scope, channelID)
+		}
+		if err != nil {
+			return domain.TestResult{}, err
+		}
+	}
+	return tester.TestMapping(ctx, scope, connectionID, channelID, fact)
 }
 
 // lastTestResult reconstructs the verdict the first attempt recorded.

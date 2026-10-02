@@ -40,7 +40,12 @@ type Unsealer interface {
 // against it and a second copy would drift.
 var CredentialKinds = []string{
 	"slack_bot_token", "slack_app_token", "slack_signing_secret", "basic", "bearer",
-	"webhook_signing_secret", "none",
+	"webhook_signing_secret",
+	// A webhook Connection's payload-mapping secrets, name → value, in its own slot
+	// (migration 00090). channels/api seals it from `mapping_secrets`, never from a
+	// `credential` input, whose `kind` enum does not list it.
+	domain.MappingSecretsKind,
+	"none",
 }
 
 // ValidCredentialKind reports whether kind is in the closed set.

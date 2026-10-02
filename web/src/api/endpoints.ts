@@ -84,6 +84,7 @@ import type {
   SourceHealth,
   SourceTest,
   StatsOverview,
+  TestConnectionMappingRequest,
   TimelineQuery,
   UpdateChannelConnectionRequest,
   UpdateChannelRequest,
@@ -836,6 +837,20 @@ export function updateChannelConnection(
 
 export function deleteChannelConnection(id: Uuid): Promise<void> {
   return del(`${V1}/channel-connections/${id}`);
+}
+
+/**
+ * Send one fact through a webhook connection's payload mapping, by way of one of
+ * its channels. ⚠️ It may open a real incident in the tool the mapping points at.
+ */
+export function testChannelConnectionMapping(
+  id: Uuid,
+  body: TestConnectionMappingRequest,
+  key: string,
+): Promise<ChannelTest> {
+  return postItem<ChannelTest>(`${V1}/channel-connections/${id}/mapping/test`, body, {
+    idempotencyKey: key,
+  });
 }
 
 /**
