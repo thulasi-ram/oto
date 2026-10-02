@@ -29,6 +29,25 @@ vendor whose API wants a different JSON shape, without writing a service.
 API built on by strangers needs on top: **secret rotation, a signed timestamp** against replay, and a written **compatibility promise** — additive changes only
 within `v1`; a removal or a change of meaning is `v2`, sent side by side for a stated period.
 
+As built (git-bug 2765f74; the owner's rulings of 2026-10-02):
+
+- **The signing secret has its own slot** on the Connection (migration `00088`,
+  `signing_credential_id`), beside the authentication credential rather than instead of it, so a
+  receiver that needs a bearer token — incident.io's — can also verify a signature.
+- **Rotation overlaps for 24 hours.** A new secret signs at once; the one it replaces keeps signing
+  beside it for 24 hours, so `X-Oto-Signature` carries two `v1=` entries in that window and never
+  more than two.
+- **The signed base is `v1:` + `X-Oto-Timestamp` + `:` + body**, HMAC-SHA256, sent as
+  `X-Oto-Signature: v1=<hex>`. The timestamp is per attempt and is what lets a receiver refuse a
+  replay.
+- **This is a one-time breaking change, accepted by the owner.** Until it, the header was
+  `sha256=<hex>` over the body alone, and it was never documented. A receiver written against it
+  stops verifying; the setup guide and the release that ships this say so. From here the format
+  moves only under the promise below: a new scheme is a new entry beside `v1=`.
+- **The stated period is 180 days** — the owner's ruling. When `v2` ships, `v1` and `v2` are both
+  sent for 180 days, and the end date is announced before `v1` stops; the same holds for a new
+  signature scheme.
+
 ### 2. A plugin is data: a payload mapping on the webhook Connection
 
 A webhook Connection may carry a **payload mapping**: a document that renders the request **body and
@@ -51,6 +70,19 @@ to that surface's stakes, not a template's:
 
 A **catalog** of community mappings is a folder of files — contributed, reviewed and imported onto a
 Connection; no code ships with one.
+
+A value a tool requires and the envelope cannot always supply — PagerDuty's severity, for an Incident
+whose labels give none — is **the operator's to choose at import**, not the catalog's (owner ruling,
+2026-10-02). The catalog file declares it as a choice over the values the tool accepts and writes a
+placeholder where it goes; the import asks, and writes the literal pick into the Connection's copy.
+A copy that still holds a placeholder cannot be saved, and the catalog check refuses a file that
+hard-codes the fallback instead.
+
+A mapping cannot decline a fact, so **which facts reach a tool is the notification policy's
+business**. A tool that opens a new incident for an event on the key of one a human resolved —
+PagerDuty and incident.io both do — would be paged again by any later fact; the starters' setup
+routes them only `drawn` and `active_again` (owner ruling, 2026-10-02: fixed by policy, with no new
+schema).
 
 ### 3. Anything that needs logic is a bridge, outside oto
 

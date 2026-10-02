@@ -25,14 +25,21 @@
 #
 # The token rides the connection's sealed `bearer` credential — never this file.
 #
+# ⚠️ ROUTE ONLY `drawn` AND `active_again` HERE. Once a human has resolved the alert
+# in incident.io, a later `firing` event on the same deduplication key can open a
+# new incident, so a `case_added`, `case_removed` or `quiet` would page again for a
+# response somebody just ended. The notification policy for this channel names those two
+# reasons and no others (setup, below).
+#
 # Nothing to echo: the 202 names only the `deduplication_key` oto sent, so there is
 # no `response` path and the Incident page shows no external link for this tool.
 
 vendor: incident.io
 title: incident.io HTTP alert source
 summary: >-
-  Opens one incident.io alert per oto Incident, keyed on the Incident's id, and keeps it
-  firing: later facts about the same Incident update that alert and never close it.
+  Fires one incident.io alert per oto Incident, keyed on the Incident's id, when it is
+  drawn and when it is active again, and never sends it resolved. Route only those two
+  facts to it: a firing event after a human resolved the alert can open a new incident.
 docs:
   - https://docs.incident.io/openapi/tags/alert-events-v2.json
   - https://docs.incident.io/api-reference/alert-sources-v2/create
@@ -41,7 +48,7 @@ setup:
   - In incident.io, create an HTTP alert source and copy its URL and its token.
   - Give this webhook connection a `bearer` credential holding that token.
   - Point a channel of the connection at the URL, `https://api.incident.io/v2/alert_events/http/<alert_source_config_id>`.
-  - Route Incident facts to that channel. Case facts and digests render too, because a mapping cannot decline a fact; each becomes its own alert, keyed on its conversation.
+  - Add a notification policy for that channel whose reasons are ONLY `drawn` and `active_again`. Any other fact would be a further firing event on the same deduplication key, and once a human has resolved the alert in incident.io that event can open a new incident and page again. A mapping cannot decline a fact, so the policy is what keeps them out.
 commands:
   - field: status
     forbidden: [resolved]

@@ -2813,6 +2813,22 @@ export const PayloadMappingCommandDTOSchema = v.looseObject({
   "forbidden": v.array(v.string()),
 });
 
+export const PayloadMappingChoiceDTOSchema = v.looseObject({
+  "name": v.pipe(
+    v.string(),
+    v.regex(/^[a-z][a-z0-9_]{0,63}$/),
+  ),
+  "question": v.string(),
+  "field": v.string(),
+  "options": v.pipe(
+    v.array(v.pipe(
+      v.string(),
+      v.regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/),
+    )),
+    v.minLength(2),
+  ),
+});
+
 export const PayloadMappingCatalogEntryDTOSchema = v.looseObject({
   "id": v.pipe(
     v.string(),
@@ -2828,6 +2844,7 @@ export const PayloadMappingCatalogEntryDTOSchema = v.looseObject({
   "checked_on": v.string(),
   "setup": v.array(v.string()),
   "commands": v.array(PayloadMappingCommandDTOSchema),
+  "choices": v.array(PayloadMappingChoiceDTOSchema),
   "secrets": v.array(v.pipe(
     v.string(),
     v.regex(/^[a-z][a-z0-9_]{0,63}$/),

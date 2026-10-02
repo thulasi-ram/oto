@@ -29,7 +29,10 @@ import (
 // The catalog is `mappings/*.yaml` at the repository root, embedded in the binary.
 // LoadCatalog reads it at boot so Settings → Connections can list it; importing an
 // entry is the UI copying the entry's mapping into the Connection's own
-// `payload_mapping`, through the same save-time gate every mapping passes.
+// `payload_mapping`, through the same save-time gate every mapping passes — with
+// the operator's pick written in for each of the entry's `choices` (owner ruling
+// of 2026-10-02: a value only the operator may decide is asked at import, never
+// answered by the file).
 //
 // ⛔ "NO MAPPING IN oto'S CATALOG TURNS A FACT INTO A RESOLVE, CLOSE OR STATUS
 // CHANGE; A CATALOG REVIEW REFUSES ONE" (§4). A reviewer reading a Liquid branch on
@@ -59,9 +62,26 @@ type catalogFile struct {
 	CheckedOn    string           `yaml:"checked_on"`
 	Setup        []string         `yaml:"setup"`
 	Commands     []catalogCommand `yaml:"commands"`
+	Choices      []catalogChoice  `yaml:"choices"`
 	SecretFields []string         `yaml:"secret_fields"`
 	Mapping      any              `yaml:"mapping"`
 }
+
+type catalogChoice struct {
+	Name     string   `yaml:"name"`
+	Question string   `yaml:"question"`
+	Field    string   `yaml:"field"`
+	Options  []string `yaml:"options"`
+}
+
+// choiceNamePattern is what a choice may be called, the same shape as a secret's
+// name.
+var choiceNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+
+// choiceOptionPattern is what a choice's option may be: a plain token. It is
+// written into the mapping's JSON strings and Liquid as text, so it holds nothing
+// that could close a string or open a tag.
+var choiceOptionPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
 
 type catalogCommand struct {
 	Field     string   `yaml:"field"`
@@ -133,6 +153,7 @@ func ParseCatalogFile(id string, raw []byte) (domain.CatalogMapping, error) {
 	if f.Mapping == nil {
 		probs = append(probs, "`mapping` is required")
 	}
+	probs = append(probs, checkChoiceShapes(f.Choices)...)
 	if len(probs) > 0 {
 		return domain.CatalogMapping{}, errors.New(strings.Join(probs, "; "))
 	}
@@ -157,6 +178,36 @@ func ParseCatalogFile(id string, raw []byte) (domain.CatalogMapping, error) {
 		return domain.CatalogMapping{}, errors.New(strings.Join(msgs, "; "))
 	}
 
+	// Every placeholder names a declared choice, and every declared choice is
+	// written somewhere: a choice nobody reads is a question with no effect.
+	written := map[string]bool{}
+	for _, src := range mappingSources(doc) {
+		for _, n := range domain.ChoicesIn(src.text) {
+			written[n] = true
+		}
+	}
+	declared := map[string]bool{}
+	choices := make([]domain.CatalogChoice, 0, len(f.Choices))
+	for _, c := range f.Choices {
+		declared[c.Name] = true
+		if !written[c.Name] {
+			probs = append(probs, fmt.Sprintf("choice %s is declared and the mapping never writes %s",
+				c.Name, domain.ChoicePlaceholder(c.Name)))
+		}
+		choices = append(choices, domain.CatalogChoice{
+			Name: c.Name, Question: strings.TrimSpace(c.Question), Field: c.Field, Options: c.Options,
+		})
+	}
+	for _, n := range slices.Sorted(maps.Keys(written)) {
+		if !declared[n] {
+			probs = append(probs, fmt.Sprintf("the mapping writes %s and `choices` declares no %q",
+				domain.ChoicePlaceholder(n), n))
+		}
+	}
+	if len(probs) > 0 {
+		return domain.CatalogMapping{}, errors.New(strings.Join(probs, "; "))
+	}
+
 	commands := make([]domain.CatalogCommand, 0, len(f.Commands))
 	for _, c := range f.Commands {
 		commands = append(commands, domain.CatalogCommand{Field: c.Field, Forbidden: c.Forbidden})
@@ -170,6 +221,7 @@ func ParseCatalogFile(id string, raw []byte) (domain.CatalogMapping, error) {
 		CheckedOn:    f.CheckedOn,
 		Setup:        f.Setup,
 		Commands:     commands,
+		Choices:      choices,
 		SecretFields: f.SecretFields,
 		Secrets:      m.Secrets(),
 		Mapping:      mapping,
@@ -196,9 +248,9 @@ func catalogCanary(name string) string { return "oto-catalog-canary-" + name }
 //     right one — the one judgement no test can make.
 //  2. NO FORBIDDEN VALUE IS SPELLED ANYWHERE IN THE MAPPING, as a whole word,
 //     ignoring case — in a JSON value, a Liquid comparison or a branch nobody can
-//     reach. Rendering proves only the branches the corpus reaches; a mapping that
-//     cannot write the word cannot send it, and nobody has to argue whether a
-//     branch is reachable.
+//     reach — nor offered as a choice's option. Rendering proves only the branches
+//     the corpus reaches; a mapping that cannot write the word cannot send it, and
+//     nobody has to argue whether a branch is reachable.
 //  3. EVERY FACT RENDERS AND NONE RENDERS A COMMAND. The mapping is rendered
 //     against the save-time corpus — every one of the 20 facts plus the hostile and
 //     zero-value shapes (template.MappingFixtures) — and in every body each command
@@ -212,12 +264,27 @@ func catalogCanary(name string) string { return "oto-catalog-canary-" + name }
 //     reads the first and a tool may read the last.
 //  7. A COMMAND IS WRITTEN, NOT INTERPOLATED. Each command field's rendered value
 //     appears as a literal in some mapping source; otherwise it comes from the
-//     envelope's data, and an alert the corpus does not contain could set it.
+//     envelope's data (or from a choice), and an alert the corpus does not contain
+//     could set it.
+//  8. A CHOICE IS THE OPERATOR'S, AND THE FILE DOES NOT ANSWER IT. A file with
+//     choices is checked once per option of each — 3 to 7 run over every filled
+//     copy an import could store — and then, fact by fact, the choice's field must
+//     be present, must be one of its options, and must either FOLLOW the pick (the
+//     fact carries no usable value, so the operator's answer goes out) or PASS
+//     THROUGH a value the fact itself carries, the same whatever is picked. A value
+//     that is the same whatever is picked and that the fact does not carry is a
+//     fallback the FILE chose — PagerDuty's old `critical` — and is refused. At
+//     least one fact must follow the pick, or the question changes nothing.
 func CheckCatalogMapping(c domain.CatalogMapping) []string {
 	var probs []string
+	seen := map[string]bool{}
+	// Each filled copy is checked in turn, and a mistake that does not depend on
+	// the pick would otherwise be reported once per option.
 	add := func(format string, args ...any) {
-		if len(probs) < maxCatalogProblems {
-			probs = append(probs, fmt.Sprintf(format, args...))
+		p := fmt.Sprintf(format, args...)
+		if len(probs) < maxCatalogProblems && !seen[p] {
+			seen[p] = true
+			probs = append(probs, p)
 		}
 	}
 
@@ -246,8 +313,10 @@ func CheckCatalogMapping(c domain.CatalogMapping) []string {
 		return probs
 	}
 
-	// 2. The spelling.
-	for _, src := range mappingSources(doc) {
+	// 2. The spelling — in the mapping as the catalog writes it, and in what a
+	// choice could write into it.
+	sources := mappingSources(doc)
+	for _, src := range sources {
 		for _, cmd := range c.Commands {
 			for _, v := range cmd.Forbidden {
 				if strings.TrimSpace(v) != "" && wholeWord(v).MatchString(src.text) {
@@ -256,89 +325,320 @@ func CheckCatalogMapping(c domain.CatalogMapping) []string {
 			}
 		}
 	}
-
-	// 4. A connection would accept it.
-	if err := ValidateMapping(c.Mapping, c.Secrets); err != nil {
-		if e, ok := errs.As(err); ok && len(e.Violations) > 0 {
-			for _, v := range e.Violations {
-				add("a connection would refuse it: %s: %s", v.Field, v.Message)
+	for _, ch := range c.Choices {
+		for _, cmd := range c.Commands {
+			if ch.Field == cmd.Field {
+				add("choice %s decides %s, a command field: the catalog writes a command, it never asks for one",
+					ch.Name, cmd.Field)
 			}
-		} else {
-			add("a connection would refuse it: %s", err.Error())
+			for _, v := range cmd.Forbidden {
+				if containsFoldTrim(ch.Options, v) {
+					add("choice %s offers %q, a value of %s the catalog never sends", ch.Name, v, cmd.Field)
+				}
+			}
 		}
-		return probs
 	}
 
-	// 3 and 5. Every fact, rendered.
+	// 3 to 7, over every copy an import could store.
+	variants, err := catalogVariants(c)
+	if err != nil {
+		add("%s", err.Error())
+		return probs
+	}
+	for i := range variants {
+		v := &variants[i]
+		// 4. A connection would accept it.
+		if err := ValidateMapping(v.mapping, c.Secrets); err != nil {
+			if e, ok := errs.As(err); ok && len(e.Violations) > 0 {
+				for _, viol := range e.Violations {
+					add("a connection would refuse it: %s: %s", viol.Field, viol.Message)
+				}
+			} else {
+				add("a connection would refuse it: %s", err.Error())
+			}
+			return probs
+		}
+		v.rendered = renderCatalogVariant(c, v.mapping, sources, add)
+		if v.rendered == nil {
+			return probs
+		}
+	}
+
+	// 8. The choices.
+	for _, ch := range c.Choices {
+		checkChoice(ch, variants, add)
+	}
+	return probs
+}
+
+// catalogVariant is one copy of a catalog mapping an import could store: every
+// choice filled, the one under test with each of its options in turn.
+type catalogVariant struct {
+	// varies is the choice this copy fills with each of its options in turn; ""
+	// for a file that asks nothing.
+	varies   string
+	picks    map[string]string
+	mapping  json.RawMessage
+	rendered []renderedFixture
+}
+
+// renderedFixture is one fact of the corpus, rendered through one copy.
+type renderedFixture struct {
+	fixture  string
+	field    string
+	body     []byte
+	envelope []byte
+}
+
+// catalogVariants is the mapping itself when the file asks nothing, and otherwise
+// one filled copy per option of each choice, the other choices at their first.
+func catalogVariants(c domain.CatalogMapping) ([]catalogVariant, error) {
+	if len(c.Choices) == 0 {
+		return []catalogVariant{{mapping: c.Mapping}}, nil
+	}
+	var out []catalogVariant
+	for _, ch := range c.Choices {
+		for _, opt := range ch.Options {
+			picks := make(map[string]string, len(c.Choices))
+			for _, other := range c.Choices {
+				if len(other.Options) > 0 {
+					picks[other.Name] = other.Options[0]
+				}
+			}
+			picks[ch.Name] = opt
+			filled, err := c.Fill(picks)
+			if err != nil {
+				return nil, fmt.Errorf("the mapping cannot be filled: %w", err)
+			}
+			out = append(out, catalogVariant{varies: ch.Name, picks: picks, mapping: filled})
+		}
+	}
+	return out, nil
+}
+
+// renderCatalogVariant runs checks 3, 5, 6 and 7 over one filled copy and returns
+// what every fixture rendered to, or nil when the copy does not compile.
+func renderCatalogVariant(
+	c domain.CatalogMapping, mapping json.RawMessage, sources []mappingSource, add func(string, ...any),
+) []renderedFixture {
+	doc, err := domain.ParsePayloadMapping(mapping)
+	if err != nil {
+		add("the mapping is not a mapping document: %s", err.Error())
+		return nil
+	}
 	m, mprobs := template.CompileMapping(doc)
 	if len(mprobs) > 0 {
 		add("the mapping does not compile")
-		return probs
+		return nil
 	}
-	sources := mappingSources(doc)
 	fromData := map[string]bool{}
 	canaries := make(map[string]string, len(c.Secrets))
 	for _, n := range c.Secrets {
 		canaries[n] = catalogCanary(n)
 	}
+	out := []renderedFixture{}
 	for _, fx := range template.MappingFixtures() {
 		envelope, err := sampleEnvelope(fx)
 		if err != nil {
 			add("fixture %q: %s", fx.Name, err.Error())
 			continue
 		}
-		out, err := m.Render(envelope)
+		rendered, err := m.Render(envelope)
 		if err != nil {
 			add("fixture %q: %s", fx.Name, err.Error())
 			continue
 		}
-		body, _, err := template.FillSecrets([]byte(out.Body), out.Headers, canaries)
+		body, _, err := template.FillSecrets([]byte(rendered.Body), rendered.Headers, canaries)
 		if err != nil {
 			add("fixture %q: %s", fx.Name, err.Error())
 			continue
 		}
+		out = append(out, renderedFixture{fixture: fx.Name, field: rendered.Field, body: body, envelope: envelope})
 		// A repeated key is two answers to one question, and gjson reads the first
 		// while a tool may read the last: the check would pass a `trigger` the tool
 		// never sees.
 		if k, err := repeatedKey(body); err != nil {
-			add("fixture %q (%s): the body does not decode: %s", fx.Name, out.Field, err.Error())
+			add("fixture %q (%s): the body does not decode: %s", fx.Name, rendered.Field, err.Error())
 		} else if k != "" {
 			add("fixture %q (%s): the body repeats the key %q; which of the two a tool reads is its choice, "+
-				"not the catalog's", fx.Name, out.Field, k)
+				"not the catalog's", fx.Name, rendered.Field, k)
 		}
 		for _, cmd := range c.Commands {
 			got := gjson.GetBytes(body, cmd.Field)
 			if !got.Exists() {
 				add("fixture %q (%s): the body carries no %s, so the tool's default decides what the fact does",
-					fx.Name, out.Field, cmd.Field)
+					fx.Name, rendered.Field, cmd.Field)
 				continue
 			}
 			for _, v := range cmd.Forbidden {
 				if strings.EqualFold(strings.TrimSpace(got.String()), strings.TrimSpace(v)) {
 					add("fixture %q (%s): %s is %q — the fact %q became a command",
-						fx.Name, out.Field, cmd.Field, got.String(), out.Fact)
+						fx.Name, rendered.Field, cmd.Field, got.String(), rendered.Fact)
 				}
 			}
 			// The corpus is finite and an alert is not: a command field whose value
 			// is interpolated passes every fixture and sends whatever a label says.
-			// So the value must be one the mapping itself writes, as a literal.
-			// Reported once per field: twenty copies would crowd out the rest.
+			// So the value must be one the mapping itself writes, as a literal — in
+			// the file as written, not in a copy a choice filled. Reported once per
+			// field: twenty copies would crowd out the rest.
 			if !fromData[cmd.Field] && !writtenLiterally(got, sources) {
 				fromData[cmd.Field] = true
 				add("fixture %q (%s): %s is %q, which no mapping source writes as a literal; "+
 					"it comes from the envelope's data, so an alert would decide the command",
-					fx.Name, out.Field, cmd.Field, got.String())
+					fx.Name, rendered.Field, cmd.Field, got.String())
 			}
 		}
 		for _, sf := range c.SecretFields {
 			got := gjson.GetBytes(body, sf)
 			if !isCanary(got, c.Secrets) {
 				add("fixture %q (%s): %s is not a `{{ secrets.<name> }}` reference and nothing else",
-					fx.Name, out.Field, sf)
+					fx.Name, rendered.Field, sf)
 			}
 		}
 	}
+	return out
+}
+
+// checkChoice is check 8 for one choice: fact by fact, across the copies filled
+// with each of its options.
+func checkChoice(ch domain.CatalogChoice, variants []catalogVariant, add func(string, ...any)) {
+	// The copies that vary this choice, one per option, in the options' order.
+	var mine []catalogVariant
+	for _, v := range variants {
+		if v.varies == ch.Name {
+			mine = append(mine, v)
+		}
+	}
+	if len(mine) == 0 {
+		return
+	}
+	n := len(mine[0].rendered)
+	for _, v := range mine {
+		if len(v.rendered) != n {
+			return // a fixture failed to render; that is already reported
+		}
+	}
+	followed := false
+	for j := 0; j < n; j++ {
+		fx := mine[0].rendered[j]
+		vals := make([]string, 0, len(mine))
+		present := true
+		for _, v := range mine {
+			got := gjson.GetBytes(v.rendered[j].body, ch.Field)
+			if !got.Exists() || got.Type != gjson.String {
+				add("fixture %q (%s): the body carries no %s as a string, which choice %s decides",
+					fx.fixture, fx.field, ch.Field, ch.Name)
+				present = false
+				break
+			}
+			if !slices.Contains(ch.Options, got.Str) {
+				add("fixture %q (%s): %s is %q, which is not one of choice %s's options (%s)",
+					fx.fixture, fx.field, ch.Field, got.Str, ch.Name, strings.Join(ch.Options, ", "))
+			}
+			vals = append(vals, got.Str)
+		}
+		if !present {
+			continue
+		}
+		follows, same := true, true
+		for i, v := range mine {
+			if vals[i] != v.picks[ch.Name] {
+				follows = false
+			}
+			if vals[i] != vals[0] {
+				same = false
+			}
+		}
+		switch {
+		case follows:
+			followed = true
+		case same && carries(fx.envelope, vals[0]):
+			// Passed through from the fact, whatever was picked.
+		case same:
+			add("fixture %q (%s): %s is %q whatever the operator picks for %s, and the fact carries no "+
+				"such value: the file hard-codes the fallback that %s asks the operator to choose; "+
+				"write %s there instead", fx.fixture, fx.field, ch.Field, vals[0], ch.Name, ch.Name,
+				domain.ChoicePlaceholder(ch.Name))
+		default:
+			add("fixture %q (%s): %s is %s across the picks %s: it neither follows choice %s nor "+
+				"passes one value of the fact through", fx.fixture, fx.field, ch.Field,
+				strings.Join(vals, "/"), strings.Join(ch.Options, "/"), ch.Name)
+		}
+	}
+	if !followed {
+		add("choice %s never reaches %s: no fact sends the operator's pick, so the question changes nothing",
+			ch.Name, ch.Field)
+	}
+}
+
+// carries reports whether some string anywhere in the envelope is exactly v — a
+// label, a state, a name — so a value the body sends can be told to come from the
+// fact rather than from the file.
+func carries(envelope []byte, v string) bool {
+	var walk func(r gjson.Result) bool
+	walk = func(r gjson.Result) bool {
+		switch {
+		case r.Type == gjson.String:
+			return r.Str == v
+		case r.IsObject() || r.IsArray():
+			found := false
+			r.ForEach(func(_, x gjson.Result) bool {
+				found = walk(x)
+				return !found
+			})
+			return found
+		default:
+			return false
+		}
+	}
+	return walk(gjson.ParseBytes(envelope))
+}
+
+// checkChoiceShapes is the shape of `choices`, checked at parse.
+func checkChoiceShapes(choices []catalogChoice) []string {
+	var probs []string
+	names := map[string]bool{}
+	for i, c := range choices {
+		if !choiceNamePattern.MatchString(c.Name) {
+			probs = append(probs, fmt.Sprintf("choices[%d]: %q is not a choice name: lower-case letters, digits "+
+				"and underscores, starting with a letter", i, c.Name))
+		}
+		if names[c.Name] {
+			probs = append(probs, fmt.Sprintf("choices[%d]: %s is declared twice", i, c.Name))
+		}
+		names[c.Name] = true
+		if strings.TrimSpace(c.Question) == "" {
+			probs = append(probs, fmt.Sprintf("choices[%d] (%s): `question` says what the import asks", i, c.Name))
+		}
+		if strings.TrimSpace(c.Field) == "" {
+			probs = append(probs, fmt.Sprintf("choices[%d] (%s): `field` names the body field it decides", i, c.Name))
+		}
+		if len(c.Options) < 2 {
+			probs = append(probs, fmt.Sprintf("choices[%d] (%s): `options` offers at least two values; "+
+				"one is not a choice", i, c.Name))
+		}
+		opts := map[string]bool{}
+		for _, o := range c.Options {
+			if !choiceOptionPattern.MatchString(o) {
+				probs = append(probs, fmt.Sprintf("choices[%d] (%s): option %q is not a plain token: letters, "+
+					"digits, `_`, `.` and `-`", i, c.Name, o))
+			}
+			if opts[o] {
+				probs = append(probs, fmt.Sprintf("choices[%d] (%s): option %q is offered twice", i, c.Name, o))
+			}
+			opts[o] = true
+		}
+	}
 	return probs
+}
+
+func containsFoldTrim(list []string, v string) bool {
+	for _, s := range list {
+		if strings.EqualFold(strings.TrimSpace(s), strings.TrimSpace(v)) {
+			return true
+		}
+	}
+	return false
 }
 
 // writtenLiterally reports whether a rendered command value appears in some mapping

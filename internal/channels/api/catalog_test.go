@@ -54,6 +54,20 @@ func TestTheMappingCatalogListsEveryEmbeddedFileWhole(t *testing.T) {
 	if len(secrets) != 1 || secrets[0] != "routing_key" {
 		t.Fatalf("secrets is %#v, want the one name an importer must seal", pd["secrets"])
 	}
+	// The fallback severity is asked, not answered: the entry lists the choice,
+	// and its mapping holds the placeholder the import fills (owner ruling,
+	// 2026-10-02).
+	choices, _ := pd["choices"].([]any)
+	if len(choices) != 1 {
+		t.Fatalf("choices is %#v, want the one default_severity choice", pd["choices"])
+	}
+	choice, _ := choices[0].(map[string]any)
+	if choice["name"] != "default_severity" || choice["field"] != "payload.severity" {
+		t.Fatalf("choice is %#v, want default_severity deciding payload.severity", choice)
+	}
+	if !strings.Contains(bodySrc, "<<choose:default_severity>>") {
+		t.Fatalf("the pagerduty mapping does not write the choice's placeholder: %q", bodySrc)
+	}
 	if _, ok := byID["incident-io"]; !ok {
 		t.Fatalf("the catalog lists no incident-io entry: %v", byID)
 	}

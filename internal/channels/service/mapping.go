@@ -95,6 +95,16 @@ func ValidateMapping(raw json.RawMessage, secretNames []string) error {
 					"`{{ secrets.<name> }}` and add the value under mapping_secrets", name))
 		}
 	}
+	// A catalog choice the import never answered (owner ruling of 2026-10-02): a
+	// copy stored over the API without picking would otherwise send the
+	// placeholder itself to the tool, which refuses it on every delivery.
+	for _, src := range mappingSources(doc) {
+		if names := domain.ChoicesIn(src.text); len(names) > 0 {
+			add(src.field, "choice_unfilled", fmt.Sprintf(
+				"%s is a catalog choice nobody made: replace it with one of the values the catalog "+
+					"entry offers, as Import from the catalog does", domain.ChoicePlaceholder(names[0])))
+		}
+	}
 	if r := doc.Response; r != nil {
 		for field, path := range map[string]string{"external_url": r.ExternalURL, "external_id": r.ExternalID} {
 			if msg := checkPath(path); msg != "" {

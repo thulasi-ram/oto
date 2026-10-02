@@ -228,7 +228,7 @@ type UpdateChannelConnectionRequest struct {
 	// sends the plain envelope from the next claim on.
 	PayloadMapping json.RawMessage `json:"payload_mapping,omitempty"`
 	// MappingSecrets REPLACES the whole set of mapping secrets — nothing outside the
-	// send path can unseal the current ones to merge into — and `{}` removes them.
+	// send path can unseal the current ones to add to — and `{}` removes them.
 	MappingSecrets map[string]string `json:"mapping_secrets,omitempty" validate:"omitempty,max=16"`
 }
 
@@ -253,6 +253,10 @@ type PayloadMappingCatalogEntryDTO struct {
 	// Commands are the tool's command fields and the values the catalog never sends
 	// in them (ADR 0055 §4) — what the import tells the operator they are NOT getting.
 	Commands []PayloadMappingCommandDTO `json:"commands"`
+	// Choices are what the import must ask before it copies `mapping`: each is
+	// written into the copy as the literal the operator picks, in place of its
+	// `<<choose:<name>>>` placeholder. A copy that still holds one is refused at save.
+	Choices []PayloadMappingChoiceDTO `json:"choices"`
 	// Secrets are the mapping secrets the connection must seal before the copy can
 	// be saved, by name. Never a value: a catalog file holds none.
 	Secrets []string        `json:"secrets"`
@@ -264,6 +268,14 @@ type PayloadMappingCatalogEntryDTO struct {
 type PayloadMappingCommandDTO struct {
 	Field     string   `json:"field"`
 	Forbidden []string `json:"forbidden"`
+}
+
+// PayloadMappingChoiceDTO is one value a catalog entry leaves to the operator.
+type PayloadMappingChoiceDTO struct {
+	Name     string   `json:"name"`
+	Question string   `json:"question"`
+	Field    string   `json:"field"`
+	Options  []string `json:"options"`
 }
 
 // TestConnectionMappingRequest asks for one fact to be sent through a mapped

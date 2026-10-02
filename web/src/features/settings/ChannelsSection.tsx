@@ -31,7 +31,9 @@
  * COPYING: the entry's document lands in the editor above, and Save stores it as
  * this connection's own, through the same per-fact gate. Nothing links the
  * connection back to the catalog afterwards, and the catalog carries no secret —
- * the operator seals the ones it names here, as for any mapping.
+ * the operator seals the ones it names here, as for any mapping. An entry that
+ * leaves a value to the operator (PagerDuty's fallback severity) asks for it
+ * before it copies, and the copy holds the literal pick (`catalogChoices.ts`).
  */
 import {
   For,
@@ -68,6 +70,8 @@ import type {
   PayloadMappingCatalogEntry,
 } from "~/api/types";
 import { REASON_LABEL } from "~/features/notifications/vocabulary";
+
+import { fillChoices, unansweredChoices } from "./catalogChoices";
 
 /** A credential kind, as the descriptor lists it. */
 type CredentialKind = ChannelTypeDescriptor["connection_credential_kinds"][number];
@@ -411,17 +415,24 @@ const MappingTest: Component<{ readonly connection: ChannelConnection }> = (prop
 
 /**
  * The payload-mapping catalog (ADR 0055 §2): pick a tool, read what the mapping
- * does and what it never sends, and copy it into the editor. Nothing is saved
- * until the dialog is — the copy goes through the same gate as a mapping typed by
- * hand, and it needs whatever secrets it names sealed beside it.
+ * does and what it never sends, answer what it leaves to you, and copy it into
+ * the editor. Nothing is saved until the dialog is — the copy goes through the
+ * same gate as a mapping typed by hand, and it needs whatever secrets it names
+ * sealed beside it.
  */
 const MappingCatalog: Component<{
   readonly sealed: readonly string[];
-  readonly onImport: (entry: PayloadMappingCatalogEntry) => void;
+  readonly onImport: (mapping: unknown) => void;
 }> = (props) => {
   const catalog = useQuery(() => mappingCatalogQuery());
   const entries = (): readonly PayloadMappingCatalogEntry[] => catalog.data ?? [];
-  const [chosenId, setChosenId] = createSignal<string | null>(null);
+  const [chosenId, setChosenIdRaw] = createSignal<string | null>(null);
+  // A pick answers one entry's question; choosing another tool asks afresh.
+  const [picks, setPicks] = createSignal<Readonly<Record<string, string>>>({});
+  const setChosenId = (id: string | null): void => {
+    setChosenIdRaw(id);
+    setPicks({});
+  };
   const chosen = (): PayloadMappingCatalogEntry | undefined => {
     const id = chosenId();
     return id === null ? undefined : entries().find((e) => e.id === id);
@@ -432,6 +443,10 @@ const MappingCatalog: Component<{
   };
   const missing = (): readonly string[] =>
     (chosen()?.secrets ?? []).filter((n) => !props.sealed.includes(n));
+  const unanswered = (): readonly string[] => {
+    const entry = chosen();
+    return entry === undefined ? [] : unansweredChoices(entry, picks());
+  };
 
   return (
     <Show when={entries().length > 0}>
@@ -457,10 +472,12 @@ const MappingCatalog: Component<{
           <Button
             size="sm"
             variant="secondary"
-            disabled={chosen() === undefined}
+            disabled={chosen() === undefined || unanswered().length > 0}
             onClick={() => {
               const entry = chosen();
-              if (entry !== undefined) props.onImport(entry);
+              if (entry !== undefined && unanswered().length === 0) {
+                props.onImport(fillChoices(entry, picks()));
+              }
             }}
           >
             Copy into the mapping
@@ -483,6 +500,47 @@ const MappingCatalog: Component<{
               <ol class="list-decimal pl-md">
                 <For each={entry().setup}>{(step) => <li>{step}</li>}</For>
               </ol>
+              <For each={entry().choices}>
+                {(choice) => (
+                  <Select<string>
+                    class={FIELD}
+                    options={[...choice.options]}
+                    value={picks()[choice.name] ?? null}
+                    onChange={(next) => {
+                      const rest = { ...picks() };
+                      if (next === null) delete rest[choice.name];
+                      else rest[choice.name] = next;
+                      setPicks(rest);
+                    }}
+                    placeholder="Choose"
+                    itemComponent={(itemProps) => (
+                      <SelectItem item={itemProps.item}>{itemProps.item.rawValue}</SelectItem>
+                    )}
+                  >
+                    <SelectLabel>
+                      {choice.question}
+                      <span class="ml-0.5 text-ink-subtle" aria-hidden="true">
+                        *
+                      </span>
+                    </SelectLabel>
+                    <SelectTrigger id={`conn-mapping-choice-${choice.name}`}>
+                      <SelectValue<string>>{(state) => state.selectedOption()}</SelectValue>
+                    </SelectTrigger>
+                    <SelectHiddenSelect />
+                    <SelectContent />
+                  </Select>
+                )}
+              </For>
+              <Show when={unanswered().length > 0}>
+                <p>
+                  The catalog does not choose{" "}
+                  {entry()
+                    .choices.filter((c) => unanswered().includes(c.name))
+                    .map((c) => c.field)
+                    .join(", ")}{" "}
+                  for you: pick a value above, and it is written into the copy as you chose it.
+                </p>
+              </Show>
               <Show when={missing().length > 0}>
                 <p class="text-error-foreground">
                   It reads {missing().map((n) => `secrets.${n}`).join(", ")}: add{" "}
@@ -556,7 +614,10 @@ const ConnectionDialog: Component<{
   const signs = createMemo(() =>
     (descriptor()?.connection_credential_kinds ?? []).includes(SIGNING_KIND),
   );
-  const chosenAuthKind = (): CredentialKind | undefined => authKind() ?? authKinds()[0];
+  // Unchosen, a form offering `bearer` offers it first: it is what an incident
+  // tool's alert source takes (incident.io), and `basic` asks for two values.
+  const chosenAuthKind = (): CredentialKind | undefined =>
+    authKind() ?? (authKinds().includes("bearer") ? "bearer" : authKinds()[0]);
   // Only a webhook connection carries a payload mapping (ADR 0055 §2).
   const isWebhook = (): boolean => (props.connection?.type ?? type()) === "webhook";
   const mappingInput = createMemo(() => readMapping(mappingText(), initialMapping()));
@@ -586,7 +647,12 @@ const ConnectionDialog: Component<{
     }
     setSecret("");
     setUsername("");
-    setAuthKind(null);
+    // An existing connection opens on the kind it holds, so a blank "Replace
+    // credential" never reads as a different kind than the one sealed.
+    const held = connection?.credential_kind;
+    setAuthKind(
+      held !== undefined && held !== null && authKinds().includes(held) ? held : null,
+    );
     setSigningSecret("");
     const mapping = connection?.payload_mapping;
     const text = mapping ? JSON.stringify(mapping, null, 2) : "";
@@ -838,8 +904,12 @@ const ConnectionDialog: Component<{
             <fieldset class="flex flex-col gap-sm">
               <legend class={LEGEND}>Payload mapping</legend>
               <MappingCatalog
-                sealed={sealedNames()}
-                onImport={(entry) => setMappingText(JSON.stringify(entry.mapping, null, 2))}
+                sealed={
+                  secretsInput().secrets !== undefined
+                    ? Object.keys(secretsInput().secrets ?? {})
+                    : sealedNames()
+                }
+                onImport={(mapping) => setMappingText(JSON.stringify(mapping, null, 2))}
               />
               <TextField
                 class={FIELD}

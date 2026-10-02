@@ -77,6 +77,25 @@ func TestTheStarterMappingsDeclareTheirVendorsCommands(t *testing.T) {
 			t.Errorf("%s declares no %s command field", id, cmd.Field)
 		}
 	}
+	// PagerDuty's severity, when no label gives one, is the operator's to choose at
+	// import (owner ruling, 2026-10-02): declared as a choice over the four values
+	// PagerDuty accepts, with no fallback the file picked.
+	if pd, ok := byID["pagerduty"]; ok {
+		want := domain.CatalogChoice{Name: "default_severity", Field: "payload.severity",
+			Options: []string{"critical", "error", "warning", "info"}}
+		found := false
+		for _, ch := range pd.Choices {
+			if ch.Name == want.Name {
+				found = true
+				if ch.Field != want.Field || !slices.Equal(ch.Options, want.Options) {
+					t.Errorf("pagerduty: choice %s = %+v, want field %s over %v", ch.Name, ch, want.Field, want.Options)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("pagerduty declares no %s choice; the operator picks the fallback severity at import", want.Name)
+		}
+	}
 	// The PagerDuty routing key travels in the body, so it must be a sealed secret.
 	if pd, ok := byID["pagerduty"]; ok {
 		if !slices.Contains(pd.SecretFields, "routing_key") || !slices.Contains(pd.Secrets, "routing_key") {
@@ -133,6 +152,16 @@ func TestTheCatalogCheckRefusesACommand(t *testing.T) {
 			file: "takes-the-command-from-data.yaml",
 			want: []string{`fixture "fired" (body): status is "fired"`, "comes from the envelope's data"},
 		},
+		{
+			// The severity choice declared, and answered by the file anyway on every
+			// Case fact: the operator's pick never reaches them (owner ruling,
+			// 2026-10-02).
+			file: "hard-codes-a-fallback.yaml",
+			want: []string{
+				`(body): payload.severity is "critical" whatever the operator picks`,
+				"hard-codes the fallback that default_severity asks the operator to choose",
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.file, func(t *testing.T) {
@@ -161,6 +190,66 @@ func TestTheCatalogCheckRefusesACommand(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestTheStartersRouteOnlyDrawnAndActiveAgain: a later trigger on a dedup key whose
+// incident a human has resolved opens a new incident in both tools, so each
+// starter's setup says to route it only the two facts that mean "page" (owner
+// ruling, 2026-10-02: fixed by policy, not by schema).
+func TestTheStartersRouteOnlyDrawnAndActiveAgain(t *testing.T) {
+	catalog, err := LoadCatalog(mappings.FS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range catalog {
+		if e.ID != "pagerduty" && e.ID != "incident-io" {
+			continue
+		}
+		setup := strings.Join(e.Setup, "\n")
+		for _, w := range []string{"notification policy", "ONLY `drawn` and `active_again`"} {
+			if !strings.Contains(setup, w) {
+				t.Errorf("%s: setup does not say %q:\n%s", e.ID, w, setup)
+			}
+		}
+	}
+}
+
+// TestACatalogChoiceIsDeclaredAndWritten: a placeholder no choice declares cannot be
+// filled at import, and a declared choice the mapping never writes asks a question
+// that changes nothing; both are refused at parse. A filled copy holds the pick.
+func TestACatalogChoiceIsDeclaredAndWritten(t *testing.T) {
+	base := "vendor: x\ntitle: x\nsummary: x\ndocs: [https://example.com/docs]\nchecked_on: \"2026-10-02\"\n" +
+		"setup: [x]\ncommands: [{field: status, forbidden: [resolved]}]\n"
+	choice := "choices: [{name: tone, question: Which tone, field: tone, options: [loud, soft]}]\n"
+	for name, doc := range map[string]string{
+		"undeclared placeholder":  base + "mapping: {body: '{\"status\": \"firing\", \"tone\": \"<<choose:tone>>\"}'}\n",
+		"declared, never written": base + choice + "mapping: {body: '{\"status\": \"firing\"}'}\n",
+		"one option":              base + strings.Replace(choice, "[loud, soft]", "[loud]", 1) + "mapping: {body: '{\"status\": \"firing\", \"tone\": \"<<choose:tone>>\"}'}\n",
+		"an option that is JSON":  base + strings.Replace(choice, "soft]", "'so\"ft']", 1) + "mapping: {body: '{\"status\": \"firing\", \"tone\": \"<<choose:tone>>\"}'}\n",
+	} {
+		if _, err := ParseCatalogFile("bad", []byte(doc)); err == nil {
+			t.Errorf("%s: the file parsed; it must be refused", name)
+		}
+	}
+
+	entry, err := ParseCatalogFile("good", []byte(base+choice+
+		"mapping: {body: '{\"status\": \"firing\", \"tone\": \"<<choose:tone>>\"}'}\n"))
+	if err != nil {
+		t.Fatalf("a declared, written choice was refused: %v", err)
+	}
+	filled, err := entry.Fill(map[string]string{"tone": "soft"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(filled), `\"tone\": \"soft\"`) || strings.Contains(string(filled), "<<choose:") {
+		t.Errorf("the filled copy = %s, want the literal pick and no placeholder", filled)
+	}
+	if _, err := entry.Fill(map[string]string{"tone": "shrill"}); err == nil {
+		t.Error("a pick that is not an option was filled in")
+	}
+	if _, err := entry.Fill(nil); err == nil {
+		t.Error("a copy was filled with no pick")
 	}
 }
 

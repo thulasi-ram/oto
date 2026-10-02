@@ -139,7 +139,7 @@ export interface paths {
          *     Every filter `listAlerts` accepts is accepted here and applied identically, so the buckets always
          *     summarise exactly the list beside them. Each bucket carries counts by state, by acknowledgement,
          *     by damping facet and by raw severity, plus a roll-up `state`: **a bucket is as alive as its
-         *     liveliest member**, and `resolved` and `expired` are never merged, because "the upstream said it
+         *     liveliest member**, and `resolved` and `expired` are never combined, because "the upstream said it
          *     ended" and "we stopped hearing about it" are different facts and the second is the more
          *     interesting one.
          *
@@ -1044,7 +1044,7 @@ export interface paths {
         head?: never;
         /**
          * Update a Correlator
-         * @description A partial update, validated against the **merged** Correlator. **Reordering is a `priority`
+         * @description A partial update, validated against the Correlator **as it would be after the update**. **Reordering is a `priority`
          *     change**, as it is for notification policies. An explicit `null` on `count_min` and
          *     `count_window_seconds` clears the count condition; clearing one half alone is a `422`.
          *
@@ -2410,9 +2410,9 @@ export interface paths {
          *     reports `default` again. An unknown name in `reset` is rejected, never ignored: a typo'd key that
          *     was silently dropped is a reset the operator believes happened and did not.
          *
-         *     **The bounds are enforced here, on the server.** They are checked against the *merged* state, so a
+         *     **The bounds are enforced here, on the server.** They are checked against the state *after the update*, so a
          *     write cannot slip a value past by relying on a key it did not send, and the result is stored only
-         *     if the whole merged state is legal. A `resolve_grace_s` of `0` is refused whatever a UI would have
+         *     if the whole updated state is legal. A `resolve_grace_s` of `0` is refused whatever a UI would have
          *     allowed — that value is a Slack thread per transition.
          *
          *     **A key this deployment's configuration manages is refused with `409`**, and the problem's
@@ -6803,7 +6803,7 @@ export interface components {
          *     Supplying `payload_mapping` or `mapping_secrets` re-checks the mapping the connection will have
          *     against the secrets it will have, for every fact, so removing a secret the mapping still names is
          *     a `422` here rather than a failed delivery later. `mapping_secrets` **replaces the whole set**
-         *     (oto cannot read the current values back to merge into); `{}` removes them.
+         *     (oto cannot read the current values back to add to); `{}` removes them.
          */
         UpdateChannelConnectionRequest: {
             name?: string;
@@ -6888,6 +6888,13 @@ export interface components {
              */
             commands: components["schemas"]["PayloadMappingCommandDTO"][];
             /**
+             * @description What the import must ask before it copies `mapping`, e.g. PagerDuty's default severity. Each
+             *     choice stands in `mapping` as the placeholder `<<choose:<name>>>`; the import writes the
+             *     operator's pick in its place as a literal, and a copy that still holds a placeholder is
+             *     refused at save (`choice_unfilled`). The catalog never answers a choice itself.
+             */
+            choices: components["schemas"]["PayloadMappingChoiceDTO"][];
+            /**
              * @description The mapping secrets the connection must seal, by name, before the copied mapping can be
              *     saved. Never a value: a catalog entry holds none.
              */
@@ -6899,6 +6906,16 @@ export interface components {
             field: string;
             /** @description The values of `field` that would turn a fact into a command; the catalog sends none. */
             forbidden: string[];
+        };
+        PayloadMappingChoiceDTO: {
+            /** @description The choice's name, as the mapping's placeholder writes it. */
+            name: string;
+            /** @description What the import asks the operator, in one sentence. */
+            question: string;
+            /** @description A gjson path into the request body the choice decides, e.g. `payload.severity`. */
+            field: string;
+            /** @description The values the operator picks one of. */
+            options: string[];
         };
         PayloadMappingCatalogResponse: {
             data: components["schemas"]["PayloadMappingCatalogEntryDTO"][];
@@ -7229,7 +7246,7 @@ export interface components {
              *     binding admits none of the policy's reasons, and a `422` if the policy carries a `count_min`
              *     and the new binding is not exactly `["case"]` — code `required` when it names no single kind,
              *     code **`unsupported`** when the single kind it names is `alert` or `digest`
-             *     (`policies_count_case_ck`). The check runs against the MERGED policy, so a `PATCH` that
+             *     (`policies_count_case_ck`). The check runs against the policy AS UPDATED, so a `PATCH` that
              *     touches only this field can be refused for a `count_min` it never mentioned; clear the count
              *     condition in the same request to widen the binding.
              * @example [
@@ -7245,7 +7262,7 @@ export interface components {
              *     count condition means anything alone.
              *
              *     ⛔ **Turning a count condition ON requires the policy's `subject_kinds` to be exactly
-             *     `["case"]`** after the merge, whether this request restates the binding or leaves it alone;
+             *     `["case"]`** after the update, whether this request restates the binding or leaves it alone;
              *     otherwise it is a `422` on `subject_kinds` (`policies_count_case_ck`). See `PolicyDTO.count_min`
              *     for why `alert` would mute the policy permanently and `digest` would be read by nothing.
              */
@@ -7679,7 +7696,7 @@ export interface components {
         };
         /**
          * @description A partial write. **An omitted key is left alone**; `reset` is the only way to return one to the
-         *     default. Every bound here is a copy of the server's own table and the server checks the *merged*
+         *     default. Every bound here is a copy of the server's own table and the server checks the *updated*
          *     state regardless — this schema is a courtesy to the form, not the boundary.
          */
         UpdateOrgSettingsRequest: {
@@ -8184,7 +8201,7 @@ export interface operations {
             query?: {
                 /**
                  * @description Comma-separated lifecycle states. Remember that `resolved` and `expired` are different
-                 *     things and are never merged.
+                 *     things and are never combined.
                  */
                 state?: components["schemas"]["State"][];
                 /**
