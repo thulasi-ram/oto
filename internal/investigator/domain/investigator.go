@@ -296,9 +296,9 @@ func (c InvestigatorChange) Apply(cur Version) (VersionSpec, error) {
 // quoteShort renders a refused value for a violation message without letting a
 // pasted paragraph become the message.
 func quoteShort(s string) string {
-	const max = 64
-	if len(s) > max {
-		s = s[:max] + "…"
+	const maxShown = 64
+	if len(s) > maxShown {
+		s = s[:maxShown] + "…"
 	}
 	return `"` + s + `"`
 }

@@ -12,7 +12,7 @@ import (
 )
 
 func TestFakeKeepsTheContract(t *testing.T) {
-	modelcontract.Run(t, func(t *testing.T, steps []modelfake.Step) (domain.ModelProvider, func() int) {
+	modelcontract.Run(t, func(_ *testing.T, steps []modelfake.Step) (domain.ModelProvider, func() int) {
 		p := modelfake.New(steps...)
 		return p, func() int { return len(p.Requests()) }
 	})

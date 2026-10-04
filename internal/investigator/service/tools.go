@@ -73,8 +73,8 @@ func mustSchema(name, description, params string) domain.ToolSchema {
 	return s
 }
 
-// limitArg reads an optional `limit` argument inside [1, max], defaulting to def.
-func limitArg(args json.RawMessage, def, max int) (int, error) {
+// limitArg reads an optional `limit` argument inside [1, ceiling], defaulting to def.
+func limitArg(args json.RawMessage, def, ceiling int) (int, error) {
 	var in struct {
 		Limit *int `json:"limit"`
 	}
@@ -86,8 +86,8 @@ func limitArg(args json.RawMessage, def, max int) (int, error) {
 	if in.Limit == nil {
 		return def, nil
 	}
-	if *in.Limit < 1 || *in.Limit > max {
-		return 0, errs.Newf(errs.KindValidation, "tool_arguments_invalid", "limit must be 1 to %d", max)
+	if *in.Limit < 1 || *in.Limit > ceiling {
+		return 0, errs.Newf(errs.KindValidation, "tool_arguments_invalid", "limit must be 1 to %d", ceiling)
 	}
 	return *in.Limit, nil
 }
