@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 90 {
-		t.Fatalf("latest migration is %d, want 90 — this test pins the number so that a "+
+	if latest != 93 {
+		t.Fatalf("latest migration is %d, want 93 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1631,6 +1631,36 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// accepts a kind the release below it cannot interpret. No column reading can
 	// see that, and it is the half most likely to be forgotten because nothing
 	// references it.
+	// ⭐ 00093 NUMBERS AN INCIDENT'S FACTS (ADR 0052 §5, owner ruling 2026-10-04): a
+	// defaulted counter on `incidents` and a nullable column on `notifications`, each with
+	// its CHECK. The notifications CHECK is read for its subject arm, because a sequence on
+	// a Case fact would be a number no receiver could order anything against.
+	//
+	// ⚠️ 00091 AND 00092 BELONG TO A CONCURRENT BRANCH. Until it lands, 00090 is the
+	// migration beneath this one and `down(93)` is followed directly by `down(90)`; when it
+	// lands, its two steps go between them, and `down` refuses the run until they do.
+	if n := countColumns("incidents", "fact_sequence"); n != 1 {
+		t.Fatalf("incidents.fact_sequence is absent at migration 93 (found %d)", n)
+	}
+	if n := countColumns("notifications", "incident_sequence"); n != 1 {
+		t.Fatalf("notifications.incident_sequence is absent at migration 93 (found %d)", n)
+	}
+	if n := countConstraints("incidents_fact_sequence_ck", "notifications_incident_seq_ck"); n != 2 {
+		t.Fatalf("%d of 00093's two CHECKs exist at migration 93, want 2", n)
+	}
+	if def := constraintDef("notifications_incident_seq_ck", "notifications"); !strings.Contains(def, "'incident'") {
+		t.Fatalf("notifications_incident_seq_ck does not confine a sequence to an Incident fact: %s", def)
+	}
+
+	down(93)
+
+	if n := countColumns("incidents", "fact_sequence") + countColumns("notifications", "incident_sequence"); n != 0 {
+		t.Fatalf("%d of 00093's columns survived its Down", n)
+	}
+	if n := countConstraints("incidents_fact_sequence_ck", "notifications_incident_seq_ck"); n != 0 {
+		t.Fatalf("%d of 00093's CHECKs survived its Down", n)
+	}
+
 	// ⭐ 00090 LETS A WEBHOOK CONNECTION CARRY A PAYLOAD MAPPING (ADR 0055 §2, git-bug
 	// 2205620): three columns on `channel_connections` with their four CHECKs, and a
 	// widened `channel_credentials_kind_ck` admitting `webhook_mapping_secrets`. The kind

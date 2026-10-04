@@ -2360,6 +2360,10 @@ CREATE TABLE notifications (
   -- the other is a position (git-bug 893cee4).
   digest_covered_from TIMESTAMPTZ,
   digest_covered_to   TIMESTAMPTZ,
+  -- 00093. An Incident fact's per-Incident order (ADR 0052 §5), handed over by the transaction that
+  -- made the fact true and frozen here, so every delivery renders the same `incident.sequence`.
+  -- NULL on every other row, and on an Incident fact declared before 00093.
+  incident_sequence BIGINT,
   reason          TEXT        NOT NULL,            -- §H.6 Reason enum
   policy_id       UUID        REFERENCES notification_policies(id) ON DELETE SET NULL,
   state_version   INT         NOT NULL,
@@ -2451,6 +2455,9 @@ CREATE TABLE notifications (
   --      while carrying a count of episodes that happened inside it.
   --   4. IT CONTAINS THE WINDOW'S START — the clause that makes the pair MEAN something rather than
   --      merely be present. A row that satisfies this cannot claim a span that misses its own window.
+  -- 00093: only an Incident fact is numbered, and from 1
+  CONSTRAINT notifications_incident_seq_ck CHECK (incident_sequence IS NULL
+                                                  OR (subject_kind = 'incident' AND incident_sequence >= 1)),
   CONSTRAINT notifications_digcover_ck CHECK (
         (digest_covered_from IS NULL) = (digest_covered_to IS NULL)
     AND (digest_covered_from IS NULL OR subject_kind = 'digest')
@@ -2767,8 +2774,12 @@ CREATE TABLE incidents (
   drawn_by               UUID        REFERENCES users(id) ON DELETE SET NULL,   -- ACTOR metadata (R8)
   drawn_by_label         TEXT,
   drawn_by_correlator_id UUID,
+  -- 00093. The sequence of the LATEST declared fact: bumped by UPDATE … RETURNING in the transaction
+  -- that enqueues each `notify.incident`, under this row's lock, so facts are numbered in commit order.
+  fact_sequence          BIGINT      NOT NULL DEFAULT 0,
   CONSTRAINT incidents_number_uniq UNIQUE (org_id, number),
   CONSTRAINT incidents_number_ck   CHECK (number >= 1),
+  CONSTRAINT incidents_fact_sequence_ck CHECK (fact_sequence >= 0),
   -- EXACTLY ONE AUTHOR (ADR 0052 §2). The LABEL is the human half's presence marker rather than
   -- `drawn_by`, because `drawn_by` is nulled when the user is deleted.
   CONSTRAINT incidents_drawn_by_ck CHECK ((drawn_by_label IS NULL) <> (drawn_by_correlator_id IS NULL)),

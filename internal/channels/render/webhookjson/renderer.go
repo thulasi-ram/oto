@@ -221,13 +221,14 @@ func mapGroup(g domain.GroupView) Group {
 // lives in `summary`, and no status, which oto does not hold.
 func mapIncident(i domain.IncidentView) *Incident {
 	out := &Incident{
-		ID:      i.ID,
-		Number:  i.Number,
-		State:   i.State,
-		DrawnAt: i.DrawnAt.UTC(),
-		DrawnBy: mapIncidentAuthor(i.DrawnBy),
-		Members: make([]IncidentMember, 0, len(i.Members)),
-		Link:    i.Link,
+		ID:       i.ID,
+		Number:   i.Number,
+		Sequence: i.Sequence,
+		State:    i.State,
+		DrawnAt:  i.DrawnAt.UTC(),
+		DrawnBy:  mapIncidentAuthor(i.DrawnBy),
+		Members:  make([]IncidentMember, 0, len(i.Members)),
+		Link:     i.Link,
 	}
 	for _, m := range i.Members {
 		mm := IncidentMember{

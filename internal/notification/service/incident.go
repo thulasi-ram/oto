@@ -54,6 +54,14 @@ type IncidentIntent struct {
 	// OccasionID is WHICH TIME this fact happened, and for an Incident it is the
 	// whole discriminator: an Incident has no `state_version`. Required.
 	OccasionID uuid.UUID
+	// Sequence is the fact's per-Incident order (migration 00093), allocated by the
+	// transaction that made it true. Frozen onto the row and rendered on every
+	// delivery as `incident.sequence`. 0 only for a job enqueued before 00093.
+	//
+	// ⛔ IT IS NOT IN THE §C.7 KEY. The occasion already makes the fact unique, and a
+	// redelivered job carries the same sequence anyway; keying on it would only add a
+	// second way for one fact to be two notifications.
+	Sequence int64
 }
 
 // incidentSkipReason is the sentence a threaded destination's delivery is recorded
@@ -146,9 +154,13 @@ func (s *NotificationService) evaluateIncident(
 		// discriminator, and the version is the constant `notifications_sver_ck`
 		// admits.
 		StateVersion: 1,
-		Status:       domain.StatusPending,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		// ⭐ FROZEN HERE, ONCE. A redelivered job meets the key below and reads back
+		// the row the first run wrote, so the number a receiver sees never changes
+		// between attempts (migration 00093).
+		IncidentSequence: in.Sequence,
+		Status:           domain.StatusPending,
+		CreatedAt:        now,
+		UpdatedAt:        now,
 	}
 	n.IdempotencyKey = domain.IdempotencyKey(
 		scope.OrgID(), n.SubjectKind, n.SubjectID, n.Reason, n.StateVersion, in.OccasionID)
@@ -484,6 +496,15 @@ func (v *ViewService) incidentCard(
 		Members: make([]IncidentMemberView, 0, len(f.Members)),
 		// "" except on the pointer posted into a member Case's own thread.
 		PointsFrom: pointsFrom,
+	}
+	// ⭐ THE SEQUENCE IS THE FACT'S, READ OFF THE ROW, AND ONLY AN INCIDENT FACT HAS ONE.
+	// The Incident itself is read live (C11) — its members and state are what it is
+	// NOW — but its sequence is where THIS fact falls in its story, frozen when the
+	// fact was recorded, so a retry renders the number the first attempt did. A Case
+	// fact amending the Incident's root card, and the pointer into a member Case's
+	// thread, are not Incident facts and carry none.
+	if n.Incident() && !n.IncidentPointer() {
+		iv.Sequence = n.IncidentSequence
 	}
 	if v.baseURL != "" {
 		iv.Link = v.baseURL + "/incidents/" + strconv.FormatInt(f.Number, 10)

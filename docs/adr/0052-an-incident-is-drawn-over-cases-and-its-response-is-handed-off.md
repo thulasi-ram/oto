@@ -93,6 +93,7 @@ one is a number an operator wrote, which is the test 0044 set.
   [0055](0055-an-incident-tool-integration-is-data-or-a-bridge-never-code-in-oto.md) §4: oto's own
   code and oto's mapping catalog never send a command, but an operator-written payload mapping
   on a webhook Connection may turn a fact into one — the operator's rule, not oto's.*
+- Every fact carries a per-Incident **`sequence`** — `1` for `drawn`, allocated in the transaction that records the fact, reused on its retries — so a receiver orders facts that arrive out of order (owner's ruling, 2026-10-04; `00093`).
 - **Nothing is read back.** Two-way sync is not considered.
 
 ### 6. An Incident may be a conversation

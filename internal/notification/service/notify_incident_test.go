@@ -126,7 +126,9 @@ func TestAPolicyBoundToIncidentRoutesTheFactToTheWebhook(t *testing.T) {
 	r := newIncidentRig(t, 0, incidentPolicy) // the generic webhook: no threading, no amend
 	ctx := t.Context()
 
-	intent := service.IncidentIntent{IncidentID: r.facts.ID, Reason: domain.ReasonDrawn, OccasionID: id.New()}
+	intent := service.IncidentIntent{
+		IncidentID: r.facts.ID, Reason: domain.ReasonDrawn, OccasionID: id.New(), Sequence: 1,
+	}
 	res, err := r.notifier.EvaluateIncident(ctx, r.fx.scope, intent)
 	require.NoError(t, err)
 	require.True(t, res.Created)
@@ -163,6 +165,15 @@ func TestAPolicyBoundToIncidentRoutesTheFactToTheWebhook(t *testing.T) {
 	assert.False(t, again.Created)
 	assert.Zero(t, again.Deliveries)
 	assert.Equal(t, 1, dispatches(r.jobs))
+
+	// ⭐ THE SEQUENCE IS FROZEN ON THE ROW (migration 00093), so the redelivery reads
+	// back the number the first run wrote, and so does every delivery attempt.
+	var sequence *int64
+	require.NoError(t, r.fx.pool.QueryRow(ctx,
+		`SELECT incident_sequence FROM notifications WHERE id = $1`, res.Notification.ID).Scan(&sequence))
+	require.NotNil(t, sequence)
+	assert.Equal(t, int64(1), *sequence)
+	assert.Equal(t, int64(1), again.Notification.IncidentSequence, "a redelivery is the same fact, same number")
 
 	next, err := r.notifier.EvaluateIncident(ctx, r.fx.scope, service.IncidentIntent{
 		IncidentID: r.facts.ID, Reason: domain.ReasonDrawn, OccasionID: id.New(),
@@ -230,7 +241,7 @@ func TestTheIncidentCardIsBuiltFromTheIncident(t *testing.T) {
 	ctx := t.Context()
 
 	res, err := r.notifier.EvaluateIncident(ctx, r.fx.scope, service.IncidentIntent{
-		IncidentID: r.facts.ID, Reason: domain.ReasonDrawn, OccasionID: id.New(),
+		IncidentID: r.facts.ID, Reason: domain.ReasonDrawn, OccasionID: id.New(), Sequence: 5,
 	})
 	require.NoError(t, err)
 
@@ -243,6 +254,7 @@ func TestTheIncidentCardIsBuiltFromTheIncident(t *testing.T) {
 	// The envelope's `org` is on an Incident fact as on a Case fact: it was "", "", "".
 	assert.Equal(t, service.OrgRef{ID: r.facts.Org.ID.String(), Slug: "acme", Name: "Acme"}, v.Org)
 	assert.Equal(t, int64(4), v.Incident.Number)
+	assert.Equal(t, int64(5), v.Incident.Sequence, "the fact's number, read off its row")
 	assert.Equal(t, "active", v.Incident.State)
 	assert.Equal(t, "Priya R.", v.Incident.DrawnBy.Label)
 	assert.Equal(t, "https://oto.example/incidents/4", v.Incident.Link)

@@ -23,6 +23,7 @@ type Repository interface {
 	Ref(ctx context.Context, s db.TenantScope, number int64) (domain.Ref, error)
 	Lock(ctx context.Context, s db.TenantScope, ids []uuid.UUID) error
 	OpenMembers(ctx context.Context, s db.TenantScope, incidentID uuid.UUID) (int, error)
+	NextSequence(ctx context.Context, s db.TenantScope, incidentID uuid.UUID) (int64, error)
 	Holding(ctx context.Context, s db.TenantScope, caseIDs []uuid.UUID) ([]uuid.UUID, error)
 	Cases(ctx context.Context, s db.TenantScope, ids []uuid.UUID) (map[uuid.UUID]domain.CaseRef, error)
 	LiveMemberships(ctx context.Context, s db.TenantScope, caseIDs []uuid.UUID) (map[uuid.UUID]domain.Ref, error)
@@ -76,6 +77,11 @@ type Announcement struct {
 	// it true. An Incident has no version, so this is what keeps one Case added,
 	// removed and added again from collapsing into one notification.
 	Occasion uuid.UUID
+	// Sequence is WHERE IN THE INCIDENT'S STORY this fact falls: 1 for `drawn`, one
+	// more for each fact after, allocated in the same transaction (migration 00093).
+	// The occasion tells two facts APART; the sequence tells a receiver which came
+	// FIRST when their deliveries arrive out of order.
+	Sequence int64
 }
 
 // Announcer hands Incident facts to the notification layer, INSIDE the caller's

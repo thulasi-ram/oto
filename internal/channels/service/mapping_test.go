@@ -117,6 +117,52 @@ func TestAHostileLabelDoesNotBreakASavedMapping(t *testing.T) {
 	}
 }
 
+// TestAMappingCanReadAnIncidentFactsSequence — ADR 0052 §5, migration 00093. The
+// envelope's `incident.sequence` is a binding like any other key, so a mapping can
+// hand an incident tool the order the facts happened in. Read with `default`, because
+// a Case fact has no `incident` and a fact declared before 00093 has no sequence — and
+// a bare number that renders empty would leave the body not JSON, which the save gate
+// refuses on exactly those fixtures.
+func TestAMappingCanReadAnIncidentFactsSequence(t *testing.T) {
+	t.Parallel()
+	doc := domain.PayloadMapping{Body: `{"sequence": {{ incident.sequence | default: 0 }}}`}
+	if err := ValidateMapping(mappingDoc(t, doc), nil); err != nil {
+		t.Fatalf("a mapping reading incident.sequence was refused: %v", err)
+	}
+	if err := ValidateMapping(mappingDoc(t, domain.PayloadMapping{
+		Body: `{"sequence": {{ incident.sequence }}}`,
+	}), nil); err == nil {
+		t.Fatal("a bare incident.sequence renders `{\"sequence\": }` on a Case fact, and was saved anyway")
+	}
+
+	m, probs := template.CompileMapping(doc)
+	if len(probs) > 0 {
+		t.Fatalf("CompileMapping: %+v", probs)
+	}
+	want := map[string]string{"drawn": `{"sequence": 1}`, "case_added": `{"sequence": 3}`, "fired": `{"sequence": 0}`}
+	for _, fx := range template.MappingFixtures() {
+		w, ok := want[fx.Name]
+		if !ok {
+			continue
+		}
+		envelope, err := sampleEnvelope(fx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, err := m.Render(envelope)
+		if err != nil {
+			t.Fatalf("%s: %v", fx.Name, err)
+		}
+		if out.Body != w {
+			t.Errorf("%s rendered %s, want %s", fx.Name, out.Body, w)
+		}
+		delete(want, fx.Name)
+	}
+	if len(want) > 0 {
+		t.Fatalf("no mapping fixture named %v", want)
+	}
+}
+
 // TestAMappingReferencingAMissingSecretCannotBeSaved, and the secret it names is
 // enough to save it.
 func TestAMappingReferencingAMissingSecretCannotBeSaved(t *testing.T) {

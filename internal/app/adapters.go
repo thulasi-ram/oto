@@ -358,6 +358,7 @@ func (a incidentAnnouncer) Announce(
 			IncidentID: f.IncidentID,
 			Reason:     string(reason),
 			OccasionID: f.Occasion,
+			Sequence:   f.Sequence,
 		}})
 	}
 	if len(reqs) == 0 {

@@ -275,6 +275,14 @@ type Notification struct {
 	DigestCoveredFrom *time.Time
 	DigestCoveredTo   *time.Time
 
+	// IncidentSequence is the per-Incident order of the Incident fact this row
+	// declares (migration 00093): 1 for `drawn`, one more per fact after, allocated
+	// in the transaction that made the fact true and frozen here when the fact is
+	// evaluated, so every delivery attempt renders the same number. 0 — NULL in the
+	// row — on every non-Incident row, on the pointer into a member Case's thread,
+	// and on an Incident fact enqueued before 00093 (`notifications_incident_seq_ck`).
+	IncidentSequence int64
+
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }

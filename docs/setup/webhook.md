@@ -140,6 +140,7 @@ The `incident` object:
 |---|---|
 | `id` | The Incident's id. **Stable for the Incident's whole life — this is your de-duplication key.** Key your external incident on it: every later fact about the same Incident carries the same `id`, so a receiver that upserts on it gets one external incident whose later facts are updates, not new incidents. A tool that opens a **new** incident for an event on a key whose incident was resolved — PagerDuty and incident.io do — is the exception: see §7 for routing it only `drawn` and `active_again`. |
 | `number` | The number humans quote (`#12`). Unique per org; prefer `id` as a key. |
+| `sequence` | Where **this fact** falls in the Incident's story: `1` for `drawn`, and higher for every fact after it. The same on every retry of the fact. **Use it to order facts that arrive out of order** — see below. |
 | `state` | `active` (some current member Case is open) or `quiet` (none is). Derived by oto from the Cases; nobody sets it. |
 | `drawn_at` | When it was drawn. |
 | `drawn_by` | `{kind: "human", label}` or `{kind: "correlator", correlator_id}`. |
@@ -149,6 +150,26 @@ The `incident` object:
 Each member: `case_id`, `case_number`, `case_state` (`open`/`closed`), `alert_id`, `alert_name`,
 `labels`, `added_at`, `added_by`, and on a removed spell `removed_at`, `removed_by_label` and — when
 it was moved — `moved_to_number`; `link` to the Case.
+
+**Ordering facts: keep the highest `sequence`, drop anything below it.** Each fact is its own
+delivery with its own retries, so two facts about one Incident can reach you in the wrong order: a
+`quiet` can land before the `case_removed` that caused it, because the removal's first attempt hit
+a `503` and was retried. `delivered_at` cannot help — it is when oto *sent* the request, which is
+exactly what a retry reorders. `sequence` is the order the facts **happened** in, numbered in the
+same database transaction that recorded each one, so a receiver should:
+
+- remember, per `incident.id`, the highest `sequence` it has applied;
+- **drop a fact whose `sequence` is lower** than that — a newer fact has already been applied, and
+  its envelope already describes the Incident as it is (`state` and `members` are read when each
+  request is built, so the later fact's are the more recent);
+- treat a fact with the **same** `sequence` as a redelivery of one it has seen: a retry carries the
+  number the first attempt did.
+
+The numbers increase but are **not gapless**: a fact your policy routes nowhere — or to another
+destination — still takes its number, so you may see `1, 2, 4`. A gap is not a lost fact. The key is
+**absent** on a fact declared before your oto had this field; treat such a fact as unordered. A
+**test send** — a channel's test, or **Test the mapping** (§7) — always carries `1`, whichever fact
+you pick, and names a test Incident of its own, so a test never makes a receiver drop a real fact.
 
 **Severity.** oto holds none for an Incident and invents none. If your tool needs one, map it from
 the member alerts' own labels (`members[].labels.severity`, typically) in your receiver or mapping.
@@ -315,6 +336,9 @@ and `status` — is reached without a bridge by putting a **payload mapping** on
 - **`body`** (required) is Liquid over the envelope of §3 — `{{ summary }}`, `{{ incident.id }}`,
   `{% for a in alerts %}…{% endfor %}` — and must render **one JSON object**. **`facts`** overrides it
   for the facts it names (the envelope's `reason`). A mapping cannot decline a fact: every one renders.
+  An Incident fact's order is `{{ incident.sequence }}` (§3); it is digits, so it may stand outside
+  quotes as a JSON number, written `{{ incident.sequence | default: 0 }}` so that a Case fact — which
+  has no `incident` — still renders JSON.
 - **Every interpolated value is JSON-escaped, with no opt-out**, so write it inside quotes. A label
   holding `"`, `\`, a newline or `</script>` lands as that string, never as structure.
 - **`headers`** are Liquid too. `Authorization` and every `X-Oto-*` name are refused: a vendor's

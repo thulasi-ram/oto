@@ -469,9 +469,20 @@ func (s *Service) announceMembership(
 // announce declares one fact, minting its occasion here — in the transaction that
 // made it true — so a redelivered job is the same fact and a second happening never
 // is.
+//
+// ⭐ AND ITS SEQUENCE, IN THE SAME TRANSACTION (owner ruling, migration 00093). The
+// Incident's counter is bumped beside the outbox job that declares the fact, so the
+// fact and its number commit together or not at all, and the bump's row lock orders
+// it after every fact committed before it. A `quiet` is therefore always numbered
+// after the `case_removed` that caused it, which is what lets a receiver that gets the
+// two the other way round put them back.
 func (s *Service) announce(ctx context.Context, scope db.TenantScope, incidentID uuid.UUID, fact domain.Fact) error {
+	seq, err := s.incidents.NextSequence(ctx, scope, incidentID)
+	if err != nil {
+		return err
+	}
 	return s.announcer.Announce(ctx, scope, []Announcement{{
-		IncidentID: incidentID, Fact: fact, Occasion: id.New(),
+		IncidentID: incidentID, Fact: fact, Occasion: id.New(), Sequence: seq,
 	}})
 }
 
