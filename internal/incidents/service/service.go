@@ -79,13 +79,17 @@ func New(d Deps) (*Service, error) {
 func (s *Service) now() time.Time { return s.clock.Now().UTC() }
 
 // List returns a page of the org's Incidents, newest first, each with its derived
-// state.
-func (s *Service) List(ctx context.Context, scope db.TenantScope, p db.Keyset) ([]domain.Incident, db.Cursor, error) {
-	return s.incidents.List(ctx, scope, p)
+// state. An Incident with no current member is left out unless f includes it
+// (domain.ListFilter).
+func (s *Service) List(
+	ctx context.Context, scope db.TenantScope, p db.Keyset, f domain.ListFilter,
+) ([]domain.Incident, db.Cursor, error) {
+	return s.incidents.List(ctx, scope, p, f)
 }
 
 // Get returns one Incident by the number a human quotes, with every spell of
-// every Case that has been in it.
+// every Case that has been in it — an empty one included, which the list hides by
+// default and this never does.
 func (s *Service) Get(ctx context.Context, scope db.TenantScope, number int64) (domain.Detail, error) {
 	return s.incidents.Get(ctx, scope, number)
 }

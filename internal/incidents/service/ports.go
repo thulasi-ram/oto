@@ -17,7 +17,7 @@ import (
 // Repository is the storage this service writes and reads through, satisfied by
 // `incidents/repository.IncidentRepository`.
 type Repository interface {
-	List(ctx context.Context, s db.TenantScope, p db.Keyset) ([]domain.Incident, db.Cursor, error)
+	List(ctx context.Context, s db.TenantScope, p db.Keyset, f domain.ListFilter) ([]domain.Incident, db.Cursor, error)
 	Get(ctx context.Context, s db.TenantScope, number int64) (domain.Detail, error)
 	GetByID(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Detail, error)
 	Ref(ctx context.Context, s db.TenantScope, number int64) (domain.Ref, error)

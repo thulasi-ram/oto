@@ -201,7 +201,7 @@ func TestADrawnIncidentHoldsItsCasesAndNarratesEachOne(t *testing.T) {
 	require.NoError(t, err)
 	assert.EqualValues(t, 2, second.Number, "numbers are per-org and monotonic")
 
-	list, _, err := r.svc.List(ctx, r.scope, db.Keyset{Limit: 10})
+	list, _, err := r.svc.List(ctx, r.scope, db.Keyset{Limit: 10}, domain.ListFilter{})
 	require.NoError(t, err)
 	require.Len(t, list, 2)
 	assert.EqualValues(t, 2, list[0].Number, "newest first")
@@ -225,7 +225,7 @@ func TestACaseInAnIncidentCannotBeDrawnOrAddedIntoAnother(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, "case_in_incident", errs.CodeOf(err))
 	assert.Contains(t, err.Error(), "/api/v1/incidents/1/cases/"+held.String()+"/move")
-	list, _, err := r.svc.List(ctx, r.scope, db.Keyset{Limit: 10})
+	list, _, err := r.svc.List(ctx, r.scope, db.Keyset{Limit: 10}, domain.ListFilter{})
 	require.NoError(t, err)
 	assert.Len(t, list, 1, "a refused draw draws nothing")
 
@@ -343,6 +343,71 @@ func TestARemovedCaseStaysRecordedAsRemoved(t *testing.T) {
 	assert.Equal(t, 2, d.MemberCount)
 }
 
+// TestAnEmptyIncidentIsKeptButLeftOffTheList — owner ruling 2026-10-04. An
+// Incident whose every Case was removed or moved away stays in the database and is
+// served by number, but the list leaves it out unless the filter asks for it.
+//
+// ⭐ "EMPTY" IS NO CURRENT MEMBER, NOT "QUIET". An Incident whose Cases all CLOSED
+// still holds them and is still listed; only one with nothing left in it is hidden.
+func TestAnEmptyIncidentIsKeptButLeftOffTheList(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := context.Background()
+
+	// #1 is emptied by a removal, #2 by a move into #3, and #4 is quiet but whole.
+	removed := r.openCase("HighErrorRate")
+	emptied, err := r.svc.Draw(ctx, r.scope, []uuid.UUID{removed}, r.alice)
+	require.NoError(t, err)
+	moving := r.openCase("KubePodCrashLooping")
+	left, err := r.svc.Draw(ctx, r.scope, []uuid.UUID{moving}, r.alice)
+	require.NoError(t, err)
+	joined, err := r.svc.Draw(ctx, r.scope, []uuid.UUID{r.openCase("DiskFull")}, r.alice)
+	require.NoError(t, err)
+	closed := r.openCase("Watchdog")
+	quiet, err := r.svc.Draw(ctx, r.scope, []uuid.UUID{closed}, r.alice)
+	require.NoError(t, err)
+	r.closeCase(closed)
+
+	r.h.Advance(time.Minute)
+	_, err = r.svc.Remove(ctx, r.scope, emptied.Number, removed, r.alice)
+	require.NoError(t, err)
+	_, err = r.svc.Move(ctx, r.scope, left.Number, joined.Number, moving, r.alice)
+	require.NoError(t, err)
+
+	numbers := func(f domain.ListFilter) []int64 {
+		t.Helper()
+		list, _, err := r.svc.List(ctx, r.scope, db.Keyset{Limit: 10}, f)
+		require.NoError(t, err)
+		out := make([]int64, 0, len(list))
+		for _, i := range list {
+			out = append(out, i.Number)
+		}
+		return out
+	}
+	assert.Equal(t, []int64{quiet.Number, joined.Number}, numbers(domain.ListFilter{}),
+		"the default list hides the two husks and keeps the quiet Incident that still holds its Case")
+	assert.Equal(t, []int64{quiet.Number, joined.Number, left.Number, emptied.Number},
+		numbers(domain.ListFilter{IncludeEmpty: true}), "asked, the list serves every Incident")
+
+	// ⭐ A HIDDEN PAGE BOUNDARY IS STILL A POSITION. A page of one over the default
+	// list must step past the husks rather than end on them.
+	page, next, err := r.svc.List(ctx, r.scope, db.Keyset{Limit: 1}, domain.ListFilter{})
+	require.NoError(t, err)
+	require.Len(t, page, 1)
+	require.True(t, next.HasMore)
+	page, next, err = r.svc.List(ctx, r.scope, db.Keyset{Limit: 1, Cursor: next}, domain.ListFilter{})
+	require.NoError(t, err)
+	require.Len(t, page, 1)
+	assert.Equal(t, joined.Number, page[0].Number)
+	assert.False(t, next.HasMore, "nothing after #%d is listed by default", joined.Number)
+
+	// The record is never hidden from its address.
+	d := r.get(emptied.Number)
+	assert.Zero(t, d.MemberCount)
+	require.Len(t, d.Members, 1, "the removed spell is still on the record")
+	assert.False(t, d.Members[0].Current())
+}
+
 // -------------------------------------------------------------------- move
 
 func TestAMoveIsOneAttributedTransaction(t *testing.T) {
@@ -452,7 +517,7 @@ func TestADrillsSyntheticCaseIsNeverDrawnOrAdded(t *testing.T) {
 	_, err := r.svc.Draw(ctx, r.scope, []uuid.UUID{free, drill}, r.alice)
 	require.Error(t, err)
 	assert.Equal(t, "case_synthetic", errs.CodeOf(err))
-	list, _, err := r.svc.List(ctx, r.scope, db.Keyset{Limit: 10})
+	list, _, err := r.svc.List(ctx, r.scope, db.Keyset{Limit: 10}, domain.ListFilter{})
 	require.NoError(t, err)
 	assert.Empty(t, list, "a draw naming a drill's Case is refused whole")
 

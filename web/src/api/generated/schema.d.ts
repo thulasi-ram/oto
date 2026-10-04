@@ -840,6 +840,12 @@ export interface paths {
          *     With `case_id`, the answer is the Incident that Case is in **now** — none or exactly one, because a
          *     Case is in at most one — so a screen can say a Case would be moved before a draw or an add is
          *     refused for it. A Case in no Incident, or one this org does not have, is the same empty list.
+         *
+         *     **An empty Incident is left out unless `include_empty=true`.** An Incident whose every Case was
+         *     removed or moved away (`member_count: 0`) is kept — it is a record of what the story held — and
+         *     `GET /incidents/{number}` always serves it, but it is not a story anybody is following, so the
+         *     default list does not lead with it. A quiet Incident whose Cases all closed still holds them and
+         *     is listed.
          */
         get: operations["listIncidents"];
         put?: never;
@@ -881,6 +887,9 @@ export interface paths {
          * @description One Incident addressed by the `number` a human quotes, with every Case that has ever been in it:
          *     the current members, and the removed ones as tombstones carrying who removed them and, for a
          *     move, which Incident they went to. A removed Case stays recorded as removed.
+         *
+         *     An Incident with no Case left in it is served here like any other: the list hides it unless
+         *     `include_empty=true`, but its number always resolves.
          *
          *     A number naming no Incident in this org is a `404`, indistinguishable from one another org drew.
          */
@@ -9879,6 +9888,13 @@ export interface operations {
                 cursor?: components["parameters"]["CursorParam"];
                 /** @description Only the Incident this Case is a current member of (at most one). Nothing to page. */
                 case_id?: components["schemas"]["Uuid"];
+                /**
+                 * @description List the Incidents with no current member as well — every Case removed or moved away. Off by
+                 *     default: such an Incident is kept and served by number, and hidden from the list. A cursor is
+                 *     bound to this setting, so one minted with it cannot page the list without it. It changes
+                 *     nothing alongside `case_id`, whose answer is never empty.
+                 */
+                include_empty?: boolean;
             };
             header?: never;
             path?: never;
