@@ -3747,6 +3747,30 @@ export const ToolServerToolDTOSchema = v.looseObject({
   "unusable_reason": v.nullable(v.string()),
 });
 
+export const RemedyApproverDTOSchema = v.looseObject({
+  "user_id": v.pipe(
+    v.string(),
+    v.uuid(),
+  ),
+  "email": v.string(),
+  "display_name": v.string(),
+  "granted_at": v.pipe(
+    v.string(),
+    v.isoTimestamp(),
+  ),
+  "granted_by": v.picklist(["cli"]),
+  "counts": v.boolean(),
+});
+
+export const RemedyApproverListResponseSchema = v.looseObject({
+  "data": v.pipe(
+    v.array(RemedyApproverDTOSchema),
+    v.maxLength(200),
+  ),
+  "page": PageInfoSchema,
+  "meta": MetaSchema,
+});
+
 export const ToolServerListResponseSchema = v.looseObject({
   "data": v.array(ToolServerDTOSchema),
   "page": PageInfoSchema,

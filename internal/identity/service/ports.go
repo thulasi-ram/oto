@@ -129,3 +129,19 @@ type SlackIdentityStore interface {
 	// signature (§H.8).
 	ResolveBySlackUser(ctx context.Context, team domain.SlackTeamID, member domain.SlackUserID) (domain.SlackIdentity, error)
 }
+
+// RemedyApproverReader reads `remedy_approver_grants` (ADR 0054 §4, migration 00099,
+// git-bug 47f67c8), satisfied by `identity/repository.RemedyApproverRepository`.
+//
+// ⛔⛔ IT HAS NO WRITE METHOD AND MUST NEVER GROW ONE. A grant is given and taken by `oto
+// grant` / `oto revoke` from the host shell (internal/app), never by anything this
+// service can reach: a write here is one handler away from an HTTP route, and an in-app
+// grant lets one holder mint a second approver and defeat double approval.
+type RemedyApproverReader interface {
+	// ListForToolServer reads every grant on one ToolServer with its holder, disabled
+	// holders included.
+	ListForToolServer(ctx context.Context, s db.TenantScope, toolServerID uuid.UUID) ([]domain.RemedyApprover, error)
+	// Grant reads one user's grant on one ToolServer; KindNotFound when they hold none
+	// (never granted, or revoked).
+	Grant(ctx context.Context, s db.TenantScope, toolServerID, userID uuid.UUID) (domain.RemedyApprover, error)
+}

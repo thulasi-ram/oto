@@ -391,6 +391,9 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		Tokens:   tokenRepo,
 		Sessions: identityrepo.NewSessionRepository(general),
 		Slack:    identityrepo.NewSlackIdentityRepository(general),
+		// ⛔ READ-ONLY (ADR 0054 §4, git-bug 47f67c8): who may approve a Remedy. A grant
+		// is written by `oto grant` from the host shell (remedyapprover.go), never here.
+		RemedyApprovers: identityrepo.NewRemedyApproverRepository(general),
 		// The same runner the identity API uses: it is what makes the ingest-token
 		// rotation's mint and revocation ONE commit (IssueIngestToken).
 		Tx:          identityTx,
@@ -844,6 +847,12 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		Suggestions: investigatorrepo.NewSuggestionRepository(general),
 		Policies:    suggestionPolicies{reads: c.notifConfigRepo, writes: c.PolicyWrites},
 		Memberships: suggestedMemberships{incidents: c.Incidents},
+
+		// ---- the Remedy approval grant (ADR 0054 §4, git-bug 47f67c8) -------
+		//
+		// ⛔ READ THROUGH `identity`, WRITTEN BY NOTHING IN THIS PROCESS. `oto grant` /
+		// `oto revoke` are the only writers, from the host shell.
+		Approvers: remedyApprovers{identity: c.Identity},
 	})
 	if err != nil {
 		return nil, err

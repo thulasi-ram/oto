@@ -313,6 +313,30 @@ func (a investigationControls) InvestigationControls(ctx context.Context, s db.T
 	}, nil
 }
 
+// remedyApprovers is `investigator/service.RemedyApprovers` over `identity/service` (ADR
+// 0054 §4, git-bug 47f67c8): the grant is identity's table, read here and written by
+// nothing but `oto grant` / `oto revoke` (remedyapprover.go).
+type remedyApprovers struct {
+	identity *identityservice.Service
+}
+
+func (a remedyApprovers) RemedyApprovers(ctx context.Context, s db.TenantScope, toolServerID uuid.UUID) ([]investigatordomain.RemedyApprover, error) {
+	got, err := a.identity.RemedyApprovers(ctx, s, toolServerID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]investigatordomain.RemedyApprover, 0, len(got))
+	for _, g := range got {
+		out = append(out, investigatordomain.RemedyApprover{UserID: g.UserID, Email: g.Email.String(),
+			DisplayName: g.DisplayName, GrantedAt: g.GrantedAt, GrantedBy: g.GrantedBy, Counts: g.Counts()})
+	}
+	return out, nil
+}
+
+func (a remedyApprovers) RequireRemedyApprover(ctx context.Context, s db.TenantScope, toolServerID, userID uuid.UUID) error {
+	return a.identity.RequireRemedyApprover(ctx, s, toolServerID, userID)
+}
+
 // toolResultRedaction is `investigator/service.RedactionRules` (git-bug 2e9a086): the
 // org's ingest redaction rules — every source's `redact_labels` and `redact_annotations`,
 // deleted sources included — as ingest's own matcher and replacement value, so a

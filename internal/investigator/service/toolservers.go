@@ -96,6 +96,21 @@ func (s *Service) ToolServerTools(ctx context.Context, scope db.TenantScope, id 
 	return ToolServerCatalog{ToolServer: cfg, Tools: tools}, nil
 }
 
+// RemedyApprovers reads every grant on one ToolServer (ADR 0054 §4, git-bug
+// 47f67c8). Another org's ToolServer, or one that does not exist, is a 404 — the grants
+// are read only once the ToolServer is known to be this org's.
+//
+// ⛔ READ-ONLY. There is no method on this Service that grants or revokes: that is `oto
+// grant` / `oto revoke`, from the host shell. A `read` ToolServer always lists none — the
+// CLI refuses a grant on one, and so does the schema.
+func (s *Service) RemedyApprovers(ctx context.Context, scope db.TenantScope, id uuid.UUID) ([]domain.RemedyApprover, error) {
+	cfg, err := s.toolServers.Get(ctx, scope, id)
+	if err != nil {
+		return nil, err
+	}
+	return s.approvers.RemedyApprovers(ctx, scope, cfg.ID)
+}
+
 // DiscoverToolServer asks a ToolServer for its Tools and records the answer: the list
 // replaces the last one, or — when the ToolServer cannot be reached or answers badly —
 // the failure is recorded on the ToolServer, the last good list is kept, and the

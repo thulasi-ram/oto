@@ -659,3 +659,27 @@ func (m *memDigests) InvestigationDigest(_ context.Context, _ db.TenantScope, po
 	}
 	return domain.DigestSubject{}, errs.NotFound("policy_not_found", "no such policy")
 }
+
+// memApprovers is RemedyApprovers over a map of ToolServer -> grants (git-bug 47f67c8).
+// Read-only, like the port.
+type memApprovers struct {
+	mu   sync.Mutex
+	rows map[uuid.UUID][]domain.RemedyApprover
+}
+
+func (m *memApprovers) RemedyApprovers(_ context.Context, _ db.TenantScope, toolServerID uuid.UUID) ([]domain.RemedyApprover, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]domain.RemedyApprover{}, m.rows[toolServerID]...), nil
+}
+
+func (m *memApprovers) RequireRemedyApprover(_ context.Context, _ db.TenantScope, toolServerID, userID uuid.UUID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, a := range m.rows[toolServerID] {
+		if a.UserID == userID && a.Counts {
+			return nil
+		}
+	}
+	return errs.Forbidden("remedy_approver_required", "no grant")
+}

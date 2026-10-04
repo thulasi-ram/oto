@@ -1194,6 +1194,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/tool-servers/{id}/remedy-approvers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List who may approve Remedies on a ToolServer
+         * @description Every user holding the Remedy approval grant on this ToolServer (ADR 0054 §4), by address.
+         *     A Remedy on a `write` ToolServer may be approved only by a holder whose grant `counts`; double
+         *     approval needs two different holders. A disabled user's grant is listed with `counts: false`.
+         *     A `read` ToolServer never carries a grant.
+         *
+         *     **Read-only, and there is no write operation anywhere in this API.** A grant is given and taken
+         *     from the host shell — `oto grant remedy-approver --org <slug> --toolserver <name> --email <addr>`
+         *     and `oto revoke remedy-approver …` — so that no holder can mint a second approver from inside
+         *     oto. Never paged.
+         */
+        get: operations["listToolServerRemedyApprovers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/investigators": {
         parameters: {
             query?: never;
@@ -8321,6 +8349,28 @@ export interface components {
             /** @description Why not, when `usable` is false. */
             unusable_reason: string | null;
         };
+        /** @description One user holding the Remedy approval grant on a ToolServer (ADR 0054 §4). Read-only. */
+        RemedyApproverDTO: {
+            /** Format: uuid */
+            user_id: string;
+            /** @description The holder's address. A grant is given by address, so a member with none can never hold one. */
+            email: string;
+            display_name: string;
+            /** Format: date-time */
+            granted_at: string;
+            /**
+             * @description Who wrote the grant. Always `cli` — `oto grant` on the host is the only writer.
+             * @enum {string}
+             */
+            granted_by: "cli";
+            /** @description Whether this grant lets its holder approve a Remedy now. False when the holder is disabled. */
+            counts: boolean;
+        };
+        RemedyApproverListResponse: {
+            data: components["schemas"]["RemedyApproverDTO"][];
+            page: components["schemas"]["PageInfo"];
+            meta: components["schemas"]["Meta"];
+        };
         ToolServerListResponse: {
             data: components["schemas"]["ToolServerDTO"][];
             page: components["schemas"]["PageInfo"];
@@ -11694,6 +11744,36 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ToolServerToolListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    listToolServerRemedyApprovers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The grant holders, by address. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemedyApproverListResponse"];
                 };
             };
             400: components["responses"]["BadRequest"];

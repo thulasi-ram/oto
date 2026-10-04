@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 98 {
-		t.Fatalf("latest migration is %d, want 98 — this test pins the number so that a "+
+	if latest != 99 {
+		t.Fatalf("latest migration is %d, want 99 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1632,6 +1632,37 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// accepts a kind the release below it cannot interpret. No column reading can
 	// see that, and it is the half most likely to be forgotten because nothing
 	// references it.
+	// ⭐ 00099 GRANTS A REMEDY APPROVER FROM THE HOST SHELL (ADR 0054 §4, git-bug 47f67c8):
+	// one table with its two CHECKs and two composite foreign keys, a user index, and the
+	// two unique indexes those keys target (`tool_servers (org_id, id, access)` and
+	// `users (org_id, id)`). The writer CHECK is read for its BODY: `cli` is the only
+	// writer, and a Down that left the indexes behind leaves two the release below never had.
+	if n := countTables("remedy_approver_grants"); n != 1 {
+		t.Fatalf("remedy_approver_grants exists %d time(s) at migration 99", n)
+	}
+	if n := countConstraints("remedy_approver_grants_access_ck", "remedy_approver_grants_by_ck",
+		"remedy_approver_grants_tool_server_fk", "remedy_approver_grants_user_fk"); n != 4 {
+		t.Fatalf("%d of 00099's four constraints exist at migration 99", n)
+	}
+	if def := constraintDef("remedy_approver_grants_by_ck", "remedy_approver_grants"); !strings.Contains(def, "'cli'") {
+		t.Fatalf("remedy_approver_grants_by_ck does not pin the writer to the CLI: %s", def)
+	}
+	if n := countIndexes("tool_servers_org_id_access_uniq", "users_org_id_uniq", "remedy_approver_grants_user_idx"); n != 3 {
+		t.Fatalf("%d of 00099's three indexes exist at migration 99", n)
+	}
+	if c := columnComment("remedy_approver_grants", "granted_by"); !strings.Contains(c, "no other writer") {
+		t.Fatalf("remedy_approver_grants.granted_by's comment does not say the CLI is the only writer: %s", c)
+	}
+
+	down(99)
+
+	if n := countTables("remedy_approver_grants"); n != 0 {
+		t.Fatalf("remedy_approver_grants survived 00099's Down")
+	}
+	if n := countIndexes("tool_servers_org_id_access_uniq", "users_org_id_uniq", "remedy_approver_grants_user_idx"); n != 0 {
+		t.Fatalf("%d of 00099's three indexes survived its Down", n)
+	}
+
 	// ⭐ 00098 LETS A DIGEST CARRY A FINDING THAT WAS READY WHEN ITS WINDOW CLOSED (ADR
 	// 0053 §4, git-bug 3e96f5a): `investigations_subjkind_ck` widened by `digest`, the
 	// window pair on `investigations` with its CHECK and its one-run-per-window index, the

@@ -181,7 +181,11 @@ func TestTheRunningServerMatchesTheContract(t *testing.T) {
 // — landed, and ONE answers 2xx: the list, empty, because this world works no runs. Apply
 // needs a Suggestion only a run's Finding makes, so it is driven to its typed 404 and not
 // credited, which is why the floor rises by one and not two.
-const minimumSuccessfulOperations = 111
+//
+// ⬆️ 111 → 112 (ADR 0054 §4, git-bug 47f67c8). A ToolServer's Remedy approvers — one read,
+// answering 2xx with an empty list. There is no write operation to drive: a grant is
+// given only by `oto grant` on the host.
+const minimumSuccessfulOperations = 112
 
 /* -------------------------------------------------------------------------- */
 /* The three assertions                                                       */

@@ -174,6 +174,8 @@ var bindings = []binding{
 	{"investigator", "ToolServerDTO", investigatorapi.ToolServerDTO{}},
 	{"investigator", "CreateToolServerRequest", investigatorapi.CreateToolServerRequest{}},
 	{"investigator", "ToolServerToolDTO", investigatorapi.ToolServerToolDTO{}},
+	// The Remedy approval grant (git-bug 47f67c8): read-only; `oto grant` is the only writer.
+	{"investigator", "RemedyApproverDTO", investigatorapi.RemedyApproverDTO{}},
 
 	// ------------------------------------------------------------ sources
 	{"sources", "ClusterDTO", sourcesapi.ClusterDTO{}},

@@ -33,6 +33,9 @@ type InvestigatorService interface {
 	GetToolServer(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.ToolServerConfig, error)
 	DiscoverToolServer(ctx context.Context, s db.TenantScope, id uuid.UUID) (service.ToolServerCatalog, error)
 	ToolServerTools(ctx context.Context, s db.TenantScope, id uuid.UUID) (service.ToolServerCatalog, error)
+	// ⛔ READ-ONLY: who holds the Remedy approval grant on a ToolServer. There is no method
+	// here that grants or revokes one, and there must never be (ADR 0054 §4).
+	RemedyApprovers(ctx context.Context, s db.TenantScope, id uuid.UUID) ([]domain.RemedyApprover, error)
 
 	CreateInvestigator(ctx context.Context, s db.TenantScope, d domain.InvestigatorDraft) (domain.Investigator, error)
 	UpdateInvestigator(ctx context.Context, s db.TenantScope, id uuid.UUID, c domain.InvestigatorChange) (domain.Investigator, error)
@@ -92,6 +95,11 @@ func (rt *Router) Mount(r chi.Router) {
 		r.Get("/{id}", rt.getToolServer)
 		r.Post("/{id}/discover", rt.discoverToolServer)
 		r.Get("/{id}/tools", rt.listToolServerTools)
+		// ⛔ GET ONLY (ADR 0054 §4, git-bug 47f67c8). A Remedy approver is granted and
+		// revoked from the host shell — `oto grant` / `oto revoke` — and by nothing
+		// mounted here: a route that let one holder mint a second approver would defeat
+		// double approval. test/scope walks the mounted routes to hold that.
+		r.Get("/{id}/remedy-approvers", rt.listToolServerRemedyApprovers)
 	})
 	r.Route("/investigators", func(r chi.Router) {
 		r.Get("/", rt.listInvestigators)
@@ -267,6 +275,28 @@ func (rt *Router) listToolServerTools(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.List(w, r, toolServerToolDTOs(cat), httpx.PageOf(db.Cursor{}, maxListedTools), started)
+}
+
+// listToolServerRemedyApprovers serves GET /api/v1/tool-servers/{id}/remedy-approvers:
+// who holds the Remedy approval grant on this ToolServer, by address, disabled holders
+// included and marked as not counting. Read-only; `oto grant` is the only writer.
+func (rt *Router) listToolServerRemedyApprovers(w http.ResponseWriter, r *http.Request) {
+	started := rt.now()
+	scope, id, err := scopeAndID(r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	got, err := rt.svc.RemedyApprovers(r.Context(), scope, id)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	out := make([]RemedyApproverDTO, 0, len(got))
+	for _, a := range got {
+		out = append(out, remedyApproverDTO(a))
+	}
+	httpx.List(w, r, out, httpx.PageOf(db.Cursor{}, maxListed), started)
 }
 
 // maxListedTools is the page a Tool list reports: the whole list, never paged.

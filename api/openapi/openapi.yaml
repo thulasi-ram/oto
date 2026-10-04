@@ -2740,6 +2740,45 @@ paths:
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
 
+  /api/v1/tool-servers/{id}/remedy-approvers:
+    get:
+      operationId: listToolServerRemedyApprovers
+      summary: List who may approve Remedies on a ToolServer
+      tags: [Investigators]
+      description: |
+        Every user holding the Remedy approval grant on this ToolServer (ADR 0054 §4), by address.
+        A Remedy on a `write` ToolServer may be approved only by a holder whose grant `counts`; double
+        approval needs two different holders. A disabled user's grant is listed with `counts: false`.
+        A `read` ToolServer never carries a grant.
+
+        **Read-only, and there is no write operation anywhere in this API.** A grant is given and taken
+        from the host shell — `oto grant remedy-approver --org <slug> --toolserver <name> --email <addr>`
+        and `oto revoke remedy-approver …` — so that no holder can mint a second approver from inside
+        oto. Never paged.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      responses:
+        '200':
+          description: The grant holders, by address.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RemedyApproverListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   /api/v1/investigators:
     get:
       operationId: listInvestigators
@@ -14995,6 +15034,45 @@ components:
           type: ['string', 'null']
           description: Why not, when `usable` is false.
       description: One Tool a ToolServer listed at its last successful discovery.
+
+    RemedyApproverDTO:
+      type: object
+      required: [user_id, email, display_name, granted_at, granted_by, counts]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          description: The holder's address. A grant is given by address, so a member with none can never hold one.
+        display_name:
+          type: string
+        granted_at:
+          type: string
+          format: date-time
+        granted_by:
+          type: string
+          enum: [cli]
+          description: Who wrote the grant. Always `cli` — `oto grant` on the host is the only writer.
+        counts:
+          type: boolean
+          description: Whether this grant lets its holder approve a Remedy now. False when the holder is disabled.
+      description: One user holding the Remedy approval grant on a ToolServer (ADR 0054 §4). Read-only.
+
+    RemedyApproverListResponse:
+      type: object
+      required: [data, page, meta]
+      additionalProperties: false
+      properties:
+        data:
+          type: array
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/RemedyApproverDTO'
+        page:
+          $ref: '#/components/schemas/PageInfo'
+        meta:
+          $ref: '#/components/schemas/Meta'
 
     ToolServerListResponse:
       type: object

@@ -388,6 +388,24 @@ func toolServerToolDTO(server domain.ToolServerConfig, t domain.DiscoveredTool) 
 		InputSchema: schema, ReadOnlyHint: t.ReadOnlyHint, Usable: why == "", UnusableReason: optString(why)}
 }
 
+// RemedyApproverDTO renders `RemedyApproverDTO`: one user holding the Remedy approval
+// grant on a ToolServer (ADR 0054 §4, git-bug 47f67c8). ⛔ Read-only: no request body
+// anywhere in this API names one — a grant is given with `oto grant remedy-approver` on
+// the host.
+type RemedyApproverDTO struct {
+	UserID      uuid.UUID `json:"user_id"`
+	Email       string    `json:"email"`
+	DisplayName string    `json:"display_name"`
+	GrantedAt   time.Time `json:"granted_at"`
+	GrantedBy   string    `json:"granted_by"`
+	Counts      bool      `json:"counts"`
+}
+
+func remedyApproverDTO(a domain.RemedyApprover) RemedyApproverDTO {
+	return RemedyApproverDTO{UserID: a.UserID, Email: a.Email, DisplayName: a.DisplayName,
+		GrantedAt: a.GrantedAt, GrantedBy: a.GrantedBy, Counts: a.Counts}
+}
+
 // ---------------------------------------------------------------- Classification
 //
 // ADR 0053 §5, git-bug 4298aa0: the org's closed class set, read and replaced whole.

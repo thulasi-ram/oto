@@ -321,3 +321,21 @@ type ToolServerDialer interface {
 type RedactionRules interface {
 	ToolResultRedactor(ctx context.Context, s db.TenantScope) (domain.ResultRedactor, error)
 }
+
+// RemedyApprovers is the Remedy approval grant (ADR 0054 §4, git-bug 47f67c8), satisfied in
+// `internal/app` over `identity/service`, which owns `remedy_approver_grants`.
+//
+// ⛔⛔ READ-ONLY, AND IT MUST STAY SO. A grant is given and taken by `oto grant` / `oto
+// revoke` from the host shell, never from inside oto: a write method here would be one
+// handler away from a route that lets one holder mint a second approver, which defeats
+// double approval. test/scope/remedy_approver_routes_test.go walks the mounted routes to
+// hold that.
+type RemedyApprovers interface {
+	// RemedyApprovers lists every grant on one ToolServer, disabled holders included.
+	RemedyApprovers(ctx context.Context, s db.TenantScope, toolServerID uuid.UUID) ([]domain.RemedyApprover, error)
+	// RequireRemedyApprover is nil when the user holds a grant that counts on the
+	// ToolServer, and otherwise the typed 403 `remedy_approver_required`. ⭐ The Remedy
+	// approval path (git-bug 4148256) calls this once per approval, with the approving
+	// human's user id; double approval calls it for each of two DIFFERENT users.
+	RequireRemedyApprover(ctx context.Context, s db.TenantScope, toolServerID, userID uuid.UUID) error
+}

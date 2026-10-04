@@ -445,3 +445,22 @@ type ToolResult struct {
 	Text    string
 	IsError bool
 }
+
+// RemedyApprover is one user holding the Remedy approval grant on a write ToolServer, as
+// the settings read shows it (ADR 0054 §4, git-bug 47f67c8). The grant itself is the
+// `identity` module's; this is its read-only face here, delivered through a port.
+//
+// ⛔ NOTHING IN THIS MODULE GRANTS OR REVOKES ONE. A grant is given and taken from the host
+// shell only — `oto grant remedy-approver` / `oto revoke remedy-approver` — so no route
+// here can mint a second approver and defeat double approval.
+type RemedyApprover struct {
+	UserID      uuid.UUID
+	Email       string
+	DisplayName string
+	GrantedAt   time.Time
+	// GrantedBy is who wrote the grant: always `cli`.
+	GrantedBy string
+	// Counts is false when the holder is disabled: the grant is shown and lets them
+	// approve nothing.
+	Counts bool
+}

@@ -810,6 +810,13 @@ func plan() []probe {
 			method: http.MethodGet, tmpl: "/api/v1/tool-servers/{id}/tools", url: "/api/v1/tool-servers/{{toolserver}}/tools",
 			want: http.StatusOK,
 		},
+		// ADR 0054 §4 (git-bug 47f67c8): who holds the Remedy approval grant. Read-only —
+		// `oto grant` on the host is the only writer, so there is no write probe to make
+		// and this world's read ToolServer lists none.
+		{
+			method: http.MethodGet, tmpl: "/api/v1/tool-servers/{id}/remedy-approvers",
+			url: "/api/v1/tool-servers/{{toolserver}}/remedy-approvers", want: http.StatusOK,
+		},
 
 		/* ------------------------------------------------------- case policies */
 		// The case RETENTION WINDOW W, per (namespace, alertname). The shape is

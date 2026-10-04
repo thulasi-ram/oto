@@ -31,6 +31,13 @@
 //	               session of theirs, then exit. THE ONLY RECOVERY FOR A LOCKED-OUT
 //	               USER: v1 has no self-service reset. Like `bootstrap` it is not
 //	               an HTTP route and must never become one.
+//	oto grant remedy-approver --org SLUG --toolserver NAME --email ADDRESS
+//	               let a user approve Remedies on a write ToolServer (ADR 0054 §4).
+//	oto revoke remedy-approver …
+//	               take that away. THE ONLY WAY A REMEDY APPROVER IS GIVEN OR TAKEN:
+//	               like `bootstrap` they are not routes and must never become ones,
+//	               because an in-app grant would let one holder mint a second
+//	               approver and defeat double approval.
 //	oto version    print the version and exit
 //
 // `api` and `worker` exist so a deployment can scale the two independently — a
@@ -136,6 +143,12 @@ func run() error {
 	}
 	if flag.Arg(0) == "reset-password" {
 		return resetPasswordCommand(ctx, cfg.DB.URL, flag.Args()[1:])
+	}
+	if flag.Arg(0) == "grant" {
+		return grantCommand(ctx, cfg.DB.URL, flag.Args()[1:])
+	}
+	if flag.Arg(0) == "revoke" {
+		return revokeCommand(ctx, cfg.DB.URL, flag.Args()[1:])
 	}
 	if flag.Arg(0) == "demo-seed" {
 		// It takes the WHOLE Config rather than just the DSN, unlike `bootstrap`,
@@ -247,6 +260,8 @@ func modeOf(arg string) (mode, error) {
 		return mode{name: "reset-password"}, nil
 	case "demo-seed":
 		return mode{name: "demo-seed"}, nil
+	case "grant", "revoke":
+		return mode{name: arg}, nil
 	case "replay":
 		// It builds the container — it needs the ingestion service, the alerts
 		// reads behind the supersession gate and the SAME outbox the accept path
@@ -259,7 +274,7 @@ func modeOf(arg string) (mode, error) {
 		return mode{}, nil
 	default:
 		return mode{}, fmt.Errorf(
-			"unknown subcommand %q; try: serve | api | worker | migrate | replay | bootstrap | reset-password | demo-seed | version",
+			"unknown subcommand %q; try: serve | api | worker | migrate | replay | bootstrap | reset-password | grant | revoke | demo-seed | version",
 			arg)
 	}
 }

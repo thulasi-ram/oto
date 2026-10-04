@@ -54,6 +54,7 @@ type Service struct {
 	suggestions SuggestionStore
 	policies    PolicyEditor
 	memberships MembershipEditor
+	approvers   RemedyApprovers
 }
 
 // Deps are the Service's collaborators. Every one but Clock and Limits is required:
@@ -103,6 +104,10 @@ type Deps struct {
 	Suggestions SuggestionStore
 	Policies    PolicyEditor
 	Memberships MembershipEditor
+
+	// Approvers reads who holds the Remedy approval grant on a write ToolServer (ADR 0054
+	// §4, git-bug 47f67c8). Read-only: a grant is written only from the host shell.
+	Approvers RemedyApprovers
 }
 
 // New builds the Service.
@@ -147,6 +152,9 @@ func New(d Deps) (*Service, error) {
 	case d.Suggestions == nil || d.Policies == nil || d.Memberships == nil:
 		return nil, errors.New("investigator: the Suggestion store and the policy and membership editors are required; " +
 			"a Finding's Suggestion is applied only through the ordinary edit")
+	case d.Approvers == nil:
+		return nil, errors.New("investigator: the Remedy approver grants are required; who may approve a Remedy " +
+			"is read through them")
 	}
 	if d.Clock == nil {
 		d.Clock = clock.New()
@@ -160,6 +168,7 @@ func New(d Deps) (*Service, error) {
 		orgControls: d.OrgControls, classes: d.Classes, queue: d.Queue, limits: d.Limits.orDefault(),
 		toolServers: d.ToolServers, tokens: d.Tokens, toolDialer: d.ToolDialer, redaction: d.Redaction,
 		suggestions: d.Suggestions, policies: d.Policies, memberships: d.Memberships,
+		approvers: d.Approvers,
 	}
 	// The proposing Tools are built in too, and held only when an allowlist names them
 	// (git-bug 8327c00).

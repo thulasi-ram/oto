@@ -62,6 +62,26 @@ different such users; one person in Slack and again in the UI counts once. A cli
 Slack identity is refused with a reply on how to link. A grant is a permission, never an obligation:
 it routes nothing to anyone and creates no queue (H-1).
 
+**Amendment (owner's ruling, 2026-10-02): the grant is given and taken from the host shell only.**
+`oto grant remedy-approver --org <slug> --toolserver <name> --email <addr>` creates it and
+`oto revoke remedy-approver …` removes it, as subcommands like `oto bootstrap` and
+`oto reset-password`. Running one needs a shell on the host and the database credentials — the
+authority that could write the row by hand anyway — which also answers who grants the first grant
+before any admin role exists. **No HTTP route may ever create, change or delete a grant**; the API
+shows a ToolServer's holders read-only (and so will the UI, which has no ToolServer screen yet) (`GET /api/v1/tool-servers/{id}/remedy-approvers`).
+The reason is double approval itself: an in-app grant would let one holder mint a second approver
+(an alt account) and approve alone. A test walks the mounted router to hold this. An earlier
+ruling the same day, a declarative grant in the deployment's configuration, is superseded.
+
+The shape (migration 00099, git-bug 47f67c8): a grant is a row `(org, ToolServer, user)`, unique
+per ToolServer and user, stamped with the CLI's clock and `granted_by = cli`. The user is resolved
+by email, so a shadow member (no address) can never hold one; a disabled user's grant stays on the
+record and stops counting; revoking deletes the row. The ToolServer must exist and must be declared
+`write` — a Remedy runs through a write Tool, so a grant on a `read` ToolServer would permit
+nothing, and both the CLI and the schema refuse it. Deleting the ToolServer deletes its grants.
+Granting one already held, or revoking one not held, is refused rather than ignored, so a typo is
+never mistaken for success.
+
 ### 5. Where it runs
 
 In the **ToolServer**, under the ServiceAccount and RBAC its operator gave it. oto holds no cluster
