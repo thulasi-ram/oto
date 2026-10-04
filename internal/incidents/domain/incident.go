@@ -223,6 +223,23 @@ type Incident struct {
 // State is the derived state (ADR 0052 §3). There is no setter.
 func (i Incident) State() State { return StateOf(i.OpenMemberCount) }
 
+// ListFilter narrows the Incident list.
+//
+// ⭐ AN EMPTY INCIDENT IS A RECORD, NOT A ROW TO SCAN PAST (owner ruling
+// 2026-10-04). An Incident whose every member was removed or moved away is kept —
+// nothing here deletes an Incident, and "#4 held these Cases until alice moved them
+// to #7" is history a human may need — but it is no longer a story anybody is
+// following, and a list that leads with husks buries the ones that are. So the list
+// leaves it out unless IncludeEmpty asks for it, and `Get` serves it by number
+// whatever this says: the record is hidden from the scan, never from the address.
+//
+// "Empty" is ZERO CURRENT MEMBERS — the same `removed_at IS NULL` the summary counts
+// — and nothing else. A quiet Incident whose Cases all closed still holds them, is
+// still a story, and is listed.
+type ListFilter struct {
+	IncludeEmpty bool
+}
+
 // Member is one spell of one Case inside one Incident: current while RemovedAt
 // is zero, a tombstone after.
 type Member struct {

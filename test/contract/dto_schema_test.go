@@ -1038,6 +1038,7 @@ var queryBindings = []queryBinding{
 	{pkg: "stats", opIDs: []string{"getStatsOverview"}, v: statsapi.OverviewQuery{}},
 	{pkg: "stats", opIDs: []string{"getAlertQualityStats"}, v: statsapi.AlertQualityQuery{}},
 	{pkg: "identity", opIDs: []string{"listApiTokens"}, v: identityapi.PageQuery{}},
+	{pkg: "incidents", opIDs: []string{"listIncidents"}, v: incidentsapi.ListIncidentsQuery{}},
 }
 
 // TestQueryParamsMatchContract is the half of G1 that covers `*Query` structs.

@@ -26,7 +26,7 @@ import (
 // could reach one if there were. An Incident's state is read off its Cases
 // (ADR 0052 §3); its response is the incident tool's (§5).
 type IncidentService interface {
-	List(ctx context.Context, s db.TenantScope, p db.Keyset) ([]domain.Incident, db.Cursor, error)
+	List(ctx context.Context, s db.TenantScope, p db.Keyset, f domain.ListFilter) ([]domain.Incident, db.Cursor, error)
 	HoldingCase(ctx context.Context, s db.TenantScope, caseID uuid.UUID) ([]domain.Incident, error)
 	Get(ctx context.Context, s db.TenantScope, number int64) (domain.Detail, error)
 	Draw(ctx context.Context, s db.TenantScope, caseIDs []uuid.UUID, by domain.Attribution) (domain.Detail, error)
@@ -88,16 +88,19 @@ func (rt *Router) listIncidents(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
-	page, limit, caseID, err := listPage(r)
+	q, page, err := listPage(r)
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
-	if caseID != uuid.Nil {
+	if q.CaseID != uuid.Nil {
 		// ⭐ "WHICH INCIDENT IS THIS CASE IN?" — none or one, so there is nothing
 		// to page. A Case this org does not have is simply in none: the answer is
 		// the same empty list another org's Case gets, and tells a caller nothing.
-		held, err := rt.svc.HoldingCase(r.Context(), scope, caseID)
+		//
+		// `include_empty` changes nothing here: a Case is a CURRENT member of the
+		// Incident that holds it, so that Incident is never empty.
+		held, err := rt.svc.HoldingCase(r.Context(), scope, q.CaseID)
 		if err != nil {
 			httpx.WriteProblem(w, r, err)
 			return
@@ -106,10 +109,10 @@ func (rt *Router) listIncidents(w http.ResponseWriter, r *http.Request) {
 		for _, i := range held {
 			out = append(out, incidentDTO(i))
 		}
-		httpx.List(w, r, out, httpx.PageOf(db.Cursor{}, limit), started)
+		httpx.List(w, r, out, httpx.PageOf(db.Cursor{}, q.Limit), started)
 		return
 	}
-	incs, next, err := rt.svc.List(r.Context(), scope, page)
+	incs, next, err := rt.svc.List(r.Context(), scope, page, domain.ListFilter{IncludeEmpty: q.IncludeEmpty})
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
@@ -118,7 +121,7 @@ func (rt *Router) listIncidents(w http.ResponseWriter, r *http.Request) {
 	for _, i := range incs {
 		out = append(out, incidentDTO(i))
 	}
-	httpx.List(w, r, out, httpx.PageOf(next, limit), started)
+	httpx.List(w, r, out, httpx.PageOf(next, q.Limit), started)
 }
 
 // createIncident serves POST /api/v1/incidents: a human draws an Incident.
@@ -317,28 +320,43 @@ func pathMember(r *http.Request) (int64, uuid.UUID, error) {
 }
 
 // listParams is the allow-list of `GET /incidents`.
-var listParams = []string{"limit", "cursor", "case_id"}
+var listParams = []string{"limit", "cursor", "case_id", "include_empty"}
 
-// listPage compiles the list query: a keyset page and, optionally, the one Case
-// whose current Incident is asked for.
+// listPage compiles the list query: a keyset page, optionally the one Case whose
+// current Incident is asked for, and whether empty Incidents are listed.
 //
-// The cursor is bound to that filter, so a cursor minted by the unfiltered list
-// and replayed with `case_id` is the ordinary `cursor_filter_mismatch` — and the
-// filtered answer is at most one row, so it never mints one of its own.
-func listPage(r *http.Request) (db.Keyset, int, uuid.UUID, error) {
+// The cursor is bound to every filter, so a cursor minted by the default list and
+// replayed with `case_id` or `include_empty=true` is the ordinary
+// `cursor_filter_mismatch` — the two lists are different keysets, and a position in
+// one is not a position in the other. The `case_id` answer is at most one row, so
+// it never mints one of its own.
+//
+// ⚠️ `include_empty=false` HASHES AS THE DEFAULT, because it IS the default: an
+// explicit false names the same keyset as an absent one, and the cursor a page of
+// either minted is good on the other.
+func listPage(r *http.Request) (ListIncidentsQuery, db.Keyset, error) {
 	p := httpx.NewParams(r, listParams...)
-	limit := p.Limit()
-	caseID := p.UUID("case_id")
+	q := ListIncidentsQuery{
+		CaseID: p.UUID("case_id"),
+		Limit:  p.Limit(),
+		Cursor: p.Cursor(),
+	}
+	if b := p.Bool("include_empty"); b != nil {
+		q.IncludeEmpty = *b
+	}
 	if err := p.Err(); err != nil {
-		return db.Keyset{}, 0, uuid.Nil, err
+		return ListIncidentsQuery{}, db.Keyset{}, err
 	}
-	hash := httpx.FilterHash()
-	if caseID != uuid.Nil {
-		hash = httpx.FilterHash("case_id=" + caseID.String())
+	var parts []string
+	if q.CaseID != uuid.Nil {
+		parts = append(parts, "case_id="+q.CaseID.String())
 	}
-	cursor, err := httpx.DecodeCursor(p.Cursor(), hash)
+	if q.IncludeEmpty {
+		parts = append(parts, "include_empty=true")
+	}
+	cursor, err := httpx.DecodeCursor(q.Cursor, httpx.FilterHash(parts...))
 	if err != nil {
-		return db.Keyset{}, 0, uuid.Nil, err
+		return ListIncidentsQuery{}, db.Keyset{}, err
 	}
-	return httpx.Keyset(limit, cursor), limit, caseID, nil
+	return q, httpx.Keyset(q.Limit, cursor), nil
 }

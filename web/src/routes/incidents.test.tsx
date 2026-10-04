@@ -11,7 +11,7 @@
  * ⭐ AND THE ROW SHOWS ITS WORKING: the open count beside the word, so the rule can
  * be seen to hold rather than taken on trust.
  */
-import { screen } from "@solidjs/testing-library";
+import { fireEvent, screen } from "@solidjs/testing-library";
 import { describe, expect, it } from "vitest";
 
 import IncidentsRoute from "./incidents";
@@ -87,10 +87,34 @@ describe("the Incident list", () => {
     }
   });
 
-  it("says where an Incident comes from when there are none", async () => {
+  it("says where an Incident comes from when there are none, and that empty ones are hidden", async () => {
     mount([]);
-    await until(() => expect(screen.getByText("No Incidents have been drawn.")).toBeTruthy());
+    // With empty Incidents hidden, "none have been drawn" could be false.
+    await until(() => expect(screen.getByText("No Incidents with Cases in them.")).toBeTruthy());
     expect(document.body.textContent).toMatch(/by selecting Cases on the Cases screen/);
+    expect(document.body.textContent).toMatch(/Show empty Incidents lists it/);
+
+    fireEvent.click(screen.getByLabelText("Show empty Incidents"));
+    await until(() => expect(screen.getByText("No Incidents have been drawn.")).toBeTruthy());
+  });
+
+  it("⭐ hides empty Incidents by default and asks for them only when the toggle is on", async () => {
+    const net = mount();
+    await until(() => expect(net.to(PATH).length).toBeGreaterThan(0));
+    expect(net.to(PATH)[0]!.search.has("include_empty")).toBe(false);
+
+    fireEvent.click(screen.getByLabelText("Show empty Incidents"));
+    await until(() =>
+      expect(net.to(PATH).some((r) => r.search.get("include_empty") === "true")).toBe(true),
+    );
+  });
+
+  it("names an emptied Incident for what it is when it is shown", async () => {
+    mount([
+      incident({ number: 9, state: "quiet", member_count: 0, open_member_count: 0, alertnames: [] }),
+    ]);
+    await until(() => expect(screen.getByText("#9")).toBeTruthy());
+    expect(screen.getByText("No Cases left in it")).toBeTruthy();
   });
 
   it("asks for nothing but a page", async () => {

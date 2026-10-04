@@ -551,6 +551,12 @@ func plan() []probe {
 			method: http.MethodGet, tmpl: "/api/v1/incidents", url: "/api/v1/incidents?case_id={{case}}",
 			want: http.StatusOK,
 		},
+		// Empty Incidents are hidden by default and listed on request (owner ruling
+		// 2026-10-04); the opt-in is a different keyset and must answer the same shape.
+		{
+			method: http.MethodGet, tmpl: "/api/v1/incidents", url: "/api/v1/incidents?include_empty=true",
+			want: http.StatusOK,
+		},
 		{
 			method: http.MethodPost, tmpl: "/api/v1/incidents",
 			body: map[string]any{"case_ids": []string{"{{case}}"}},
