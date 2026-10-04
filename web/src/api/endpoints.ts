@@ -64,6 +64,9 @@ import type {
   Incident,
   IncidentDetail,
   IncidentListQuery,
+  Investigation,
+  InvestigationDetail,
+  Investigator,
   OrgSettingsView,
   PayloadMappingCatalogEntry,
   Policy,
@@ -492,6 +495,58 @@ export function moveIncidentCase(
     { to_number: toNumber },
     { idempotencyKey: key },
   );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Investigations (ADR 0053)                                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Every Investigator in the org, each with the version a new Investigation would
+ * pin. The server answers the whole set (it is a settings list, never paged), and
+ * it includes the switched-off ones: whether one may be asked is the caller's to
+ * read off `enabled`, not this function's to hide.
+ */
+export function listInvestigators(c: Ctx = {}): Promise<ListEnvelope<Investigator>> {
+  return getList<Investigator>(`${V1}/investigators`, ctx(c));
+}
+
+/**
+ * A Case's Investigations, latest requested first, WITHOUT transcripts. The
+ * first row is the one a Case shows (ADR 0053 §4); the rest are its history.
+ */
+export function listCaseInvestigations(
+  caseId: Uuid,
+  query: { readonly limit?: number } = {},
+  c: Ctx = {},
+): Promise<ListEnvelope<Investigation>> {
+  return getList<Investigation>(`${V1}/cases/${caseId}/investigations`, {
+    ...ctx(c),
+    query: query as QueryParams,
+  });
+}
+
+/**
+ * Ask one Investigator to investigate one Case. Answers `202` with the run AS
+ * RECORDED — `queued`, or `skipped` with reason `disabled` when a kill switch is
+ * off, which is a request taken and refused in the open rather than dropped.
+ *
+ * ⛔ NO IDEMPOTENCY KEY, BECAUSE THE CONTRACT TAKES NONE. Two presses are two
+ * Investigations, each recorded, each with its own tokens; the screen guards the
+ * double press by disabling the control while the first is in flight.
+ */
+export function requestCaseInvestigation(
+  caseId: Uuid,
+  investigatorId: Uuid,
+): Promise<InvestigationDetail> {
+  return postItem<InvestigationDetail>(`${V1}/cases/${caseId}/investigations`, {
+    investigator_id: investigatorId,
+  });
+}
+
+/** One run with its whole transcript and its Finding. Frozen once it has ended. */
+export function getInvestigation(id: Uuid, c: Ctx = {}): Promise<InvestigationDetail> {
+  return getItem<InvestigationDetail>(`${V1}/investigations/${id}`, ctx(c));
 }
 
 /* -------------------------------------------------------------------------- */

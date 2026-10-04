@@ -44,6 +44,7 @@ import {
   listChannelTypes,
   listChannels,
   listClusters,
+  listInvestigators,
   listLabelNames,
   listNotifications,
   listPayloadMappingCatalog,
@@ -240,6 +241,23 @@ export function templatePreviewQuery(
   };
 }
 
+/**
+ * Every Investigator in the org — what the Case screen's "Investigate" offers.
+ *
+ * Bounded at the reference staleness, and for the same reason clusters are: an
+ * Investigator changes when an operator configures one, no frame announces it,
+ * and no screen writes one yet. Five minutes behind costs an operator a reload
+ * to see one that was configured in that window — never a run against the wrong
+ * one, because the server pins the version that is current when it is asked.
+ */
+export function investigatorsQuery() {
+  return {
+    queryKey: qk.settings.investigators(),
+    queryFn: ({ signal }: { signal: AbortSignal }) => listInvestigators({ signal }),
+    staleTime: REFERENCE_STALE_MS,
+  };
+}
+
 /** The label names offered as matcher completions. */
 export function labelNamesQuery() {
   return {
@@ -396,6 +414,11 @@ export const FRESHNESS: Readonly<Record<string, Freshness>> = {
   "cases.list": { by: "live" },
   "cases.detail": { by: "live" },
   "cases.timeline": { by: "live" },
+  // A Case's Investigations ride the same prefix. While one is `queued` or
+  // `running` it changes with no frame at all, and `InvestigationPanel` polls
+  // for exactly that window; the request it sends invalidates the list itself.
+  "cases.investigations": { by: "live" },
+  "cases.investigation": { by: "live" },
 
   // Incidents. No frame is ABOUT one, but every frame that can turn one quiet or
   // active is about one of its Cases: `case.upserted` closes a member, and
@@ -447,6 +470,11 @@ export const FRESHNESS: Readonly<Record<string, Freshness>> = {
     by: "bounded",
     ms: CAPABILITY_STALE_MS,
     why: "the payload-mapping catalog embedded in this build, which changes on deploy and not on any action an operator can take here — importing an entry writes the connection, never the catalog",
+  },
+  "settings.investigators": {
+    by: "bounded",
+    ms: REFERENCE_STALE_MS,
+    why: "the org's Investigators are configured through the API and no screen writes one yet; a list five minutes behind costs a reload, never a run against the wrong version, because the server pins the version current when asked",
   },
   "labels.names": {
     by: "bounded",

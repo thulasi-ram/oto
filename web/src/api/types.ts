@@ -252,6 +252,26 @@ export type ApiToken = S["ApiTokenDTO"];
 export type ApiTokenCreated = S["ApiTokenCreatedDTO"];
 export type VersionInfo = S["VersionDTO"];
 
+/* ---- investigators (ADR 0053) ------------------------------------------- */
+
+/** A named, versioned configuration of a model-driven investigation. */
+export type Investigator = S["InvestigatorDTO"];
+/**
+ * One run of one Investigator version against one Case, frozen once it ends.
+ * Its `finding` is a snapshot of what was seen when it ran — never live state
+ * (ADR 0016), and never an input to whether anyone is told (ADR 0053 §2).
+ */
+export type Investigation = S["InvestigationDTO"];
+/** The same run with its whole transcript — every Step, in order. */
+export type InvestigationDetail = S["InvestigationDetailDTO"];
+/** One immutable transcript entry: a model turn, or one Tool call and what came of it. */
+export type InvestigationStep = S["InvestigationStepDTO"];
+export type StepToolCall = S["StepToolCallDTO"];
+export type InvestigationStatus = S["InvestigationStatus"];
+export type InvestigationReason = S["InvestigationReason"];
+/** What came of one Tool call. `null` on a model turn. */
+export type StepOutcome = NonNullable<InvestigationStep["outcome"]>;
+
 /* ---- requests ----------------------------------------------------------- */
 
 export type AckRequest = S["AckRequest"];
@@ -260,6 +280,7 @@ export type CreateIncidentRequest = S["CreateIncidentRequest"];
 export type AddIncidentCaseRequest = S["AddIncidentCaseRequest"];
 export type MoveIncidentCaseRequest = S["MoveIncidentCaseRequest"];
 export type CreateCorrelatorRequest = S["CreateCorrelatorRequest"];
+export type RequestInvestigationRequest = S["RequestInvestigationRequest"];
 export type UpdateCorrelatorRequest = S["UpdateCorrelatorRequest"];
 export type CommentRequest = S["CommentRequest"];
 /** Exactly one of `until` and `duration_seconds`. Both, or neither, is a 422. */

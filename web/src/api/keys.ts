@@ -123,6 +123,17 @@ export const qk = {
     list: (query: CaseListQuery) => ["cases", "list", query] as const,
     detail: (id: string) => ["cases", "detail", id] as const,
     timeline: (id: string, query: TimelineQuery) => ["cases", "timeline", id, query] as const,
+    /**
+     * One Case's Investigations, latest first (ADR 0053), and one run with its
+     * transcript. Under `["cases"]` rather than a root of their own because a
+     * Case is their only subject today, and because the frames that move a Case
+     * (`case.upserted`, `event.appended`) are the ones that already reach this
+     * prefix. A run that is still `queued` or `running` changes with no frame at
+     * all, so the panel that reads these polls while one is in progress — a
+     * screen's own safety net, stated there (`InvestigationPanel`).
+     */
+    investigations: (caseId: string) => ["cases", "investigations", caseId] as const,
+    investigation: (id: string) => ["cases", "investigation", id] as const,
   },
   /**
    * Incidents (ADR 0052) — a root of their own, beside `["cases"]` and not under
@@ -182,6 +193,12 @@ export const qk = {
      * screen writes them, so a mutation invalidates; no frame is about one.
      */
     correlators: () => ["settings", "correlators"] as const,
+    /**
+     * The org's Investigators (ADR 0053), read by the Case screen to offer
+     * "Investigate". No screen writes one yet — they are configured through the
+     * API — so no mutation reaches this, and its staleness is bounded instead.
+     */
+    investigators: () => ["settings", "investigators"] as const,
     /** The org's tuning, its origins and its bounds — one query, one screen. */
     org: () => ["settings", "org"] as const,
     /**

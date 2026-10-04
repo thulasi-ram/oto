@@ -56,6 +56,11 @@ function mount(patch = {}, inIncident: Incident | null = null): FetchStub {
     "GET /api/v1/incidents": (call: RecordedCall) => ({
       json: list(call.search.get("case_id") === ID && inIncident !== null ? [inIncident] : []),
     }),
+    // The Investigation panel's two reads. Its own states are covered in
+    // `features/investigations/InvestigationPanel.test.tsx`; here it only has
+    // to answer, so an unrouted call does not paint an error on this screen.
+    [`GET ${PATH}/investigations`]: () => ({ json: list([]) }),
+    "GET /api/v1/investigators": () => ({ json: list([]) }),
   });
 
   renderScreen(() => <CaseDetailRoute />, { path: `/cases/${ID}`, routePath: "/cases/:id" });

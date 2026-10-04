@@ -74,6 +74,7 @@ import { caseIncidentQuery, parseIncidentNumber } from "~/features/incidents/mem
 import { absoluteTime, idempotencyKey } from "~/lib/format";
 import { createKeysetFeed, keepPrevious, type KeysetFeed } from "~/lib/keysetFeed";
 import { EnrichmentPanel } from "~/features/alerts/detail/EnrichmentPanel";
+import { InvestigationPanel } from "~/features/investigations/InvestigationPanel";
 import { PANEL_CODE_BLOCK } from "~/features/alerts/detail/rhythm";
 import { Timeline } from "~/features/alerts/detail/Timeline";
 import { typesForCategories, type EventCategory } from "~/features/alerts/detail/eventKinds";
@@ -598,6 +599,12 @@ export default function CaseDetailRoute() {
                       </Panel>
                     )}
                   </Show>
+
+                  {/* ⭐ THE LATEST FINDING, AS SEEN AT THE INSTANT IT WAS REACHED
+                      (ADR 0016, ADR 0053 §4), and the control that asks for
+                      another. Above the enrichment it is also published as,
+                      because this is where its Steps and its earlier runs live. */}
+                  <InvestigationPanel caseId={c().id} />
 
                   <EnrichmentPanel enrichments={c().enrichments} loading={false} error={null} />
 
