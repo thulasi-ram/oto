@@ -283,7 +283,7 @@ CREATE UNIQUE INDEX investigation_steps_seq_uniq ON investigation_steps (org_id,
 
 -- +goose StatementBegin
 COMMENT ON TABLE investigation_steps IS
-  'One immutable entry in an Investigation''s transcript (ADR 0053 §1): a model turn (text, the Tool calls it asked for, finish reason, tokens) or one Tool call with its outcome (ok, refused — outside the allowlist or past the step budget —, timeout, truncated, failed) and the result the model was answered with. APPEND-ONLY: investigation_steps_append_only refuses every UPDATE, and every DELETE but its owner''s cascade. If you would ever UPDATE it, it is not a Step.';
+  'One immutable entry in an Investigation''s transcript (ADR 0053 §1): a model turn (text, the Tool calls it asked for, finish reason, tokens) or one Tool call with its outcome (ok, refused — outside the allowlist or past the step budget —, timeout, truncated, failed) and the result the model was answered with. APPEND-ONLY: investigation_steps_append_only refuses every UPDATE, and every DELETE but the cascade of its org or its Investigation going. If you would ever UPDATE it, it is not a Step.';
 -- +goose StatementEnd
 
 -- +goose StatementBegin
