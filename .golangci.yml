@@ -1009,6 +1009,19 @@ linters:
             - pkg: github.com/openai/openai-go
               desc: "the model SDK is confined to investigator/models/openaicompat (ADR 0053 §3); speak investigator/domain.ModelProvider"
 
+        # ADR 0053 §3, git-bug 2e9a086 — the MCP SDK is a transport behind ONE port, on the
+        # model SDK's terms. Its types stop at the one adapter; `test/toolserverfake` (outside
+        # `internal/`) is where a test builds a real MCP server, so no test inside names it.
+        mcp-sdk-is-adapter-only:
+          list-mode: lax
+          files:
+            - "**/internal/**"
+            - "**/cmd/**"
+            - "!**/internal/investigator/toolservers/mcpclient/**"
+          deny:
+            - pkg: github.com/modelcontextprotocol/go-sdk
+              desc: "the MCP SDK is confined to investigator/toolservers/mcpclient (ADR 0053 §3); speak investigator/domain.ToolServerClient"
+
         # ADR 0053 §2 — an Investigator NEVER decides whether anyone is told, and git-bug
         # 180a525's "never touches the notification path" is made structural here: no
         # investigator package may import the module that decides a notification or the

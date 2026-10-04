@@ -56,10 +56,10 @@ type Limits struct {
 	MaxToolResult int
 }
 
-// DefaultLimits are oto's per-call controls until the ToolServer ticket makes them
-// configurable per Tool. Fifteen seconds is long for a read of oto's own tables and
-// short against a run's wall budget; sixteen KiB is a long timeline and a fraction of
-// any model's context.
+// DefaultLimits are the built-in Tools' per-call controls; a ToolServer's Tools run
+// under the ToolServer's own (domain.CallLimits, migration 00093). Fifteen seconds is
+// long for a read of oto's own tables and short against a run's wall budget; sixteen
+// KiB is a long timeline and a fraction of any model's context.
 func DefaultLimits() Limits { return Limits{ToolTimeout: 15 * time.Second, MaxToolResult: 16 << 10} }
 
 func (l Limits) orDefault() Limits {
@@ -82,6 +82,12 @@ type plan struct {
 	// to anything else is refused.
 	offered []Tool
 	allow   domain.Allowlist
+	// unavailable says why an allowlisted Tool the run cannot hold is not offered — on
+	// a write ToolServer, on none, or not listed — so a call to it is refused with the
+	// reason rather than as an unknown name.
+	unavailable map[string]string
+	// redact is the org's ingest redaction rules, applied to every result.
+	redact  domain.ResultRedactor
 	budgets domain.Budgets
 	scope   db.TenantScope
 	run     RunSubject
@@ -217,12 +223,20 @@ func (s *Service) runLoop(ctx context.Context, p plan, startedAt time.Time, reco
 }
 
 // callTool runs one call and says what came of it. It never fails the run.
+//
+// ⭐ EVERY RESULT IS REDACTED BEFORE IT IS CUT, RECORDED OR READ, failures included: a
+// ToolServer's error text is as likely to quote a secret as its answer. Redaction runs
+// before the size cap so a matched name is seen whole, and the cap then bounds what was
+// redacted — what the Step keeps and what the model reads are the same bytes.
 func (s *Service) callTool(ctx context.Context, p plan, served map[string]Tool, call domain.ToolCall) (domain.ToolOutcome, string) {
 	if !p.allow.Allows(call.Name) {
 		return domain.OutcomeRefused, fmt.Sprintf("refused: %q is not on this Investigator's Tool allowlist", call.Name)
 	}
 	tool, ok := served[call.Name]
 	if !ok {
+		if why, held := p.unavailable[call.Name]; held {
+			return domain.OutcomeRefused, fmt.Sprintf("refused: %s cannot be called: %s", call.Name, why)
+		}
 		return domain.OutcomeRefused, fmt.Sprintf("refused: no configured Tool is named %q", call.Name)
 	}
 	args := strings.TrimSpace(call.Arguments)
@@ -234,23 +248,38 @@ func (s *Service) callTool(ctx context.Context, p plan, served map[string]Tool, 
 		return domain.OutcomeFailed, "failed: the arguments are not one JSON object"
 	}
 
-	callCtx, cancel := context.WithTimeout(ctx, s.limits.ToolTimeout)
+	limits := s.limits
+	if lt, ok := tool.(limitedTool); ok {
+		limits = lt.callLimits().orDefault()
+	}
+	callCtx, cancel := context.WithTimeout(ctx, limits.ToolTimeout)
 	defer cancel()
 	result, err := tool.Call(callCtx, p.scope, p.run, json.RawMessage(args))
 	if callCtx.Err() != nil {
 		if ctx.Err() != nil {
 			return domain.OutcomeTimeout, fmt.Sprintf("timeout: the run's wall time ran out while %s was answering", call.Name)
 		}
-		return domain.OutcomeTimeout, fmt.Sprintf("timeout: %s gave no result within %s", call.Name, s.limits.ToolTimeout)
+		return domain.OutcomeTimeout, fmt.Sprintf("timeout: %s gave no result within %s", call.Name, limits.ToolTimeout)
 	}
+	outcome := domain.OutcomeOK
 	if err != nil {
-		return domain.OutcomeFailed, "failed: " + safeMessage(err)
+		outcome, result = domain.OutcomeFailed, "failed: "+safeMessage(err)
 	}
-	if len(result) > s.limits.MaxToolResult {
-		cut := truncateUTF8(result, s.limits.MaxToolResult)
-		return domain.OutcomeTruncated, cut + fmt.Sprintf("\n[truncated: %d of %d bytes]", len(cut), len(result))
+
+	result, redacted := p.redact.Redact(result)
+	note := ""
+	if len(result) > limits.MaxToolResult {
+		cut := truncateUTF8(result, limits.MaxToolResult)
+		note = fmt.Sprintf("\n[truncated: %d of %d bytes]", len(cut), len(result))
+		result = cut
+		if outcome == domain.OutcomeOK {
+			outcome = domain.OutcomeTruncated
+		}
 	}
-	return domain.OutcomeOK, result
+	if redacted > 0 {
+		note += fmt.Sprintf("\n[redacted: %d value(s) matched this org's redaction rules]", redacted)
+	}
+	return outcome, result + note
 }
 
 // safeMessage is an error as a Step or an ending may record it: oto's own code and

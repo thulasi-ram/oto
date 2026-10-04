@@ -50,6 +50,10 @@ var CredentialKinds = []string{
 	// `investigator/repository`; no channel ever names one. Spelled as a literal because
 	// `channels` may not import `investigator/domain.CredentialKind`, which says the same.
 	"model_api_key",
+	// A ToolServer's access token (migration 00093, git-bug 2e9a086), on the same terms
+	// as a model key: sealed through the CredentialWriter port, unsealed only by
+	// `investigator/repository` as a `tool_server_token`. Literal for the same reason.
+	"tool_server_token",
 	"none",
 }
 

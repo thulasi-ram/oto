@@ -209,6 +209,19 @@ func (s *Service) RunInvestigation(ctx context.Context, scope db.TenantScope, id
 			version.Number, version.Model, model.Identity()))})
 	}
 
+	// ⭐ THE REDACTION RULES AND THE TOOLSERVER TOOLS ARE READ BEFORE THE RUN STARTS, so
+	// a database that cannot answer is a retried job, not a run that began without
+	// them. ⛔ A run never proceeds unredacted: no rules read is no run.
+	redact, err := s.redaction.ToolResultRedactor(ctx, scope)
+	if err != nil {
+		return err
+	}
+	fromServers, unavailable, closeSessions, err := s.toolServerTools(ctx, scope, version.Tools)
+	if err != nil {
+		return err
+	}
+	defer closeSessions()
+
 	startedAt := s.now()
 	started, err := s.investigations.Start(ctx, scope, inv.ID, startedAt)
 	if err != nil || !started {
@@ -216,14 +229,16 @@ func (s *Service) RunInvestigation(ctx context.Context, scope db.TenantScope, id
 	}
 
 	p := plan{
-		model:   model,
-		prompt:  version.Prompt,
-		subject: renderCaseSubject(subject),
-		offered: s.offeredTools(version.Tools),
-		allow:   version.Tools,
-		budgets: inv.Budgets,
-		scope:   scope,
-		run:     RunSubject{InvestigationID: inv.ID, Case: subject},
+		model:       model,
+		prompt:      version.Prompt,
+		subject:     renderCaseSubject(subject),
+		offered:     append(s.offeredTools(version.Tools), fromServers...),
+		allow:       version.Tools,
+		unavailable: unavailable,
+		redact:      redact,
+		budgets:     inv.Budgets,
+		scope:       scope,
+		run:         RunSubject{InvestigationID: inv.ID, Case: subject},
 	}
 	out, err := s.runLoop(ctx, p, startedAt, func(ctx context.Context, step domain.Step) error {
 		return s.investigations.AppendStep(ctx, scope, inv.ID, step)

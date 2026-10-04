@@ -22,11 +22,14 @@ import (
 	enrichdomain "github.com/thulasiram/oto/internal/enrichment/domain"
 	enrichrepo "github.com/thulasiram/oto/internal/enrichment/repository"
 	identityservice "github.com/thulasiram/oto/internal/identity/service"
+	"github.com/thulasiram/oto/internal/ingestion/decode"
 	investigatordomain "github.com/thulasiram/oto/internal/investigator/domain"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/jobs"
 	rulesservice "github.com/thulasiram/oto/internal/rules/service"
+	sourcesdomain "github.com/thulasiram/oto/internal/sources/domain"
+	sourcesservice "github.com/thulasiram/oto/internal/sources/service"
 )
 
 // investigationCases is `investigator/service.CaseReader` and `TimelineReader` over
@@ -186,6 +189,45 @@ func (a investigationSwitch) InvestigationsEnabled(ctx context.Context, s db.Ten
 		return false, err
 	}
 	return org.Settings.InvestigationsEnabled, nil
+}
+
+// toolResultRedaction is `investigator/service.RedactionRules` (git-bug 2e9a086): the
+// org's ingest redaction rules — every source's `redact_labels` and `redact_annotations`,
+// deleted sources included — as ingest's own matcher and replacement value, so a
+// ToolServer's result is redacted in the dialect an operator already wrote.
+//
+// ⭐ EVERY SOURCE, NOT ONE. A Tool reads the cluster, not a source; a name an operator
+// called sensitive on any source of this org is sensitive in what any ToolServer says.
+// A deleted source's rules count too: the data it described has not gone anywhere.
+//
+// ⛔ AN UNREADABLE RULE SET IS AN ERROR, NOT AN EMPTY ONE. The run's job retries rather
+// than recording a result unredacted.
+type toolResultRedaction struct {
+	sources *sourcesservice.Service
+}
+
+func (a toolResultRedaction) ToolResultRedactor(ctx context.Context, s db.TenantScope) (investigatordomain.ResultRedactor, error) {
+	var labels, annotations []string
+	page := db.Keyset{Limit: db.MaxPageLimit}
+	for {
+		srcs, next, err := a.sources.List(ctx, s, sourcesdomain.SourceFilter{IncludeDeleted: true}, page)
+		if err != nil {
+			return investigatordomain.ResultRedactor{}, err
+		}
+		for _, src := range srcs {
+			labels = append(labels, src.RedactLabels...)
+			annotations = append(annotations, src.RedactAnnotations...)
+		}
+		if !next.HasMore {
+			break
+		}
+		page.Cursor = next
+	}
+	r := decode.NewRedactor(labels, annotations)
+	if !r.Enabled() {
+		return investigatordomain.ResultRedactor{}, nil
+	}
+	return investigatordomain.NewResultRedactor(r.MatchesName, decode.RedactedValue), nil
 }
 
 // runInvestigation is `investigations.run` (ADR 0053 §3): one queued run, in its org.

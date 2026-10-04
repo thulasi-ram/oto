@@ -41,6 +41,11 @@ type Service struct {
 	queue          JobQueue
 	limits         Limits
 	tools          []Tool
+
+	toolServers ToolServerStore
+	tokens      TokenResolver
+	toolDialer  ToolServerDialer
+	redaction   RedactionRules
 }
 
 // Deps are the Service's collaborators. Every one but Clock and Limits is required:
@@ -63,8 +68,17 @@ type Deps struct {
 	Findings       FindingPublisher
 	OrgSwitch      OrgSwitch
 	Queue          JobQueue
-	// Limits are the per-Tool-call controls. Zero fields take DefaultLimits.
+	// Limits are the built-in Tools' per-call controls. Zero fields take
+	// DefaultLimits. A ToolServer's Tools run under the ToolServer's own.
 	Limits Limits
+
+	// ToolServers, Tokens and ToolDialer reach an operator's MCP servers (git-bug
+	// 2e9a086); Redaction is the org's ingest redaction rules every Tool result passes
+	// through before it is recorded or read.
+	ToolServers ToolServerStore
+	Tokens      TokenResolver
+	ToolDialer  ToolServerDialer
+	Redaction   RedactionRules
 }
 
 // New builds the Service.
@@ -92,6 +106,10 @@ func New(d Deps) (*Service, error) {
 		return nil, errors.New("investigator: the org kill switch is required; a run must be stoppable")
 	case d.Queue == nil:
 		return nil, errors.New("investigator: a job queue is required; an Investigation runs asynchronously")
+	case d.ToolServers == nil || d.Tokens == nil || d.ToolDialer == nil:
+		return nil, errors.New("investigator: the ToolServer store, token resolver and dialer are required")
+	case d.Redaction == nil:
+		return nil, errors.New("investigator: the org's redaction rules are required; a Tool result is never recorded unredacted")
 	}
 	if d.Clock == nil {
 		d.Clock = clock.New()
@@ -102,6 +120,7 @@ func New(d Deps) (*Service, error) {
 		investigators: d.Investigators, investigations: d.Investigations,
 		cases: d.Cases, timeline: d.Timeline, rules: d.Rules, findings: d.Findings,
 		orgSwitch: d.OrgSwitch, queue: d.Queue, limits: d.Limits.orDefault(),
+		toolServers: d.ToolServers, tokens: d.Tokens, toolDialer: d.ToolDialer, redaction: d.Redaction,
 	}
 	s.tools = builtinTools(s)
 	return s, nil

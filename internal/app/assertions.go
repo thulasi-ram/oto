@@ -18,6 +18,7 @@ import (
 	"github.com/thulasiram/oto/internal/investigator/models/openaicompat"
 	investigatorrepo "github.com/thulasiram/oto/internal/investigator/repository"
 	investigatorservice "github.com/thulasiram/oto/internal/investigator/service"
+	"github.com/thulasiram/oto/internal/investigator/toolservers/mcpclient"
 	notifapi "github.com/thulasiram/oto/internal/notification/api"
 	notifrepo "github.com/thulasiram/oto/internal/notification/repository"
 	notifservice "github.com/thulasiram/oto/internal/notification/service"
@@ -84,14 +85,20 @@ var (
 	_ investigatorservice.FindingPublisher   = findingPublisher{}
 	_ investigatorservice.OrgSwitch          = investigationSwitch{}
 	_ investigatorservice.JobQueue           = (*lateEnqueuer)(nil)
-	_ notifservice.IncidentReader            = (*incidentFacts)(nil)
-	_ alertsservice.SourceHealth             = sourceHealth{}
-	_ alertsservice.SettingsReader           = orgSettings{}
-	_ notifservice.SettingsReader            = orgSettings{}
-	_ rulesservice.RuleLookup                = ruleLookup{}
-	_ enrichservice.SubjectLoader            = subjectLoader{}
-	_ enrichworker.ScopeResolver             = caseScopes{}
-	_ ingestservice.AlertObserver            = alertObserver{}
+
+	// ToolServers (git-bug 2e9a086).
+	_ investigatorservice.ToolServerStore  = (*investigatorrepo.ToolServerRepository)(nil)
+	_ investigatorservice.TokenResolver    = (*investigatorrepo.KeyStore)(nil)
+	_ investigatorservice.ToolServerDialer = mcpclient.Dialer{}
+	_ investigatorservice.RedactionRules   = toolResultRedaction{}
+	_ notifservice.IncidentReader          = (*incidentFacts)(nil)
+	_ alertsservice.SourceHealth           = sourceHealth{}
+	_ alertsservice.SettingsReader         = orgSettings{}
+	_ notifservice.SettingsReader          = orgSettings{}
+	_ rulesservice.RuleLookup              = ruleLookup{}
+	_ enrichservice.SubjectLoader          = subjectLoader{}
+	_ enrichworker.ScopeResolver           = caseScopes{}
+	_ ingestservice.AlertObserver          = alertObserver{}
 	// The ingest-token mint moved INTO identity (relocation, not a merge with the
 	// PAT mint): the identity service satisfies the sources-side port directly,
 	// and this line is what breaks if either side of that seam drifts.

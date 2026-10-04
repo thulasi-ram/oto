@@ -65,6 +65,13 @@ func (m *memCreds) ResolveKey(_ context.Context, _ db.TenantScope, id uuid.UUID)
 	return m.sealed[id][domain.CredentialValueKey], nil
 }
 
+func (m *memCreds) ResolveToolServerToken(_ context.Context, _ db.TenantScope, id uuid.UUID) (string, error) {
+	if m.kinds[id] != domain.ToolServerCredentialKind {
+		return "", errs.New(errs.KindInternal, "tool_server_credential_kind", "wrong kind")
+	}
+	return m.sealed[id][domain.ToolServerCredentialValueKey], nil
+}
+
 // memTx runs fn and records that it did; a failed fn is "rolled back" by the test
 // asserting nothing was left behind in the stores.
 type memTx struct{ ran int }
@@ -116,6 +123,9 @@ type rig struct {
 	findings       *memFindings
 	orgSwitch      *memSwitch
 	queue          *memQueue
+	toolServers    *memToolServers
+	toolDialer     *switchDialer
+	redaction      *memRedaction
 }
 
 func (r *rig) deps() Deps {
@@ -123,7 +133,8 @@ func (r *rig) deps() Deps {
 		Investigators: r.investigators, Investigations: r.investigations,
 		Cases: r.history, Timeline: r.history, Rules: r.history, Findings: r.findings,
 		OrgSwitch: r.orgSwitch, Queue: r.queue,
-		Limits: Limits{ToolTimeout: 50 * time.Millisecond, MaxToolResult: 4096}}
+		Limits:      Limits{ToolTimeout: 50 * time.Millisecond, MaxToolResult: 4096},
+		ToolServers: r.toolServers, Tokens: r.creds, ToolDialer: r.toolDialer, Redaction: r.redaction}
 }
 
 func newRig(t *testing.T) *rig {
@@ -140,6 +151,9 @@ func newRig(t *testing.T) *rig {
 		findings:       &memFindings{},
 		orgSwitch:      &memSwitch{on: true},
 		queue:          &memQueue{},
+		toolServers:    newMemToolServers(),
+		toolDialer:     &switchDialer{},
+		redaction:      &memRedaction{},
 	}
 	scope, err := db.NewTenantScope(uuid.New())
 	if err != nil {
@@ -255,6 +269,10 @@ func TestNewRequiresEveryPort(t *testing.T) {
 		"findings":       func(d *Deps) { d.Findings = nil },
 		"org switch":     func(d *Deps) { d.OrgSwitch = nil },
 		"queue":          func(d *Deps) { d.Queue = nil },
+		"tool servers":   func(d *Deps) { d.ToolServers = nil },
+		"tokens":         func(d *Deps) { d.Tokens = nil },
+		"tool dialer":    func(d *Deps) { d.ToolDialer = nil },
+		"redaction":      func(d *Deps) { d.Redaction = nil },
 	} {
 		d := r.deps()
 		drop(&d)

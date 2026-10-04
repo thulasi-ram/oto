@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 92 {
-		t.Fatalf("latest migration is %d, want 92 — this test pins the number so that a "+
+	if latest != 93 {
+		t.Fatalf("latest migration is %d, want 93 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1631,6 +1631,46 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// accepts a kind the release below it cannot interpret. No column reading can
 	// see that, and it is the half most likely to be forgotten because nothing
 	// references it.
+	// ⭐ 00093 LETS AN INVESTIGATOR READ THE CLUSTER THROUGH A TOOLSERVER (ADR 0053, 0054 §5,
+	// git-bug 2e9a086): two tables with their named CHECKs and the per-org name index, and
+	// a widened `channel_credentials_kind_ck` admitting `tool_server_token`. The kind CHECK
+	// is read on both sides for 00075's reason, and its Down must restore 00091's exactly —
+	// `model_api_key` still admitted — or a rollback one step too far would orphan every
+	// model key. The access CHECK is read for its body: `read`/`write` is the gate an
+	// allowlist is held to, and a Down that left it behind is no Down.
+	if n := countTables("tool_servers", "tool_server_tools"); n != 2 {
+		t.Fatalf("%d of 00093's two tables exist at migration 93", n)
+	}
+	if n := countConstraints("tool_servers_name_ck", "tool_servers_url_ck", "tool_servers_transport_ck",
+		"tool_servers_access_ck", "tool_servers_token_tls_ck", "tool_servers_timeout_ck", "tool_servers_result_ck",
+		"tool_servers_failure_ck", "tool_servers_time_ck", "tool_server_tools_name_ck", "tool_server_tools_desc_ck",
+		"tool_server_tools_schema_ck"); n != 12 {
+		t.Fatalf("%d of 00093's twelve CHECKs exist at migration 93, want 12", n)
+	}
+	if def := constraintDef("tool_servers_access_ck", "tool_servers"); !strings.Contains(def, "'read'") ||
+		!strings.Contains(def, "'write'") {
+		t.Fatalf("tool_servers_access_ck does not declare read and write: %s", def)
+	}
+	if n := countIndexes("tool_servers_org_name_uniq"); n != 1 {
+		t.Fatalf("tool_servers_org_name_uniq is absent at migration 93 (found %d)", n)
+	}
+	if def := constraintDef("channel_credentials_kind_ck", "channel_credentials"); !strings.Contains(def, "tool_server_token") {
+		t.Fatalf("channel_credentials_kind_ck at migration 93 does not admit tool_server_token: %s", def)
+	}
+
+	down(93)
+
+	if n := countTables("tool_servers", "tool_server_tools"); n != 0 {
+		t.Fatalf("%d of 00093's tables survived its Down", n)
+	}
+	if n := countIndexes("tool_servers_org_name_uniq"); n != 0 {
+		t.Fatalf("tool_servers_org_name_uniq survived 00093's Down (found %d)", n)
+	}
+	if def := constraintDef("channel_credentials_kind_ck", "channel_credentials"); strings.Contains(def, "tool_server_token") ||
+		!strings.Contains(def, "model_api_key") {
+		t.Fatalf("00093's Down did not restore 00091's channel_credentials_kind_ck: %s", def)
+	}
+
 	// ⭐ 00092 RUNS AN INVESTIGATION AGAINST A CASE (ADR 0053, git-bug 180a525): four
 	// tables, the two trigger functions that make a Step append-only and an ended run
 	// frozen, and a new statement of the `orgs.settings` key set. The triggers are read

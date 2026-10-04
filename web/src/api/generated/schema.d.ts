@@ -1086,6 +1086,114 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/tool-servers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List ToolServers
+         * @description Every ToolServer the org's operator configured, by name (ADR 0016, 0053, 0054 §5): an MCP server
+         *     the operator runs, which an Investigator reads the cluster through. oto ships none and holds no
+         *     cluster credential — only each ToolServer's own access token, which is **never returned**. The
+         *     list is never paged; `page.has_more` is always `false`.
+         */
+        get: operations["listToolServers"];
+        put?: never;
+        /**
+         * Configure a ToolServer
+         * @description One MCP server reached over HTTP — `streamable_http` (the default) or the older `sse`; there is
+         *     no stdio, because oto starts no process. `access` is the operator's **declaration** and has no
+         *     default: only a `read` ToolServer's Tools may be on an Investigator's allowlist; a `write` one
+         *     is configured and discovered but never offered to a model — it is where a Remedy's write Tool
+         *     will be bound (ADR 0054). A Tool's own `readOnlyHint` is shown, never trusted.
+         *
+         *     `token` is **write-only**: sealed before the row is written, sent as a bearer token, and only over
+         *     `https` — a token with an `http` URL is a `422`. A URL carrying credentials or a query is refused,
+         *     not stripped. `call_timeout_seconds` and `max_result_bytes` are the per-call controls (ADR 0053
+         *     §6); a timeout or a truncation is recorded on the Step and the run continues. Creating a
+         *     ToolServer lists nothing: discover it.
+         *
+         *     A duplicate name is a `409` naming `tool_servers_org_name_uniq`.
+         */
+        post: operations["createToolServer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tool-servers/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get one ToolServer
+         * @description One ToolServer, without its token, with when it was last discovered and — if the last attempt
+         *     since then failed — why.
+         */
+        get: operations["getToolServer"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tool-servers/{id}/discover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * List a ToolServer's Tools now
+         * @description Asks the ToolServer for every Tool it serves and records the answer, replacing the last list,
+         *     and answers with it. A ToolServer that cannot be reached, refuses oto's token or answers
+         *     badly is a `502`; the failure is recorded on the ToolServer (`discovery_error`) and the last
+         *     good list is kept. A run offers a model the Tools as last discovered, so discover again after
+         *     a ToolServer changes. Listing reads nothing from the cluster, so a `write` ToolServer is
+         *     discovered too. Takes no body.
+         */
+        post: operations["discoverToolServer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tool-servers/{id}/tools": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List a ToolServer's Tools
+         * @description The Tools the ToolServer listed at its last successful discovery, by name, each with the
+         *     qualified name an allowlist holds it by — `<toolserver>__<tool>` — or why it cannot be held: a
+         *     name a model cannot be offered, a schema that is not one JSON object, or a `write` ToolServer.
+         *     Never paged.
+         */
+        get: operations["listToolServerTools"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/investigators": {
         parameters: {
             query?: never;
@@ -1108,7 +1216,9 @@ export interface paths {
          *     its Findings are published as the Enrichment `investigator.<name>`; it is never renamed. `tools`
          *     names Tools **exactly** — there are no wildcards — and a Tool the list omits is refused when
          *     called, and recorded. oto's own history is offered as three built-in Tools: `oto_prior_findings`,
-         *     `oto_case_timeline` and `oto_rule_at_fire`. Omitted `budgets` are oto's defaults.
+         *     `oto_case_timeline` and `oto_rule_at_fire`. A ToolServer's Tool is named `<toolserver>__<tool>`,
+         *     and only one a `read` ToolServer has listed may be held — anything else is a `422`
+         *     (`investigator_tools_invalid`). Omitted `budgets` are oto's defaults.
          *
          *     A duplicate name is a `409` naming `investigators_org_name_uniq`; a `model_provider_id` this org
          *     does not have is a `404`.
@@ -7829,12 +7939,16 @@ export interface components {
             tool_name: string | null;
             arguments: string | null;
             /**
-             * @description What came of a Tool call. `refused`: outside the allowlist, no such Tool, or past the step
-             *     budget. `timeout` and `truncated` are the per-call controls; the run continued.
+             * @description What came of a Tool call. `refused`: outside the allowlist, no such Tool, one the run cannot
+             *     hold (a `write` ToolServer's), or past the step budget. `timeout` and `truncated` are the
+             *     per-call controls; the run continued.
              * @enum {string|null}
              */
             outcome: "ok" | "refused" | "timeout" | "truncated" | "failed" | null;
-            /** @description What the model was answered with. */
+            /**
+             * @description What the model was answered with — after the org's ingest redaction rules, and the same bytes
+             *     the model read.
+             */
             result: string | null;
             /** Format: int64 */
             duration_ms: number;
@@ -7851,6 +7965,109 @@ export interface components {
         };
         ModelProviderResponse: {
             data: components["schemas"]["ModelProviderDTO"];
+            meta: components["schemas"]["Meta"];
+        };
+        /**
+         * @description One ToolServer (ADR 0053 §1): an MCP server the operator runs, where trust stops. oto holds only its
+         *     access token, sealed server-side.
+         */
+        ToolServerDTO: {
+            id: components["schemas"]["Uuid"];
+            /**
+             * @description The first half of every qualified Tool name, `<toolserver>__<tool>`.
+             * @example k8s
+             */
+            name: string;
+            /**
+             * @description The MCP endpoint. Never carries credentials or a query.
+             * @example https://k8s-mcp.tools.svc/mcp
+             */
+            url: string;
+            /** @enum {string} */
+            transport: "streamable_http" | "sse";
+            /**
+             * @description The operator's declaration. Only a `read` ToolServer's Tools may be held by an Investigator; a
+             *     `write` one is never offered to a model.
+             * @enum {string}
+             */
+            access: "read" | "write";
+            /** @description Whether an access token is stored. The token itself is never returned. */
+            has_token: boolean;
+            /** Format: int32 */
+            call_timeout_seconds: number;
+            /** Format: int32 */
+            max_result_bytes: number;
+            /** @description When its Tools were last listed successfully; `null` for never. */
+            discovered_at: components["schemas"]["Timestamp"] | null;
+            /** @description When a discovery since then failed; `null` once one succeeds. */
+            discovery_failed_at: components["schemas"]["Timestamp"] | null;
+            /** @description Why it failed. */
+            discovery_error: string | null;
+            created_at: components["schemas"]["Timestamp"];
+            updated_at: components["schemas"]["Timestamp"];
+        };
+        /** @description Configure a ToolServer. */
+        CreateToolServerRequest: {
+            /** @description Lower-case letters, digits and inner hyphens, starting with a letter; not `oto`. */
+            name: string;
+            /** @description `http` or `https`. A token is only sent over `https`; credentials or a query in the URL are refused. */
+            url: string;
+            /**
+             * @description Defaults to `streamable_http`.
+             * @enum {string}
+             */
+            transport?: "streamable_http" | "sse";
+            /**
+             * @description No default — declare what the ToolServer's Tools may do.
+             * @enum {string}
+             */
+            access: "read" | "write";
+            /** @description Sealed before it is stored and never returned. Omit it for a ToolServer that takes none. */
+            token?: string;
+            /**
+             * Format: int32
+             * @description Defaults to 15.
+             */
+            call_timeout_seconds?: number;
+            /**
+             * Format: int32
+             * @description Defaults to 16384.
+             */
+            max_result_bytes?: number;
+        };
+        /** @description One Tool a ToolServer listed at its last successful discovery. */
+        ToolServerToolDTO: {
+            /** @description The ToolServer's own name for it. */
+            name: string;
+            /**
+             * @description `<toolserver>__<tool>` — what an allowlist names and a model is offered. `null` when no model could be offered the name.
+             * @example k8s__pods_list
+             */
+            qualified_name: string | null;
+            description: string;
+            /** @description Its arguments' JSON Schema as listed; `null` when it was not one JSON object of at most 64 KiB. */
+            input_schema: {
+                [key: string]: unknown;
+            } | null;
+            /** @description What the ToolServer says about the Tool. Shown, never trusted — `access` decides. */
+            read_only_hint: boolean | null;
+            /** @description Whether an Investigator's allowlist may hold it. */
+            usable: boolean;
+            /** @description Why not, when `usable` is false. */
+            unusable_reason: string | null;
+        };
+        ToolServerListResponse: {
+            data: components["schemas"]["ToolServerDTO"][];
+            page: components["schemas"]["PageInfo"];
+            meta: components["schemas"]["Meta"];
+        };
+        ToolServerResponse: {
+            data: components["schemas"]["ToolServerDTO"];
+            meta: components["schemas"]["Meta"];
+        };
+        ToolServerToolListResponse: {
+            data: components["schemas"]["ToolServerToolDTO"][];
+            page: components["schemas"]["PageInfo"];
             meta: components["schemas"]["Meta"];
         };
         InvestigatorListResponse: {
@@ -10931,6 +11148,157 @@ export interface operations {
             413: components["responses"]["PayloadTooLarge"];
             415: components["responses"]["UnsupportedMediaType"];
             422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    listToolServers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every ToolServer, by name. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolServerListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    createToolServer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateToolServerRequest"];
+            };
+        };
+        responses: {
+            /** @description The ToolServer, without its token. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolServerResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    getToolServer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The ToolServer. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolServerResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    discoverToolServer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The Tools the ToolServer listed, by name. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolServerToolListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            502: components["responses"]["BadGateway"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    listToolServerTools: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The Tools, by name. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolServerToolListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
             429: components["responses"]["RateLimited"];
             500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];

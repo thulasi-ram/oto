@@ -184,6 +184,25 @@ func (k *KeyStore) db(ctx context.Context) db.Querier { return db.FromContext(ct
 // a bearer key — which is a token handed to a third party. The seal's AAD would refuse
 // it too; this says why, before trying.
 func (k *KeyStore) ResolveKey(ctx context.Context, s db.TenantScope, credentialID uuid.UUID) (string, error) {
+	return k.resolve(ctx, s, credentialID, domain.CredentialKind, domain.CredentialValueKey,
+		"model", "the model endpoint's key")
+}
+
+// ResolveToolServerToken unseals one ToolServer's access token (git-bug 2e9a086), on
+// ResolveKey's terms: one row, one org, and refused unless it is a `tool_server_token`
+// — a model key behind a ToolServer's slot would otherwise be presented to a
+// cluster-facing server. ⛔ The returned string is a secret.
+func (k *KeyStore) ResolveToolServerToken(ctx context.Context, s db.TenantScope, credentialID uuid.UUID) (string, error) {
+	return k.resolve(ctx, s, credentialID, domain.ToolServerCredentialKind, domain.ToolServerCredentialValueKey,
+		"tool_server", "the ToolServer's access token")
+}
+
+// resolve is both: `code` prefixes the error codes (`model_credential_kind`,
+// `tool_server_credential_kind`), and `what` names the secret in a message without
+// ever rendering it.
+func (k *KeyStore) resolve(
+	ctx context.Context, s db.TenantScope, credentialID uuid.UUID, wantKind, valueKey, code, what string,
+) (string, error) {
 	if err := db.RequireScope(s); err != nil {
 		return "", err
 	}
@@ -205,21 +224,21 @@ func (k *KeyStore) ResolveKey(ctx context.Context, s db.TenantScope, credentialI
 	if err != nil {
 		return "", db.MapError(err, db.ErrorPolicy{
 			NotFound: "credential_not_found", NotFoundMessage: "no such credential",
-			QueryFailed: "investigator_query_failed", QueryFailedMessage: "could not read a model key",
+			QueryFailed: "investigator_query_failed", QueryFailedMessage: "could not read " + what,
 		})
 	}
-	if kind != domain.CredentialKind {
-		return "", errs.Newf(errs.KindInternal, "model_credential_kind",
-			"the model endpoint's key slot holds a %q credential, not a %s", kind, domain.CredentialKind)
+	if kind != wantKind {
+		return "", errs.Newf(errs.KindInternal, code+"_credential_kind",
+			"%s slot holds a %q credential, not a %s", what, kind, wantKind)
 	}
 	values, err := k.open.Unseal(ctx, kind, sealed, keyVersion)
 	if err != nil {
 		return "", err
 	}
-	key := values[domain.CredentialValueKey]
-	if key == "" {
-		return "", errs.New(errs.KindInternal, "model_credential_empty",
-			"the model endpoint's sealed key holds no api_key value")
+	secret := values[valueKey]
+	if secret == "" {
+		return "", errs.Newf(errs.KindInternal, code+"_credential_empty",
+			"%s holds no %s value", what, valueKey)
 	}
-	return key, nil
+	return secret, nil
 }

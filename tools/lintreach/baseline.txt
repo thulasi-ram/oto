@@ -257,7 +257,6 @@ nowrite:github.com/thulasiram/oto/internal/sources/domain.ClusterDraft.Key	field
 nowrite:github.com/thulasiram/oto/internal/sources/domain.ClusterPatch.DisplayName	field is never written in production — nothing populates it (internal/sources/domain/registry.go:58)
 nowrite:github.com/thulasiram/oto/internal/sources/domain.SilenceFilter.Filter	field is never written in production — nothing populates it (internal/sources/domain/ports.go:141)
 nowrite:github.com/thulasiram/oto/internal/sources/domain.SourceFilter.ClusterID	field is never written in production — nothing populates it (internal/sources/domain/source.go:119)
-nowrite:github.com/thulasiram/oto/internal/sources/domain.SourceFilter.IncludeDeleted	field is never written in production — nothing populates it (internal/sources/domain/source.go:122)
 nowrite:github.com/thulasiram/oto/internal/sources/domain.SourceFilter.Kind	field is never written in production — nothing populates it (internal/sources/domain/source.go:120)
 nowrite:github.com/thulasiram/oto/internal/sources/service.HTTPClientFactory.Sleep	field is never written in production — nothing populates it (internal/sources/service/factory.go:38)
 nowrite:github.com/thulasiram/oto/internal/sources/service.HTTPClientFactory.Transport	field is never written in production — nothing populates it (internal/sources/service/factory.go:36)

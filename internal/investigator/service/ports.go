@@ -135,3 +135,47 @@ type OrgSwitch interface {
 type JobQueue interface {
 	Enqueue(ctx context.Context, args db.JobArgs, opts ...db.JobOption) (db.EnqueueResult, error)
 }
+
+// ---------------------------------------------------------------- ToolServers
+//
+// The ports below carry git-bug 2e9a086: an operator's MCP servers, the Tools they list,
+// and the org's redaction rules a Tool's result passes through. ⛔ None of them holds a
+// cluster credential — the one secret is the ToolServer's own access token, sealed like
+// a model key (ADR 0016, 0054 §5).
+
+// ToolServerStore is where ToolServers and the Tools they listed are kept, satisfied by
+// `investigator/repository.ToolServerRepository`.
+type ToolServerStore interface {
+	Insert(ctx context.Context, s db.TenantScope, draft domain.ToolServerDraft, credentialID uuid.UUID, at time.Time) (domain.ToolServerConfig, error)
+	Get(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.ToolServerConfig, error)
+	List(ctx context.Context, s db.TenantScope) ([]domain.ToolServerConfig, error)
+	// ByNames reads the org's ToolServers with these names; an unknown name is absent.
+	ByNames(ctx context.Context, s db.TenantScope, names []string) ([]domain.ToolServerConfig, error)
+	// ReplaceTools records a successful discovery (the caller's transaction).
+	ReplaceTools(ctx context.Context, s db.TenantScope, id uuid.UUID, tools []domain.DiscoveredTool, at time.Time) error
+	// RecordDiscoveryFailure records a failed one, keeping the last good list.
+	RecordDiscoveryFailure(ctx context.Context, s db.TenantScope, id uuid.UUID, reason string, at time.Time) error
+	// Tools reads what a ToolServer listed at its last successful discovery, by name.
+	Tools(ctx context.Context, s db.TenantScope, id uuid.UUID) ([]domain.DiscoveredTool, error)
+}
+
+// TokenResolver unseals a ToolServer's access token, satisfied by
+// `investigator/repository.KeyStore`. The string it returns is a secret.
+type TokenResolver interface {
+	ResolveToolServerToken(ctx context.Context, s db.TenantScope, credentialID uuid.UUID) (string, error)
+}
+
+// ToolServerDialer opens a session with one ToolServer, satisfied by
+// `investigator/toolservers/mcpclient.Dialer`. It is a port so this service names no
+// SDK: the adapter is chosen in `internal/app`, with the guarded HTTP client it must
+// dial through.
+type ToolServerDialer interface {
+	Connect(ctx context.Context, cfg domain.ToolServerConfig, token string) (domain.ToolServerClient, error)
+}
+
+// RedactionRules hands a run the org's ingest redaction rules as a ResultRedactor,
+// satisfied in `internal/app` over `sources/service` and `ingestion/decode`'s matcher —
+// the same patterns and the same replacement value ingest applies (git-bug 2e9a086).
+type RedactionRules interface {
+	ToolResultRedactor(ctx context.Context, s db.TenantScope) (domain.ResultRedactor, error)
+}

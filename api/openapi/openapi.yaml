@@ -2555,6 +2555,191 @@ paths:
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
 
+  /api/v1/tool-servers:
+    get:
+      operationId: listToolServers
+      summary: List ToolServers
+      tags: [Investigators]
+      description: |
+        Every ToolServer the org's operator configured, by name (ADR 0016, 0053, 0054 §5): an MCP server
+        the operator runs, which an Investigator reads the cluster through. oto ships none and holds no
+        cluster credential — only each ToolServer's own access token, which is **never returned**. The
+        list is never paged; `page.has_more` is always `false`.
+      responses:
+        '200':
+          description: Every ToolServer, by name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolServerListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    post:
+      operationId: createToolServer
+      summary: Configure a ToolServer
+      tags: [Investigators]
+      description: |
+        One MCP server reached over HTTP — `streamable_http` (the default) or the older `sse`; there is
+        no stdio, because oto starts no process. `access` is the operator's **declaration** and has no
+        default: only a `read` ToolServer's Tools may be on an Investigator's allowlist; a `write` one
+        is configured and discovered but never offered to a model — it is where a Remedy's write Tool
+        will be bound (ADR 0054). A Tool's own `readOnlyHint` is shown, never trusted.
+
+        `token` is **write-only**: sealed before the row is written, sent as a bearer token, and only over
+        `https` — a token with an `http` URL is a `422`. A URL carrying credentials or a query is refused,
+        not stripped. `call_timeout_seconds` and `max_result_bytes` are the per-call controls (ADR 0053
+        §6); a timeout or a truncation is recorded on the Step and the run continues. Creating a
+        ToolServer lists nothing: discover it.
+
+        A duplicate name is a `409` naming `tool_servers_org_name_uniq`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateToolServerRequest'
+      responses:
+        '201':
+          description: The ToolServer, without its token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolServerResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/tool-servers/{id}:
+    get:
+      operationId: getToolServer
+      summary: Get one ToolServer
+      tags: [Investigators]
+      description: |
+        One ToolServer, without its token, with when it was last discovered and — if the last attempt
+        since then failed — why.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      responses:
+        '200':
+          description: The ToolServer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolServerResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/tool-servers/{id}/discover:
+    post:
+      operationId: discoverToolServer
+      summary: List a ToolServer's Tools now
+      tags: [Investigators]
+      description: |
+        Asks the ToolServer for every Tool it serves and records the answer, replacing the last list,
+        and answers with it. A ToolServer that cannot be reached, refuses oto's token or answers
+        badly is a `502`; the failure is recorded on the ToolServer (`discovery_error`) and the last
+        good list is kept. A run offers a model the Tools as last discovered, so discover again after
+        a ToolServer changes. Listing reads nothing from the cluster, so a `write` ToolServer is
+        discovered too. Takes no body.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      responses:
+        '200':
+          description: The Tools the ToolServer listed, by name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolServerToolListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/tool-servers/{id}/tools:
+    get:
+      operationId: listToolServerTools
+      summary: List a ToolServer's Tools
+      tags: [Investigators]
+      description: |
+        The Tools the ToolServer listed at its last successful discovery, by name, each with the
+        qualified name an allowlist holds it by — `<toolserver>__<tool>` — or why it cannot be held: a
+        name a model cannot be offered, a schema that is not one JSON object, or a `write` ToolServer.
+        Never paged.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      responses:
+        '200':
+          description: The Tools, by name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolServerToolListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   /api/v1/investigators:
     get:
       operationId: listInvestigators
@@ -2593,7 +2778,9 @@ paths:
         its Findings are published as the Enrichment `investigator.<name>`; it is never renamed. `tools`
         names Tools **exactly** — there are no wildcards — and a Tool the list omits is refused when
         called, and recorded. oto's own history is offered as three built-in Tools: `oto_prior_findings`,
-        `oto_case_timeline` and `oto_rule_at_fire`. Omitted `budgets` are oto's defaults.
+        `oto_case_timeline` and `oto_rule_at_fire`. A ToolServer's Tool is named `<toolserver>__<tool>`,
+        and only one a `read` ToolServer has listed may be held — anything else is a `422`
+        (`investigator_tools_invalid`). Omitted `budgets` are oto's defaults.
 
         A duplicate name is a `409` naming `investigators_org_name_uniq`; a `model_provider_id` this org
         does not have is a `404`.
@@ -14201,11 +14388,14 @@ components:
           type: ['string', 'null']
           enum: [ok, refused, timeout, truncated, failed, null]
           description: |
-            What came of a Tool call. `refused`: outside the allowlist, no such Tool, or past the step
-            budget. `timeout` and `truncated` are the per-call controls; the run continued.
+            What came of a Tool call. `refused`: outside the allowlist, no such Tool, one the run cannot
+            hold (a `write` ToolServer's), or past the step budget. `timeout` and `truncated` are the
+            per-call controls; the run continued.
         result:
           type: ['string', 'null']
-          description: What the model was answered with.
+          description: |
+            What the model was answered with — after the org's ingest redaction rules, and the same bytes
+            the model read.
         duration_ms:
           type: integer
           format: int64
@@ -14248,6 +14438,182 @@ components:
       properties:
         data:
           $ref: '#/components/schemas/ModelProviderDTO'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    ToolServerDTO:
+      type: object
+      required: [id, name, url, transport, access, has_token, call_timeout_seconds, max_result_bytes,
+                 discovered_at, discovery_failed_at, discovery_error, created_at, updated_at]
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        name:
+          type: string
+          minLength: 1
+          maxLength: 24
+          pattern: '^[a-z]([a-z0-9-]{0,22}[a-z0-9])?$'
+          description: The first half of every qualified Tool name, `<toolserver>__<tool>`.
+          examples: ['k8s']
+        url:
+          type: string
+          maxLength: 2048
+          description: The MCP endpoint. Never carries credentials or a query.
+          examples: ['https://k8s-mcp.tools.svc/mcp']
+        transport:
+          type: string
+          enum: [streamable_http, sse]
+        access:
+          type: string
+          enum: [read, write]
+          description: |
+            The operator's declaration. Only a `read` ToolServer's Tools may be held by an Investigator; a
+            `write` one is never offered to a model.
+        has_token:
+          type: boolean
+          description: Whether an access token is stored. The token itself is never returned.
+        call_timeout_seconds:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 120
+        max_result_bytes:
+          type: integer
+          format: int32
+          minimum: 1024
+          maximum: 61440
+        discovered_at:
+          oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+          description: When its Tools were last listed successfully; `null` for never.
+        discovery_failed_at:
+          oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+          description: When a discovery since then failed; `null` once one succeeds.
+        discovery_error:
+          type: ['string', 'null']
+          maxLength: 2000
+          description: Why it failed.
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        updated_at:
+          $ref: '#/components/schemas/Timestamp'
+      description: |
+        One ToolServer (ADR 0053 §1): an MCP server the operator runs, where trust stops. oto holds only its
+        access token, sealed server-side.
+
+    CreateToolServerRequest:
+      type: object
+      required: [name, url, access]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 24
+          description: Lower-case letters, digits and inner hyphens, starting with a letter; not `oto`.
+        url:
+          type: string
+          minLength: 1
+          maxLength: 2048
+          description: '`http` or `https`. A token is only sent over `https`; credentials or a query in the URL are refused.'
+        transport:
+          type: string
+          enum: [streamable_http, sse]
+          description: Defaults to `streamable_http`.
+        access:
+          type: string
+          enum: [read, write]
+          description: No default — declare what the ToolServer's Tools may do.
+        token:
+          type: string
+          maxLength: 4096
+          writeOnly: true
+          description: Sealed before it is stored and never returned. Omit it for a ToolServer that takes none.
+        call_timeout_seconds:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 120
+          description: Defaults to 15.
+        max_result_bytes:
+          type: integer
+          format: int32
+          minimum: 1024
+          maximum: 61440
+          description: Defaults to 16384.
+      description: Configure a ToolServer.
+
+    ToolServerToolDTO:
+      type: object
+      required: [name, qualified_name, description, input_schema, read_only_hint, usable, unusable_reason]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: The ToolServer's own name for it.
+        qualified_name:
+          type: ['string', 'null']
+          maxLength: 64
+          description: '`<toolserver>__<tool>` — what an allowlist names and a model is offered. `null` when no model could be offered the name.'
+          examples: ['k8s__pods_list']
+        description:
+          type: string
+          maxLength: 4096
+        input_schema:
+          type: ['object', 'null']
+          additionalProperties: true
+          description: Its arguments' JSON Schema as listed; `null` when it was not one JSON object of at most 64 KiB.
+        read_only_hint:
+          type: ['boolean', 'null']
+          description: What the ToolServer says about the Tool. Shown, never trusted — `access` decides.
+        usable:
+          type: boolean
+          description: Whether an Investigator's allowlist may hold it.
+        unusable_reason:
+          type: ['string', 'null']
+          description: Why not, when `usable` is false.
+      description: One Tool a ToolServer listed at its last successful discovery.
+
+    ToolServerListResponse:
+      type: object
+      required: [data, page, meta]
+      additionalProperties: false
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ToolServerDTO'
+        page:
+          $ref: '#/components/schemas/PageInfo'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    ToolServerResponse:
+      type: object
+      required: [data, meta]
+      additionalProperties: false
+      properties:
+        data:
+          $ref: '#/components/schemas/ToolServerDTO'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    ToolServerToolListResponse:
+      type: object
+      required: [data, page, meta]
+      additionalProperties: false
+      properties:
+        data:
+          type: array
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/ToolServerToolDTO'
+        page:
+          $ref: '#/components/schemas/PageInfo'
         meta:
           $ref: '#/components/schemas/Meta'
 

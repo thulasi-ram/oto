@@ -3615,6 +3615,114 @@ export const ModelProviderResponseSchema = v.looseObject({
   "meta": MetaSchema,
 });
 
+export const ToolServerDTOSchema = v.looseObject({
+  "id": UuidSchema,
+  "name": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(24),
+    v.regex(/^[a-z]([a-z0-9-]{0,22}[a-z0-9])?$/),
+  ),
+  "url": v.pipe(
+    v.string(),
+    v.maxLength(2048),
+  ),
+  "transport": v.picklist(["streamable_http", "sse"]),
+  "access": v.picklist(["read", "write"]),
+  "has_token": v.boolean(),
+  "call_timeout_seconds": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+    v.maxValue(120),
+  ),
+  "max_result_bytes": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1024),
+    v.maxValue(61440),
+  ),
+  "discovered_at": v.nullable(TimestampSchema),
+  "discovery_failed_at": v.nullable(TimestampSchema),
+  "discovery_error": v.nullable(v.pipe(
+    v.string(),
+    v.maxLength(2000),
+  )),
+  "created_at": TimestampSchema,
+  "updated_at": TimestampSchema,
+});
+
+export const CreateToolServerRequestSchema = v.strictObject({
+  "name": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(24),
+  ),
+  "url": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(2048),
+  ),
+  "transport": v.exactOptional(v.picklist(["streamable_http", "sse"])),
+  "access": v.picklist(["read", "write"]),
+  "token": v.exactOptional(v.pipe(
+    v.string(),
+    v.maxLength(4096),
+  )),
+  "call_timeout_seconds": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+    v.maxValue(120),
+  )),
+  "max_result_bytes": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1024),
+    v.maxValue(61440),
+  )),
+});
+
+export const ToolServerToolDTOSchema = v.looseObject({
+  "name": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(128),
+  ),
+  "qualified_name": v.nullable(v.pipe(
+    v.string(),
+    v.maxLength(64),
+  )),
+  "description": v.pipe(
+    v.string(),
+    v.maxLength(4096),
+  ),
+  "input_schema": v.nullable(v.record(v.string(), v.unknown())),
+  "read_only_hint": v.nullable(v.boolean()),
+  "usable": v.boolean(),
+  "unusable_reason": v.nullable(v.string()),
+});
+
+export const ToolServerListResponseSchema = v.looseObject({
+  "data": v.array(ToolServerDTOSchema),
+  "page": PageInfoSchema,
+  "meta": MetaSchema,
+});
+
+export const ToolServerResponseSchema = v.looseObject({
+  "data": ToolServerDTOSchema,
+  "meta": MetaSchema,
+});
+
+export const ToolServerToolListResponseSchema = v.looseObject({
+  "data": v.pipe(
+    v.array(ToolServerToolDTOSchema),
+    v.maxLength(200),
+  ),
+  "page": PageInfoSchema,
+  "meta": MetaSchema,
+});
+
 export const InvestigatorListResponseSchema = v.looseObject({
   "data": v.array(InvestigatorDTOSchema),
   "page": PageInfoSchema,

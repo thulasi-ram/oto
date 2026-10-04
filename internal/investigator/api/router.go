@@ -27,6 +27,12 @@ type InvestigatorService interface {
 	CreateProvider(ctx context.Context, s db.TenantScope, d domain.ProviderDraft) (domain.ProviderConfig, error)
 	ListProviders(ctx context.Context, s db.TenantScope) ([]domain.ProviderConfig, error)
 
+	CreateToolServer(ctx context.Context, s db.TenantScope, d domain.ToolServerDraft) (domain.ToolServerConfig, error)
+	ListToolServers(ctx context.Context, s db.TenantScope) ([]domain.ToolServerConfig, error)
+	GetToolServer(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.ToolServerConfig, error)
+	DiscoverToolServer(ctx context.Context, s db.TenantScope, id uuid.UUID) (service.ToolServerCatalog, error)
+	ToolServerTools(ctx context.Context, s db.TenantScope, id uuid.UUID) (service.ToolServerCatalog, error)
+
 	CreateInvestigator(ctx context.Context, s db.TenantScope, d domain.InvestigatorDraft) (domain.Investigator, error)
 	UpdateInvestigator(ctx context.Context, s db.TenantScope, id uuid.UUID, c domain.InvestigatorChange) (domain.Investigator, error)
 	ListInvestigators(ctx context.Context, s db.TenantScope) ([]domain.Investigator, error)
@@ -66,6 +72,13 @@ func (rt *Router) Mount(r chi.Router) {
 	r.Route("/model-providers", func(r chi.Router) {
 		r.Get("/", rt.listModelProviders)
 		r.Post("/", rt.createModelProvider)
+	})
+	r.Route("/tool-servers", func(r chi.Router) {
+		r.Get("/", rt.listToolServers)
+		r.Post("/", rt.createToolServer)
+		r.Get("/{id}", rt.getToolServer)
+		r.Post("/{id}/discover", rt.discoverToolServer)
+		r.Get("/{id}/tools", rt.listToolServerTools)
 	})
 	r.Route("/investigators", func(r chi.Router) {
 		r.Get("/", rt.listInvestigators)
@@ -131,6 +144,118 @@ func (rt *Router) createModelProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.Data(w, r, http.StatusCreated, modelProviderDTO(p), started)
+}
+
+// listToolServers serves GET /api/v1/tool-servers.
+func (rt *Router) listToolServers(w http.ResponseWriter, r *http.Request) {
+	started := rt.now()
+	scope, err := plainScope(r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	ts, err := rt.svc.ListToolServers(r.Context(), scope)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	out := make([]ToolServerDTO, 0, len(ts))
+	for _, c := range ts {
+		out = append(out, toolServerDTO(c))
+	}
+	httpx.List(w, r, out, httpx.PageOf(db.Cursor{}, maxListed), started)
+}
+
+// createToolServer serves POST /api/v1/tool-servers.
+//
+// ⛔ THE TOKEN IS SEALED AND NEVER ECHOED. The response is the stored row's public half,
+// with `has_token`; nothing on any error path renders the request body. Creating one
+// lists nothing: discovery is its own, explicit request.
+func (rt *Router) createToolServer(w http.ResponseWriter, r *http.Request) {
+	started := rt.now()
+	scope, err := plainScope(r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	dto, err := httpx.Bind[CreateToolServerRequest](w, r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	draft, err := dto.toDomain()
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	c, err := rt.svc.CreateToolServer(r.Context(), scope, draft)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	httpx.Data(w, r, http.StatusCreated, toolServerDTO(c), started)
+}
+
+// getToolServer serves GET /api/v1/tool-servers/{id}.
+func (rt *Router) getToolServer(w http.ResponseWriter, r *http.Request) {
+	started := rt.now()
+	scope, id, err := scopeAndID(r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	c, err := rt.svc.GetToolServer(r.Context(), scope, id)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	httpx.Data(w, r, http.StatusOK, toolServerDTO(c), started)
+}
+
+// discoverToolServer serves POST /api/v1/tool-servers/{id}/discover: ask the ToolServer
+// for its Tools now, and answer with what it listed. A ToolServer that cannot be reached
+// is a 502, and the failure is recorded on it.
+func (rt *Router) discoverToolServer(w http.ResponseWriter, r *http.Request) {
+	started := rt.now()
+	scope, id, err := scopeAndID(r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	cat, err := rt.svc.DiscoverToolServer(r.Context(), scope, id)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	httpx.List(w, r, toolServerToolDTOs(cat), httpx.PageOf(db.Cursor{}, maxListedTools), started)
+}
+
+// listToolServerTools serves GET /api/v1/tool-servers/{id}/tools: what it listed at its
+// last successful discovery, by name.
+func (rt *Router) listToolServerTools(w http.ResponseWriter, r *http.Request) {
+	started := rt.now()
+	scope, id, err := scopeAndID(r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	cat, err := rt.svc.ToolServerTools(r.Context(), scope, id)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	httpx.List(w, r, toolServerToolDTOs(cat), httpx.PageOf(db.Cursor{}, maxListedTools), started)
+}
+
+// maxListedTools is the page a Tool list reports: the whole list, never paged.
+const maxListedTools = domain.MaxDiscoveredTools
+
+func toolServerToolDTOs(cat service.ToolServerCatalog) []ToolServerToolDTO {
+	out := make([]ToolServerToolDTO, 0, len(cat.Tools))
+	for _, t := range cat.Tools {
+		out = append(out, toolServerToolDTO(cat.ToolServer, t))
+	}
+	return out
 }
 
 // listInvestigators serves GET /api/v1/investigators.

@@ -10,6 +10,11 @@ package service
 // NOW, the prompt, the allowlist — and only a difference mints version N+1. Re-sending the
 // same prompt is not a new version; flipping the kill switch or a budget never is.
 //
+// ⛔ A TOOLSERVER TOOL ON THE ALLOWLIST MUST BE ONE A READ TOOLSERVER HAS LISTED (git-bug
+// 2e9a086). `<toolserver>__<tool>` naming a write ToolServer, an unknown one, or a Tool
+// it never listed is a 422 when the allowlist is written — and the run refuses the
+// same call again, recorded, because a version outlives the moment it was written.
+//
 // ⭐ THE IDENTITY IS READ FROM THE ENDPOINT ROW AT WRITE TIME AND PINNED. A version names
 // (base_url, model) as they stood when it was written, so a Finding names the model that
 // produced it even if the row it was read from is later edited — and a run refuses to
@@ -37,6 +42,9 @@ func (s *Service) CreateInvestigator(ctx context.Context, scope db.TenantScope, 
 	}
 	endpoint, err := s.providers.Get(ctx, scope, d.Spec.ProviderID)
 	if err != nil {
+		return domain.Investigator{}, err
+	}
+	if err := s.checkToolServerAllowlist(ctx, scope, d.Spec.Tools); err != nil {
 		return domain.Investigator{}, err
 	}
 	var out domain.Investigator
@@ -80,6 +88,11 @@ func (s *Service) UpdateInvestigator(
 		spec, err := change.Apply(cur.Current)
 		if err != nil {
 			return err
+		}
+		if change.Tools != nil {
+			if err := s.checkToolServerAllowlist(ctx, scope, spec.Tools); err != nil {
+				return err
+			}
 		}
 		endpoint, err := s.providers.Get(ctx, scope, spec.ProviderID)
 		if err != nil {

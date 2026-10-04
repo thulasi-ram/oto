@@ -44,6 +44,7 @@ import (
 	"github.com/thulasiram/oto/internal/investigator/models/openaicompat"
 	investigatorrepo "github.com/thulasiram/oto/internal/investigator/repository"
 	investigatorservice "github.com/thulasiram/oto/internal/investigator/service"
+	"github.com/thulasiram/oto/internal/investigator/toolservers/mcpclient"
 	notifapi "github.com/thulasiram/oto/internal/notification/api"
 	notifrepo "github.com/thulasiram/oto/internal/notification/repository"
 	notifservice "github.com/thulasiram/oto/internal/notification/service"
@@ -760,10 +761,11 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	// same switch an in-cluster Alertmanager does. The client timeout is a backstop
 	// only — the Investigation's wall-time budget is the real bound, through ctx —
 	// and retries re-send only a request that got no answer, so they never pay twice.
+	investigatorKeys := investigatorrepo.NewKeyStore(general, investigatorUnsealer(c.Keyring))
 	c.Investigator, err = investigatorservice.New(investigatorservice.Deps{
 		Providers:   investigatorrepo.NewProviderRepository(general),
 		Credentials: credentialRepo,
-		Keys:        investigatorrepo.NewKeyStore(general, investigatorUnsealer(c.Keyring)),
+		Keys:        investigatorKeys,
 		Dialer: openaicompat.Dialer{
 			HTTPClient: &http.Client{Transport: c.NetGuard.Transport(nil), Timeout: modelCallBackstop},
 			MaxRetries: modelCallRetries,
@@ -785,9 +787,28 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		Findings:       findingPublisher{repo: enrichmentRepo},
 		OrgSwitch:      investigationSwitch{identity: c.Identity},
 		Queue:          c.enqueuer,
-		// The per-call controls (ADR 0053 §6), stated where every other deployment
-		// number is chosen; per-Tool limits arrive with ToolServers.
+		// The built-in Tools' per-call controls (ADR 0053 §6), stated where every
+		// other deployment number is chosen. A ToolServer's Tools run under the
+		// limits its operator set on it (migration 00093).
 		Limits: investigatorservice.DefaultLimits(),
+
+		// ---- ToolServers (git-bug 2e9a086) ----------------------------------
+		//
+		// ⭐ THE ACCESS TOKEN IS SEALED LIKE A MODEL KEY, as a `tool_server_token`,
+		// and unsealed by the same KeyStore. ⭐ THE MCP ADAPTER DIALS THROUGH THE SSRF
+		// GUARD: a ToolServer on the cluster network needs `allow_private_targets`,
+		// the switch an in-cluster Alertmanager needs. No client timeout — each
+		// call's own timeout bounds it through ctx, and a session's SSE stream
+		// outlives any one call.
+		ToolServers: investigatorrepo.NewToolServerRepository(general),
+		Tokens:      investigatorKeys,
+		ToolDialer: mcpclient.Dialer{
+			HTTPClient:       &http.Client{Transport: c.NetGuard.Transport(nil)},
+			MaxResponseBytes: mcpclient.DefaultMaxResponseBytes,
+		},
+		// ⛔ Every Tool result is redacted with the org's ingest rules before a Step
+		// or the model sees it.
+		Redaction: toolResultRedaction{sources: c.Sources},
 	})
 	if err != nil {
 		return nil, err

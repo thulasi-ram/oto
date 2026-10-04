@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -260,4 +261,100 @@ func optTime(t time.Time) *time.Time {
 		return nil
 	}
 	return &t
+}
+
+// ---------------------------------------------------------------- ToolServers
+//
+// git-bug 2e9a086. ⛔ NO DTO HERE CARRIES A TOOLSERVER'S TOKEN ON THE WAY OUT.
+// `CreateToolServerRequest.token` is write-only; every response says only `has_token`.
+
+// ToolServerDTO renders `ToolServerDTO`: one ToolServer, without its token.
+type ToolServerDTO struct {
+	ID                 uuid.UUID  `json:"id"`
+	Name               string     `json:"name"`
+	URL                string     `json:"url"`
+	Transport          string     `json:"transport"`
+	Access             string     `json:"access"`
+	HasToken           bool       `json:"has_token"`
+	CallTimeoutSeconds int        `json:"call_timeout_seconds"`
+	MaxResultBytes     int        `json:"max_result_bytes"`
+	DiscoveredAt       *time.Time `json:"discovered_at"`
+	DiscoveryFailedAt  *time.Time `json:"discovery_failed_at"`
+	DiscoveryError     *string    `json:"discovery_error"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+}
+
+func toolServerDTO(c domain.ToolServerConfig) ToolServerDTO {
+	return ToolServerDTO{
+		ID: c.ID, Name: c.Name, URL: c.URL, Transport: string(c.Transport), Access: string(c.Access),
+		HasToken: c.HasToken(), CallTimeoutSeconds: c.Limits.TimeoutSeconds(), MaxResultBytes: c.Limits.MaxResultBytes,
+		DiscoveredAt: optTime(c.DiscoveredAt), DiscoveryFailedAt: optTime(c.DiscoveryFailedAt),
+		DiscoveryError: optString(c.DiscoveryError), CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt,
+	}
+}
+
+// CreateToolServerRequest is the body of `POST /api/v1/tool-servers`.
+//
+// ⛔ `token` IS WRITE-ONLY. It is sealed before the row is written and never read back.
+// ⭐ `access` HAS NO DEFAULT: whether a ToolServer only reads is the operator's
+// declaration to make, and the one an Investigator's allowlist is checked against.
+type CreateToolServerRequest struct {
+	Name               string  `json:"name"                           validate:"required,min=1,max=24"`
+	URL                string  `json:"url"                            validate:"required,min=1,max=2048"`
+	Transport          *string `json:"transport,omitempty"            validate:"omitempty,oneof=streamable_http sse"`
+	Access             string  `json:"access"                         validate:"required,oneof=read write"`
+	Token              *string `json:"token,omitempty"                validate:"omitempty,max=4096"`
+	CallTimeoutSeconds *int    `json:"call_timeout_seconds,omitempty" validate:"omitempty,min=1,max=120"`
+	MaxResultBytes     *int    `json:"max_result_bytes,omitempty"     validate:"omitempty,min=1024,max=61440"`
+}
+
+func (dto CreateToolServerRequest) toDomain() (domain.ToolServerDraft, error) {
+	timeout, maxResult := 0, 0
+	if dto.CallTimeoutSeconds != nil {
+		timeout = *dto.CallTimeoutSeconds
+	}
+	if dto.MaxResultBytes != nil {
+		maxResult = *dto.MaxResultBytes
+	}
+	limits, err := domain.NewCallLimits(timeout, maxResult)
+	if err != nil {
+		return domain.ToolServerDraft{}, err
+	}
+	transport, token := "", ""
+	if dto.Transport != nil {
+		transport = *dto.Transport
+	}
+	if dto.Token != nil {
+		token = *dto.Token
+	}
+	return domain.NewToolServerDraft(dto.Name, dto.URL, transport, dto.Access, token, limits)
+}
+
+// ToolServerToolDTO renders `ToolServerToolDTO`: one Tool a ToolServer listed, and the
+// name an allowlist holds it by — or why it cannot be held.
+type ToolServerToolDTO struct {
+	Name           string          `json:"name"`
+	QualifiedName  *string         `json:"qualified_name"`
+	Description    string          `json:"description"`
+	InputSchema    json.RawMessage `json:"input_schema"`
+	ReadOnlyHint   *bool           `json:"read_only_hint"`
+	Usable         bool            `json:"usable"`
+	UnusableReason *string         `json:"unusable_reason"`
+}
+
+func toolServerToolDTO(server domain.ToolServerConfig, t domain.DiscoveredTool) ToolServerToolDTO {
+	qualified, why := t.Usable(server.Name)
+	if why == "" && !server.Readable() {
+		// ⛔ Listed, named, and never held: a write ToolServer's Tools are not an
+		// Investigator's (ADR 0054 §5). The qualified name is still shown — it is how
+		// a Remedy will name the Tool it would use.
+		why = "it is on a write ToolServer; an Investigator holds only read Tools"
+	}
+	schema := t.InputSchema
+	if schema == nil {
+		schema = json.RawMessage("null")
+	}
+	return ToolServerToolDTO{Name: t.Name, QualifiedName: optString(qualified), Description: t.Description,
+		InputSchema: schema, ReadOnlyHint: t.ReadOnlyHint, Usable: why == "", UnusableReason: optString(why)}
 }
