@@ -134,6 +134,43 @@ rules like any other, with one difference in what you can expect from the histor
   but the link opens the metrics UI, which won't run LogsQL. To get working links, give vlogs
   groups their own vmalert with a link to the VictoriaLogs UI.
 
+## 6. Try it locally: `just vm`
+
+The compose file carries this whole shape as an optional profile, `vm`: a VictoriaMetrics
+single-node on `:8428` and a vmalert on `:8880` that evaluates
+[`deploy/vmalert/rules.yml`](../../deploy/vmalert/rules.yml) and notifies the **same**
+Alertmanager the compose Prometheus uses. Nothing starts it unless you ask:
+
+```bash
+just vm            # just infra, then VictoriaMetrics + vmalert
+```
+
+vmalert runs with `-external.url=http://localhost:8880` and the **default** alert link, so its
+alerts arrive with the expression-less `/vmalert/alert?group_id=…&alert_id=…` link of section 3,
+which oto follows back to this vmalert. Then:
+
+1. Create a source whose base URL is the Alertmanager and whose Prometheus URL is vmalert, and
+   keep its ingest token (it is shown once):
+
+   ```bash
+   curl -sS -X POST http://localhost:8080/api/v1/sources \
+     -H "authorization: Bearer $OTO_PAT" -H 'content-type: application/json' \
+     -d '{"cluster_id":"…","name":"dev-vmalert","kind":"alertmanager",
+          "base_url":"http://localhost:9093","prometheus_url":"http://localhost:8880"}'
+   ```
+
+2. Point the Alertmanager at it: set `OTO_AM_LOCAL_WEBHOOK` (the source's ingest URL) and
+   `OTO_AM_LOCAL_INGEST_TOKEN` in `.env`, then `just am-wire`. Alertmanager reads both files on
+   every send, so it needs no restart.
+3. **Test** the source: `prometheus_ok` is `true`, and source health shows the rule source up with
+   no version (section 2).
+4. Within a minute `VmStackSmokeTest` (`for: 15s`) is a Case in oto. `just vm-toggle 1` fires
+   `VmDevToggle` after its 30 s `for`; its rule snapshot records `for_seconds: 30` and
+   `keep_firing_for_seconds: 120`. `just vm-toggle 0` resolves it two minutes later, which is the
+   `keep_firing_for` at work.
+
+`just down` stops these containers with the rest; the profile only decides what `up` starts.
+
 ## Checklist
 
 - [ ] vmalert `-notifier.url` points at Alertmanager, not at oto.

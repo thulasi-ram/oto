@@ -111,6 +111,28 @@ infra: am-wire
     docker compose up -d --wait postgres alertmanager prometheus
     @echo "postgres :5432   alertmanager http://localhost:9093   prometheus http://localhost:9090"
 
+# Also start the optional VictoriaMetrics stack (compose profile `vm`):
+# VictoriaMetrics single-node on :8428 and vmalert on :8880, which evaluates
+# deploy/vmalert/rules.yml and notifies the same Alertmanager as Prometheus.
+#
+# Pair a source with it as docs/setup/victoriametrics.md says: base_url is the
+# Alertmanager (http://localhost:9093), prometheus_url is vmalert
+# (http://localhost:8880). `just down` stops these too; the profile only
+# decides what `up` starts.
+[group('run')]
+vm: infra
+    docker compose --profile vm up -d --wait victoriametrics vmalert
+    @echo "victoriametrics http://localhost:8428/vmui   vmalert http://localhost:8880"
+
+# Flip VmDevToggle in deploy/vmalert/rules.yml by writing one sample of
+# `oto_dev_toggle` into VictoriaMetrics. 1 fires it after its 30 s `for`;
+# 0 resolves it after its 2 m `keep_firing_for`.
+# Usage: just vm-toggle 1
+[group('poke')]
+vm-toggle value="1":
+    curl -fsS -X POST http://localhost:8428/api/v1/import/prometheus --data-binary 'oto_dev_toggle {{value}}'
+    @echo "→ oto_dev_toggle = {{value}}"
+
 # Render the dev Alertmanager receiver's URL and ingest token into
 # deploy/alertmanager/local/, which is gitignored and mounted at
 # /etc/alertmanager/local. Both are read by `url_file` / `credentials_file`.
