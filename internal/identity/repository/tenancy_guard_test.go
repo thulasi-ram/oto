@@ -109,6 +109,15 @@ var notARequestResolver = map[string]string{
 		"It is scanned only because it opens with the `WITH` that allocates the number in the same statement",
 	"sources/repository.resolveSourceOrgSQL": "job-payload scope for the source workers: the org comes from the source row",
 
+	"investigator/repository.investigationSelect": "a SELECT PREFIX, not a statement: it projects `n.org_id` " +
+		"so the row maps whole, and it never runs bare. Every caller appends `WHERE n.org_id = $1` with " +
+		"`s.OrgID()` from a TenantScope it already holds (Get, ListBySubject), so it CONSUMES a tenancy " +
+		"the same way selectOrgSQL does. The scan sees the constant before the suffix is concatenated",
+	"investigator/repository.investigatorSelect": "the same prefix shape as investigationSelect above, " +
+		"for an Investigator joined to its current version: every caller appends `WHERE i.org_id = $1` " +
+		"from a scope it already holds (Get and Lock via getOne, List), and the LATERAL it carries is itself bound to " +
+		"`v.org_id = i.org_id`. A consumer, never a resolver",
+
 	"app.selectLiveOrgIDBySlugSQL": "operator scope for `oto reset-password`, the same category as " +
 		"`ingestion/repository.locateBatchSQL` above: an operator running the CLI has a shell on the " +
 		"host and the database credentials — the same authority that could write the row by hand — " +
