@@ -319,8 +319,6 @@ type MessageRef struct {
 	ThreadID       string // Slack root ts
 	// ProviderKey is the provider's own composite handle — `channel:ts` for
 	// Slack, the delivery id for the generic webhook.
-	//
-	//oto:reachable-ok its only reader used to be Tester, which published it as ChannelTestDTO.permalink; the contract declares that member `format: uri` and this value never is one, so gate G2 rejected every successful channel test. The field stays because a provider must be able to round-trip its own key to amend a message, and ConversationID/MessageID are what oto stores.
 	ProviderKey string
 }
 
