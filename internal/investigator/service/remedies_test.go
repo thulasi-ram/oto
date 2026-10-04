@@ -39,6 +39,9 @@ type memRemedies struct {
 	mu    sync.Mutex
 	rows  map[uuid.UUID]domain.Remedy
 	order []uuid.UUID
+	// failMove, when set, fails the next transition into that state — a worker dying
+	// between the call and its record, for the at-most-once test.
+	failMove domain.RemedyState
 }
 
 func newMemRemedies() *memRemedies { return &memRemedies{rows: map[uuid.UUID]domain.Remedy{}} }
@@ -122,6 +125,10 @@ func (m *memRemedies) Transition(
 	if r.State.Terminal() {
 		return errs.New(errs.KindInternal, "remedies_frozen", "a Remedy that ended is never rewritten")
 	}
+	if m.failMove != "" && m.failMove == t.To {
+		m.failMove = ""
+		return errs.New(errs.KindInternal, "investigator_query_failed", "the worker died before it could record this")
+	}
 	if r.State != t.From {
 		return errs.Conflict("remedy_moved", "this Remedy moved meanwhile")
 	}
@@ -163,6 +170,19 @@ func (m *memRemedies) PastDeadline(_ context.Context, s db.TenantScope, now time
 		r := m.rows[id]
 		if r.OrgID == s.OrgID() && (r.State == domain.RemedyProposed || r.State == domain.RemedyApproved) &&
 			!now.Before(r.ExpiresAt) && len(out) < limit {
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}
+
+func (m *memRemedies) OutcomeOverdue(_ context.Context, s db.TenantScope, claimedBy time.Time, limit int) ([]uuid.UUID, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []uuid.UUID{}
+	for _, id := range m.order {
+		r := m.rows[id]
+		if r.OrgID == s.OrgID() && r.State == domain.RemedyExecuting && !r.ExecutingAt.After(claimedBy) && len(out) < limit {
 			out = append(out, id)
 		}
 	}
@@ -522,9 +542,12 @@ func TestTwoDifferentHoldersMustApproveAndTheSameOneCountsOnce(t *testing.T) {
 	third := r.grant(cfg.ID, "Barbara Liskov")
 	_, err = r.svc.ApproveRemedy(ctx, r.scope, rem.ID, third, rem.ArgumentsSHA256)
 	wantCode(t, err, "remedy_not_proposed")
-	// ⛔ Approving executes nothing: execution is a separate step.
+	// ⛔ Approving executes nothing: execution is a separate step, enqueued with the approval.
 	if len(sent) != 0 {
 		t.Fatalf("approving called the write Tool")
+	}
+	if n := executeJobs(r, rem.ID); n != 1 {
+		t.Fatalf("%d remedies.execute jobs enqueued for the approval, want 1", n)
 	}
 }
 

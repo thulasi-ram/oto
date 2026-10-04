@@ -74,6 +74,13 @@ const (
 	MaxRemedyResult = 16384
 )
 
+// RemedyOutcomeDeadline is how long after its claim an `executing` Remedy may go without a
+// recorded answer before the sweep records it `failed` with `outcome_unknown`: the longest
+// per-call timeout a ToolServer may set, and five minutes for the worker to record what came
+// back. A Remedy still `executing` past it belonged to a worker that died mid-call — the
+// change may or may not have been made — and ⛔ IT IS NEVER SENT AGAIN.
+const RemedyOutcomeDeadline = MaxCallTimeoutSeconds*time.Second + 5*time.Minute
+
 // DefaultRequiredApprovals is how many different grant holders must approve a Remedy until
 // operator-written risk rules exist (git-bug eb4f21b): two, for every Remedy.
 const DefaultRequiredApprovals = 2
@@ -399,6 +406,12 @@ func (r Remedy) StateAt(now time.Time) RemedyState {
 		return RemedyExpired
 	}
 	return r.State
+}
+
+// OutcomeOverdue reports whether an `executing` Remedy has gone past RemedyOutcomeDeadline
+// with no answer recorded.
+func (r Remedy) OutcomeOverdue(now time.Time) bool {
+	return r.State == RemedyExecuting && !now.Before(r.ExecutingAt.Add(RemedyOutcomeDeadline))
 }
 
 // Counted is how many DIFFERENT people have approved it. A user deleted since is not

@@ -152,6 +152,11 @@ func (c *Container) handlers() jobs.Handlers {
 		// ⭐ remedies.sweep (ADR 0054 §2, git-bug 4148256) — records every Remedy past its
 		// approval window as expired, by system, and declares it. It reaches no ToolServer.
 		RemediesSweep: c.sweepRemedies,
+
+		// ⭐ remedies.execute (ADR 0054 §5, git-bug 4148256) — one approved Remedy, claimed
+		// before its write Tool is called, so it is sent at most once. Enqueued by the
+		// approval that completed it.
+		RemediesExecute: c.executeRemedy,
 	}
 
 	// notification fills its own four fields (notify.evaluate, deliver.dispatch,

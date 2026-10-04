@@ -718,7 +718,8 @@ func (d remedyDeclarer) DeclareRemedy(ctx context.Context, _ db.TenantScope, inc
 }
 
 // sweepRemedies is `remedies.sweep` (ADR 0054 §2, git-bug 4148256): the per-tenant tick that
-// records every Remedy past its approval window as expired. ⛔ It reaches no ToolServer.
+// records every Remedy past its approval window as expired, and every one claimed for
+// execution with no answer past the deadline as failed. ⛔ It reaches no ToolServer.
 func (c *Container) sweepRemedies(ctx context.Context, job *jobs.Job[jobs.RemediesSweepArgs]) error {
 	if c.Investigator == nil {
 		return jobs.ErrNotImplemented(jobs.KindRemediesSweep)
@@ -726,7 +727,28 @@ func (c *Container) sweepRemedies(ctx context.Context, job *jobs.Job[jobs.Remedi
 	return c.perTenantSweep(ctx, jobs.KindRemediesSweep, job.Args.TenantFanOut,
 		func(f jobs.TenantFanOut) db.JobArgs { return jobs.RemediesSweepArgs{TenantFanOut: f} },
 		func(ctx context.Context, scope db.TenantScope) error {
-			_, err := c.Investigator.ExpireRemedies(ctx, scope)
+			if _, err := c.Investigator.ExpireRemedies(ctx, scope); err != nil {
+				return err
+			}
+			// A claim with no answer past the deadline: failed, outcome_unknown, never
+			// sent again.
+			_, err := c.Investigator.FailOverdueRemedies(ctx, scope)
+			return err
+		})
+}
+
+// executeRemedy is `remedies.execute` (ADR 0054 §5, git-bug 4148256): one approved Remedy,
+// claimed and then sent to its write Tool at most once. A Remedy whose org is gone is done.
+func (c *Container) executeRemedy(ctx context.Context, job *jobs.Job[jobs.RemediesExecuteArgs]) error {
+	if c.Investigator == nil {
+		return jobs.ErrNotImplemented(jobs.KindRemediesExecute)
+	}
+	return jobs.ForTenant(ctx, jobs.KindRemediesExecute, c.orgs, job.Args.OrgID,
+		func(ctx context.Context, scope db.TenantScope) error {
+			err := c.Investigator.ExecuteRemedy(ctx, scope, job.Args.RemedyID)
+			if errs.IsKind(err, errs.KindValidation) {
+				return jobs.Permanent(err)
+			}
 			return err
 		})
 }

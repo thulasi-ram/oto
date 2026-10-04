@@ -544,6 +544,11 @@ func (s *Service) ApproveRemedy(
 				now.Add(controls.RemedyWindow()), ""); err != nil {
 				return err
 			}
+			// ⭐ EXECUTION IS A SEPARATE STEP (ADR 0054 §5): its job is enqueued here, in
+			// the approval's transaction, and claims the Remedy before it calls anything.
+			if err := s.enqueueExecution(ctx, scope, r.ID); err != nil {
+				return err
+			}
 		}
 		out = r
 		return nil

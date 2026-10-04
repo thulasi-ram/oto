@@ -370,6 +370,9 @@ type RemedyStore interface {
 		expiresAt time.Time, result string) error
 	// PastDeadline lists the Remedies still proposed or approved whose window passed at `now`.
 	PastDeadline(ctx context.Context, s db.TenantScope, now time.Time, limit int) ([]uuid.UUID, error)
+	// OutcomeOverdue lists the Remedies `executing` since at or before `claimedBy` — claimed,
+	// and no answer recorded.
+	OutcomeOverdue(ctx context.Context, s db.TenantScope, claimedBy time.Time, limit int) ([]uuid.UUID, error)
 }
 
 // RemedyDeclarer declares one Remedy transition outbound as an Incident fact — `remedy_proposed`,

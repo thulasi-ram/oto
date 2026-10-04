@@ -157,6 +157,12 @@ const (
 	// is recorded `expired` by `system`, and declared. A per-tenant periodic; it never
 	// reaches a ToolServer.
 	KindRemediesSweep = "remedies.sweep"
+	// KindRemediesExecute executes one approved Remedy (ADR 0054 §5, git-bug 4148256):
+	// it claims it, calls the operator's write Tool with the approved arguments exactly,
+	// and records what came back. Enqueued by the approval that completed it, in that
+	// transaction. ⭐ AT MOST ONCE: the claim commits before the call, and a redelivery
+	// that finds the Remedy claimed does nothing.
+	KindRemediesExecute = "remedies.execute"
 )
 
 // Priority levels. River orders 1 (highest) before 4 (lowest) within a queue.
@@ -185,4 +191,9 @@ const (
 	// re-created by its schedule within a minute or two, so grinding through 13
 	// retries of a stale tick only delays the fresh one.
 	MaxAttemptsPeriodic = 3
+	// MaxAttemptsRemedyExecute is deliberately small, and it is not what makes a Remedy run
+	// at most once — the claim does (RemediesExecuteArgs). It bounds how long a database
+	// that cannot answer before the claim keeps an approved Remedy waiting; one that never
+	// runs expires on its window, on the record.
+	MaxAttemptsRemedyExecute = 3
 )

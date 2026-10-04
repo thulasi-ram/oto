@@ -924,8 +924,10 @@ func (InvestigationsDigestArgs) InsertOpts() river.InsertOpts {
 
 // RemediesSweepArgs records what the clock decided about Remedies (ADR 0054 §2, git-bug
 // 4148256): once a minute, per tenant, every Remedy still `proposed` or `approved` whose
-// approval window has passed is moved to `expired` by `system`, in its own transaction, and
-// the transition is declared outbound like any other. Periodic, 60 s, zero payload.
+// approval window has passed is moved to `expired` by `system`, and every one still
+// `executing` past `investigator/domain.RemedyOutcomeDeadline` — its worker died mid-call — is
+// moved to `failed` with `outcome_unknown`, each in its own transaction and declared outbound
+// like any other transition. ⛔ NOTHING IT TOUCHES IS SENT AGAIN. Periodic, 60 s, zero payload.
 //
 // Queue: lifecycle · Priority: BACKGROUND · Retry: periodic (3) · Payload v1
 //
@@ -947,4 +949,48 @@ func (RemediesSweepArgs) Kind() string { return KindRemediesSweep }
 // InsertOpts pins the queue, priority, retry ceiling and tick uniqueness.
 func (RemediesSweepArgs) InsertOpts() river.InsertOpts {
 	return periodicOpts(QueueLifecycle, PriorityBackground, time.Minute)
+}
+
+// RemedyExecuteJobTimeout bounds one `remedies.execute`: the longest per-call timeout a
+// ToolServer may set (`tool_servers_timeout_ck`, 120 s) and two minutes to claim before the
+// call and record after it. ⚠️ A copy of that bound — platform may not import the
+// investigator domain — and `investigator/service` asserts the two agree.
+const RemedyExecuteJobTimeout = 4 * time.Minute
+
+// RemediesExecuteArgs executes one approved Remedy (ADR 0054 §5, §6; git-bug 4148256): the
+// executor re-checks the Remedy against the configuration and the grants as they stand,
+// CLAIMS it (`approved → executing`, committed), calls the operator's write Tool through the
+// MCP client with the approved arguments exactly, and records what came back — `executed`,
+// or `failed` with the reason.
+//
+// Queue: investigate · Priority: normal · Retry: 3 · Payload v1
+//
+// ⭐⭐ AT MOST ONCE, BY STATE. The claim is an UPDATE from `approved` committed BEFORE the call.
+// A retry of a job that failed before the claim re-checks and may claim; a retry of one that
+// failed after it finds the Remedy `executing` (or ended) and does nothing — so a crash
+// mid-call leaves it `executing`, never `approved`, and `remedies.sweep` records it `failed`
+// with `outcome_unknown` once RemedyOutcomeDeadline passes. Nothing re-sends a Remedy, and a
+// failed one is never retried: a retry is a new Remedy and a new approval (§6).
+//
+// ⛔ `investigate`, NOT `notify`: a write Tool call can take its ToolServer's whole per-call
+// timeout, and the notification path never waits on it.
+type RemediesExecuteArgs struct {
+	Payload
+	// OrgID is the tenant; the Remedy is resolved inside it.
+	OrgID uuid.UUID `json:"org_id"`
+	// RemedyID is the Remedy.
+	RemedyID uuid.UUID `json:"remedy_id"`
+}
+
+// Kind implements db.JobArgs and river.JobArgs.
+func (RemediesExecuteArgs) Kind() string { return KindRemediesExecute }
+
+// InsertOpts pins the queue, priority and retry ceiling. Three attempts cover a database
+// blip before the claim; after the claim a retry is a no-op by state.
+func (RemediesExecuteArgs) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue:       QueueInvestigate,
+		Priority:    PriorityNormal,
+		MaxAttempts: MaxAttemptsRemedyExecute,
+	}
 }

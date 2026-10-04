@@ -157,3 +157,45 @@ VALUES ($1, $2, $3, 'case', $4, 'x', $5, 'k8s-write', 'rollout_restart', '{"a":1
 	require.NoError(t, err)
 	require.Equal(t, []uuid.UUID{r.ID}, ids, "the proposed one is past its deadline; the expired one is recorded")
 }
+
+// TestAClaimIsCommittedBeforeTheCallAndAnUnansweredOneIsListed — the executor's claim
+// (`approved → executing`) stamps `executing_at`; until its answer is recorded it is listed
+// as overdue once the caller's deadline passes; the answer is kept on the row; and a failed
+// Remedy is frozen — no move, and certainly not back to `approved`.
+func TestAClaimIsCommittedBeforeTheCallAndAnUnansweredOneIsListed(t *testing.T) {
+	t.Parallel()
+	w := newWorld(t)
+	repo := repository.NewRemedyRepository(w.h.Pool)
+	r := w.remedy(t, repo, true)
+	grace := w.user(t, "Grace Hopper")
+	at := w.h.Now().Add(time.Minute)
+	require.NoError(t, repo.Transition(w.h.Ctx, w.scope, r.ID, move(domain.RemedyProposed, domain.RemedyApproved,
+		domain.UserActor(grace), at), at.Add(time.Hour), ""))
+	claim := at.Add(time.Second)
+	require.NoError(t, repo.Transition(w.h.Ctx, w.scope, r.ID, move(domain.RemedyApproved, domain.RemedyExecuting,
+		domain.SystemActor(), claim), time.Time{}, ""))
+
+	ids, err := repo.OutcomeOverdue(w.h.Ctx, w.scope, claim.Add(-time.Second), 10)
+	require.NoError(t, err)
+	require.Empty(t, ids, "a claim inside its deadline is not overdue")
+	ids, err = repo.OutcomeOverdue(w.h.Ctx, w.scope, claim.Add(domain.RemedyOutcomeDeadline), 10)
+	require.NoError(t, err)
+	require.Equal(t, []uuid.UUID{r.ID}, ids)
+
+	failed := move(domain.RemedyExecuting, domain.RemedyFailed, domain.SystemActor(), claim.Add(time.Minute))
+	failed.Failure, failed.Detail = domain.FailToolError, "the write Tool answered that the call failed"
+	require.NoError(t, repo.Transition(w.h.Ctx, w.scope, r.ID, failed, time.Time{}, `deployments.apps "api" is forbidden`))
+	got, err := repo.GetRemedy(w.h.Ctx, w.scope, r.ID)
+	require.NoError(t, err)
+	require.Equal(t, domain.RemedyFailed, got.State)
+	require.Equal(t, domain.FailToolError, got.Failure)
+	require.Contains(t, got.Result, "forbidden")
+	require.False(t, got.ExecutingAt.IsZero())
+
+	// ⛔ A failed Remedy is never retried: nothing moves it, back to approved least of all.
+	_, err = w.h.Pool.Exec(w.h.Ctx, `UPDATE remedies SET state = 'approved', ended_at = NULL, failure_reason = NULL WHERE id = $1`, r.ID)
+	require.Error(t, err)
+	ids, err = repo.OutcomeOverdue(w.h.Ctx, w.scope, claim.Add(time.Hour), 10)
+	require.NoError(t, err)
+	require.Empty(t, ids)
+}

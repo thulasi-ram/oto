@@ -3,7 +3,8 @@
 A **Remedy** is a change to a cluster that an Investigator proposes with its Finding, and that oto
 executes through one of **your** write Tools only after two different people approve it
 ([ADR 0054](../adr/0054-a-remedy-earns-the-write-path.md)). It is the one place oto writes to a
-cluster, and this page is what you need to set one up and to know what each part does.
+cluster, and this page is what you need to set one up, to know what each part does, and to know
+where oto's control ends and your ToolServer's begins.
 
 ```
 proposed ──► approved ──► executed | failed
@@ -68,6 +69,58 @@ configure a Tool and ask for another Investigation.
 
 When the second approval lands the Remedy is `approved`, and its window starts again: it must be
 executed within `remedy_approval_window_s` of its approval.
+
+## Execution
+
+When the second approval lands, oto enqueues the Remedy's execution in the same transaction. The
+executor then:
+
+1. **Checks everything again, against now.** An approved Remedy past its window is recorded
+   `expired`. If the ToolServer was removed or re-declared `read`, or no longer lists the Tool, it
+   is `failed` with `tool_unavailable`. If its arguments no longer hash to what was approved,
+   `arguments_changed`. If fewer than two **different** approvers of these arguments still hold the
+   grant — one was revoked, or disabled — `approvals_withdrawn`. In every one of these **nothing is
+   sent**, and the Remedy says so.
+2. **Claims it.** The Remedy moves `approved → executing`, and that is committed **before** the
+   write Tool is called.
+3. **Calls your write Tool once**, through the MCP client, with the stored arguments — the exact
+   bytes the approvers approved by hash, never decoded and re-encoded — inside the ToolServer's own
+   per-call timeout.
+4. **Records what came back.** `executed` when the Tool did not report a failure; `failed` with
+   `tool_error` when it did. Either way the answer is kept with your redaction rules applied, the
+   ToolServer's token scrubbed, and capped at 16 KiB — on the Remedy, not on the Incident fact.
+
+**At most once.** Because the claim is committed before the call, a retried or duplicated job
+finds the Remedy `executing` (or ended) and sends nothing. A worker that dies mid-call leaves it
+`executing`; once seven minutes have passed with no answer, `remedies.sweep` records it `failed`
+with **`outcome_unknown`** — the change may or may not have been made, and the record says exactly
+that. A broken connection or a timeout during the call is `outcome_unknown` for the same reason.
+A ToolServer that could not be reached at all is `tool_unavailable`: no session, so no call.
+
+**A failed Remedy is never retried.** `failed` is final. If the change still matters, ask for
+another Investigation: a retry is a **new** Remedy and a **new** approval.
+
+## The trust boundary is your ToolServer
+
+oto holds no cluster credential. It holds your write ToolServer's access token, sealed, and it
+sends that ToolServer the approved arguments. **A ToolServer that accepts oto's credential will run
+whatever oto sends it** — oto ships no ToolServer and does not inspect yours — so **oto's approval
+(two different holders of the grant) and, once they exist, its risk rules are the only gate oto
+owns.** Everything past that is what you granted the ToolServer.
+
+So:
+
+- **Give a write ToolServer narrower RBAC than a read one.** Run it under its own
+  ServiceAccount, separate from your read ToolServer's, with exactly the verbs, resources and
+  namespaces the Remedies you want to allow need — `patch` on `deployments` in the namespaces you
+  name, say, not `*` on `*`. The read ToolServer may see more; the write one should be able to
+  change less.
+- **Expose only the Tools you mean.** Every Tool a `write` ToolServer lists is one a Remedy may
+  name. A Tool that runs an arbitrary command or shell is an arbitrary change, approved by two
+  people reading it.
+- **Keep its token for oto alone**, and rotate it like any credential that can change a cluster.
+- **Grant approval narrowly.** `oto grant remedy-approver` per ToolServer, to the people who
+  should be able to change what that ToolServer can change.
 
 ## Expiry
 

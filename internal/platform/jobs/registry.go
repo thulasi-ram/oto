@@ -151,7 +151,8 @@ type Handlers struct {
 	InvestigationsIncident Handler[InvestigationsIncidentArgs]
 	InvestigationsDigest   Handler[InvestigationsDigestArgs]
 
-	RemediesSweep Handler[RemediesSweepArgs]
+	RemediesSweep   Handler[RemediesSweepArgs]
+	RemediesExecute Handler[RemediesExecuteArgs]
 }
 
 // stub returns the not-implemented handler for a kind.
@@ -305,6 +306,13 @@ func RegisterAll(r *Registry, h Handlers) error {
 			// window, one short transaction each. It never reaches a ToolServer.
 			return Register(r, Spec{Queue: QueueLifecycle, PayloadVersion: 1, Timeout: 2 * time.Minute},
 				orStub(h.RemediesSweep, KindRemediesSweep))
+		},
+		func() error {
+			// The longest per-call timeout a ToolServer may set, plus room to claim before
+			// and to record after. The call's own timeout is what stops it; this frees the
+			// worker if that context did not, and the Remedy stays `executing` for the sweep.
+			return Register(r, Spec{Queue: QueueInvestigate, PayloadVersion: 1, Timeout: RemedyExecuteJobTimeout},
+				orStub(h.RemediesExecute, KindRemediesExecute))
 		},
 	}
 

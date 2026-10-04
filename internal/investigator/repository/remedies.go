@@ -331,6 +331,20 @@ func (r *RemedyRepository) PastDeadline(ctx context.Context, s db.TenantScope, n
 	return r.ids(ctx, s, pastDeadlineSQL, now, limit, "list the Remedies past their deadline")
 }
 
+// ⭐ A CLAIM WITH NO ANSWER: `executing` since at or before $2, which the caller computes as
+// now − RemedyOutcomeDeadline. Served by `remedies_open_idx`'s predicate and the org.
+const outcomeOverdueSQL = `
+SELECT r.id FROM remedies r
+ WHERE r.org_id = $1 AND r.state = 'executing' AND r.executing_at <= $2
+ ORDER BY r.executing_at, r.id
+ LIMIT $3`
+
+// OutcomeOverdue lists the Remedies claimed for execution at or before `claimedBy` that
+// still have no recorded answer — their worker died mid-call.
+func (r *RemedyRepository) OutcomeOverdue(ctx context.Context, s db.TenantScope, claimedBy time.Time, limit int) ([]uuid.UUID, error) {
+	return r.ids(ctx, s, outcomeOverdueSQL, claimedBy, limit, "list the Remedies claimed with no answer")
+}
+
 func (r *RemedyRepository) ids(ctx context.Context, s db.TenantScope, sql string, at time.Time, limit int, what string) ([]uuid.UUID, error) {
 	if err := db.RequireScope(s); err != nil {
 		return nil, err
