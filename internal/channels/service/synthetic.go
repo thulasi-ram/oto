@@ -201,12 +201,17 @@ func SyntheticFactView(inst domain.Instance, now time.Time, baseURL, fact string
 			member.RemovedAt, member.RemovedByLabel = now, "oto channel test"
 		}
 		incident := &domain.IncidentView{
-			ID:      "00000000-0000-7000-8000-000000000005",
-			Number:  1,
-			State:   state,
-			DrawnAt: drawn,
-			DrawnBy: domain.IncidentAuthorView{Label: "oto channel test"},
-			Members: []domain.IncidentMemberView{member},
+			ID:     "00000000-0000-7000-8000-000000000005",
+			Number: 1,
+			// ⚠️ EVERY TEST FACT IS SEQUENCE 1, whichever one the operator sends. A
+			// test is one fact about a story that has no other, and a receiver that
+			// drops a fact BELOW the highest it has seen must not start dropping the
+			// second test it is sent because the first was numbered higher.
+			Sequence: 1,
+			State:    state,
+			DrawnAt:  drawn,
+			DrawnBy:  domain.IncidentAuthorView{Label: "oto channel test"},
+			Members:  []domain.IncidentMemberView{member},
 		}
 		if base != "" {
 			incident.Link = base + "/incidents/1"

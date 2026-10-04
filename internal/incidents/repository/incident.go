@@ -421,6 +421,33 @@ func (r *IncidentRepository) Lock(ctx context.Context, s db.TenantScope, ids []u
 	return mapErr(rows.Err(), "lock incidents")
 }
 
+// ⭐ THE SEQUENCE IS THE INCIDENT ROW'S OWN COUNTER, BUMPED WHERE THE FACT IS RECORDED
+// (migration 00093). The UPDATE takes the row lock — already held by every caller that
+// locked before counting, and taken here by the draw, whose row this transaction just
+// inserted — and keeps it to COMMIT, so two transactions declaring facts about one
+// Incident are numbered in the order they commit. A database SEQUENCE could not say
+// that: nextval() is handed out when it is called, and the later call can commit first.
+const nextSequenceSQL = `
+UPDATE incidents SET fact_sequence = fact_sequence + 1
+ WHERE org_id = $1 AND id = $2
+RETURNING fact_sequence`
+
+// NextSequence allocates the next fact sequence of one Incident, inside the caller's
+// transaction: 1 for its first fact, `drawn`, and one more for each fact after.
+func (r *IncidentRepository) NextSequence(ctx context.Context, s db.TenantScope, incidentID uuid.UUID) (int64, error) {
+	if err := db.RequireScope(s); err != nil {
+		return 0, err
+	}
+	var seq int64
+	if err := r.db(ctx).QueryRow(ctx, nextSequenceSQL, s.OrgID(), incidentID).Scan(&seq); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, domain.NotFound()
+		}
+		return 0, mapErr(err, "number an incident fact")
+	}
+	return seq, nil
+}
+
 const openMembersSQL = `
 SELECT count(*)::int
   FROM incident_members m

@@ -199,6 +199,16 @@ type Digest struct {
 type Incident struct {
 	ID     string `json:"id"`
 	Number int64  `json:"number"`
+	// Sequence orders this Incident's facts: 1 for `drawn`, one more for each fact
+	// after, allocated in the transaction that recorded the fact (migration 00093)
+	// and the same on every retry of it. Facts are delivered independently and can
+	// arrive out of order — a `quiet` before the `case_removed` that caused it — so a
+	// receiver keeps the highest sequence it has seen per `id` and drops a fact
+	// below it. Increasing, NOT gapless: a fact routed elsewhere still took a number.
+	//
+	// ⛔ ADDITIVE, `omitempty`, for `incident`'s own reason above: v1 admits a new key.
+	// It is absent only on a fact declared before 00093, which nobody numbered.
+	Sequence int64 `json:"sequence,omitempty"`
 	// State is `active` while any current member Case is open and `quiet` otherwise.
 	// Derived by oto from its Cases and never set by anyone.
 	State   string         `json:"state"`

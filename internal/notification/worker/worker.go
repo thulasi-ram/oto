@@ -176,6 +176,7 @@ func (w *Workers) NotifyIncident(ctx context.Context, job *jobs.Job[jobs.NotifyI
 		IncidentID: args.IncidentID,
 		Reason:     reason,
 		OccasionID: args.OccasionID,
+		Sequence:   args.Sequence,
 	})
 	if err != nil {
 		if errs.IsKind(err, errs.KindValidation) {

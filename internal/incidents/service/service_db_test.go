@@ -81,6 +81,20 @@ func (r *recordedAnnouncer) Announce(_ context.Context, _ db.TenantScope, facts 
 	return nil
 }
 
+// sequences returns the sequence each fact about one Incident was declared with, in
+// the order they were declared.
+func (r *recordedAnnouncer) sequences(incidentID uuid.UUID) []int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []int64
+	for _, f := range r.facts {
+		if f.IncidentID == incidentID {
+			out = append(out, f.Sequence)
+		}
+	}
+	return out
+}
+
 // of returns the facts declared about one Incident, in order.
 func (r *recordedAnnouncer) of(incidentID uuid.UUID) []domain.Fact {
 	r.mu.Lock()
@@ -570,6 +584,15 @@ func TestEveryIncidentFactIsDeclaredAndTheStateEdgesFollowMembership(t *testing.
 		assert.NotContains(t, []string{"resolved", "closed", "mitigated"}, string(f.Fact))
 		assert.NotEqual(t, uuid.Nil, f.Occasion, "every fact names its occasion")
 	}
+
+	// ⭐ AND EVERY FACT IS NUMBERED IN THE ORDER IT HAPPENED (migration 00093): 1 for
+	// `drawn`, then one more each, so the `quiet` a removal produced is always after the
+	// `case_removed` that caused it, whatever order the deliveries arrive in.
+	assert.Equal(t, []int64{1, 2, 3, 4, 5, 6}, r.announce.sequences(id))
+	var stored int64
+	require.NoError(t, r.h.Pool.QueryRow(ctx,
+		`SELECT fact_sequence FROM incidents WHERE id = $1`, id).Scan(&stored))
+	assert.Equal(t, int64(6), stored, "the counter is the latest fact's number")
 }
 
 func TestAMoveDeclaresAFactOnEachIncident(t *testing.T) {
@@ -592,6 +615,9 @@ func TestAMoveDeclaresAFactOnEachIncident(t *testing.T) {
 		r.announce.of(from.ID), "the Incident left behind lost its only open Case")
 	assert.Equal(t, []domain.Fact{domain.FactDrawn, domain.FactCaseAdded, domain.FactActiveAgain},
 		r.announce.of(to.ID), "the quiet Incident joined gained an open Case")
+	// Each Incident numbers its OWN story: the move is facts 2 and 3 on both.
+	assert.Equal(t, []int64{1, 2, 3}, r.announce.sequences(from.ID))
+	assert.Equal(t, []int64{1, 2, 3}, r.announce.sequences(to.ID))
 }
 
 // TestACaseClosingQuietsItsIncidentOnce is the observer `alerts` calls inside the

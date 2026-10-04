@@ -330,16 +330,24 @@ func MappingFixtures() []Fixture {
 // one: a Reason, an IncidentView and a render time, and nothing else (ADR 0052 §5).
 func incidentFixtureView(reason string) *domain.NotificationView {
 	drawn := fixtureClock.Add(-20 * time.Minute)
+	// `drawn` is always an Incident's first fact; every other fixture is a few into the
+	// story, so a mapping that reads `incident.sequence` is checked against a number
+	// that is not the trivial 1.
+	sequence := int64(3)
+	if reason == "drawn" {
+		sequence = 1
+	}
 	return &domain.NotificationView{
 		Org:    domain.OrgRef{ID: "org", Slug: "acme", Name: "Acme"},
 		Reason: reason,
 		Incident: &domain.IncidentView{
-			ID:      "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
-			Number:  4,
-			State:   "active",
-			DrawnAt: drawn,
-			DrawnBy: domain.IncidentAuthorView{Label: "Priya R."},
-			Link:    "https://oto.example/incidents/4",
+			ID:       "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
+			Number:   4,
+			Sequence: sequence,
+			State:    "active",
+			DrawnAt:  drawn,
+			DrawnBy:  domain.IncidentAuthorView{Label: "Priya R."},
+			Link:     "https://oto.example/incidents/4",
 			Members: []domain.IncidentMemberView{
 				{
 					CaseID: "0199a1b2-0000-7000-8000-000000000412", CaseNumber: 412, CaseState: "open",

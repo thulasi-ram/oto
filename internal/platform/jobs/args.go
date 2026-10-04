@@ -223,6 +223,14 @@ type NotifyIncidentArgs struct {
 	// OccasionID is WHICH TIME this fact happened. Required for every Incident
 	// Reason (`notification/domain.Reason.NeedsOccasion`).
 	OccasionID uuid.UUID `json:"occasion_id"`
+	// Sequence is the fact's per-Incident order, allocated by the producer in the
+	// transaction that enqueues this job (migration 00093) and frozen onto the
+	// notification row, so every delivery attempt carries the same number.
+	//
+	// ⚠️ OPTIONAL ON THE WIRE, AND STILL PAYLOAD V1. A job enqueued by a pod from
+	// before 00093 has no `sequence`; it decodes as 0, the row stores NULL, and the
+	// envelope omits the field — the honest rendering of a fact nobody numbered.
+	Sequence int64 `json:"sequence,omitzero"`
 }
 
 // Kind implements db.JobArgs and river.JobArgs.
