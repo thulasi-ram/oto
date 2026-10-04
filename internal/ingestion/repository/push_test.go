@@ -1,6 +1,7 @@
 package repository_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -112,4 +113,36 @@ func TestRecordPushIsOrgScoped(t *testing.T) {
 
 	got, _ := lastPush(t, h, sourceID)
 	require.Nil(t, got, "another tenant's scope stamped this source's last_push_at")
+}
+
+// TestRecordPushInsideTheWindowWaitsOnNoLock is the half of the hot-row claim the
+// value check above cannot see: that a stamp inside domain.PushStampEvery does not
+// merely leave the column alone but takes no row lock and so WAITS on none. Another
+// transaction holds `source_health`'s row — the prober's SaveHealth, say, mid-write
+// — and the in-window stamp must still return at once. Were the statement an
+// upsert, or its WHERE evaluated after the lock, the accept transaction would queue
+// behind that holder and the deadline below would cancel it.
+func TestRecordPushInsideTheWindowWaitsOnNoLock(t *testing.T) {
+	t.Parallel()
+
+	h := harness.New(t)
+	repo := repository.NewPushRepository(h.Pool)
+	org, sourceID := seedPushedSource(t, h)
+	scope := harness.Scope(t, org.ID)
+
+	first := h.Now()
+	require.NoError(t, repo.RecordPush(h.Ctx, scope, sourceID, first))
+
+	holder, err := h.Pool.Begin(h.Ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = holder.Rollback(h.Ctx) })
+	_, err = holder.Exec(h.Ctx,
+		`UPDATE source_health SET status = 'healthy' WHERE source_id = $1`, sourceID)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(h.Ctx, 2*time.Second)
+	defer cancel()
+	require.NoError(t, repo.RecordPush(ctx, scope, sourceID, first.Add(domain.PushStampEvery-time.Second)),
+		"a stamp inside the throttle window waited on another transaction's row lock: every "+
+			"accept from this source would queue behind whoever holds source_health")
 }
