@@ -442,7 +442,7 @@ type UpdatePolicyRequest struct {
 	//
 	// ⚠️ THE TWO HALVES ARE SEPARATELY NULLABLE AND THAT IS NOT A LICENCE TO CLEAR
 	// ONE. `policies_count_pair_ck` is symmetric, unlike the digest's pair rule, so
-	// clearing exactly one half is refused — `validateMerged` catches it as a
+	// clearing exactly one half is refused — `PolicyPatch.ValidateAgainst` catches it as a
 	// field-level 422 before the UPDATE can turn it into a 23514. They are two
 	// nullable fields because the WIRE is two fields, not because half a condition is
 	// a state a policy may be in.

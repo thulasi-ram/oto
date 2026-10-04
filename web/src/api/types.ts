@@ -278,6 +278,12 @@ export type StepOutcome = NonNullable<InvestigationStep["outcome"]>;
  */
 export type InvestigationClassSet = S["InvestigationClassSetDTO"];
 export type InvestigationClass = S["InvestigationClassDTO"];
+/**
+ * A change a Finding proposes and only a human can apply (ADR 0053 §2): a policy's
+ * count condition, or one Case into one Incident. `open` or `applied`; one that lapsed
+ * unapplied is never listed. There is no other verb on it.
+ */
+export type Suggestion = S["SuggestionDTO"];
 
 /* ---- requests ----------------------------------------------------------- */
 
@@ -289,6 +295,7 @@ export type MoveIncidentCaseRequest = S["MoveIncidentCaseRequest"];
 export type CreateCorrelatorRequest = S["CreateCorrelatorRequest"];
 export type RequestInvestigationRequest = S["RequestInvestigationRequest"];
 export type ReplaceInvestigationClassesRequest = S["ReplaceInvestigationClassesRequest"];
+export type ApplySuggestionRequest = S["ApplySuggestionRequest"];
 export type UpdateCorrelatorRequest = S["UpdateCorrelatorRequest"];
 export type CommentRequest = S["CommentRequest"];
 /** Exactly one of `until` and `duration_seconds`. Both, or neither, is a 422. */

@@ -1216,7 +1216,10 @@ export interface paths {
          *     its Findings are published as the Enrichment `investigator.<name>`; it is never renamed. `tools`
          *     names Tools **exactly** — there are no wildcards — and a Tool the list omits is refused when
          *     called, and recorded. oto's own history is offered as three built-in Tools: `oto_prior_findings`,
-         *     `oto_case_timeline` and `oto_rule_at_fire`. A ToolServer's Tool is named `<toolserver>__<tool>`,
+         *     `oto_case_timeline` and `oto_rule_at_fire`. Two more built-in Tools let a Finding propose a change
+         *     a human then applies or lets lapse — `oto_suggest_count_condition` and `oto_suggest_membership`
+         *     (`GET /api/v1/investigations/{id}/suggestions`); an Investigator holds them only when `tools`
+         *     names them, and never applies one. A ToolServer's Tool is named `<toolserver>__<tool>`,
          *     and only one a `read` ToolServer has listed may be held — anything else is a `422`
          *     (`investigator_tools_invalid`). Omitted `budgets` are oto's defaults.
          *
@@ -1363,6 +1366,78 @@ export interface paths {
         get: operations["getInvestigation"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/investigations/{id}/suggestions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The changes an Investigation's Finding suggests
+         * @description The Suggestions this run's Finding made (ADR 0053 §2), in the order they were proposed: a change
+         *     to oto's **own** configuration that only a human can apply — a notification policy's count
+         *     condition (ADR 0044), or one Case into one Incident (ADR 0052 §4). An Investigator proposes them
+         *     through the built-in Tools `oto_suggest_count_condition` and `oto_suggest_membership`, held only
+         *     when its allowlist names them; **it never applies one**.
+         *
+         *     A Suggestion is `open` until a human applies it (`applied`, with who and when) or it **lapses**,
+         *     seven days after it was proposed (`lapses_at`). A lapsed Suggestion is **not listed**: it stops
+         *     showing. There is no other state and no other verb — nothing declines one, so it is never a queue.
+         *
+         *     An open membership Suggestion for a Case that is in **another** Incident names it in
+         *     `membership.moves_from_incident_number`: applying it moves the Case, because a Case belongs to at
+         *     most one Incident, and the screen says so before anyone applies it. An Investigation this org does
+         *     not have is a `404`.
+         */
+        get: operations["listInvestigationSuggestions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/suggestions/{id}/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Apply a Suggestion — the ordinary edit, with provenance
+         * @description A human applies one Suggestion, and oto makes **the ordinary edit** it proposes, in one
+         *     transaction with the record of who applied it:
+         *
+         *     - `policy_count_condition` sets the policy's `count_min` and `count_window_seconds` through the
+         *       same service method `PATCH /api/v1/notification-policies/{id}` uses — the merged policy is
+         *       validated exactly as a hand edit's is, and refused (`422`) where a hand edit would be.
+         *     - `incident_membership` adds the Case to the Incident through the Incident's own add — or, when
+         *       the Case is in another Incident, its **move** — with the applier as actor. The Case's timeline
+         *       fact (`incident.case_added` or `incident.case_moved`) also carries
+         *       `suggested_by_investigation_id`.
+         *
+         *     **A move is never a surprise.** When applying would move the Case, the body must name the
+         *     Incident it moves from in `moves_from_incident_number`; without it — or with another number,
+         *     because the Case moved since it was read — the answer is `409 suggestion_moves_case` with the
+         *     sentence to show, and nothing is written. Every other Suggestion takes an empty body.
+         *
+         *     Refusals, each typed: `404 suggestion_not_found`; `409 suggestion_already_applied`;
+         *     `409 suggestion_lapsed`; `409 suggestion_target_gone` when the policy, Incident or Case was
+         *     deleted since it was proposed. The edit's own refusals come back as the hand edit would answer
+         *     them. Needs a human: a system principal is a `403`.
+         */
+        post: operations["applySuggestion"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3203,8 +3278,10 @@ export interface components {
          *     alice". `incident.case_added` carries `{incident_id, incident_number, drawn}`, where `drawn` is
          *     true when the Case was one of those the Incident was drawn over; `incident.case_removed`
          *     carries `{incident_id, incident_number}`; `incident.case_moved` carries
-         *     `{from_incident_id, from_number, to_incident_id, to_number}`. None of them changes the Case: an
-         *     episode is open or closed exactly as it was.
+         *     `{from_incident_id, from_number, to_incident_id, to_number}`. When the human was applying an
+         *     Investigation's Suggestion, an add or a move also carries `suggested_by_investigation_id` — the
+         *     decision is still the human's, and the key says which Finding proposed it. None of them changes
+         *     the Case: an episode is open or closed exactly as it was.
          * @example case.opened
          * @enum {string}
          */
@@ -8283,6 +8360,92 @@ export interface components {
             data: components["schemas"]["InvestigationClassSetDTO"];
             meta: components["schemas"]["Meta"];
         };
+        /**
+         * @description A change a Finding proposes and only a human can apply (ADR 0053 §2). It is applied or it lapses;
+         *     there is no other verb.
+         */
+        SuggestionDTO: {
+            id: components["schemas"]["Uuid"];
+            /** @description The Investigation whose Finding proposed it — its provenance. */
+            investigation_id: components["schemas"]["Uuid"];
+            /**
+             * @description What it would change: one notification policy's count condition (ADR 0044), or one Case into one
+             *     Incident (ADR 0052 §4). Exactly the matching one of `count_condition` and `membership` is set.
+             * @enum {string}
+             */
+            kind: "policy_count_condition" | "incident_membership";
+            /**
+             * @description `open` until a human applies it, then `applied`. A Suggestion that lapsed unapplied is never
+             *     shown, so it never carries a third state here.
+             * @enum {string}
+             */
+            state: "open" | "applied";
+            /** @description The Investigator's reason, in a sentence or two — a model's judgement, read before applying. */
+            why: string;
+            /** Format: date-time */
+            proposed_at: string;
+            /**
+             * Format: date-time
+             * @description When an unapplied Suggestion lapses and stops showing — seven days after it was proposed.
+             */
+            lapses_at: string;
+            /** Format: date-time */
+            applied_at: string | null;
+            /** @description Who applied it, as their name stood then. */
+            applied_by_label: string | null;
+            count_condition: components["schemas"]["CountConditionSuggestionDTO"] | null;
+            membership: components["schemas"]["MembershipSuggestionDTO"] | null;
+        };
+        /** @description Set this policy's count condition — the one silence an operator may ask for by name (ADR 0044). */
+        CountConditionSuggestionDTO: {
+            policy_id: components["schemas"]["Uuid"];
+            /** @description The policy's name when it was proposed. */
+            policy_name: string;
+            /** Format: int32 */
+            count_min: number;
+            /** Format: int32 */
+            count_window_seconds: number;
+            /**
+             * Format: int32
+             * @description The count condition the policy carried when it was proposed; null for none.
+             */
+            was_count_min: number | null;
+            /** Format: int32 */
+            was_count_window_seconds: number | null;
+        };
+        /** @description Put this Case in this Incident. */
+        MembershipSuggestionDTO: {
+            incident_id: components["schemas"]["Uuid"];
+            /** Format: int64 */
+            incident_number: number;
+            case_id: components["schemas"]["Uuid"];
+            /** Format: int64 */
+            case_number: number;
+            /**
+             * Format: int64
+             * @description While it is open: the Incident the Case is in now, when that is not this one — applying it MOVES
+             *     the Case from there, because a Case belongs to at most one Incident. Null when applying it adds.
+             */
+            moves_from_incident_number: number | null;
+        };
+        /** @description Applying a Suggestion. Empty for every Suggestion but a membership one that moves its Case. */
+        ApplySuggestionRequest: {
+            /**
+             * Format: int64
+             * @description Required to apply a membership Suggestion that would move its Case: the Incident it moves from,
+             *     as the list said. Omitted otherwise.
+             */
+            moves_from_incident_number?: number;
+        };
+        SuggestionListResponse: {
+            data: components["schemas"]["SuggestionDTO"][];
+            page: components["schemas"]["PageInfo"];
+            meta: components["schemas"]["Meta"];
+        };
+        SuggestionResponse: {
+            data: components["schemas"]["SuggestionDTO"];
+            meta: components["schemas"]["Meta"];
+        };
         IncidentListResponse: {
             data: components["schemas"]["IncidentDTO"][];
             page: components["schemas"]["PageInfo"];
@@ -11827,6 +11990,74 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    listInvestigationSuggestions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The Investigation's Suggestions that are still shown — open or applied. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SuggestionListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    applySuggestion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApplySuggestionRequest"];
+            };
+        };
+        responses: {
+            /** @description The Suggestion, applied. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SuggestionResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
             429: components["responses"]["RateLimited"];
             500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];

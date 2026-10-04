@@ -133,6 +133,9 @@ type Attribution struct {
 	userID       uuid.UUID
 	label        string
 	correlatorID uuid.UUID
+	// suggestedBy is the Investigation whose Suggestion the human applied, or uuid.Nil
+	// (git-bug 8327c00). PROVENANCE, NOT AUTHORSHIP: the human is still who decided.
+	suggestedBy uuid.UUID
 }
 
 // Human builds the attribution of a person's decision. userID may be uuid.Nil
@@ -161,6 +164,27 @@ func Restore(userID uuid.UUID, label string, correlatorID uuid.UUID) (Attributio
 	}
 	return Attribution{userID: userID, label: label, correlatorID: correlatorID}, nil
 }
+
+// Suggested is a human's attribution carrying the Investigation whose Suggestion they
+// applied (ADR 0053 §2, ADR 0052 §2; git-bug 8327c00): "the Investigator only proposes
+// membership, as a Suggestion" — so the decision is still the human's, and this says which
+// Finding put it in front of them. It travels to the Case's timeline fact as
+// `suggested_by_investigation_id`, beside the human who applied it.
+//
+// ⛔ ONLY A HUMAN APPLIES A SUGGESTION. A Correlator's attribution cannot carry one, and
+// an Investigation is never an author: refused here as an oto bug.
+func (a Attribution) Suggested(investigationID uuid.UUID) (Attribution, error) {
+	if !a.IsHuman() || investigationID == uuid.Nil {
+		return Attribution{}, errs.New(errs.KindInternal, "incident_suggestion_not_human",
+			"a Suggestion is applied by a named human, on behalf of one Investigation")
+	}
+	a.suggestedBy = investigationID
+	return a, nil
+}
+
+// SuggestedBy is the Investigation whose Suggestion the human applied, or uuid.Nil for a
+// decision nobody suggested.
+func (a Attribution) SuggestedBy() uuid.UUID { return a.suggestedBy }
 
 // IsHuman reports whether a person decided. The other answer is a Correlator.
 func (a Attribution) IsHuman() bool { return a.correlatorID == uuid.Nil }

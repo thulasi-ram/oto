@@ -258,12 +258,12 @@ func (s *Service) Add(
 			Type:    kernel.EventIncidentCaseAdded,
 			CaseID:  c.ID,
 			AlertID: c.AlertID,
-			Summary: fmt.Sprintf("Added to Incident #%d by %s", in.Number, who(by)),
-			Payload: map[string]any{
+			Summary: fmt.Sprintf("Added to Incident #%d by %s", in.Number, who(by)) + suggestedNote(by),
+			Payload: withProvenance(by, map[string]any{
 				"incident_id":     in.ID.String(),
 				"incident_number": in.Number,
 				"drawn":           false,
-			},
+			}),
 			By: by,
 		})
 	})
@@ -378,13 +378,13 @@ func (s *Service) Move(
 			Type:    kernel.EventIncidentCaseMoved,
 			CaseID:  c.ID,
 			AlertID: c.AlertID,
-			Summary: fmt.Sprintf("Moved from Incident #%d to #%d by %s", src.Number, dst.Number, who(by)),
-			Payload: map[string]any{
+			Summary: fmt.Sprintf("Moved from Incident #%d to #%d by %s", src.Number, dst.Number, who(by)) + suggestedNote(by),
+			Payload: withProvenance(by, map[string]any{
 				"from_incident_id": src.ID.String(),
 				"from_number":      src.Number,
 				"to_incident_id":   dst.ID.String(),
 				"to_number":        dst.Number,
-			},
+			}),
 			By: by,
 		})
 	})
@@ -534,6 +534,27 @@ func distinctCases(ids []uuid.UUID) ([]uuid.UUID, error) {
 		return nil, domain.CaseNotFound()
 	}
 	return out, nil
+}
+
+// withProvenance adds `suggested_by_investigation_id` to a membership fact's payload when
+// the human applied an Investigation's Suggestion (git-bug 8327c00). It is the minimal home
+// for "suggested by Investigation X": the timeline fact already names the human as its
+// actor, and the payload is where a fact says what else is true of it. A decision nobody
+// suggested carries no key at all.
+func withProvenance(by domain.Attribution, payload map[string]any) map[string]any {
+	if id := by.SuggestedBy(); id != uuid.Nil {
+		payload["suggested_by_investigation_id"] = id.String()
+	}
+	return payload
+}
+
+// suggestedNote is the timeline sentence's tail for a suggested decision: whose call it
+// was stays the human's, and the sentence says where the idea came from.
+func suggestedNote(by domain.Attribution) string {
+	if by.SuggestedBy() == uuid.Nil {
+		return ""
+	}
+	return ", applying an Investigation's Suggestion"
 }
 
 // who renders the actor for a timeline sentence.

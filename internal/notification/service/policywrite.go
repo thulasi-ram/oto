@@ -23,10 +23,15 @@ import (
 // `Idempotency-Key` claim refuses to run outside one, and `createNotificationPolicy`
 // went handler → repository directly, so there was nowhere for one to be taken.
 //
-// ⛔ THERE IS NO UPDATE OR DELETE HERE. Neither declares the header and neither
-// duplicates anything on a retry — a PATCH is already idempotent by construction
-// and a soft delete converges. Adding them would be adding a write path for the
-// sake of symmetry.
+// ⭐ UPDATE IS HERE NOW, AND NOT FOR SYMMETRY (git-bug 8327c00). A PATCH declares no
+// `Idempotency-Key` and needs no claim, but it gained a SECOND caller: an
+// Investigation's count-condition Suggestion, applied by a human, must edit the policy
+// "exactly as a human edit would" — the same read of the row, the same refusal of a
+// deleted one, the same merged validation, the same write. Two callers of one rule is a
+// service method, so the PATCH handler and the Suggestion's apply both call
+// UpdatePolicy, and neither holds a copy of it.
+//
+// ⛔ THERE IS STILL NO DELETE HERE. A soft delete converges and has one caller.
 
 // opCreateNotificationPolicy is the contract operationId a key is claimed under,
 // spelled once so a claim and the contract cannot drift.
@@ -52,6 +57,7 @@ type IdempotencyClaims interface {
 type PolicyWriteStore interface {
 	CreatePolicy(ctx context.Context, s db.TenantScope, in domain.PolicyDraft) (domain.Policy, error)
 	GetPolicy(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Policy, error)
+	UpdatePolicy(ctx context.Context, s db.TenantScope, id uuid.UUID, p domain.PolicyPatch) (domain.Policy, error)
 }
 
 // Idempotency is the caller's `Idempotency-Key` intent for one settings write —
@@ -150,6 +156,46 @@ func (w *PolicyWriter) CreatePolicy(
 		// the FIRST attempt committed.
 		return w.store.GetPolicy(ctx, scope, replayOf)
 	}
+	if err != nil {
+		return domain.Policy{}, err
+	}
+	return out, nil
+}
+
+// UpdatePolicy is THE policy edit: a human's `PATCH /notification-policies/{id}`, and a
+// human applying an Investigation's count-condition Suggestion (git-bug 8327c00), are
+// this one method.
+//
+// The patch is validated against the MERGED policy rather than in isolation: clearing
+// `channel_ids` to an empty list is only invalid in the context of the row it lands on,
+// and a validator that could not see the row would have to defer that to the CHECK
+// constraint — a 500 where a 422 belongs. A deleted policy is a 404 `policy_deleted`.
+//
+// ⭐ ONE TRANSACTION, joined when the caller already holds one: the Suggestion's apply
+// records who applied it in the same unit of work, so the edit and its provenance commit
+// together or neither does.
+func (w *PolicyWriter) UpdatePolicy(
+	ctx context.Context, scope db.TenantScope, id uuid.UUID, patch domain.PolicyPatch,
+) (domain.Policy, error) {
+	if w.store == nil {
+		return domain.Policy{}, errs.Unavailable("policies_unavailable",
+			"the policy store is not configured in this deployment", 0)
+	}
+	var out domain.Policy
+	err := w.inTx(ctx, func(ctx context.Context) error {
+		existing, err := w.store.GetPolicy(ctx, scope, id)
+		if err != nil {
+			return err
+		}
+		if existing.DeletedAt != nil {
+			return errs.NotFound("policy_deleted", "this policy has been deleted")
+		}
+		if err := patch.ValidateAgainst(existing); err != nil {
+			return err
+		}
+		out, err = w.store.UpdatePolicy(ctx, scope, id, patch)
+		return err
+	})
 	if err != nil {
 		return domain.Policy{}, err
 	}

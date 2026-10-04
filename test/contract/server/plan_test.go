@@ -714,6 +714,24 @@ func plan() []probe {
 			method: http.MethodGet, tmpl: "/api/v1/investigations/{id}", url: "/api/v1/investigations/{{stranger}}",
 			want: http.StatusNotFound,
 		},
+		// ADR 0053 §2 (git-bug 8327c00): a Finding's Suggestions. The run above is
+		// recorded `queued` and never worked here, so it has no Finding and its list is
+		// EMPTY — still a 2xx validated against SuggestionListResponse. Applying needs a
+		// Suggestion, and only a run's Finding makes one, so apply is driven to its typed
+		// 404: driven, not credited.
+		{
+			method: http.MethodGet, tmpl: "/api/v1/investigations/{id}/suggestions",
+			url: "/api/v1/investigations/{{investigation}}/suggestions", want: http.StatusOK,
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/investigations/{id}/suggestions",
+			url: "/api/v1/investigations/{{stranger}}/suggestions", want: http.StatusNotFound,
+		},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/suggestions/{id}/apply", url: "/api/v1/suggestions/{{stranger}}/apply",
+			body: map[string]any{}, want: http.StatusNotFound,
+			why: "a Suggestion is made only by a run's Finding, and this world works no runs; suggestion_not_found",
+		},
 		// ADR 0053 §4 (git-bug 74ea849): an Incident investigated as a whole, asked
 		// about by the number the incident probes above captured. Nothing is dialled,
 		// for the Case request's reason: the run is recorded `queued` and its job is

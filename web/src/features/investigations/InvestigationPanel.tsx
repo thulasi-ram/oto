@@ -44,6 +44,15 @@
  * shown. The list below the Finding is the rest, latest first, and picking one
  * shows ITS Finding with ITS instant — never the latest one's.
  *
+ * ⭐ A FINDING'S SUGGESTIONS SIT UNDER IT, AND THE ONLY CONTROL IS APPLY (ADR 0053 §2,
+ * git-bug 8327c00). A Suggestion proposes a change to oto's own configuration — a
+ * policy's count condition, or a Case into an Incident — and a human applies it or it
+ * lapses. ⛔ There is no decline control and no count of open ones anywhere: a
+ * Suggestion that waited on somebody's answer would be a queue. A membership Suggestion
+ * that would MOVE its Case says so before the button is pressed, and the button says
+ * "Move"; the request names the Incident it moves from, so a Case that moved meanwhile
+ * is refused rather than moved from somewhere nobody was shown.
+ *
  * ⚠️ WHY IT POLLS. A run's progress announces itself with no stream frame, so
  * while any run on screen is `queued` or `running` both the list and the shown
  * run are re-read every `POLL_MS`, and the moment none is, polling stops — a
@@ -54,9 +63,11 @@ import { For, Match, Show, Switch, createSignal, type Component } from "solid-js
 import { useMutation, useQuery, useQueryClient } from "@tanstack/solid-query";
 
 import {
+  applySuggestion,
   getInvestigation,
   listCaseInvestigations,
   listIncidentInvestigations,
+  listInvestigationSuggestions,
   requestCaseInvestigation,
   requestIncidentInvestigation,
 } from "~/api/endpoints";
@@ -68,6 +79,7 @@ import type {
   InvestigationStep,
   Investigator,
   ListEnvelope,
+  Suggestion,
 } from "~/api/types";
 import { RelativeTime } from "~/components/Time";
 import { Button, Spinner } from "~/components/ui/Button";
@@ -466,6 +478,11 @@ const RunView: Component<{
         </Match>
       </Switch>
 
+      {/* What the Finding suggests: only a run that reached one made any. */}
+      <Show when={r().finding !== null && (r().status === "completed" || r().status === "exhausted")}>
+        <SuggestionsView investigationId={r().id} />
+      </Show>
+
       {/* What it cost and who asked — facts on the record, not a verdict. */}
       <div class="mt-sm flex flex-wrap items-center gap-2xs">
         <Chip
@@ -582,6 +599,148 @@ const FindingView: Component<{ readonly run: Investigation }> = (props) => {
     </figure>
   );
 };
+
+/* -------------------------------------------------------------------------- */
+/* Suggestions                                                                */
+/* -------------------------------------------------------------------------- */
+
+/** A window in seconds, as a human reads it: whole minutes or hours when it is one. */
+function span(seconds: number): string {
+  if (seconds % 3600 === 0) return `${seconds / 3600}h`;
+  if (seconds % 60 === 0) return `${seconds / 60}m`;
+  return `${seconds}s`;
+}
+
+/**
+ * The changes a Finding suggests, each with the one control there is: apply. An empty
+ * list renders nothing — a Finding that suggested nothing is the ordinary case, and a
+ * lapsed Suggestion is not listed at all.
+ */
+const SuggestionsView: Component<{ readonly investigationId: string }> = (props) => {
+  const client = useQueryClient();
+  const suggestions = useQuery(() => ({
+    queryKey: qk.cases.suggestions(props.investigationId),
+    queryFn: ({ signal }: { signal: AbortSignal }) =>
+      listInvestigationSuggestions(props.investigationId, { signal }),
+  }));
+  const [refusal, setRefusal] = createSignal<unknown>(null);
+
+  const apply = useMutation(() => ({
+    mutationFn: (s: Suggestion) => applySuggestion(s.id, s.membership?.moves_from_incident_number ?? null),
+    onMutate: () => setRefusal(null),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: qk.cases.suggestions(props.investigationId) });
+      // The edit was the ordinary one, so whatever reads what it changed re-reads.
+      void client.invalidateQueries({ queryKey: qk.incidents.all() });
+      void client.invalidateQueries({ queryKey: qk.settings.policies() });
+    },
+    onError: (err: unknown) => {
+      setRefusal(err);
+      void client.invalidateQueries({ queryKey: qk.cases.suggestions(props.investigationId) });
+    },
+  }));
+
+  const rows = (): readonly Suggestion[] => suggestions.data?.data ?? [];
+
+  return (
+    <Show when={rows().length > 0}>
+      <section class="mt-sm" data-suggestions aria-label="What the Finding suggests">
+        <h3 class={cn(SECTION_LABEL, "text-ink-muted")}>Suggested</h3>
+        <p class="mt-2xs text-meta text-ink-subtle">
+          Changes to this organisation's own configuration the model proposed. Nothing happens
+          unless someone applies one; an unapplied Suggestion lapses after seven days.
+        </p>
+        <Show when={refusal()}>{(err) => <ErrorBanner class="mt-2xs" error={err()} />}</Show>
+        <ul class="mt-2xs space-y-sm">
+          <For each={rows()}>
+            {(s) => (
+              <li
+                class="border-l-2 border-line pl-sm"
+                data-suggestion={s.kind}
+                data-state={s.state}
+              >
+                <SuggestionChange suggestion={s} />
+                <p class="mt-2xs whitespace-pre-wrap break-words text-meta text-ink-muted">
+                  Why, in the model's words: {s.why}
+                </p>
+                <Show
+                  when={s.state === "open"}
+                  fallback={
+                    <p class="mt-2xs text-meta text-ink-subtle" data-applied>
+                      Applied by {s.applied_by_label ?? "someone"}{" "}
+                      <time datetime={s.applied_at ?? undefined}>{absoluteTime(s.applied_at)}</time>.
+                    </p>
+                  }
+                >
+                  <Show when={s.membership?.moves_from_incident_number}>
+                    {(from) => (
+                      <p class="mt-2xs text-meta font-medium text-ink" role="note" data-moves-from>
+                        This will move Case #{s.membership!.case_number} from Incident #{from()} to
+                        Incident #{s.membership!.incident_number}: a Case belongs to at most one
+                        Incident.
+                      </p>
+                    )}
+                  </Show>
+                  <div class="mt-2xs flex flex-wrap items-center gap-sm">
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      busy={apply.isPending && apply.variables?.id === s.id}
+                      disabled={apply.isPending}
+                      onClick={() => apply.mutate(s)}
+                      title="Make this change now, as if you had made it by hand. You are recorded as the one who applied it."
+                    >
+                      {s.membership?.moves_from_incident_number != null
+                        ? `Move to Incident #${s.membership.incident_number}`
+                        : "Apply"}
+                    </Button>
+                    <span class="text-meta text-ink-subtle">
+                      Lapses{" "}
+                      <time datetime={s.lapses_at} class="tabular-nums">
+                        {absoluteTime(s.lapses_at)}
+                      </time>{" "}
+                      if nobody applies it.
+                    </span>
+                  </div>
+                </Show>
+              </li>
+            )}
+          </For>
+        </ul>
+      </section>
+    </Show>
+  );
+};
+
+/** What one Suggestion would change, in one sentence. */
+const SuggestionChange: Component<{ readonly suggestion: Suggestion }> = (props) => (
+  <Switch>
+    <Match when={props.suggestion.count_condition}>
+      {(c) => (
+        <p class="text-body leading-snug text-ink">
+          Give the policy <span class="font-medium">{c().policy_name}</span> a count condition:
+          stay silent until {c().count_min} Cases have happened within{" "}
+          {span(c().count_window_seconds)}{" "}
+          <span class="text-ink-muted">
+            (it has{" "}
+            {c().was_count_min !== null && c().was_count_window_seconds !== null
+              ? `${c().was_count_min} within ${span(c().was_count_window_seconds!)}`
+              : "none"}{" "}
+            now)
+          </span>
+          .
+        </p>
+      )}
+    </Match>
+    <Match when={props.suggestion.membership}>
+      {(m) => (
+        <p class="text-body leading-snug text-ink">
+          Put Case #{m().case_number} in Incident #{m().incident_number}.
+        </p>
+      )}
+    </Match>
+  </Switch>
+);
 
 /* -------------------------------------------------------------------------- */
 /* One Step                                                                   */

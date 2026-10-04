@@ -165,6 +165,11 @@ var bindings = []binding{
 	{"investigator", "InvestigationClassSetDTO", investigatorapi.InvestigationClassSetDTO{}},
 	{"investigator", "InvestigationClassRequest", investigatorapi.InvestigationClassRequest{}},
 	{"investigator", "ReplaceInvestigationClassesRequest", investigatorapi.ReplaceInvestigationClassesRequest{}},
+	// Suggestions (git-bug 8327c00): applied or lapsed, and apply is the one request.
+	{"investigator", "SuggestionDTO", investigatorapi.SuggestionDTO{}},
+	{"investigator", "CountConditionSuggestionDTO", investigatorapi.CountConditionSuggestionDTO{}},
+	{"investigator", "MembershipSuggestionDTO", investigatorapi.MembershipSuggestionDTO{}},
+	{"investigator", "ApplySuggestionRequest", investigatorapi.ApplySuggestionRequest{}},
 	// ToolServers (git-bug 2e9a086). `CreateToolServerRequest.token` is write-only.
 	{"investigator", "ToolServerDTO", investigatorapi.ToolServerDTO{}},
 	{"investigator", "CreateToolServerRequest", investigatorapi.CreateToolServerRequest{}},

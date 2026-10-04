@@ -33,6 +33,7 @@ import (
 	"github.com/thulasiram/oto/internal/ingestion/decode"
 	investigatordomain "github.com/thulasiram/oto/internal/investigator/domain"
 	notifdomain "github.com/thulasiram/oto/internal/notification/domain"
+	notifservice "github.com/thulasiram/oto/internal/notification/service"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/jobs"
@@ -385,3 +386,113 @@ func (c *Container) triggerIncidentInvestigations(ctx context.Context, job *jobs
 			return err
 		})
 }
+
+// ---------------------------------------------------------------- Suggestions
+//
+// git-bug 8327c00: a Finding's Suggestions are applied by a human through the ORDINARY
+// edit. These two adapters are where "ordinary" is made literal — each calls the very
+// service method a human's own request calls, and nothing else.
+
+// policyReads is the half of the notification settings store a Suggestion reads policies
+// through, satisfied by `*notification/repository.ConfigRepository`.
+type policyReads interface {
+	ListPolicies(ctx context.Context, s db.TenantScope, p db.Keyset) ([]notifdomain.Policy, db.Cursor, error)
+	GetPolicy(ctx context.Context, s db.TenantScope, id uuid.UUID) (notifdomain.Policy, error)
+}
+
+// policyEdits is the policy edit a human's `PATCH /notification-policies/{id}` goes
+// through, satisfied by `*notification/service.PolicyWriter`.
+type policyEdits interface {
+	UpdatePolicy(ctx context.Context, s db.TenantScope, id uuid.UUID, p notifdomain.PolicyPatch) (notifdomain.Policy, error)
+}
+
+// suggestionPolicies is `investigator/service.PolicyEditor`: notification policies as a
+// Suggestion names them, and the count-condition edit.
+//
+// ⭐⭐ THE EDIT IS `PolicyWriter.UpdatePolicy`, THE PATCH'S OWN. The patch it builds is the
+// one `{"count_min": n, "count_window_seconds": w}` binds to, so the merged validation, the
+// refusal of a deleted policy and the write are the hand edit's, byte for byte. It decides
+// nothing about any notification: a count condition is a column an operator can read back
+// and clear with one PATCH (ADR 0044 §3), and a human pressed apply.
+type suggestionPolicies struct {
+	reads  policyReads
+	writes policyEdits
+}
+
+func (a suggestionPolicies) SuggestionPolicy(ctx context.Context, s db.TenantScope, policyID uuid.UUID) (investigatordomain.PolicyTarget, error) {
+	p, err := a.reads.GetPolicy(ctx, s, policyID)
+	if err != nil {
+		return investigatordomain.PolicyTarget{}, err
+	}
+	if p.DeletedAt != nil {
+		return investigatordomain.PolicyTarget{}, errs.NotFound("policy_deleted", "this policy has been deleted")
+	}
+	return policyTarget(p), nil
+}
+
+func (a suggestionPolicies) SuggestionPolicies(ctx context.Context, s db.TenantScope) ([]investigatordomain.PolicyTarget, error) {
+	var out []investigatordomain.PolicyTarget
+	page := db.Keyset{Limit: db.MaxPageLimit}
+	for {
+		ps, next, err := a.reads.ListPolicies(ctx, s, page)
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range ps {
+			out = append(out, policyTarget(p))
+		}
+		if !next.HasMore {
+			return out, nil
+		}
+		page.Cursor = next
+	}
+}
+
+func (a suggestionPolicies) ApplyCountCondition(
+	ctx context.Context, s db.TenantScope, policyID uuid.UUID, countMin int, window time.Duration,
+) error {
+	n, w := &countMin, &window
+	_, err := a.writes.UpdatePolicy(ctx, s, policyID, notifdomain.PolicyPatch{CountMin: &n, CountWindow: &w})
+	return err
+}
+
+// policyTarget is the struct copy the boundary costs.
+func policyTarget(p notifdomain.Policy) investigatordomain.PolicyTarget {
+	kinds := make([]string, 0, len(p.Subjects))
+	for _, k := range p.Subjects {
+		kinds = append(kinds, string(k))
+	}
+	return investigatordomain.PolicyTarget{ID: p.ID, Name: p.Name, SubjectKinds: kinds,
+		CountMin: p.Count.Min, CountWindow: p.Count.Window}
+}
+
+// suggestedMemberships is `investigator/service.MembershipEditor` over `incidents/service`:
+// a membership Suggestion applied is the Incident service's own Add — or its Move, when the
+// Case is in another Incident — attributed to the human who applied it, with the
+// Investigation as provenance on the Case's timeline fact (`suggested_by_investigation_id`).
+// The verbs, the locks, the outbound facts and the at-most-one rule are the hand edit's.
+type suggestedMemberships struct {
+	incidents *incidentsservice.Service
+}
+
+func (a suggestedMemberships) ApplySuggestedMembership(
+	ctx context.Context, s db.TenantScope, m investigatordomain.AppliedMembership,
+) error {
+	human, err := incidentsdomain.Human(m.By.UserID, m.By.Label)
+	if err != nil {
+		return err
+	}
+	by, err := human.Suggested(m.SuggestedBy)
+	if err != nil {
+		return err
+	}
+	if m.FromNumber != 0 {
+		_, err = a.incidents.Move(ctx, s, m.FromNumber, m.IncidentNumber, m.CaseID, by)
+		return err
+	}
+	_, err = a.incidents.Add(ctx, s, m.IncidentNumber, m.CaseID, by)
+	return err
+}
+
+// Compile-time proof that the PATCH's service satisfies the edit port the adapter holds.
+var _ policyEdits = (*notifservice.PolicyWriter)(nil)

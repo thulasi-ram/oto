@@ -428,3 +428,88 @@ func (dto ReplaceInvestigationClassesRequest) toDomain() (domain.ClassSet, error
 	}
 	return domain.NewClassSet(classes)
 }
+
+// ---------------------------------------------------------------- Suggestions
+//
+// git-bug 8327c00. ⛔ THERE IS NO REQUEST BODY HERE BUT APPLY'S: a Suggestion is applied or
+// it lapses, and no DTO carries a verb that declines one.
+
+// SuggestionDTO renders `SuggestionDTO`: one change a Finding proposed, `open` or `applied`.
+// A lapsed one is never rendered — it stops being shown.
+type SuggestionDTO struct {
+	ID              uuid.UUID                    `json:"id"`
+	InvestigationID uuid.UUID                    `json:"investigation_id"`
+	Kind            string                       `json:"kind"`
+	State           string                       `json:"state"`
+	Why             string                       `json:"why"`
+	ProposedAt      time.Time                    `json:"proposed_at"`
+	LapsesAt        time.Time                    `json:"lapses_at"`
+	AppliedAt       *time.Time                   `json:"applied_at"`
+	AppliedByLabel  *string                      `json:"applied_by_label"`
+	CountCondition  *CountConditionSuggestionDTO `json:"count_condition"`
+	Membership      *MembershipSuggestionDTO     `json:"membership"`
+}
+
+// CountConditionSuggestionDTO renders `CountConditionSuggestionDTO`: the policy, the count
+// condition proposed, and the one it carried when proposed (null for none).
+type CountConditionSuggestionDTO struct {
+	PolicyID              uuid.UUID `json:"policy_id"`
+	PolicyName            string    `json:"policy_name"`
+	CountMin              int       `json:"count_min"`
+	CountWindowSeconds    int       `json:"count_window_seconds"`
+	WasCountMin           *int      `json:"was_count_min"`
+	WasCountWindowSeconds *int      `json:"was_count_window_seconds"`
+}
+
+// MembershipSuggestionDTO renders `MembershipSuggestionDTO`: this Case, into this Incident —
+// and, while it is open, the Incident applying it would move the Case from.
+type MembershipSuggestionDTO struct {
+	IncidentID              uuid.UUID `json:"incident_id"`
+	IncidentNumber          int64     `json:"incident_number"`
+	CaseID                  uuid.UUID `json:"case_id"`
+	CaseNumber              int64     `json:"case_number"`
+	MovesFromIncidentNumber *int64    `json:"moves_from_incident_number"`
+}
+
+// ApplySuggestionRequest is the body of `POST /api/v1/suggestions/{id}/apply`. It is empty
+// for every Suggestion but a membership one that would MOVE its Case, which must name the
+// Incident it moves from — the move is said before it is applied.
+type ApplySuggestionRequest struct {
+	MovesFromIncidentNumber *int64 `json:"moves_from_incident_number,omitempty" validate:"omitempty,min=1"`
+}
+
+// suggestionDTO renders one Suggestion the service SHOWED — applied, or open when it was
+// read — so its state is read off `applied_at` alone: a lapsed one never reaches here.
+func suggestionDTO(s domain.Suggestion) SuggestionDTO {
+	state := domain.SuggestionOpen
+	if !s.AppliedAt.IsZero() {
+		state = domain.SuggestionApplied
+	}
+	out := SuggestionDTO{ID: s.ID, InvestigationID: s.InvestigationID, Kind: string(s.Kind),
+		State: string(state), Why: s.Why, ProposedAt: s.ProposedAt, LapsesAt: s.LapsesAt,
+		AppliedAt: optTime(s.AppliedAt)}
+	if !s.AppliedAt.IsZero() {
+		out.AppliedByLabel = &s.AppliedBy.Label
+	}
+	switch s.Kind {
+	case domain.SuggestCountCondition:
+		c := s.Count
+		cc := &CountConditionSuggestionDTO{PolicyID: c.PolicyID, PolicyName: c.PolicyName,
+			CountMin: c.CountMin, CountWindowSeconds: int(c.CountWindow / time.Second)}
+		if c.WasMin > 0 {
+			was, wasWin := c.WasMin, int(c.WasWindow/time.Second)
+			cc.WasCountMin, cc.WasCountWindowSeconds = &was, &wasWin
+		}
+		out.CountCondition = cc
+	case domain.SuggestMembership:
+		m := s.Membership
+		ms := &MembershipSuggestionDTO{IncidentID: m.IncidentID, IncidentNumber: m.IncidentNumber,
+			CaseID: m.CaseID, CaseNumber: m.CaseNumber}
+		if !s.MovesFrom.IsZero() {
+			n := s.MovesFrom.Number
+			ms.MovesFromIncidentNumber = &n
+		}
+		out.Membership = ms
+	}
+	return out
+}

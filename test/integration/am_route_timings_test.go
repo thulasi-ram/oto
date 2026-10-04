@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 96 {
-		t.Fatalf("latest migration is %d, want 96 — this test pins the number so that a "+
+	if latest != 97 {
+		t.Fatalf("latest migration is %d, want 97 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1632,6 +1632,57 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// accepts a kind the release below it cannot interpret. No column reading can
 	// see that, and it is the half most likely to be forgotten because nothing
 	// references it.
+	// ⭐ 00097 LETS A FINDING SUGGEST, AND A HUMAN APPLY IT OR IT LAPSES (ADR 0053 §2,
+	// git-bug 8327c00): one table with its nine named CHECKs, its run index, a comment on
+	// `lapses_at`, and the trigger that applies a Suggestion once and never rewrites a
+	// proposal. The shape CHECK is read for its BODY, for 00075's reason: it is what keeps
+	// a row from saying half of two changes. The trigger and its function are counted on
+	// both sides — a Down that dropped the table and forgot the function leaves a
+	// function the release below never had.
+	suggestionFn := func() int {
+		t.Helper()
+		var n int
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT count(*) FROM pg_proc WHERE proname = 'investigation_suggestions_refuse_rewrite'`).Scan(&n); err != nil {
+			t.Fatalf("introspect investigation_suggestions_refuse_rewrite: %v", err)
+		}
+		return n
+	}
+	if n := countTables("investigation_suggestions"); n != 1 {
+		t.Fatalf("investigation_suggestions exists %d time(s) at migration 97", n)
+	}
+	if n := countConstraints("investigation_suggestions_kind_ck", "investigation_suggestions_shape_ck",
+		"investigation_suggestions_count_ck", "investigation_suggestions_was_ck", "investigation_suggestions_name_ck",
+		"investigation_suggestions_number_ck", "investigation_suggestions_why_ck", "investigation_suggestions_lapse_ck",
+		"investigation_suggestions_applied_ck", "investigation_suggestions_label_ck"); n != 10 {
+		t.Fatalf("%d of 00097's ten CHECKs exist at migration 97, want 10", n)
+	}
+	if def := constraintDef("investigation_suggestions_shape_ck", "investigation_suggestions"); !strings.Contains(def, "'incident_membership'") ||
+		!strings.Contains(def, "'policy_count_condition'") {
+		t.Fatalf("investigation_suggestions_shape_ck does not tie each kind to its own columns: %s", def)
+	}
+	if n := countIndexes("investigation_suggestions_run_idx"); n != 1 {
+		t.Fatalf("investigation_suggestions_run_idx is absent at migration 97 (found %d)", n)
+	}
+	if c := columnComment("investigation_suggestions", "lapses_at"); !strings.Contains(c, "never written") {
+		t.Fatalf("investigation_suggestions.lapses_at's comment does not say lapsing is read: %s", c)
+	}
+	if n := suggestionFn(); n != 1 {
+		t.Fatalf("investigation_suggestions_refuse_rewrite exists %d time(s) at migration 97", n)
+	}
+
+	down(97)
+
+	if n := countTables("investigation_suggestions"); n != 0 {
+		t.Fatalf("investigation_suggestions survived 00097's Down")
+	}
+	if n := countIndexes("investigation_suggestions_run_idx"); n != 0 {
+		t.Fatalf("investigation_suggestions_run_idx survived 00097's Down (found %d)", n)
+	}
+	if n := suggestionFn(); n != 0 {
+		t.Fatalf("investigation_suggestions_refuse_rewrite survived 00097's Down")
+	}
+
 	// ⭐ 00096 CLASSIFIES A FINDING ONLY IN THE OPERATOR'S WORDS (ADR 0053 §5, git-bug
 	// 4298aa0): one table with its three named CHECKs and its position index, and one
 	// column on `investigations` with its CHECK. The name CHECK is read for its BODY, for

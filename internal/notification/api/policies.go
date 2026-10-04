@@ -135,7 +135,7 @@ func (rt *Router) updateNotificationPolicy(w http.ResponseWriter, r *http.Reques
 		httpx.WriteProblem(w, r, err)
 		return
 	}
-	if err := requireDependency(rt.policies != nil, "policies_unavailable",
+	if err := requireDependency(rt.policyWrites != nil, "policies_unavailable",
 		"the policy store is not configured in this deployment"); err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
@@ -159,25 +159,11 @@ func (rt *Router) updateNotificationPolicy(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// The patch is validated against the MERGED policy rather than in isolation:
-	// clearing `channel_ids` to an empty list is only invalid in the context of
-	// the row it lands on, and a validator that could not see the row would have
-	// to defer that to the CHECK constraint — a 500 where a 422 belongs.
-	existing, err := rt.policies.GetPolicy(r.Context(), scope, id)
-	if err != nil {
-		httpx.WriteProblem(w, r, err)
-		return
-	}
-	if existing.DeletedAt != nil {
-		httpx.WriteProblem(w, r, errs.NotFound("policy_deleted", "this policy has been deleted"))
-		return
-	}
-	if err := validateMerged(existing, patch); err != nil {
-		httpx.WriteProblem(w, r, err)
-		return
-	}
-
-	pol, err := rt.policies.UpdatePolicy(r.Context(), scope, id, patch)
+	// ⭐ THE EDIT IS THE SERVICE'S, NOT THIS HANDLER'S (git-bug 8327c00). The read of
+	// the row, the refusal of a deleted one and the MERGED validation live in
+	// `PolicyWriter.UpdatePolicy`, because an applied Investigation Suggestion edits a
+	// policy too and must do it exactly as this request does.
+	pol, err := rt.policyWrites.UpdatePolicy(r.Context(), scope, id, patch)
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return

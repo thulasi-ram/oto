@@ -17,7 +17,7 @@ import { describe, expect, it } from "vitest";
 
 import { InvestigationPanel } from "./InvestigationPanel";
 import { REASON_SENTENCE, OUTCOME } from "./copy";
-import type { Investigation, InvestigationDetail, Investigator } from "~/api/types";
+import type { Investigation, InvestigationDetail, Investigator, Suggestion } from "~/api/types";
 import { investigation, investigationDetail, investigator, step } from "~/test/fixtures";
 import {
   expectNoUndefined,
@@ -38,6 +38,8 @@ interface World {
   readonly runs?: readonly Investigation[];
   readonly details?: readonly InvestigationDetail[];
   readonly investigators?: readonly Investigator[];
+  /** Each run's Suggestions, by run id; none when absent. */
+  readonly suggestions?: Readonly<Record<string, readonly Suggestion[]>>;
 }
 
 /** Mount the panel over a Case whose runs and Investigators are `world`. */
@@ -48,6 +50,11 @@ function mount(world: World = {}): FetchStub {
     "GET /api/v1/investigators": () => ({ json: list(world.investigators ?? [investigator()]) }),
   });
   for (const [id, d] of details) net.on(`GET /api/v1/investigations/${id}`, () => ({ json: item(d) }));
+  for (const id of new Set([...(world.runs ?? []).map((r) => r.id), ...details.keys()])) {
+    net.on(`GET /api/v1/investigations/${id}/suggestions`, () => ({
+      json: list(world.suggestions?.[id] ?? []),
+    }));
+  }
   renderScreen(() => <InvestigationPanel subject={{ kind: "case", id: CASE }} pollMs={20} />);
   return net;
 }
@@ -512,3 +519,125 @@ describe("an Incident's Investigations", () => {
     expect(document.querySelector("[data-incident-coverage]")).toBeNull();
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/* Suggestions (ADR 0053 §2, git-bug 8327c00)                                 */
+/* -------------------------------------------------------------------------- */
+
+function suggestion(patch: Partial<Suggestion> = {}): Suggestion {
+  return {
+    id: "5f0c3a3e-6d1a-4b8e-9a7e-1c2d3e4f5a6b",
+    investigation_id: "",
+    kind: "policy_count_condition",
+    state: "open",
+    why: "It flaps on every deploy and recovers within a minute.",
+    proposed_at: "2026-08-09T09:12:00.000Z",
+    lapses_at: "2026-08-16T09:12:00.000Z",
+    applied_at: null,
+    applied_by_label: null,
+    count_condition: {
+      policy_id: "8d1f6a3e-1b2c-4d5e-8f90-a1b2c3d4e5f6",
+      policy_name: "crashloops → #platform",
+      count_min: 3,
+      count_window_seconds: 600,
+      was_count_min: null,
+      was_count_window_seconds: null,
+    },
+    membership: null,
+    ...patch,
+  };
+}
+
+const moveSuggestion = (): Suggestion =>
+  suggestion({
+    id: "6a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+    kind: "incident_membership",
+    why: "Same namespace, same minute.",
+    count_condition: null,
+    membership: {
+      incident_id: "7b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e",
+      incident_number: 4,
+      case_id: CASE,
+      case_number: 9,
+      moves_from_incident_number: 2,
+    },
+  });
+
+function suggestions(): HTMLElement {
+  const el = shownRun().querySelector<HTMLElement>("[data-suggestions]");
+  expect(el, "the run shows no Suggestions").not.toBeNull();
+  return el!;
+}
+
+describe("a Finding's Suggestions", () => {
+  it("⭐ offers apply and nothing else, and applying is the POST with an empty body", async () => {
+    const { row, detail } = run();
+    const s = suggestion({ investigation_id: detail.id });
+    const net = mount({ runs: [row], details: [detail], suggestions: { [detail.id]: [s] } });
+    net.on(`POST /api/v1/suggestions/${s.id}/apply`, () => ({
+      json: item({ ...s, state: "applied", applied_at: "2026-08-09T10:00:00.000Z", applied_by_label: "Priya R." }),
+    }));
+
+    await until(() => expect(suggestions()).toBeTruthy());
+    expect(suggestions().textContent).toContain("crashloops → #platform");
+    expect(suggestions().textContent).toContain("3 Cases have happened within 10m");
+    expect(suggestions().textContent).toContain("in the model's words");
+    expect(suggestions().textContent).toMatch(/lapses after seven days/);
+    // ⛔ There is no other verb: nothing declines, rejects or hides a Suggestion.
+    const buttons = within(suggestions()).getAllByRole("button");
+    expect(buttons.map((b) => b.textContent)).toEqual(["Apply"]);
+    for (const verb of [/declin/i, /reject/i, /dismiss/i, /ignore/i, /hide/i]) {
+      expect(within(suggestions()).queryByRole("button", { name: verb })).toBeNull();
+    }
+    expectNoUndefined(suggestions());
+
+    fireEvent.click(await button("Apply", suggestions));
+    await until(() => expect(net.to(`/suggestions/${s.id}/apply`)).toHaveLength(1));
+    expect(net.to(`/suggestions/${s.id}/apply`)[0]!.body).toEqual({});
+  });
+
+  it("⭐ says a membership Suggestion MOVES its Case before it is applied, and names the source in the request", async () => {
+    const { row, detail } = run();
+    const s = moveSuggestion();
+    const net = mount({ runs: [row], details: [detail], suggestions: { [detail.id]: [s] } });
+    net.on(`POST /api/v1/suggestions/${s.id}/apply`, () => ({ json: item({ ...s, state: "applied" }) }));
+
+    await until(() => expect(suggestions().querySelector("[data-moves-from]")).not.toBeNull());
+    expect(suggestions().querySelector("[data-moves-from]")!.textContent).toMatch(
+      /This will move Case #9 from Incident #2 to\s+Incident #4/,
+    );
+    fireEvent.click(await button("Move to Incident #4", suggestions));
+    await until(() => expect(net.to(`/suggestions/${s.id}/apply`)).toHaveLength(1));
+    expect(net.to(`/suggestions/${s.id}/apply`)[0]!.body).toEqual({ moves_from_incident_number: 2 });
+  });
+
+  it("shows an applied Suggestion with who applied it, and no control", async () => {
+    const { row, detail } = run();
+    const s = suggestion({ state: "applied", applied_at: "2026-08-09T10:00:00.000Z", applied_by_label: "Priya R." });
+    mount({ runs: [row], details: [detail], suggestions: { [detail.id]: [s] } });
+
+    await until(() => expect(suggestions().querySelector("[data-applied]")).not.toBeNull());
+    expect(suggestions().textContent).toContain("Applied by Priya R.");
+    expect(within(suggestions()).queryByRole("button")).toBeNull();
+  });
+
+  it("says a refused apply in the open", async () => {
+    const { row, detail } = run();
+    const s = suggestion();
+    const net = mount({ runs: [row], details: [detail], suggestions: { [detail.id]: [s] } });
+    net.on(`POST /api/v1/suggestions/${s.id}/apply`, () =>
+      problem(409, "suggestion_lapsed", { detail: "this Suggestion lapsed unapplied" }),
+    );
+
+    fireEvent.click(await button("Apply", suggestions));
+    await until(() => expect(suggestions().textContent).toMatch(/lapsed unapplied/));
+  });
+
+  it("renders nothing when the Finding suggested nothing", async () => {
+    const { row, detail } = run();
+    mount({ runs: [row], details: [detail] });
+    await until(() => expect(finding()).toBeTruthy());
+    await until(() => expect(shownRun().querySelector("[data-suggestions]")).toBeNull());
+  });
+});
+

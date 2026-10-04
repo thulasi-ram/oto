@@ -419,6 +419,10 @@ export const FRESHNESS: Readonly<Record<string, Freshness>> = {
   // for exactly that window; the request it sends invalidates the list itself.
   "cases.investigations": { by: "live" },
   "cases.investigation": { by: "live" },
+  // A run's Suggestions: frozen with the run except for `applied`, which only the
+  // apply on the same panel writes — and it invalidates the key. A lapse writes nothing
+  // and needs no frame: the next read simply does not list it.
+  "cases.suggestions": { by: "live" },
 
   // Incidents. No frame is ABOUT one, but every frame that can turn one quiet or
   // active is about one of its Cases: `case.upserted` closes a member, and

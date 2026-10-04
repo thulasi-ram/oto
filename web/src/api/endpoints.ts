@@ -78,6 +78,7 @@ import type {
   Rejection,
   RejectionListQuery,
   ReplaceInvestigationClassesRequest,
+  Suggestion,
   ResolvedConversation,
   ResolveConversationRequest,
   RuleHistory,
@@ -579,6 +580,35 @@ export function requestIncidentInvestigation(
 /** One run with its whole transcript and its Finding. Frozen once it has ended. */
 export function getInvestigation(id: Uuid, c: Ctx = {}): Promise<InvestigationDetail> {
   return getItem<InvestigationDetail>(`${V1}/investigations/${id}`, ctx(c));
+}
+
+/**
+ * The changes one run's Finding suggests (ADR 0053 §2), in the order proposed: every
+ * one still open, and every one applied. One that lapsed unapplied is not listed — it
+ * stops showing. An open membership Suggestion that would MOVE its Case names the
+ * Incident it moves from, so the screen can say so before anyone applies it.
+ */
+export function listInvestigationSuggestions(
+  investigationId: Uuid,
+  c: Ctx = {},
+): Promise<ListEnvelope<Suggestion>> {
+  return getList<Suggestion>(`${V1}/investigations/${investigationId}/suggestions`, ctx(c));
+}
+
+/**
+ * Apply one Suggestion: the ORDINARY edit it proposes — the policy edit a human's own
+ * PATCH makes, or the Incident's add or move — with this human as the actor.
+ *
+ * ⛔ A MOVE MUST BE CONFIRMED BY NAME. A membership Suggestion that would move its Case
+ * takes `movesFrom`, the Incident the list said it moves from; without it the server
+ * answers `409 suggestion_moves_case` and writes nothing. There is no other verb: an
+ * unapplied Suggestion lapses on its own.
+ */
+export function applySuggestion(id: Uuid, movesFrom: number | null = null): Promise<Suggestion> {
+  return postItem<Suggestion>(
+    `${V1}/suggestions/${id}/apply`,
+    movesFrom === null ? {} : { moves_from_incident_number: movesFrom },
+  );
 }
 
 /**

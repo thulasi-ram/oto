@@ -176,7 +176,12 @@ func TestTheRunningServerMatchesTheContract(t *testing.T) {
 //
 // ⬆️ 108 → 110 (ADR 0053 §5, git-bug 4298aa0). The org's Classification set — read and
 // replace — each with a probe that answers 2xx.
-const minimumSuccessfulOperations = 110
+//
+// ⬆️ 110 → 111 (ADR 0053 §2, git-bug 8327c00). A Finding's Suggestions — list and apply
+// — landed, and ONE answers 2xx: the list, empty, because this world works no runs. Apply
+// needs a Suggestion only a run's Finding makes, so it is driven to its typed 404 and not
+// credited, which is why the floor rises by one and not two.
+const minimumSuccessfulOperations = 111
 
 /* -------------------------------------------------------------------------- */
 /* The three assertions                                                       */

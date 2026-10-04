@@ -603,3 +603,45 @@ func TestAVerbWaitsForACaseClosingBeneathIt(t *testing.T) {
 		"the Case was closed by the time it joined: the Incident never went active")
 	assert.Equal(t, domain.StateQuiet, r.get(quiet.Number).State())
 }
+
+// TestAnAppliedSuggestionIsTheOrdinaryEditWithItsProvenance — git-bug 8327c00: a human
+// applying an Investigation's membership Suggestion goes through Add and Move like any
+// hand edit — the same membership row, the same attribution to the human, the same facts
+// declared — and the Case's timeline fact also says which Investigation suggested it. A
+// hand edit carries no such key.
+func TestAnAppliedSuggestionIsTheOrdinaryEditWithItsProvenance(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := context.Background()
+	investigation := uuid.New()
+	suggested, err := r.alice.Suggested(investigation)
+	require.NoError(t, err)
+
+	first := r.openCase("HighErrorRate")
+	story, err := r.svc.Draw(ctx, r.scope, []uuid.UUID{first}, r.alice)
+	require.NoError(t, err)
+	joining := r.openCase("CheckoutSlow")
+	d, err := r.svc.Add(ctx, r.scope, story.Number, joining, suggested)
+	require.NoError(t, err)
+	assert.Contains(t, current(d), joining)
+	for _, m := range d.Members {
+		if m.CaseID == joining {
+			assert.Equal(t, "alice", m.AddedBy.Label(), "the applier is the actor")
+		}
+	}
+
+	added := r.timeline.of(kernel.EventIncidentCaseAdded)
+	require.Len(t, added, 2)
+	_, handEdit := added[0].Payload["suggested_by_investigation_id"]
+	assert.False(t, handEdit, "a draw nobody suggested carries no provenance key")
+	assert.Equal(t, investigation.String(), added[1].Payload["suggested_by_investigation_id"])
+	assert.Contains(t, added[1].Summary, "by alice, applying an Investigation's Suggestion")
+
+	other, err := r.svc.Draw(ctx, r.scope, []uuid.UUID{r.openCase("KubePodCrashLooping")}, r.alice)
+	require.NoError(t, err)
+	_, err = r.svc.Move(ctx, r.scope, story.Number, other.Number, joining, suggested)
+	require.NoError(t, err)
+	moved := r.timeline.of(kernel.EventIncidentCaseMoved)
+	require.Len(t, moved, 1)
+	assert.Equal(t, investigation.String(), moved[0].Payload["suggested_by_investigation_id"])
+}

@@ -50,6 +50,12 @@ package service
 // count against the step budget and is not one of the run's Tool calls; it is still a
 // Step, because what the model said is the record. With no classes nothing is offered,
 // the prompt is the Investigator's own, and the Finding carries no classification.
+//
+// ⭐ A SUGGESTION IS PROPOSED THE SAME WAY (ADR 0053 §2, git-bug 8327c00). The two
+// proposing Tools — held only when the allowlist names them — are answered by the loop
+// (suggestions.go): a proposal that holds is an `ok` Step and is kept for the Finding, one
+// that does not is REFUSED on the record with the reason. Neither costs a step. ⛔ Nothing
+// a run does applies one.
 
 import (
 	"context"
@@ -126,6 +132,9 @@ type outcome struct {
 	// (domain.ClassSet.Settle) — "" when no set was offered.
 	picked         string
 	classification string
+	// suggestions are the proposals the run made that held (git-bug 8327c00), in order.
+	// They are written with the Finding, and only when there is one.
+	suggestions []domain.SuggestionDraft
 }
 
 // stepSink records one Step. An error from it is oto failing to keep its record,
@@ -180,6 +189,21 @@ func (s *Service) runLoop(ctx context.Context, p plan, startedAt time.Time, reco
 		}
 		messages = append(messages, domain.ToolResultMessage(call.ID, result))
 		return nil
+	}
+	// takeProposal answers one proposing Tool call — a Suggestion — and records it. Like a
+	// classification it is the shape of the answer, so it is not a Tool call against the
+	// step budget, and it never ends the run (git-bug 8327c00).
+	takeProposal := func(call domain.ToolCall) (bool, error) {
+		pt, ok := byName[call.Name].(proposingTool)
+		if !ok {
+			return false, nil
+		}
+		o, result := s.answerSuggestion(wallCtx, p, pt, call, &out)
+		if err := record(ctx, domain.NewToolStep(next(), call, o, result, 0, s.now())); err != nil {
+			return true, err
+		}
+		messages = append(messages, domain.ToolResultMessage(call.ID, result))
+		return true, nil
 	}
 	pastWall := func() bool { return wallCtx.Err() != nil || !s.now().Before(deadline) }
 	wallSpent := func() (outcome, error) {
@@ -249,6 +273,11 @@ func (s *Service) runLoop(ctx context.Context, p plan, startedAt time.Time, reco
 				}
 				continue
 			}
+			if took, err := takeProposal(call); err != nil {
+				return out, err
+			} else if took {
+				continue
+			}
 			if out.toolCalls >= p.budgets.MaxSteps {
 				// ⭐ WHAT THE MODEL ASKED FOR NEXT IS STILL RECORDED — as refused, with
 				// the reason — so the transcript ends where the model was, not where
@@ -259,6 +288,11 @@ func (s *Service) runLoop(ctx context.Context, p plan, startedAt time.Time, reco
 						if err := takeClassification(rest); err != nil {
 							return out, err
 						}
+						continue
+					}
+					if took, err := takeProposal(rest); err != nil {
+						return out, err
+					} else if took {
 						continue
 					}
 					msg := fmt.Sprintf("not run: the step budget of %d Tool calls is spent", p.budgets.MaxSteps)

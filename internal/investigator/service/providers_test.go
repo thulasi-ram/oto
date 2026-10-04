@@ -129,6 +129,9 @@ type rig struct {
 	toolServers    *memToolServers
 	toolDialer     *switchDialer
 	redaction      *memRedaction
+	suggestions    *memSuggestions
+	policies       *memPolicies
+	memberships    *memMemberships
 }
 
 func (r *rig) deps() Deps {
@@ -138,7 +141,8 @@ func (r *rig) deps() Deps {
 		Timeline: r.history, Rules: r.history, Findings: r.findings,
 		OrgControls: r.orgControls, Classes: r.classes, Queue: r.queue,
 		Limits:      Limits{ToolTimeout: 50 * time.Millisecond, MaxToolResult: 4096},
-		ToolServers: r.toolServers, Tokens: r.creds, ToolDialer: r.toolDialer, Redaction: r.redaction}
+		ToolServers: r.toolServers, Tokens: r.creds, ToolDialer: r.toolDialer, Redaction: r.redaction,
+		Suggestions: r.suggestions, Policies: r.policies, Memberships: r.memberships}
 }
 
 func newRig(t *testing.T) *rig {
@@ -161,6 +165,9 @@ func newRig(t *testing.T) *rig {
 		toolServers:    newMemToolServers(),
 		toolDialer:     &switchDialer{},
 		redaction:      &memRedaction{},
+		suggestions:    &memSuggestions{},
+		policies:       &memPolicies{},
+		memberships:    &memMemberships{},
 	}
 	scope, err := db.NewTenantScope(uuid.New())
 	if err != nil {

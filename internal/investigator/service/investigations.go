@@ -607,7 +607,15 @@ func (s *Service) finish(ctx context.Context, scope db.TenantScope, inv domain.I
 			return err
 		}
 		if finding == "" {
+			// ⭐ NO FINDING, NO SUGGESTION: a proposal belongs to what was concluded, and
+			// the Steps still show what the run proposed before it stopped.
 			return nil
+		}
+		if len(out.suggestions) > 0 {
+			if err := s.suggestions.InsertSuggestions(ctx, scope, inv.ID, out.suggestions,
+				at, at.Add(domain.SuggestionLapse)); err != nil {
+				return err
+			}
 		}
 		started := inv.StartedAt
 		if started.IsZero() {

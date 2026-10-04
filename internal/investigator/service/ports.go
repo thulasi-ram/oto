@@ -129,6 +129,61 @@ type ClassStore interface {
 	ReplaceClassSet(ctx context.Context, s db.TenantScope, set domain.ClassSet, at time.Time) error
 }
 
+// ---------------------------------------------------------------- Suggestions
+//
+// The ports below carry git-bug 8327c00: a Finding's Suggestions, and the two ORDINARY
+// edits applying one performs. ⛔ None of them writes during a run: an Investigation reads a
+// policy or an Incident to check what it proposes, and never changes either — the write
+// methods are called only from ApplySuggestion, on a human's request.
+
+// SuggestionStore is where a Finding's Suggestions are kept, satisfied by
+// `investigator/repository.SuggestionRepository`.
+type SuggestionStore interface {
+	// InsertSuggestions writes one run's Suggestions in the caller's transaction — the one
+	// that records its Finding.
+	InsertSuggestions(ctx context.Context, s db.TenantScope, investigationID uuid.UUID, drafts []domain.SuggestionDraft,
+		at, lapsesAt time.Time) error
+	// ListSuggestions reads one Investigation's SHOWN Suggestions: applied, or not lapsed
+	// at `now`. A lapsed one is not read.
+	ListSuggestions(ctx context.Context, s db.TenantScope, investigationID uuid.UUID, now time.Time) ([]domain.Suggestion, error)
+	// LockSuggestion reads one FOR UPDATE, lapsed or not, inside a transaction.
+	LockSuggestion(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Suggestion, error)
+	// MarkApplied records who applied it and when, once.
+	MarkApplied(ctx context.Context, s db.TenantScope, id uuid.UUID, by domain.Requester, at time.Time) error
+}
+
+// PolicyEditor reads notification policies as a Suggestion names them, and makes the one
+// edit a count-condition Suggestion asks for, satisfied in `internal/app` over
+// `notification/service.PolicyWriter`.
+//
+// ⭐⭐ ApplyCountCondition IS THE ORDINARY EDIT. It goes through the same service method a
+// human's `PATCH /notification-policies/{id}` does — the merged policy validated, a deleted
+// one refused, the same repository write — so a policy a Suggestion changed is
+// indistinguishable from one a human changed by hand, which is ADR 0044 §3's whole test:
+// the number is the operator's because a human applied it.
+//
+// ⛔ `investigator` NEVER IMPORTS `notification` (depguard
+// `investigator-never-reaches-the-notification-path`): the policy arrives as
+// domain.PolicyTarget, and nothing here can evaluate, send or hold a notification.
+type PolicyEditor interface {
+	// SuggestionPolicy reads one live policy; a deleted one, or one this org does not have,
+	// is KindNotFound.
+	SuggestionPolicy(ctx context.Context, s db.TenantScope, policyID uuid.UUID) (domain.PolicyTarget, error)
+	// SuggestionPolicies reads the org's live policies, in evaluation order.
+	SuggestionPolicies(ctx context.Context, s db.TenantScope) ([]domain.PolicyTarget, error)
+	// ApplyCountCondition sets the policy's count_min and count_window_seconds through the
+	// ordinary policy edit, in the caller's transaction.
+	ApplyCountCondition(ctx context.Context, s db.TenantScope, policyID uuid.UUID, countMin int, window time.Duration) error
+}
+
+// MembershipEditor makes the one edit a membership Suggestion asks for — add, or move —
+// satisfied in `internal/app` over `incidents/service`'s own Add and Move, the verbs a human's
+// request goes through, with the applier as the actor and the Investigation as provenance on
+// the Case's timeline fact. In the caller's transaction.
+type MembershipEditor interface {
+	ApplySuggestedMembership(ctx context.Context, s db.TenantScope, m domain.AppliedMembership) error
+}
+
 // CaseReader reads the Case an Investigation is about, satisfied in `internal/app`
 // over `alerts/service`. A Case this org does not have is KindNotFound.
 type CaseReader interface {

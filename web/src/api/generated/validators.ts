@@ -3828,6 +3828,104 @@ export const InvestigationClassSetResponseSchema = v.looseObject({
   "meta": MetaSchema,
 });
 
+export const CountConditionSuggestionDTOSchema = v.looseObject({
+  "policy_id": UuidSchema,
+  "policy_name": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(120),
+  ),
+  "count_min": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(2),
+    v.maxValue(10000),
+  ),
+  "count_window_seconds": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(60),
+    v.maxValue(86400),
+  ),
+  "was_count_min": v.nullable(v.pipe(
+    v.number(),
+    v.integer(),
+  )),
+  "was_count_window_seconds": v.nullable(v.pipe(
+    v.number(),
+    v.integer(),
+  )),
+});
+
+export const MembershipSuggestionDTOSchema = v.looseObject({
+  "incident_id": UuidSchema,
+  "incident_number": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+  ),
+  "case_id": UuidSchema,
+  "case_number": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+  ),
+  "moves_from_incident_number": v.nullable(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+  )),
+});
+
+export const SuggestionDTOSchema = v.looseObject({
+  "id": UuidSchema,
+  "investigation_id": UuidSchema,
+  "kind": v.picklist(["policy_count_condition", "incident_membership"]),
+  "state": v.picklist(["open", "applied"]),
+  "why": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(1000),
+  ),
+  "proposed_at": v.pipe(
+    v.string(),
+    v.isoTimestamp(),
+  ),
+  "lapses_at": v.pipe(
+    v.string(),
+    v.isoTimestamp(),
+  ),
+  "applied_at": v.nullable(v.pipe(
+    v.string(),
+    v.isoTimestamp(),
+  )),
+  "applied_by_label": v.nullable(v.pipe(
+    v.string(),
+    v.maxLength(200),
+  )),
+  "count_condition": v.nullable(CountConditionSuggestionDTOSchema),
+  "membership": v.nullable(MembershipSuggestionDTOSchema),
+});
+
+export const ApplySuggestionRequestSchema = v.strictObject({
+  "moves_from_incident_number": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+  )),
+});
+
+export const SuggestionListResponseSchema = v.looseObject({
+  "data": v.array(SuggestionDTOSchema),
+  "page": PageInfoSchema,
+  "meta": MetaSchema,
+});
+
+export const SuggestionResponseSchema = v.looseObject({
+  "data": SuggestionDTOSchema,
+  "meta": MetaSchema,
+});
+
 export const IncidentListResponseSchema = v.looseObject({
   "data": v.array(IncidentDTOSchema),
   "page": PageInfoSchema,

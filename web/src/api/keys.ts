@@ -134,6 +134,12 @@ export const qk = {
      */
     investigations: (caseId: string) => ["cases", "investigations", caseId] as const,
     investigation: (id: string) => ["cases", "investigation", id] as const,
+    /**
+     * One run's Suggestions (ADR 0053 §2, git-bug 8327c00), keyed by the run's id like
+     * its detail. Under `["cases"]` with it; applying one invalidates it, and the
+     * Incident and policy roots the edit touched.
+     */
+    suggestions: (investigationId: string) => ["cases", "suggestions", investigationId] as const,
   },
   /**
    * Incidents (ADR 0052) — a root of their own, beside `["cases"]` and not under

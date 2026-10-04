@@ -505,3 +505,116 @@ func (m *memClasses) ReplaceClassSet(_ context.Context, _ db.TenantScope, set do
 	m.set = set
 	return nil
 }
+
+// memSuggestions is the Suggestion table: inserted with a Finding, read while shown,
+// applied once. ⛔ Like the table, it has no method that declines one.
+type memSuggestions struct {
+	mu   sync.Mutex
+	rows []domain.Suggestion
+}
+
+func (m *memSuggestions) InsertSuggestions(_ context.Context, s db.TenantScope, investigationID uuid.UUID,
+	drafts []domain.SuggestionDraft, at, lapsesAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, d := range drafts {
+		m.rows = append(m.rows, domain.Suggestion{ID: uuid.New(), OrgID: s.OrgID(), InvestigationID: investigationID,
+			Kind: d.Kind, Count: d.Count, Membership: d.Membership, Why: d.Why, ProposedAt: at, LapsesAt: lapsesAt})
+	}
+	return nil
+}
+
+func (m *memSuggestions) ListSuggestions(_ context.Context, s db.TenantScope, investigationID uuid.UUID, now time.Time) ([]domain.Suggestion, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []domain.Suggestion{}
+	for _, r := range m.rows {
+		if r.OrgID == s.OrgID() && r.InvestigationID == investigationID && (!r.AppliedAt.IsZero() || now.Before(r.LapsesAt)) {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+func (m *memSuggestions) LockSuggestion(_ context.Context, s db.TenantScope, id uuid.UUID) (domain.Suggestion, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, r := range m.rows {
+		if r.OrgID == s.OrgID() && r.ID == id {
+			return r, nil
+		}
+	}
+	return domain.Suggestion{}, errs.NotFound("suggestion_not_found", "no such Suggestion")
+}
+
+func (m *memSuggestions) MarkApplied(_ context.Context, s db.TenantScope, id uuid.UUID, by domain.Requester, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, r := range m.rows {
+		if r.OrgID == s.OrgID() && r.ID == id {
+			if !r.AppliedAt.IsZero() {
+				return errs.Conflict("suggestion_already_applied", "applied meanwhile")
+			}
+			m.rows[i].AppliedAt, m.rows[i].AppliedBy = at, by
+			return nil
+		}
+	}
+	return errs.NotFound("suggestion_not_found", "no such Suggestion")
+}
+
+// countEdit is one ordinary policy edit a Suggestion made.
+type countEdit struct {
+	policyID uuid.UUID
+	min      int
+	window   time.Duration
+}
+
+// memPolicies is the org's notification policies as a Suggestion reads them, and a
+// record of every count-condition edit — the only write an applied Suggestion makes.
+type memPolicies struct {
+	mu       sync.Mutex
+	policies []domain.PolicyTarget
+	edits    []countEdit
+}
+
+func (m *memPolicies) SuggestionPolicy(_ context.Context, _ db.TenantScope, id uuid.UUID) (domain.PolicyTarget, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, p := range m.policies {
+		if p.ID == id {
+			return p, nil
+		}
+	}
+	return domain.PolicyTarget{}, errs.NotFound("policy_not_found", "no such notification policy")
+}
+
+func (m *memPolicies) SuggestionPolicies(context.Context, db.TenantScope) ([]domain.PolicyTarget, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]domain.PolicyTarget(nil), m.policies...), nil
+}
+
+func (m *memPolicies) ApplyCountCondition(_ context.Context, _ db.TenantScope, id uuid.UUID, n int, w time.Duration) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.edits = append(m.edits, countEdit{policyID: id, min: n, window: w})
+	for i, p := range m.policies {
+		if p.ID == id {
+			m.policies[i].CountMin, m.policies[i].CountWindow = n, w
+		}
+	}
+	return nil
+}
+
+// memMemberships records every ordinary membership edit an applied Suggestion made.
+type memMemberships struct {
+	mu    sync.Mutex
+	edits []domain.AppliedMembership
+}
+
+func (m *memMemberships) ApplySuggestedMembership(_ context.Context, _ db.TenantScope, a domain.AppliedMembership) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.edits = append(m.edits, a)
+	return nil
+}

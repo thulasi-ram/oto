@@ -95,6 +95,11 @@ var (
 	_ investigatorservice.TokenResolver    = (*investigatorrepo.KeyStore)(nil)
 	_ investigatorservice.ToolServerDialer = mcpclient.Dialer{}
 	_ investigatorservice.RedactionRules   = toolResultRedaction{}
+
+	// Suggestions (git-bug 8327c00).
+	_ investigatorservice.SuggestionStore  = (*investigatorrepo.SuggestionRepository)(nil)
+	_ investigatorservice.PolicyEditor     = suggestionPolicies{}
+	_ investigatorservice.MembershipEditor = suggestedMemberships{}
 	_ notifservice.IncidentReader          = (*incidentFacts)(nil)
 	_ alertsservice.SourceHealth           = sourceHealth{}
 	_ alertsservice.SettingsReader         = orgSettings{}

@@ -824,6 +824,17 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		// ⛔ Every Tool result is redacted with the org's ingest rules before a Step
 		// or the model sees it.
 		Redaction: toolResultRedaction{sources: c.Sources},
+
+		// ---- Suggestions (git-bug 8327c00) ----------------------------------
+		//
+		// ⭐ APPLYING ONE IS THE ORDINARY EDIT: the policy through the PATCH's own
+		// `PolicyWriter.UpdatePolicy`, a membership through the Incident service's own
+		// Add and Move — the same unit of work, joined, so the edit and the record of
+		// who applied it commit together. ⛔ No run calls either: the Investigator
+		// proposes, and only a human's request applies.
+		Suggestions: investigatorrepo.NewSuggestionRepository(general),
+		Policies:    suggestionPolicies{reads: c.notifConfigRepo, writes: c.PolicyWrites},
+		Memberships: suggestedMemberships{incidents: c.Incidents},
 	})
 	if err != nil {
 		return nil, err

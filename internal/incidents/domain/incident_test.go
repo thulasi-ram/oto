@@ -146,3 +146,27 @@ func TestTheStateEdgesAreTheOnlyStateFacts(t *testing.T) {
 		assert.NotContains(t, string(f), "close")
 	}
 }
+
+// TestOnlyAHumanAppliesASuggestion — provenance rides a human's attribution and never
+// replaces it (git-bug 8327c00): the human is still who decided.
+func TestOnlyAHumanAppliesASuggestion(t *testing.T) {
+	t.Parallel()
+
+	inv := uuid.New()
+	human, err := Human(uuid.New(), "alice")
+	require.NoError(t, err)
+	assert.Equal(t, uuid.Nil, human.SuggestedBy(), "a decision nobody suggested carries no Investigation")
+
+	suggested, err := human.Suggested(inv)
+	require.NoError(t, err)
+	assert.True(t, suggested.IsHuman())
+	assert.Equal(t, "alice", suggested.Label())
+	assert.Equal(t, inv, suggested.SuggestedBy())
+
+	correlator, err := Restore(uuid.Nil, "", uuid.New())
+	require.NoError(t, err)
+	_, err = correlator.Suggested(inv)
+	assert.True(t, errs.IsKind(err, errs.KindInternal), "a Correlator never applies a Suggestion")
+	_, err = human.Suggested(uuid.Nil)
+	assert.Error(t, err, "a Suggestion names the Investigation that made it")
+}

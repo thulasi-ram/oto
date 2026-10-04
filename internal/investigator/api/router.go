@@ -47,6 +47,9 @@ type InvestigatorService interface {
 	ListIncidentInvestigations(ctx context.Context, s db.TenantScope, number int64, p db.Keyset) ([]domain.Investigation, db.Cursor, error)
 	GetInvestigation(ctx context.Context, s db.TenantScope, id uuid.UUID) (service.InvestigationDetail, error)
 
+	ListSuggestions(ctx context.Context, s db.TenantScope, investigationID uuid.UUID) ([]domain.Suggestion, error)
+	ApplySuggestion(ctx context.Context, s db.TenantScope, id uuid.UUID, by domain.Requester, movesFrom int64) (domain.Suggestion, error)
+
 	ClassSet(ctx context.Context, s db.TenantScope) (domain.ClassSet, error)
 	ReplaceClassSet(ctx context.Context, s db.TenantScope, set domain.ClassSet) (domain.ClassSet, error)
 }
@@ -101,6 +104,11 @@ func (rt *Router) Mount(r chi.Router) {
 	r.Get("/incidents/{number}/investigations", rt.listIncidentInvestigations)
 	r.Post("/incidents/{number}/investigations", rt.requestIncidentInvestigation)
 	r.Get("/investigations/{id}", rt.getInvestigation)
+	// ⛔ ONE VERB ON A SUGGESTION, AND IT IS APPLY (ADR 0053 §2, git-bug 8327c00). An
+	// unapplied one lapses on its own; no route declines one, because a Suggestion that
+	// waited on a human's answer would be a queue.
+	r.Get("/investigations/{id}/suggestions", rt.listInvestigationSuggestions)
+	r.Post("/suggestions/{id}/apply", rt.applySuggestion)
 	r.Get("/investigation-classes", rt.getInvestigationClasses)
 	r.Put("/investigation-classes", rt.replaceInvestigationClasses)
 }
@@ -609,6 +617,81 @@ func (rt *Router) getInvestigation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.Data(w, r, http.StatusOK, investigationDetailDTO(d), started)
+}
+
+// listInvestigationSuggestions serves GET /api/v1/investigations/{id}/suggestions: the
+// changes the run's Finding proposed that are still shown — open, or applied — in the order
+// they were proposed. A lapsed one is not listed. An open membership Suggestion that would
+// MOVE its Case says from which Incident, so the screen can say so before anyone applies it.
+func (rt *Router) listInvestigationSuggestions(w http.ResponseWriter, r *http.Request) {
+	started := rt.now()
+	scope, id, err := scopeAndID(r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	list, err := rt.svc.ListSuggestions(r.Context(), scope, id)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	out := make([]SuggestionDTO, 0, len(list))
+	for _, s := range list {
+		out = append(out, suggestionDTO(s))
+	}
+	httpx.List(w, r, out, httpx.PageOf(db.Cursor{}, maxListed), started)
+}
+
+// applySuggestion serves POST /api/v1/suggestions/{id}/apply: a human applying one
+// Suggestion, which makes the ORDINARY edit — the policy PATCH's own service path, or the
+// Incident's add or move — with the applier as actor and the Investigation as provenance.
+//
+// ⛔ A HUMAN APPLIES. A system principal is refused before the service is reached: the
+// Investigator never applies its own Suggestion, and neither does any other machine.
+//
+// Refusals: `suggestion_already_applied`, `suggestion_lapsed`, `suggestion_target_gone` and
+// `suggestion_moves_case` are 409s; the edit's own refusals come back as the edit made by
+// hand would answer them.
+func (rt *Router) applySuggestion(w http.ResponseWriter, r *http.Request) {
+	started := rt.now()
+	p, scope, err := authn.Scope(r.Context())
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	if err := httpx.NewParams(r).Err(); err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	if kind, err := kernel.NewActorKind(p.ActorKind()); err != nil || !kind.IsHuman() {
+		httpx.WriteProblem(w, r, errs.Forbidden("forbidden", "applying a Suggestion requires a human actor"))
+		return
+	}
+	id, err := httpx.PathUUID(r, "id")
+	if err != nil {
+		httpx.WriteProblem(w, r, domain.SuggestionNotFound())
+		return
+	}
+	dto, err := httpx.Bind[ApplySuggestionRequest](w, r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	by, err := domain.NewRequester(p.UserID, p.ActorLabel())
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	var movesFrom int64
+	if dto.MovesFromIncidentNumber != nil {
+		movesFrom = *dto.MovesFromIncidentNumber
+	}
+	applied, err := rt.svc.ApplySuggestion(r.Context(), scope, id, by, movesFrom)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	httpx.Data(w, r, http.StatusOK, suggestionDTO(applied), started)
 }
 
 // getInvestigationClasses serves GET /api/v1/investigation-classes: the org's
