@@ -452,6 +452,11 @@ func incidentCaseClause(v *domain.NotificationView) string {
 // storm reads as present tense unless the card stops it; the instant it was reached
 // is what makes it a snapshot (ADR 0016) rather than a claim about now. A Finding a
 // budget cut short says "partial" before anything else.
+//
+// ⭐ A CLASSIFICATION IS SAID AS THE INVESTIGATOR'S, NEVER AS A LABEL OF THE INCIDENT'S
+// (ADR 0053 §5). "classified `x`" sits on the line that names who concluded it, so a
+// reader cannot take the operator's class for a fact about the signal; a Finding with no
+// classification — the org wrote no classes — says nothing about one.
 func incidentFinding(f domain.IncidentFindingView) string {
 	head := "Finding"
 	if f.Partial {
@@ -461,6 +466,9 @@ func incidentFinding(f domain.IncidentFindingView) string {
 	b.WriteString(findingEmoji + " *" + head + "* by " + code(f.Investigator+" v"+strconv.Itoa(f.Version)))
 	if !f.ConcludedAt.IsZero() {
 		b.WriteString(", as seen at " + slackDateTime(f.ConcludedAt))
+	}
+	if f.Classification != "" {
+		b.WriteString(", classified " + code(f.Classification))
 	}
 	if text := strings.TrimSpace(f.Summary); text != "" {
 		b.WriteString("\n>" + strings.ReplaceAll(escape(truncateRunes(text, maxFindingRunes)), "\n", "\n>"))

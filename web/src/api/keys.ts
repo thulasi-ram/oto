@@ -207,6 +207,11 @@ export const qk = {
      * API — so no mutation reaches this, and its staleness is bounded instead.
      */
     investigators: () => ["settings", "investigators"] as const,
+    /**
+     * The org's Classification set (ADR 0053 §5). Only the Classification section
+     * writes it, and its save writes the answer back with `setQueryData`.
+     */
+    investigationClasses: () => ["settings", "investigation-classes"] as const,
     /** The org's tuning, its origins and its bounds — one query, one screen. */
     org: () => ["settings", "org"] as const,
     /**

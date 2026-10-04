@@ -161,6 +161,10 @@ var bindings = []binding{
 	{"investigator", "StepToolCallDTO", investigatorapi.StepToolCallDTO{}},
 	{"investigator", "InvestigationStepDTO", investigatorapi.InvestigationStepDTO{}},
 	{"investigator", "InvestigationDetailDTO", investigatorapi.InvestigationDetailDTO{}},
+	{"investigator", "InvestigationClassDTO", investigatorapi.InvestigationClassDTO{}},
+	{"investigator", "InvestigationClassSetDTO", investigatorapi.InvestigationClassSetDTO{}},
+	{"investigator", "InvestigationClassRequest", investigatorapi.InvestigationClassRequest{}},
+	{"investigator", "ReplaceInvestigationClassesRequest", investigatorapi.ReplaceInvestigationClassesRequest{}},
 	// ToolServers (git-bug 2e9a086). `CreateToolServerRequest.token` is write-only.
 	{"investigator", "ToolServerDTO", investigatorapi.ToolServerDTO{}},
 	{"investigator", "CreateToolServerRequest", investigatorapi.CreateToolServerRequest{}},

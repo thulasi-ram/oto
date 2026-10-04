@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 95 {
-		t.Fatalf("latest migration is %d, want 95 — this test pins the number so that a "+
+	if latest != 96 {
+		t.Fatalf("latest migration is %d, want 96 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1632,6 +1632,50 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// accepts a kind the release below it cannot interpret. No column reading can
 	// see that, and it is the half most likely to be forgotten because nothing
 	// references it.
+	// ⭐ 00096 CLASSIFIES A FINDING ONLY IN THE OPERATOR'S WORDS (ADR 0053 §5, git-bug
+	// 4298aa0): one table with its three named CHECKs and its position index, and one
+	// column on `investigations` with its CHECK. The name CHECK is read for its BODY, for
+	// 00075's reason: `unclassified` is reserved there, and a CHECK that admitted it would
+	// let the operator take away the one answer that is always admissible. Both the table
+	// and the column are read on the far side: the release below has neither.
+	if n := countTables("investigation_classes"); n != 1 {
+		t.Fatalf("investigation_classes exists %d time(s) at migration 96", n)
+	}
+	if n := countConstraints("investigation_classes_name_ck", "investigation_classes_desc_ck",
+		"investigation_classes_position_ck", "investigations_class_ck"); n != 4 {
+		t.Fatalf("%d of 00096's four CHECKs exist at migration 96, want 4", n)
+	}
+	if def := constraintDef("investigation_classes_name_ck", "investigation_classes"); !strings.Contains(def, "'unclassified'") {
+		t.Fatalf("investigation_classes_name_ck does not reserve unclassified: %s", def)
+	}
+	if def := constraintDef("investigations_class_ck", "investigations"); !strings.Contains(def, "finding IS NOT NULL") {
+		t.Fatalf("investigations_class_ck does not tie a class to a Finding: %s", def)
+	}
+	if n := countIndexes("investigation_classes_position_uniq"); n != 1 {
+		t.Fatalf("investigation_classes_position_uniq is absent at migration 96 (found %d)", n)
+	}
+	if n := countColumns("investigations", "classification"); n != 1 {
+		t.Fatalf("investigations.classification exists %d time(s) at migration 96", n)
+	}
+	if c := columnComment("investigations", "classification"); !strings.Contains(c, "never a foreign key") {
+		t.Fatalf("investigations.classification's comment does not say it is a copy: %s", c)
+	}
+
+	down(96)
+
+	if n := countTables("investigation_classes"); n != 0 {
+		t.Fatalf("investigation_classes survived 00096's Down")
+	}
+	if n := countIndexes("investigation_classes_position_uniq"); n != 0 {
+		t.Fatalf("investigation_classes_position_uniq survived 00096's Down (found %d)", n)
+	}
+	if n := countColumns("investigations", "classification"); n != 0 {
+		t.Fatalf("investigations.classification survived 00096's Down")
+	}
+	if n := countConstraints("investigations_class_ck"); n != 0 {
+		t.Fatalf("investigations_class_ck survived 00096's Down")
+	}
+
 	// ⭐ 00095 INVESTIGATES AN INCIDENT AS A WHOLE (ADR 0053 §4, git-bug 74ea849): three
 	// CHECKs widened by one value each — `investigations_subjkind_ck` and
 	// `enrichments_subjkind_ck` by `incident`, `notifications_reason_ck` by `finding` —

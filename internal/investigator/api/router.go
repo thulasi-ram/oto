@@ -46,6 +46,9 @@ type InvestigatorService interface {
 		by domain.Requester) (domain.Investigation, error)
 	ListIncidentInvestigations(ctx context.Context, s db.TenantScope, number int64, p db.Keyset) ([]domain.Investigation, db.Cursor, error)
 	GetInvestigation(ctx context.Context, s db.TenantScope, id uuid.UUID) (service.InvestigationDetail, error)
+
+	ClassSet(ctx context.Context, s db.TenantScope) (domain.ClassSet, error)
+	ReplaceClassSet(ctx context.Context, s db.TenantScope, set domain.ClassSet) (domain.ClassSet, error)
 }
 
 // Compile-time proof that the service satisfies the port this layer declares.
@@ -98,6 +101,8 @@ func (rt *Router) Mount(r chi.Router) {
 	r.Get("/incidents/{number}/investigations", rt.listIncidentInvestigations)
 	r.Post("/incidents/{number}/investigations", rt.requestIncidentInvestigation)
 	r.Get("/investigations/{id}", rt.getInvestigation)
+	r.Get("/investigation-classes", rt.getInvestigationClasses)
+	r.Put("/investigation-classes", rt.replaceInvestigationClasses)
 }
 
 func (rt *Router) now() time.Time { return rt.clk.Now().UTC() }
@@ -604,6 +609,50 @@ func (rt *Router) getInvestigation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.Data(w, r, http.StatusOK, investigationDetailDTO(d), started)
+}
+
+// getInvestigationClasses serves GET /api/v1/investigation-classes: the org's
+// Classification set (ADR 0053 §5), in the operator's order.
+func (rt *Router) getInvestigationClasses(w http.ResponseWriter, r *http.Request) {
+	started := rt.now()
+	scope, err := plainScope(r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	set, err := rt.svc.ClassSet(r.Context(), scope)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	httpx.Data(w, r, http.StatusOK, classSetDTO(set), started)
+}
+
+// replaceInvestigationClasses serves PUT /api/v1/investigation-classes: the whole set,
+// replacing the old one. ⛔ No Finding is rewritten — each keeps the class it was given.
+func (rt *Router) replaceInvestigationClasses(w http.ResponseWriter, r *http.Request) {
+	started := rt.now()
+	scope, err := plainScope(r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	dto, err := httpx.Bind[ReplaceInvestigationClassesRequest](w, r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	set, err := dto.toDomain()
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	stored, err := rt.svc.ReplaceClassSet(r.Context(), scope, set)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	httpx.Data(w, r, http.StatusOK, classSetDTO(stored), started)
 }
 
 // ------------------------------------------------------------------- helpers

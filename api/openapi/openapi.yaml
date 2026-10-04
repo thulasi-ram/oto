@@ -3120,6 +3120,81 @@ paths:
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
 
+  /api/v1/investigation-classes:
+    get:
+      operationId: getInvestigationClasses
+      summary: Read the org's Classification set
+      tags: [Investigators]
+      description: |
+        The closed set of classes an Investigation classifies its Finding in (ADR 0053 §5), in the
+        operator's order. **oto ships no classes**: a fresh org's set is empty, and while it is empty a
+        Finding carries no classification at all. `unclassified` is never in the set — it is always
+        admissible, and is the right answer under doubt.
+      responses:
+        '200':
+          description: The set, in the operator's order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvestigationClassSetResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    put:
+      operationId: replaceInvestigationClasses
+      summary: Replace the org's Classification set
+      tags: [Investigators]
+      description: |
+        Writes the whole set, replacing the old one; an empty `classes` is legal and stops Findings
+        being classified. A name is lower-case letters, digits, `_` and `-`, starting with a letter, at
+        most 63 characters, and unique; `unclassified` is reserved. Each refusal is a `422`
+        (`investigation_classes_invalid`) naming the class it is about. At most 50 classes.
+
+        A run reads the set once, when it begins, and its Finding is classified in that set. **No
+        Finding is rewritten by a change here**: each keeps the class it was given, because it copied the
+        name. A classification travels outbound with its Finding, and paging on one is paging on a
+        model's judgement.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReplaceInvestigationClassesRequest'
+      responses:
+        '200':
+          description: The set as it now stands.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvestigationClassSetResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   # =================================================================================================
   # Rules
   # =================================================================================================
@@ -14428,8 +14503,8 @@ components:
       type: object
       required: [id, subject_kind, subject_id, investigator_id, investigator_name, investigator_version,
                  investigator_version_id, model, status, reason, reason_detail, budgets, tokens_in,
-                 tokens_out, tool_calls, finding, partial, requested_by_label, requested_at, not_before,
-                 started_at, ended_at]
+                 tokens_out, tool_calls, finding, classification, partial, requested_by_label, requested_at,
+                 not_before, started_at, ended_at]
       properties:
         id:
           $ref: '#/components/schemas/Uuid'
@@ -14482,13 +14557,26 @@ components:
           type: integer
           format: int32
           minimum: 0
-          description: Tool calls made, refused ones included.
+          description: |
+            Tool calls made, refused ones included. The `oto_classify` call is not one of them: it is the
+            shape of the answer, not a look at anything, and costs no step.
         finding:
           type: ['string', 'null']
           maxLength: 16384
           description: |
             What it concluded — the model's last answer. Partial when `partial` is true. A Finding is a
             snapshot of what was seen, and never an input to whether a notification is sent.
+        classification:
+          type: ['string', 'null']
+          maxLength: 63
+          pattern: '^[a-z][a-z0-9_-]{0,62}$'
+          description: |
+            The class its Finding was given (ADR 0053 §5): one of the org's own classes as the set stood
+            when the run began, or `unclassified` — the set was offered and the model named nothing in it,
+            out of doubt, silence, or a word outside the set, which is refused on the record in the Steps.
+            `null` when there is no Finding or the org had written no classes: nobody was asked. A copy of
+            the name, never re-read against today's set, so a Finding keeps its class when the set changes.
+            ⚠️ It is a model's judgement — paging on it is paging on a model's judgement.
         partial:
           type: boolean
           description: Whether a budget stopped the run before it concluded (`status` is `exhausted`).
@@ -14843,6 +14931,77 @@ components:
       properties:
         data:
           $ref: '#/components/schemas/InvestigationDetailDTO'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    InvestigationClassDTO:
+      type: object
+      required: [name, description]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 63
+          pattern: '^[a-z][a-z0-9_-]{0,62}$'
+          description: The word the model must say back exactly, a card quotes and a receiver matches on.
+        description:
+          type: string
+          maxLength: 500
+          description: What the class means, in the operator's words — what the model is told. May be empty.
+      description: One class of the org's Classification set, as the operator wrote it.
+
+    InvestigationClassSetDTO:
+      type: object
+      required: [classes]
+      properties:
+        classes:
+          type: array
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/InvestigationClassDTO'
+      description: |
+        The org's Classification set (ADR 0053 §5), in the operator's order. Empty — oto ships no classes —
+        means Findings carry no classification. `unclassified` is never listed: it is always admissible.
+
+    InvestigationClassRequest:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 63
+          description: |
+            Lower-case letters, digits, `_` and `-`, starting with a letter. Unique in the set; `unclassified`
+            is reserved.
+        description:
+          type: string
+          maxLength: 500
+          default: ''
+          description: What the class means. The model is told it.
+      description: One class, as the operator writes it.
+
+    ReplaceInvestigationClassesRequest:
+      type: object
+      required: [classes]
+      additionalProperties: false
+      properties:
+        classes:
+          type: array
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/InvestigationClassRequest'
+          description: The whole set, in order. Empty stops Findings being classified.
+      description: The org's whole Classification set, replacing the old one.
+
+    InvestigationClassSetResponse:
+      type: object
+      required: [data, meta]
+      additionalProperties: false
+      properties:
+        data:
+          $ref: '#/components/schemas/InvestigationClassSetDTO'
         meta:
           $ref: '#/components/schemas/Meta'
 

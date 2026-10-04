@@ -3576,6 +3576,11 @@ export const InvestigationDTOSchema = v.looseObject({
     v.string(),
     v.maxLength(16384),
   )),
+  "classification": v.nullable(v.pipe(
+    v.string(),
+    v.maxLength(63),
+    v.regex(/^[a-z][a-z0-9_-]{0,62}$/),
+  )),
   "partial": v.boolean(),
   "requested_by_label": v.pipe(
     v.string(),
@@ -3776,6 +3781,50 @@ export const InvestigationListResponseSchema = v.looseObject({
 
 export const InvestigationResponseSchema = v.looseObject({
   "data": InvestigationDetailDTOSchema,
+  "meta": MetaSchema,
+});
+
+export const InvestigationClassDTOSchema = v.looseObject({
+  "name": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(63),
+    v.regex(/^[a-z][a-z0-9_-]{0,62}$/),
+  ),
+  "description": v.pipe(
+    v.string(),
+    v.maxLength(500),
+  ),
+});
+
+export const InvestigationClassSetDTOSchema = v.looseObject({
+  "classes": v.pipe(
+    v.array(InvestigationClassDTOSchema),
+    v.maxLength(50),
+  ),
+});
+
+export const InvestigationClassRequestSchema = v.strictObject({
+  "name": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(63),
+  ),
+  "description": v.exactOptional(v.pipe(
+    v.string(),
+    v.maxLength(500),
+  ), ""),
+});
+
+export const ReplaceInvestigationClassesRequestSchema = v.strictObject({
+  "classes": v.pipe(
+    v.array(InvestigationClassRequestSchema),
+    v.maxLength(50),
+  ),
+});
+
+export const InvestigationClassSetResponseSchema = v.looseObject({
+  "data": InvestigationClassSetDTOSchema,
   "meta": MetaSchema,
 });
 

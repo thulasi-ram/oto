@@ -15,6 +15,7 @@ import {
   patchItem,
   postItem,
   postVoid,
+  putItem,
   type LabelSelector,
   type QueryParams,
   type RequestOptions,
@@ -65,6 +66,7 @@ import type {
   IncidentDetail,
   IncidentListQuery,
   Investigation,
+  InvestigationClassSet,
   InvestigationDetail,
   Investigator,
   OrgSettingsView,
@@ -75,6 +77,7 @@ import type {
   PreviewNotificationTemplateRequest,
   Rejection,
   RejectionListQuery,
+  ReplaceInvestigationClassesRequest,
   ResolvedConversation,
   ResolveConversationRequest,
   RuleHistory,
@@ -576,6 +579,24 @@ export function requestIncidentInvestigation(
 /** One run with its whole transcript and its Finding. Frozen once it has ended. */
 export function getInvestigation(id: Uuid, c: Ctx = {}): Promise<InvestigationDetail> {
   return getItem<InvestigationDetail>(`${V1}/investigations/${id}`, ctx(c));
+}
+
+/**
+ * The org's Classification set (ADR 0053 §5), in the operator's order. Empty until an
+ * operator writes one — oto ships no classes.
+ */
+export function getInvestigationClasses(c: Ctx = {}): Promise<InvestigationClassSet> {
+  return getItem<InvestigationClassSet>(`${V1}/investigation-classes`, ctx(c));
+}
+
+/**
+ * Replace the whole set. An empty list is legal and stops Findings being
+ * classified. ⛔ No Finding is rewritten: each keeps the class it was given.
+ */
+export function replaceInvestigationClasses(
+  body: ReplaceInvestigationClassesRequest,
+): Promise<InvestigationClassSet> {
+  return putItem<InvestigationClassSet>(`${V1}/investigation-classes`, body);
 }
 
 /* -------------------------------------------------------------------------- */

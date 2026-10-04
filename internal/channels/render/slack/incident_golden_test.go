@@ -273,4 +273,35 @@ func TestAnIncidentsFindingIsDrawnAsWhatWasSeenAtT(t *testing.T) {
 	if got := topLevelText(t, msg.Payload); !strings.Contains(got, "has a new Finding by firstlook v2") {
 		t.Errorf("the push text does not say who concluded it: %q", got)
 	}
+	if strings.Contains(root, "classified") || strings.Contains(reply, "classified") {
+		t.Errorf("a Finding with no classification (the org wrote no classes) said one:\n%s\n%s", root, reply)
+	}
+}
+
+// TestAFindingsClassificationIsSaidAsTheInvestigators — ADR 0053 §5 (git-bug 4298aa0):
+// the class a Finding was given is drawn on the line that names who concluded it, in
+// the operator's own word, on the card and on the `finding` reply alike — never as a
+// field of the Incident's, which a reader would take for a fact about the signal.
+func TestAFindingsClassificationIsSaidAsTheInvestigators(t *testing.T) {
+	t.Parallel()
+	v := incidentView()
+	v.Incident.Finding = &domain.IncidentFindingView{
+		InvestigationID: "019fe297-d84f-7599-b5b2-1f23174910f1", Investigator: "firstlook", Version: 2,
+		Summary: "The deploy at 09:00 doubled the error rate.", Classification: "deploy-regression",
+		ConcludedAt: renderedAt.Add(-time.Minute),
+	}
+	root := string(renderView(t, v, domain.ModePostRoot).Payload)
+	v.Reason = "finding"
+	reply := string(renderView(t, v, domain.ModeThreadReply).Payload)
+	for name, body := range map[string]string{"card": root, "reply": reply} {
+		if !strings.Contains(body, "*Finding* by `firstlook v2`, as seen at") ||
+			!strings.Contains(body, ", classified `deploy-regression`") {
+			t.Errorf("the %s does not say the class beside who concluded it:\n%s", name, body)
+		}
+	}
+
+	v.Incident.Finding.Classification = "unclassified"
+	if body := string(renderView(t, v, domain.ModeThreadReply).Payload); !strings.Contains(body, ", classified `unclassified`") {
+		t.Errorf("`unclassified` is an answer and is said like one:\n%s", body)
+	}
 }

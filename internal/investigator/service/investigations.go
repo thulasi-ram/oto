@@ -472,6 +472,13 @@ func (s *Service) RunInvestigation(ctx context.Context, scope db.TenantScope, id
 	if err != nil {
 		return err
 	}
+	// ⭐ THE CLASS SET IS READ ONCE, HERE, AND IS THE SET THIS RUN'S FINDING IS
+	// CLASSIFIED IN (ADR 0053 §5). An operator changing it mid-run changes the next run;
+	// this one's word is checked against what it was told.
+	classes, err := s.classes.ClassSet(ctx, scope)
+	if err != nil {
+		return err
+	}
 	fromServers, unavailable, closeSessions, err := s.toolServerTools(ctx, scope, version.Tools)
 	if err != nil {
 		return err
@@ -508,6 +515,7 @@ func (s *Service) RunInvestigation(ctx context.Context, scope db.TenantScope, id
 		budgets:     inv.Budgets,
 		scope:       scope,
 		run:         subject,
+		classes:     classes,
 	}
 	out, err := s.runLoop(ctx, p, startedAt, func(ctx context.Context, step domain.Step) error {
 		return s.investigations.AppendStep(ctx, scope, inv.ID, step)
@@ -585,12 +593,17 @@ func subjectNoun(kind domain.SubjectKind) string {
 // transaction: the ending and the Enrichment are one fact or neither.
 func (s *Service) finish(ctx context.Context, scope db.TenantScope, inv domain.Investigation, out outcome) error {
 	at := s.now()
-	finding := ""
+	finding, classification := "", ""
 	if out.ending.Status == domain.StatusCompleted || out.ending.Status == domain.StatusExhausted {
 		finding = out.finding
 	}
+	if finding != "" {
+		// A class belongs to what was concluded: no Finding, no classification.
+		classification = out.classification
+	}
 	return s.tx.InTx(ctx, func(ctx context.Context) error {
-		if err := s.investigations.Finish(ctx, scope, inv.ID, out.ending, out.spent, out.toolCalls, finding, at); err != nil {
+		if err := s.investigations.Finish(ctx, scope, inv.ID, out.ending, out.spent, out.toolCalls,
+			finding, classification, at); err != nil {
 			return err
 		}
 		if finding == "" {
@@ -620,6 +633,7 @@ func (s *Service) finish(ctx context.Context, scope db.TenantScope, inv domain.I
 			Status:          out.ending.Status,
 			Reason:          out.ending.Reason,
 			Summary:         finding,
+			Classification:  classification,
 			Partial:         out.ending.Status == domain.StatusExhausted,
 			Spent:           out.spent,
 			ToolCalls:       out.toolCalls,

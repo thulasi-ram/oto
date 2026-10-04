@@ -111,6 +111,7 @@ func fxInvestigationValue(status domain.Status) domain.Investigation {
 	case domain.StatusExhausted:
 		inv.Ending = domain.EndedBy(domain.ReasonStepBudget, "the step budget of 20 Tool calls was spent")
 		inv.Spent, inv.ToolCalls, inv.Finding = domain.Usage{InputTokens: 900, OutputTokens: 80}, 20, "It looks like a deploy."
+		inv.Classification = "deploy-regression"
 		inv.StartedAt, inv.EndedAt = fxEpoch.Add(time.Second), fxEpoch.Add(time.Minute)
 	case domain.StatusSkipped:
 		inv.Ending = domain.EndedBy(domain.ReasonDisabled, "the Investigator firstlook is disabled")

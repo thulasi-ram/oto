@@ -229,8 +229,11 @@ type IncidentFindingView struct {
 	Investigator string
 	Version      int
 	Summary      string
-	Partial      bool
-	ConcludedAt  time.Time
+	// Classification is the class the Finding was given, "" when the org had no
+	// classes (ADR 0053 §5). A renderer that says it says whose judgement it is.
+	Classification string
+	Partial        bool
+	ConcludedAt    time.Time
 }
 
 // IncidentExternalView is one external incident: which destination it came back

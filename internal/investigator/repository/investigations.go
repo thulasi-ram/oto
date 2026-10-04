@@ -56,7 +56,7 @@ SELECT n.id, n.org_id, n.subject_kind, n.subject_id, coalesce(n.alert_key, ''),
        n.investigator_id, i.name, n.investigator_version_id, v.version, v.model_endpoint, v.model_name,
        n.status, coalesce(n.reason, ''), coalesce(n.reason_detail, ''),
        n.max_steps, n.max_tokens, n.max_wall_s, n.tokens_in, n.tokens_out, n.tool_calls,
-       coalesce(n.finding, ''), n.requested_by, n.requested_by_label,
+       coalesce(n.finding, ''), coalesce(n.classification, ''), n.requested_by, n.requested_by_label,
        n.requested_at, n.not_before, n.started_at, n.ended_at
   FROM investigations n
   JOIN investigators i         ON i.id = n.investigator_id
@@ -282,10 +282,11 @@ func orgRunsKey(s db.TenantScope) int64 {
 
 // Finish ends a run that has not ended. A run that never started (`queued`) gets
 // `started_at` now — unless it is `skipped`, which never starts by definition
-// (`investigations_started_ck`).
+// (`investigations_started_ck`). `classification` is the class the Finding was given,
+// "" for none (`investigations_class_ck` refuses one without a Finding).
 func (r *InvestigationRepository) Finish(
 	ctx context.Context, s db.TenantScope, nid uuid.UUID, end domain.Ending, spent domain.Usage,
-	toolCalls int, finding string, at time.Time,
+	toolCalls int, finding, classification string, at time.Time,
 ) error {
 	if err := db.RequireScope(s); err != nil {
 		return err
@@ -296,12 +297,12 @@ func (r *InvestigationRepository) Finish(
 	tag, err := r.db(ctx).Exec(ctx, `
 UPDATE investigations
    SET status = $3, reason = $4, reason_detail = $5,
-       tokens_in = $6, tokens_out = $7, tool_calls = $8, finding = $9,
+       tokens_in = $6, tokens_out = $7, tool_calls = $8, finding = $9, classification = $11,
        started_at = CASE WHEN $3 = 'skipped' THEN NULL ELSE coalesce(started_at, $10) END,
        ended_at = $10
  WHERE org_id = $1 AND id = $2 AND status IN ('queued','running')`,
 		s.OrgID(), nid, string(end.Status), nullable(string(end.Reason)), nullable(end.Detail),
-		spent.InputTokens, spent.OutputTokens, toolCalls, nullable(finding), at.UTC())
+		spent.InputTokens, spent.OutputTokens, toolCalls, nullable(finding), at.UTC(), nullable(classification))
 	if err != nil {
 		return mapInvestigationErr(err, "end an Investigation")
 	}
@@ -416,7 +417,8 @@ SELECT id, seq, kind, coalesce(text, ''), tool_calls, coalesce(finish_reason, ''
 
 // priorFindingSelect is one ended run that reached a Finding, as a later run reads it.
 const priorFindingSelect = `
-SELECT n.id, n.subject_kind, n.subject_id, i.name, v.version, n.status, n.finding, n.ended_at
+SELECT n.id, n.subject_kind, n.subject_id, i.name, v.version, n.status, n.finding,
+       coalesce(n.classification, ''), n.ended_at
   FROM investigations n
   JOIN investigators i         ON i.id = n.investigator_id
   JOIN investigator_versions v ON v.id = n.investigator_version_id`
@@ -467,7 +469,7 @@ func (r *InvestigationRepository) priorFindings(ctx context.Context, sql string,
 			kind, status string
 		)
 		if err := rows.Scan(&p.InvestigationID, &kind, &p.SubjectID, &p.InvestigatorName, &p.VersionNumber,
-			&status, &p.Finding, &p.EndedAt); err != nil {
+			&status, &p.Finding, &p.Classification, &p.EndedAt); err != nil {
 			return nil, mapInvestigationErr(err, "read prior Findings")
 		}
 		sk, err := domain.ParseSubjectKind(kind)
@@ -501,7 +503,7 @@ func scanInvestigation(row pgx.Row) (domain.Investigation, error) {
 		&out.Model.Endpoint, &out.Model.Model,
 		&status, &reason, &det, &maxSteps, &maxTokens, &maxWall,
 		&out.Spent.InputTokens, &out.Spent.OutputTokens, &out.ToolCalls,
-		&out.Finding, &requestedBy, &out.RequestedBy.Label,
+		&out.Finding, &out.Classification, &requestedBy, &out.RequestedBy.Label,
 		&out.RequestedAt, &notBefore, &started, &ended); err != nil {
 		return domain.Investigation{}, err
 	}
@@ -518,6 +520,9 @@ func scanInvestigation(row pgx.Row) (domain.Investigation, error) {
 		return domain.Investigation{}, errs.Internal("investigation_corrupt", err)
 	}
 	out.SubjectKind, out.Status, out.Budgets = sk, st, b
+	if out.Classification, err = domain.RestoreClassification(out.Classification); err != nil {
+		return domain.Investigation{}, err
+	}
 	if st.Terminal() {
 		end, err := domain.RestoreEnding(st, reason, det)
 		if err != nil {

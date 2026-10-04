@@ -124,6 +124,7 @@ type rig struct {
 	declarer       *memDeclarer
 	findings       *memFindings
 	orgControls    *memControls
+	classes        *memClasses
 	queue          *memQueue
 	toolServers    *memToolServers
 	toolDialer     *switchDialer
@@ -135,7 +136,7 @@ func (r *rig) deps() Deps {
 		Investigators: r.investigators, Investigations: r.investigations,
 		Cases: r.history, Incidents: r.incidents, Declarer: r.declarer,
 		Timeline: r.history, Rules: r.history, Findings: r.findings,
-		OrgControls: r.orgControls, Queue: r.queue,
+		OrgControls: r.orgControls, Classes: r.classes, Queue: r.queue,
 		Limits:      Limits{ToolTimeout: 50 * time.Millisecond, MaxToolResult: 4096},
 		ToolServers: r.toolServers, Tokens: r.creds, ToolDialer: r.toolDialer, Redaction: r.redaction}
 }
@@ -155,6 +156,7 @@ func newRig(t *testing.T) *rig {
 		declarer:       &memDeclarer{},
 		findings:       &memFindings{},
 		orgControls:    &memControls{on: true, dailyTokens: 2_000_000, concurrency: 2},
+		classes:        &memClasses{},
 		queue:          &memQueue{},
 		toolServers:    newMemToolServers(),
 		toolDialer:     &switchDialer{},
@@ -273,6 +275,7 @@ func TestNewRequiresEveryPort(t *testing.T) {
 		"rules":          func(d *Deps) { d.Rules = nil },
 		"findings":       func(d *Deps) { d.Findings = nil },
 		"org controls":   func(d *Deps) { d.OrgControls = nil },
+		"classes":        func(d *Deps) { d.Classes = nil },
 		"queue":          func(d *Deps) { d.Queue = nil },
 		"tool servers":   func(d *Deps) { d.ToolServers = nil },
 		"tokens":         func(d *Deps) { d.Tokens = nil },

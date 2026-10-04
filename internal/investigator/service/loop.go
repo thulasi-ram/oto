@@ -31,6 +31,25 @@ package service
 // ⛔ THE PER-CALL CONTROLS NEVER END A RUN. A call outside the allowlist is refused; one
 // past its timeout is a `timeout`; a result past the size cap is `truncated` — each is
 // recorded on its Step and answered to the model, and the run continues (ADR 0053 §6).
+//
+// ⭐⭐ A FINDING IS CLASSIFIED ONLY IN THE OPERATOR'S WORDS (ADR 0053 §5, git-bug 4298aa0).
+// When the org has classes the model is told the set in its prompt and offered one more
+// Tool, `oto_classify`, whose one argument is an enum of exactly the operator's classes
+// and `unclassified`. The loop answers that call itself — it reads nothing — and:
+//
+//   - a word in the set is recorded as an `ok` Step and is the run's pick (a later
+//     valid call replaces it: the last word the model said is its answer);
+//   - a word OUTSIDE the set is REFUSED on the record, and the refusal answers the
+//     model with the set, so its next turn is the re-ask — the transcript shows the
+//     word it tried and that oto did not take it;
+//   - a run that ends without a word in the set — silence, only refused words, or a
+//     budget first — is `unclassified`, which is always admissible and is the right
+//     answer under doubt. ⛔ A value outside the set is never stored.
+//
+// The classify call is the shape of the answer, not a look at anything, so it does not
+// count against the step budget and is not one of the run's Tool calls; it is still a
+// Step, because what the model said is the record. With no classes nothing is offered,
+// the prompt is the Investigator's own, and the Finding carries no classification.
 
 import (
 	"context"
@@ -91,6 +110,9 @@ type plan struct {
 	budgets domain.Budgets
 	scope   db.TenantScope
 	run     RunSubject
+	// classes is the org's Classification set as the run read it when it began. Empty:
+	// nothing is offered and the Finding carries no classification.
+	classes domain.ClassSet
 }
 
 // outcome is what one run came to.
@@ -99,6 +121,11 @@ type outcome struct {
 	finding   string
 	spent     domain.Usage
 	toolCalls int
+	// picked is the last word in the set the model classified with, "" for none;
+	// classification is what the Finding is stored with once the run has ended
+	// (domain.ClassSet.Settle) — "" when no set was offered.
+	picked         string
+	classification string
 }
 
 // stepSink records one Step. An error from it is oto failing to keep its record,
@@ -116,20 +143,44 @@ func (s *Service) runLoop(ctx context.Context, p plan, startedAt time.Time, reco
 	wallCtx, cancel := context.WithTimeout(ctx, max(deadline.Sub(s.now()), 0))
 	defer cancel()
 
-	schemas := make([]domain.ToolSchema, 0, len(p.offered))
+	schemas := make([]domain.ToolSchema, 0, len(p.offered)+1)
 	byName := make(map[string]Tool, len(p.offered))
 	for _, t := range p.offered {
 		schemas = append(schemas, t.Schema())
 		byName[t.Schema().Name] = t
 	}
+	prompt := p.prompt
+	classifying := !p.classes.Empty()
+	if classifying {
+		schema, err := p.classes.ClassifySchema()
+		if err != nil {
+			return outcome{}, err
+		}
+		schemas = append(schemas, schema)
+		prompt += "\n\n" + p.classes.ClassifyPrompt()
+	}
 
-	messages := []domain.Message{domain.SystemMessage(p.prompt), domain.UserMessage(p.subject)}
+	messages := []domain.Message{domain.SystemMessage(prompt), domain.UserMessage(p.subject)}
 	var (
 		out outcome
 		seq int
 	)
 	next := func() int { seq++; return seq }
-	end := func(e domain.Ending) (outcome, error) { out.ending = e; return out, nil }
+	end := func(e domain.Ending) (outcome, error) {
+		out.ending, out.classification = e, p.classes.Settle(out.picked)
+		return out, nil
+	}
+	// takeClassification answers one `oto_classify` call and records it. It is not a
+	// Tool call against the step budget (the loop comment says why), and never ends
+	// the run.
+	takeClassification := func(call domain.ToolCall) error {
+		o, result := answerClassify(p.classes, call, &out)
+		if err := record(ctx, domain.NewToolStep(next(), call, o, result, 0, s.now())); err != nil {
+			return err
+		}
+		messages = append(messages, domain.ToolResultMessage(call.ID, result))
+		return nil
+	}
 	pastWall := func() bool { return wallCtx.Err() != nil || !s.now().Before(deadline) }
 	wallSpent := func() (outcome, error) {
 		return end(domain.EndedBy(domain.ReasonWallTime,
@@ -192,11 +243,24 @@ func (s *Service) runLoop(ctx context.Context, p plan, startedAt time.Time, reco
 
 		messages = append(messages, domain.AssistantMessage(turn))
 		for i, call := range turn.ToolCalls {
+			if classifying && call.Name == domain.ClassifyTool {
+				if err := takeClassification(call); err != nil {
+					return out, err
+				}
+				continue
+			}
 			if out.toolCalls >= p.budgets.MaxSteps {
 				// ⭐ WHAT THE MODEL ASKED FOR NEXT IS STILL RECORDED — as refused, with
 				// the reason — so the transcript ends where the model was, not where
-				// oto stopped listening.
+				// oto stopped listening. A classification among them is still taken:
+				// it costs no step, and the partial Finding is classified by it.
 				for _, rest := range turn.ToolCalls[i:] {
+					if classifying && rest.Name == domain.ClassifyTool {
+						if err := takeClassification(rest); err != nil {
+							return out, err
+						}
+						continue
+					}
 					msg := fmt.Sprintf("not run: the step budget of %d Tool calls is spent", p.budgets.MaxSteps)
 					if err := record(ctx, domain.NewToolStep(next(), rest, domain.OutcomeRefused, msg, 0, s.now())); err != nil {
 						return out, err
@@ -220,6 +284,26 @@ func (s *Service) runLoop(ctx context.Context, p plan, startedAt time.Time, reco
 			messages = append(messages, domain.ToolResultMessage(call.ID, result))
 		}
 	}
+}
+
+// answerClassify answers one `oto_classify` call: a word in the set becomes the run's
+// pick and is answered `ok`; anything else is refused and answered with the set, so
+// the model hears exactly what it may say before its next turn — that answer IS the
+// re-ask. It never fails the run.
+func answerClassify(set domain.ClassSet, call domain.ToolCall, out *outcome) (domain.ToolOutcome, string) {
+	picked := domain.ParseClassifyCall(call.Arguments)
+	if set.Admits(picked) {
+		out.picked = picked
+		return domain.OutcomeOK, fmt.Sprintf("recorded: this Finding is classified %s", picked)
+	}
+	said := fmt.Sprintf("%q is", picked)
+	if picked == "" {
+		said = "the arguments name no class, which is"
+	}
+	return domain.OutcomeRefused, fmt.Sprintf(
+		"refused: %s not one of this organisation's classes. Call %s again with exactly one of: %s. "+
+			"A Finding that ends without one is recorded %s.",
+		said, domain.ClassifyTool, strings.Join(set.Answers(), ", "), domain.Unclassified)
 }
 
 // callTool runs one call and says what came of it. It never fails the run.

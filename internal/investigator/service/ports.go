@@ -102,9 +102,10 @@ type InvestigationStore interface {
 	// the minimum interval decides on. Inside a transaction.
 	LockSubjectRuns(ctx context.Context, s db.TenantScope, investigatorID uuid.UUID, kind domain.SubjectKind,
 		subjectID uuid.UUID) (domain.SubjectRuns, error)
-	// Finish ends a run that has not ended. The row is frozen from then on.
+	// Finish ends a run that has not ended, with its Finding and the class it was
+	// given ("" for none). The row is frozen from then on.
 	Finish(ctx context.Context, s db.TenantScope, id uuid.UUID, end domain.Ending, spent domain.Usage,
-		toolCalls int, finding string, at time.Time) error
+		toolCalls int, finding, classification string, at time.Time) error
 	// AppendStep writes one transcript entry. There is no method that changes one.
 	AppendStep(ctx context.Context, s db.TenantScope, investigationID uuid.UUID, step domain.Step) error
 	Steps(ctx context.Context, s db.TenantScope, investigationID uuid.UUID) ([]domain.Step, error)
@@ -114,6 +115,18 @@ type InvestigationStore interface {
 	// kind, newest first: an Incident's own, or its member Cases'.
 	SubjectFindings(ctx context.Context, s db.TenantScope, kind domain.SubjectKind, subjectIDs []uuid.UUID,
 		except uuid.UUID, limit int) ([]domain.PriorFinding, error)
+}
+
+// ClassStore is where the org's Classification set is kept (ADR 0053 §5, git-bug
+// 4298aa0), satisfied by `investigator/repository.ClassRepository`.
+//
+// ⛔ REPLACING THE SET TOUCHES NO FINDING. A Finding copied the NAME it was given onto
+// its own row, so there is nothing here that could rewrite one — and nothing should.
+type ClassStore interface {
+	// ClassSet reads the set in the operator's order; empty when they wrote none.
+	ClassSet(ctx context.Context, s db.TenantScope) (domain.ClassSet, error)
+	// ReplaceClassSet writes the whole set, in the caller's transaction.
+	ReplaceClassSet(ctx context.Context, s db.TenantScope, set domain.ClassSet, at time.Time) error
 }
 
 // CaseReader reads the Case an Investigation is about, satisfied in `internal/app`

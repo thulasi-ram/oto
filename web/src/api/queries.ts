@@ -451,6 +451,9 @@ export const FRESHNESS: Readonly<Record<string, Freshness>> = {
   "settings.channelConnections": { by: "mutation" },
   "settings.policies": { by: "mutation" },
   "settings.correlators": { by: "mutation" },
+  // The Classification set is written on the screen that reads it, and its save
+  // writes the server's answer back; no frame is about it.
+  "settings.investigationClasses": { by: "mutation" },
   // Settings, like the policies beside them: creating, editing and deleting a
   // A template is written, edited and deleted on the screen that reads the list,
   // and all three invalidate it. No stream frame can change one — a template is

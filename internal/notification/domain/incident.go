@@ -57,6 +57,10 @@ type IncidentFinding struct {
 	Investigator string
 	Version      int
 	Summary      string
+	// Classification is the class the Finding was given — one of the org's own, or
+	// `unclassified` — and "" when the org had no classes (ADR 0053 §5). A model's
+	// judgement: carried, never routed on.
+	Classification string
 	// Partial is true when a budget stopped the run before it concluded.
 	Partial     bool
 	ConcludedAt time.Time

@@ -183,6 +183,9 @@ func findingsJSON(prior []domain.PriorFinding) (string, error) {
 		Partial         bool   `json:"partial"`
 		EndedAt         any    `json:"ended_at"`
 		Finding         string `json:"finding"`
+		// Classification is the class it was given then, absent when none was asked
+		// for — a word from the set as it stood THEN, which today's may not hold.
+		Classification string `json:"classification,omitempty"`
 	}
 	out := make([]finding, 0, len(prior))
 	for _, p := range prior {
@@ -190,6 +193,7 @@ func findingsJSON(prior []domain.PriorFinding) (string, error) {
 			InvestigationID: p.InvestigationID.String(), SubjectKind: string(p.SubjectKind), SubjectID: p.SubjectID.String(),
 			Investigator: p.InvestigatorName, Version: p.VersionNumber, Status: string(p.Status),
 			Partial: p.Status == domain.StatusExhausted, EndedAt: timeOrNil(p.EndedAt), Finding: p.Finding,
+			Classification: p.Classification,
 		})
 	}
 	return asJSON(map[string]any{"findings": out})

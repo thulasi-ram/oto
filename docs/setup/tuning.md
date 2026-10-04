@@ -535,6 +535,14 @@ delivered that nobody asked for. `refired` is now the only reason that always br
 | `raw_retention_days` | `30` | How long raw webhook payloads are kept before their partition is dropped, permanently. | Nothing in `alertmanager.yml` bears on it. The thirty is **chosen**, not derived: a replay is refused when the alerts a batch would touch have moved on, never because the batch is old, so this is the depth of the rejection and failed-batch feeds and the window a replay can be attempted in. See **Retention**, below. |
 | `event_retention_months` | `13` | How long the instant-by-instant timeline is kept before the month is dropped, permanently. | The only setting on this page that destroys something oto cannot rebuild. See **Retention**, below, before you lower it. |
 
+**Classification is not a key here, and oto ships no value for it.** The classes a Finding may be
+put in (ADR 0053 §5) are a list you write under Settings → Classification (`PUT
+/api/v1/investigation-classes`), not an `orgs.settings` key: names are lower-case letters, digits,
+`_` and `-`, at most 50 classes, and `unclassified` is reserved because it is always admissible and
+is the model's answer under doubt. With the list empty — the default — Findings carry no
+classification. A classification goes outbound with its Finding, and **paging on a classification is
+paging on a model's judgement**; see the webhook guide's *Classification* section.
+
 **`expired` is not `resolved`, and the distinction is load-bearing.** `expired` means *oto stopped
 hearing about this* — Prometheus or Alertmanager went away. `resolved` requires an explicit
 `status="resolved"` observation. The reaper will never expire a case while the alert source is

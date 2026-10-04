@@ -40,6 +40,7 @@ type Service struct {
 	rules          RuleReader
 	findings       FindingPublisher
 	orgControls    OrgControls
+	classes        ClassStore
 	queue          JobQueue
 	limits         Limits
 	tools          []Tool
@@ -73,7 +74,10 @@ type Deps struct {
 	Rules       RuleReader
 	Findings    FindingPublisher
 	OrgControls OrgControls
-	Queue       JobQueue
+	// Classes is the org's Classification set (ADR 0053 §5, git-bug 4298aa0): what a
+	// run offers the model to classify its Finding in, and the settings API's store.
+	Classes ClassStore
+	Queue   JobQueue
 	// Limits are the built-in Tools' per-call controls. Zero fields take
 	// DefaultLimits. A ToolServer's Tools run under the ToolServer's own.
 	Limits Limits
@@ -115,6 +119,8 @@ func New(d Deps) (*Service, error) {
 		return nil, errors.New("investigator: a Finding publisher is required")
 	case d.OrgControls == nil:
 		return nil, errors.New("investigator: the org's controls are required; a run must be stoppable and budgeted")
+	case d.Classes == nil:
+		return nil, errors.New("investigator: the org's class store is required; a Finding is classified only in the operator's words")
 	case d.Queue == nil:
 		return nil, errors.New("investigator: a job queue is required; an Investigation runs asynchronously")
 	case d.ToolServers == nil || d.Tokens == nil || d.ToolDialer == nil:
@@ -131,7 +137,7 @@ func New(d Deps) (*Service, error) {
 		investigators: d.Investigators, investigations: d.Investigations,
 		cases: d.Cases, incidents: d.Incidents, declarer: d.Declarer,
 		timeline: d.Timeline, rules: d.Rules, findings: d.Findings,
-		orgControls: d.OrgControls, queue: d.Queue, limits: d.Limits.orDefault(),
+		orgControls: d.OrgControls, classes: d.Classes, queue: d.Queue, limits: d.Limits.orDefault(),
 		toolServers: d.ToolServers, tokens: d.Tokens, toolDialer: d.ToolDialer, redaction: d.Redaction,
 	}
 	s.tools = builtinTools(s)

@@ -221,11 +221,17 @@ type Incident struct {
 // Investigator version that saw it. ⛔ IT CARRIES NO VERDICT ON DELIVERY: a Finding
 // never decides whether anyone is told (ADR 0053 §2), and a receiver that pages on one
 // is paging on a model's judgement.
+//
+// `classification` is the class the Finding was given in the org's own vocabulary, or
+// `unclassified` (ADR 0053 §5), and is ABSENT when the org wrote no classes. ⛔ ADDITIVE,
+// for `finding`'s own reason. A receiver that pages on it is paging on a model's
+// judgement, and the docs say so in those words.
 type IncidentFinding struct {
 	InvestigationID string    `json:"investigation_id"`
 	Investigator    string    `json:"investigator"`
 	Version         int       `json:"version"`
 	Summary         string    `json:"summary"`
+	Classification  string    `json:"classification,omitempty"`
 	Partial         bool      `json:"partial"`
 	ConcludedAt     time.Time `json:"concluded_at"`
 }

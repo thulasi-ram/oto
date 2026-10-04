@@ -798,7 +798,10 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		Rules:       investigationRules{rules: c.Rules},
 		Findings:    findingPublisher{repo: enrichmentRepo},
 		OrgControls: investigationControls{identity: c.Identity},
-		Queue:       c.enqueuer,
+		// The org's Classification set (ADR 0053 §5, git-bug 4298aa0): this module's
+		// own table, read once as a run begins and replaced whole by the settings API.
+		Classes: investigatorrepo.NewClassRepository(general),
+		Queue:   c.enqueuer,
 		// The built-in Tools' per-call controls (ADR 0053 §6), stated where every
 		// other deployment number is chosen. A ToolServer's Tools run under the
 		// limits its operator set on it (migration 00093).

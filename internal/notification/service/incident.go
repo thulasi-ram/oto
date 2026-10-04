@@ -525,6 +525,7 @@ func (v *ViewService) incidentCard(
 			Investigator:    fd.Investigator,
 			Version:         fd.Version,
 			Summary:         fd.Summary,
+			Classification:  fd.Classification,
 			Partial:         fd.Partial,
 			ConcludedAt:     fd.ConcludedAt.UTC(),
 		}

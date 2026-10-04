@@ -1369,6 +1369,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/investigation-classes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the org's Classification set
+         * @description The closed set of classes an Investigation classifies its Finding in (ADR 0053 §5), in the
+         *     operator's order. **oto ships no classes**: a fresh org's set is empty, and while it is empty a
+         *     Finding carries no classification at all. `unclassified` is never in the set — it is always
+         *     admissible, and is the right answer under doubt.
+         */
+        get: operations["getInvestigationClasses"];
+        /**
+         * Replace the org's Classification set
+         * @description Writes the whole set, replacing the old one; an empty `classes` is legal and stops Findings
+         *     being classified. A name is lower-case letters, digits, `_` and `-`, starting with a letter, at
+         *     most 63 characters, and unique; `unclassified` is reserved. Each refusal is a `422`
+         *     (`investigation_classes_invalid`) naming the class it is about. At most 50 classes.
+         *
+         *     A run reads the set once, when it begins, and its Finding is classified in that set. **No
+         *     Finding is rewritten by a change here**: each keeps the class it was given, because it copied the
+         *     name. A classification travels outbound with its Finding, and paging on one is paging on a
+         *     model's judgement.
+         */
+        put: operations["replaceInvestigationClasses"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/rule-snapshots": {
         parameters: {
             query?: never;
@@ -8005,7 +8040,8 @@ export interface components {
             tokens_out: number;
             /**
              * Format: int32
-             * @description Tool calls made, refused ones included.
+             * @description Tool calls made, refused ones included. The `oto_classify` call is not one of them: it is the
+             *     shape of the answer, not a look at anything, and costs no step.
              */
             tool_calls: number;
             /**
@@ -8013,6 +8049,15 @@ export interface components {
              *     snapshot of what was seen, and never an input to whether a notification is sent.
              */
             finding: string | null;
+            /**
+             * @description The class its Finding was given (ADR 0053 §5): one of the org's own classes as the set stood
+             *     when the run began, or `unclassified` — the set was offered and the model named nothing in it,
+             *     out of doubt, silence, or a word outside the set, which is refused on the record in the Steps.
+             *     `null` when there is no Finding or the org had written no classes: nobody was asked. A copy of
+             *     the name, never re-read against today's set, so a Finding keeps its class when the set changes.
+             *     ⚠️ It is a model's judgement — paging on it is paging on a model's judgement.
+             */
+            classification: string | null;
             /** @description Whether a budget stopped the run before it concluded (`status` is `exhausted`). */
             partial: boolean;
             /** @description Who asked, frozen when they asked. */
@@ -8200,6 +8245,42 @@ export interface components {
         };
         InvestigationResponse: {
             data: components["schemas"]["InvestigationDetailDTO"];
+            meta: components["schemas"]["Meta"];
+        };
+        /** @description One class of the org's Classification set, as the operator wrote it. */
+        InvestigationClassDTO: {
+            /** @description The word the model must say back exactly, a card quotes and a receiver matches on. */
+            name: string;
+            /** @description What the class means, in the operator's words — what the model is told. May be empty. */
+            description: string;
+        };
+        /**
+         * @description The org's Classification set (ADR 0053 §5), in the operator's order. Empty — oto ships no classes —
+         *     means Findings carry no classification. `unclassified` is never listed: it is always admissible.
+         */
+        InvestigationClassSetDTO: {
+            classes: components["schemas"]["InvestigationClassDTO"][];
+        };
+        /** @description One class, as the operator writes it. */
+        InvestigationClassRequest: {
+            /**
+             * @description Lower-case letters, digits, `_` and `-`, starting with a letter. Unique in the set; `unclassified`
+             *     is reserved.
+             */
+            name: string;
+            /**
+             * @description What the class means. The model is told it.
+             * @default
+             */
+            description: string;
+        };
+        /** @description The org's whole Classification set, replacing the old one. */
+        ReplaceInvestigationClassesRequest: {
+            /** @description The whole set, in order. Empty stops Findings being classified. */
+            classes: components["schemas"]["InvestigationClassRequest"][];
+        };
+        InvestigationClassSetResponse: {
+            data: components["schemas"]["InvestigationClassSetDTO"];
             meta: components["schemas"]["Meta"];
         };
         IncidentListResponse: {
@@ -11746,6 +11827,65 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    getInvestigationClasses: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The set, in the operator's order. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvestigationClassSetResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    replaceInvestigationClasses: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReplaceInvestigationClassesRequest"];
+            };
+        };
+        responses: {
+            /** @description The set as it now stands. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvestigationClassSetResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
             429: components["responses"]["RateLimited"];
             500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];

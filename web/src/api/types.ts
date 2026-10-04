@@ -271,6 +271,13 @@ export type InvestigationStatus = S["InvestigationStatus"];
 export type InvestigationReason = S["InvestigationReason"];
 /** What came of one Tool call. `null` on a model turn. */
 export type StepOutcome = NonNullable<InvestigationStep["outcome"]>;
+/**
+ * The org's Classification set (ADR 0053 §5): the operator's closed vocabulary a
+ * Finding is classified in. Empty by default — oto ships no classes — and
+ * `unclassified` is never in it, because it is always admissible.
+ */
+export type InvestigationClassSet = S["InvestigationClassSetDTO"];
+export type InvestigationClass = S["InvestigationClassDTO"];
 
 /* ---- requests ----------------------------------------------------------- */
 
@@ -281,6 +288,7 @@ export type AddIncidentCaseRequest = S["AddIncidentCaseRequest"];
 export type MoveIncidentCaseRequest = S["MoveIncidentCaseRequest"];
 export type CreateCorrelatorRequest = S["CreateCorrelatorRequest"];
 export type RequestInvestigationRequest = S["RequestInvestigationRequest"];
+export type ReplaceInvestigationClassesRequest = S["ReplaceInvestigationClassesRequest"];
 export type UpdateCorrelatorRequest = S["UpdateCorrelatorRequest"];
 export type CommentRequest = S["CommentRequest"];
 /** Exactly one of `until` and `duration_seconds`. Both, or neither, is a 422. */

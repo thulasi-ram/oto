@@ -108,6 +108,35 @@ describe("a completed Investigation", () => {
     expectNoUndefined(shownRun());
   });
 
+  it("⭐ says the class a Finding was given as the model's judgement, beside who concluded it", async () => {
+    const { row, detail } = run({ classification: "deploy-regression" });
+    mount({ runs: [row], details: [detail] });
+
+    await until(() => expect(finding()).toBeTruthy());
+    const cls = finding().querySelector("[data-classification]");
+    expect(cls, "the Finding does not say its class").not.toBeNull();
+    expect(cls!.textContent).toContain("deploy-regression");
+    expect(cls!.textContent).toMatch(/by the model/);
+    expect(cls!.textContent).toMatch(/a model's judgement/);
+  });
+
+  it("says `unclassified` as the answer it is, and says nothing when no class was asked for", async () => {
+    const unclassified = run({ classification: "unclassified" });
+    mount({ runs: [unclassified.row], details: [unclassified.detail] });
+    await until(() => expect(finding()).toBeTruthy());
+    expect(finding().querySelector("[data-classification]")!.textContent).toMatch(
+      /unclassified.*none of this organisation's classes clearly fit/s,
+    );
+  });
+
+  it("draws no classification for a Finding the org wrote no classes for", async () => {
+    const { row, detail } = run(); // classification: null — oto ships no classes
+    mount({ runs: [row], details: [detail] });
+    await until(() => expect(finding()).toBeTruthy());
+    expect(finding().querySelector("[data-classification]")).toBeNull();
+    expect(finding().textContent).not.toMatch(/classif/i);
+  });
+
   it("names the model and states the tokens it spent", async () => {
     const { row, detail } = run();
     mount({ runs: [row], details: [detail] });

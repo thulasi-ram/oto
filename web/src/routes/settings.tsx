@@ -1,5 +1,6 @@
 /**
- * `/settings/:section` — sources, clusters, channels, Correlators, tuning and tokens.
+ * `/settings/:section` — sources, clusters, channels, Correlators, Classification, tuning
+ * and tokens.
  *
  * The section is in the path rather than in component state so a settings screen
  * is linkable like everything else. "Look at the channel config" should be a URL.
@@ -16,6 +17,7 @@ import { Navigate, useParams } from "@solidjs/router";
 
 import { SidebarPanel, SubNavLink } from "~/components/SidebarSlot";
 import { ChannelsSection } from "~/features/settings/ChannelsSection";
+import { ClassificationSection } from "~/features/settings/ClassificationSection";
 import { CorrelatorsSection } from "~/features/settings/CorrelatorsSection";
 import { SourcesSection } from "~/features/settings/SourcesSection";
 import { TokensSection } from "~/features/settings/TokensSection";
@@ -32,6 +34,8 @@ const SECTIONS = [
   { id: "sources", label: "Sources and clusters" },
   { id: "channels", label: "Channels" },
   { id: "correlators", label: "Correlators" },
+  // ADR 0053 §5: the operator's own words a Finding is classified in.
+  { id: "classification", label: "Classification" },
   { id: "tuning", label: "Tuning" },
   { id: "tokens", label: "Access tokens" },
 ] as const;
@@ -122,6 +126,9 @@ const SettingsRoute: Component = () => {
                 </Match>
                 <Match when={params.section === "correlators"}>
                   <CorrelatorsSection />
+                </Match>
+                <Match when={params.section === "classification"}>
+                  <ClassificationSection />
                 </Match>
                 <Match when={params.section === "tuning"}>
                   <TuningSection />

@@ -146,7 +146,7 @@ The `incident` object:
 | `drawn_by` | `{kind: "human", label}` or `{kind: "correlator", correlator_id}`. |
 | `members` | Every spell of every Case that has been in it, current and removed, in the order they joined. |
 | `link` | oto's own page for it, when oto has a public URL configured. |
-| `finding` | The latest Finding an Investigation of the Incident reached, absent until one has: `investigation_id`, `investigator`, `version`, `summary`, `partial` (a budget stopped the run first) and `concluded_at`. It is what a model concluded **at `concluded_at`**, never live state — and paging on it is paging on a model's judgement. It is on every Incident fact once one exists; `finding` is the fact that says a new one arrived. |
+| `finding` | The latest Finding an Investigation of the Incident reached, absent until one has: `investigation_id`, `investigator`, `version`, `summary`, `classification`, `partial` (a budget stopped the run first) and `concluded_at`. It is what a model concluded **at `concluded_at`**, never live state — and paging on it is paging on a model's judgement. It is on every Incident fact once one exists; `finding` is the fact that says a new one arrived. `classification` is one of **your** classes (Settings → Classification) or `unclassified`, and is absent when your org has written no classes — see *Classification*, below. |
 
 Each member: `case_id`, `case_number`, `case_state` (`open`/`closed`), `alert_id`, `alert_name`,
 `labels`, `added_at`, `added_by`, and on a removed spell `removed_at`, `removed_by_label` and — when
@@ -160,6 +160,24 @@ pick.
 
 A full `case_added` envelope is checked in at
 [`internal/channels/render/webhookjson/testdata/incident_case_added.golden.json`](../../internal/channels/render/webhookjson/testdata/incident_case_added.golden.json).
+
+### Classification — paging on one is paging on a model's judgement
+
+A Finding may carry a **classification**: the class an Investigator put it in, chosen from a closed
+set **your operator wrote** (Settings → Classification, or `PUT /api/v1/investigation-classes`), or
+`unclassified` — always allowed, and the model's answer whenever none of your classes clearly fits or
+it is unsure. oto ships **no** classes: until you write some, no Finding is classified and the key is
+absent. A Finding keeps the class it was given even if you later rename or remove that class.
+
+It travels outbound — as `incident.finding.classification` on every Incident fact, and as
+`enrichments["investigator.<name>"].payload.classification` on a Case's facts once its Finding is
+published — so a receiver can route on it.
+
+> ⚠️ **Paging on a classification is paging on a model's judgement.** A class is what a model
+> concluded from what it could read at `concluded_at`; it can be wrong, and `unclassified` means
+> "it would not say", not "it is fine". oto itself never decides whether anyone is told on the
+> strength of a Finding or its class. If your receiver pages on one, that is your receiver's
+> decision, and it inherits the model's error rate.
 
 ---
 

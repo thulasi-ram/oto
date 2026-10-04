@@ -31,6 +31,14 @@
  * green transcript. A screen that showed the partial Finding as a Finding would
  * be the silent breach the ADR forbids, committed by the UI rather than the loop.
  *
+ * ⭐ A CLASSIFICATION IS THE INVESTIGATOR'S WORD, SAID AS SUCH (ADR 0053 §5, git-bug
+ * 4298aa0). The class a Finding was given sits under the caption that names who
+ * concluded it — "classified … by the model" — never as a badge on the subject,
+ * which a reader would take for a fact about the signal. It is the operator's own
+ * word as the set stood when the run began: a Finding keeps it when the set
+ * changes, so the panel never re-reads it against today's set. A run with no
+ * classification (the org wrote no classes) says nothing about one.
+ *
  * ⭐ LATEST BY DEFAULT, EVERY EARLIER RUN ONE CLICK AWAY. ADR 0053 §4: a subject
  * may have many Investigations, each seeing the last one's Finding; the latest is
  * shown. The list below the Finding is the rest, latest first, and picking one
@@ -520,6 +528,9 @@ const Reason: Component<{ readonly run: Investigation; readonly lead: string }> 
   </div>
 );
 
+/** The one class oto names: always admissible, and the answer under doubt. */
+const UNCLASSIFIED = "unclassified";
+
 /**
  * The Finding, captioned with the instant it was reached and the Investigator
  * version that reached it. ⛔ Never rendered without that caption.
@@ -537,6 +548,25 @@ const FindingView: Component<{ readonly run: Investigation }> = (props) => {
         (<RelativeTime value={r().ended_at} label="Reached" /> ago) — what it concluded then, not
         the state now.
       </figcaption>
+      <Show when={r().classification}>
+        {(cls) => (
+          <p class="mt-2xs text-meta text-ink-subtle" data-classification>
+            <Show
+              when={cls() !== UNCLASSIFIED}
+              fallback={
+                <>
+                  The model left it <span class="font-mono text-ink">{UNCLASSIFIED}</span>: none
+                  of this organisation's classes clearly fit, or it was unsure.
+                </>
+              }
+            >
+              Classified <span class="font-mono text-ink">{cls()}</span> by the model, from this
+              organisation's classes as they stood when it ran — a model's judgement, not a fact
+              about the signal.
+            </Show>
+          </p>
+        )}
+      </Show>
       <Show
         when={r().finding}
         fallback={

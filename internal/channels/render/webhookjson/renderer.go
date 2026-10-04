@@ -235,6 +235,7 @@ func mapIncident(i domain.IncidentView) *Incident {
 			Investigator:    f.Investigator,
 			Version:         f.Version,
 			Summary:         f.Summary,
+			Classification:  f.Classification,
 			Partial:         f.Partial,
 			ConcludedAt:     f.ConcludedAt.UTC(),
 		}

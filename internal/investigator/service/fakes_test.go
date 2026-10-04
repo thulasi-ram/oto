@@ -271,7 +271,7 @@ func anchor(r domain.Investigation) time.Time {
 	return r.RequestedAt
 }
 
-func (m *memInvestigations) Finish(_ context.Context, s db.TenantScope, id uuid.UUID, end domain.Ending, spent domain.Usage, calls int, finding string, at time.Time) error {
+func (m *memInvestigations) Finish(_ context.Context, s db.TenantScope, id uuid.UUID, end domain.Ending, spent domain.Usage, calls int, finding, class string, at time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	r, ok := m.rows[id]
@@ -282,7 +282,12 @@ func (m *memInvestigations) Finish(_ context.Context, s db.TenantScope, id uuid.
 		// `investigations_frozen`, said in memory.
 		return errs.Conflict("investigation_already_ended", "frozen")
 	}
+	if class != "" && finding == "" {
+		// `investigations_class_ck`, said in memory: a class belongs to a Finding.
+		return errs.Newf(errs.KindInternal, "investigations_class_ck", "classified %q with no Finding", class)
+	}
 	r.Status, r.Ending, r.Spent, r.ToolCalls, r.Finding, r.EndedAt = end.Status, end, spent, calls, finding, at
+	r.Classification = class
 	if end.Status != domain.StatusSkipped && r.StartedAt.IsZero() {
 		r.StartedAt = at
 	}
@@ -320,7 +325,7 @@ func (m *memInvestigations) PriorFindings(_ context.Context, s db.TenantScope, k
 		if r.OrgID == s.OrgID() && r.AlertKey == key && r.ID != except && r.Finding != "" {
 			out = append(out, domain.PriorFinding{InvestigationID: r.ID, SubjectKind: r.SubjectKind, SubjectID: r.SubjectID,
 				InvestigatorName: r.InvestigatorName, VersionNumber: r.VersionNumber, Status: r.Status,
-				Finding: r.Finding, EndedAt: r.EndedAt})
+				Finding: r.Finding, Classification: r.Classification, EndedAt: r.EndedAt})
 		}
 	}
 	if len(out) > limit {
@@ -340,7 +345,7 @@ func (m *memInvestigations) SubjectFindings(_ context.Context, s db.TenantScope,
 			r.ID != except && r.Finding != "" {
 			out = append(out, domain.PriorFinding{InvestigationID: r.ID, SubjectKind: r.SubjectKind, SubjectID: r.SubjectID,
 				InvestigatorName: r.InvestigatorName, VersionNumber: r.VersionNumber, Status: r.Status,
-				Finding: r.Finding, EndedAt: r.EndedAt})
+				Finding: r.Finding, Classification: r.Classification, EndedAt: r.EndedAt})
 		}
 	}
 	slices.SortFunc(out, func(a, b domain.PriorFinding) int { return b.EndedAt.Compare(a.EndedAt) })
@@ -479,4 +484,24 @@ func (t funcTool) Schema() domain.ToolSchema { return mustSchema(t.name, "a test
 
 func (t funcTool) Call(ctx context.Context, _ db.TenantScope, _ RunSubject, _ json.RawMessage) (string, error) {
 	return t.fn(ctx)
+}
+
+// memClasses is the org's Classification set. ⛔ Like the table, it knows nothing about
+// the runs: replacing the set cannot reach a Finding.
+type memClasses struct {
+	mu  sync.Mutex
+	set domain.ClassSet
+}
+
+func (m *memClasses) ClassSet(context.Context, db.TenantScope) (domain.ClassSet, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.set, nil
+}
+
+func (m *memClasses) ReplaceClassSet(_ context.Context, _ db.TenantScope, set domain.ClassSet, _ time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.set = set
+	return nil
 }

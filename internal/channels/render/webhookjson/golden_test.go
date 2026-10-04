@@ -336,9 +336,38 @@ func incidentFindingView() *domain.NotificationView {
 		Investigator:    "firstlook",
 		Version:         2,
 		Summary:         "The checkout deploy at 17:35 doubled the error rate; the crash loop began two minutes later.",
+		Classification:  "deploy-regression",
 		ConcludedAt:     renderedAt.Add(-2 * time.Minute),
 	}
 	return v
+}
+
+// TestAFindingsClassificationTravelsOutboundOnlyWhenOneWasAsked — ADR 0053 §5 (git-bug
+// 4298aa0): the class goes out with the Finding as `incident.finding.classification`, in
+// the operator's word or `unclassified`; when the org wrote no classes the key is absent,
+// never "" and never `unclassified` — nobody was asked.
+func TestAFindingsClassificationTravelsOutboundOnlyWhenOneWasAsked(t *testing.T) {
+	t.Parallel()
+	finding := func(v *domain.NotificationView) map[string]json.RawMessage {
+		t.Helper()
+		var env struct {
+			Incident struct {
+				Finding map[string]json.RawMessage `json:"finding"`
+			} `json:"incident"`
+		}
+		if err := json.Unmarshal(render(t, v).Payload, &env); err != nil {
+			t.Fatal(err)
+		}
+		return env.Incident.Finding
+	}
+	if got := string(finding(incidentFindingView())["classification"]); got != `"deploy-regression"` {
+		t.Errorf("incident.finding.classification = %s, want \"deploy-regression\"", got)
+	}
+	v := incidentFindingView()
+	v.Incident.Finding.Classification = ""
+	if got, ok := finding(v)["classification"]; ok {
+		t.Errorf("a Finding with no classification sent one: %s", got)
+	}
 }
 
 // TestAnIncidentEnvelopeNamesNoSignalAndNoCommand reads the KEYS and the sentence.

@@ -118,7 +118,7 @@ func TestPastTheConcurrencyARunWaitsAndIsNeverDropped(t *testing.T) {
 	}
 
 	// The slot frees; the waiting run takes it.
-	if err := r.investigations.Finish(context.Background(), r.scope, busy.ID, domain.Completed(), domain.Usage{}, 0, "", r.clock.Now()); err != nil {
+	if err := r.investigations.Finish(context.Background(), r.scope, busy.ID, domain.Completed(), domain.Usage{}, 0, "", "", r.clock.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := r.run(t, waiting.ID); got.Status != domain.StatusCompleted {

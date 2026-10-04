@@ -147,12 +147,12 @@ func TestAnEndedRunIsFrozenAndItsReasonBelongsToItsStatus(t *testing.T) {
 
 	// ⛔ exhausted/disabled is not a pair.
 	err := w.runs.Finish(w.h.Ctx, w.scope, run.ID, domain.Ending{Status: domain.StatusExhausted, Reason: domain.ReasonDisabled, Detail: "x"},
-		domain.Usage{}, 0, "", w.h.Now())
+		domain.Usage{}, 0, "", "", w.h.Now())
 	require.Error(t, err)
 
 	end := domain.EndedBy(domain.ReasonTokenBudget, "the token budget of 200000 was spent")
 	require.NoError(t, w.runs.Finish(w.h.Ctx, w.scope, run.ID, end, domain.Usage{InputTokens: 190000, OutputTokens: 12000}, 7,
-		"So far: a deploy.", w.h.Now().Add(time.Minute)))
+		"So far: a deploy.", "", w.h.Now().Add(time.Minute)))
 	got, err := w.runs.Get(w.h.Ctx, w.scope, run.ID)
 	require.NoError(t, err)
 	require.Equal(t, domain.StatusExhausted, got.Status)
@@ -164,7 +164,7 @@ func TestAnEndedRunIsFrozenAndItsReasonBelongsToItsStatus(t *testing.T) {
 	require.Equal(t, 1, got.VersionNumber)
 
 	// ⛔ Frozen: neither the repository nor a hand can change it now.
-	err = w.runs.Finish(w.h.Ctx, w.scope, run.ID, domain.Completed(), domain.Usage{}, 0, "", w.h.Now())
+	err = w.runs.Finish(w.h.Ctx, w.scope, run.ID, domain.Completed(), domain.Usage{}, 0, "", "", w.h.Now())
 	require.Equal(t, "investigation_already_ended", errs.CodeOf(err))
 	_, err = w.h.Pool.Exec(w.h.Ctx, `UPDATE investigations SET finding = 'better' WHERE id = $1`, run.ID)
 	require.Error(t, err)
@@ -187,7 +187,7 @@ func TestASkippedRunNeverStarted(t *testing.T) {
 
 	// A queued run skipped by its job also never started.
 	q := w.queued(t, "k", at)
-	require.NoError(t, w.runs.Finish(w.h.Ctx, w.scope, q.ID, domain.EndedBy(domain.ReasonDisabled, "off"), domain.Usage{}, 0, "", at))
+	require.NoError(t, w.runs.Finish(w.h.Ctx, w.scope, q.ID, domain.EndedBy(domain.ReasonDisabled, "off"), domain.Usage{}, 0, "", "", at))
 	got, err := w.runs.Get(w.h.Ctx, w.scope, q.ID)
 	require.NoError(t, err)
 	require.True(t, got.StartedAt.IsZero())
@@ -208,7 +208,7 @@ func TestASubjectsRunsAreLatestFirstAndPriorFindingsStayInTheirKey(t *testing.T)
 		require.NoError(t, err)
 		require.Equal(t, domain.StartBegan, w.start(t, run.ID, run.RequestedAt, 2))
 		require.NoError(t, w.runs.Finish(w.h.Ctx, w.scope, run.ID, domain.Completed(), domain.Usage{}, 0,
-			"finding "+string(rune('a'+i)), run.RequestedAt.Add(time.Second)))
+			"finding "+string(rune('a'+i)), "", run.RequestedAt.Add(time.Second)))
 		ids = append(ids, run.ID)
 	}
 	w.queued(t, "different", w.h.Now())
@@ -305,7 +305,7 @@ func TestStartHoldsTheOrgsConcurrencyAndNeedsATransaction(t *testing.T) {
 	require.Equal(t, 2, n)
 
 	// A slot frees; the waiting run takes it. A run already started is not queued.
-	require.NoError(t, w.runs.Finish(w.h.Ctx, w.scope, a.ID, domain.Completed(), domain.Usage{}, 0, "", at))
+	require.NoError(t, w.runs.Finish(w.h.Ctx, w.scope, a.ID, domain.Completed(), domain.Usage{}, 0, "", "", at))
 	require.Equal(t, domain.StartBegan, w.start(t, c.ID, at, 2))
 	require.Equal(t, domain.StartNotQueued, w.start(t, b.ID, at, 3))
 
@@ -405,7 +405,7 @@ func TestAnIncidentIsInvestigatedAsAWholeAtTheRow(t *testing.T) {
 		require.Equal(t, kind, run.SubjectKind)
 		require.Equal(t, "", run.AlertKey, "a run with no Alert key stores none")
 		require.Equal(t, domain.StartBegan, w.start(t, run.ID, at, 10))
-		require.NoError(t, w.runs.Finish(w.h.Ctx, w.scope, run.ID, domain.Completed(), domain.Usage{}, 0, finding, endedAt))
+		require.NoError(t, w.runs.Finish(w.h.Ctx, w.scope, run.ID, domain.Completed(), domain.Usage{}, 0, finding, "", endedAt))
 		return run
 	}
 	incident, caseA, caseB, outsider := uuid.New(), uuid.New(), uuid.New(), uuid.New()

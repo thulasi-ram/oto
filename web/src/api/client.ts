@@ -360,6 +360,11 @@ export function patchItem<T>(path: string, body: unknown, opts: RequestOptions =
   return getItem<T>(path, { ...opts, method: "PATCH", body });
 }
 
+/** A whole-resource replacement whose response body is an item envelope. */
+export function putItem<T>(path: string, body: unknown, opts: RequestOptions = {}): Promise<T> {
+  return getItem<T>(path, { ...opts, method: "PUT", body });
+}
+
 /** A mutation with no response body worth reading (204, or an ignored envelope). */
 export async function del(path: string, opts: RequestOptions = {}): Promise<void> {
   await request(path, { ...opts, method: "DELETE" });

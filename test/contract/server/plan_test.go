@@ -732,6 +732,24 @@ func plan() []probe {
 			method: http.MethodGet, tmpl: "/api/v1/incidents/{number}/investigations",
 			url: "/api/v1/incidents/999999/investigations", want: http.StatusNotFound,
 		},
+		// ADR 0053 §5 (git-bug 4298aa0): the org's Classification set. A fresh org reads
+		// it EMPTY — oto ships no classes — then writes two, and `unclassified` is driven
+		// to its 422 because it is reserved, not the operator's to write.
+		{method: http.MethodGet, tmpl: "/api/v1/investigation-classes", want: http.StatusOK},
+		{
+			method: http.MethodPut, tmpl: "/api/v1/investigation-classes",
+			body: map[string]any{"classes": []map[string]any{
+				{"name": "deploy-regression", "description": "A change we shipped broke it."},
+				{"name": "capacity"},
+			}},
+			want: http.StatusOK,
+		},
+		{
+			method: http.MethodPut, tmpl: "/api/v1/investigation-classes",
+			body: map[string]any{"classes": []map[string]any{{"name": "unclassified"}}},
+			want: http.StatusUnprocessableEntity,
+			why:  "unclassified is always admissible and is reserved; the set it was refused against stands",
+		},
 
 		/* -------------------------------------------------------- tool servers */
 		// ADR 0053 §3, 0054 §5 (git-bug 2e9a086): an operator's MCP server, configured,

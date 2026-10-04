@@ -247,6 +247,11 @@ type Investigation struct {
 	ToolCalls int
 	// Finding is what it concluded, "" for none. Partial when Status is exhausted.
 	Finding string
+	// Classification is the class its Finding was given (ADR 0053 §5): one of the
+	// org's classes as the set stood when the run read it, `unclassified`, or "" when
+	// the org had no classes and none was asked for. A copy of the name — it is never
+	// re-read against today's set, so a Finding keeps its class when the set changes.
+	Classification string
 
 	RequestedBy Requester
 	RequestedAt time.Time

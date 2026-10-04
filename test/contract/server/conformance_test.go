@@ -173,7 +173,10 @@ func TestTheRunningServerMatchesTheContract(t *testing.T) {
 //
 // ⬆️ 106 → 108 (ADR 0053 §4, git-bug 74ea849). An Incident's Investigations — list
 // and request — each with a probe that answers 2xx.
-const minimumSuccessfulOperations = 108
+//
+// ⬆️ 108 → 110 (ADR 0053 §5, git-bug 4298aa0). The org's Classification set — read and
+// replace — each with a probe that answers 2xx.
+const minimumSuccessfulOperations = 110
 
 /* -------------------------------------------------------------------------- */
 /* The three assertions                                                       */

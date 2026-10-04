@@ -500,6 +500,7 @@ func (r *incidentFacts) Incident(
 				Investigator:    f.InvestigatorName,
 				Version:         f.VersionNumber,
 				Summary:         f.Finding,
+				Classification:  f.Classification,
 				Partial:         f.Status == investigatordomain.StatusExhausted,
 				ConcludedAt:     f.EndedAt,
 			}

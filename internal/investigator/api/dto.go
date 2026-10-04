@@ -184,6 +184,7 @@ type InvestigationDTO struct {
 	TokensOut             int64                  `json:"tokens_out"`
 	ToolCalls             int                    `json:"tool_calls"`
 	Finding               *string                `json:"finding"`
+	Classification        *string                `json:"classification"`
 	Partial               bool                   `json:"partial"`
 	RequestedByLabel      string                 `json:"requested_by_label"`
 	RequestedAt           time.Time              `json:"requested_at"`
@@ -201,6 +202,7 @@ func investigationDTO(i domain.Investigation) InvestigationDTO {
 		Reason: optString(string(i.Ending.Reason)), ReasonDetail: optString(i.Ending.Detail),
 		Budgets: budgetsDTO(i.Budgets), TokensIn: i.Spent.InputTokens, TokensOut: i.Spent.OutputTokens,
 		ToolCalls: i.ToolCalls, Finding: optString(i.Finding), Partial: i.Partial(),
+		Classification:   optString(i.Classification),
 		RequestedByLabel: i.RequestedBy.Label, RequestedAt: i.RequestedAt, NotBefore: optTime(i.NotBefore),
 		StartedAt: optTime(i.StartedAt), EndedAt: optTime(i.EndedAt),
 	}
@@ -375,4 +377,54 @@ func toolServerToolDTO(server domain.ToolServerConfig, t domain.DiscoveredTool) 
 	}
 	return ToolServerToolDTO{Name: t.Name, QualifiedName: optString(qualified), Description: t.Description,
 		InputSchema: schema, ReadOnlyHint: t.ReadOnlyHint, Usable: why == "", UnusableReason: optString(why)}
+}
+
+// ---------------------------------------------------------------- Classification
+//
+// ADR 0053 §5, git-bug 4298aa0: the org's closed class set, read and replaced whole.
+// ⛔ `unclassified` is never in it — it is always admissible and is not the operator's.
+
+// InvestigationClassDTO renders `InvestigationClassDTO`: one class, as the operator
+// wrote it.
+type InvestigationClassDTO struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+// InvestigationClassSetDTO renders `InvestigationClassSetDTO`: the org's whole set, in
+// the operator's order. Empty: Findings carry no classification.
+type InvestigationClassSetDTO struct {
+	Classes []InvestigationClassDTO `json:"classes"`
+}
+
+func classSetDTO(set domain.ClassSet) InvestigationClassSetDTO {
+	classes := set.Classes()
+	out := InvestigationClassSetDTO{Classes: make([]InvestigationClassDTO, 0, len(classes))}
+	for _, c := range classes {
+		out.Classes = append(out.Classes, InvestigationClassDTO{Name: c.Name, Description: c.Description})
+	}
+	return out
+}
+
+// InvestigationClassRequest is one class in `ReplaceInvestigationClassesRequest`. The
+// name's alphabet, its uniqueness and the reserved `unclassified` are the domain's to
+// refuse (domain.NewClassSet), each with the field it is about.
+type InvestigationClassRequest struct {
+	Name        string `json:"name"                  validate:"required,min=1,max=63"`
+	Description string `json:"description,omitempty" validate:"max=500"`
+}
+
+// ReplaceInvestigationClassesRequest is the body of `PUT
+// /api/v1/investigation-classes`: the whole set, which replaces the old one. An empty
+// list is legal, and is how an operator stops Findings being classified.
+type ReplaceInvestigationClassesRequest struct {
+	Classes []InvestigationClassRequest `json:"classes" validate:"required,max=50,dive"`
+}
+
+func (dto ReplaceInvestigationClassesRequest) toDomain() (domain.ClassSet, error) {
+	classes := make([]domain.Class, 0, len(dto.Classes))
+	for _, c := range dto.Classes {
+		classes = append(classes, domain.Class{Name: c.Name, Description: c.Description})
+	}
+	return domain.NewClassSet(classes)
 }

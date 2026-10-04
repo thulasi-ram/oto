@@ -607,6 +607,9 @@ export function investigation(patch: Partial<Investigation> = {}): Investigation
     tokens_out: 340,
     tool_calls: 1,
     finding: "The checkout pods are crash-looping on a missing secret since the 09:02 deploy.",
+    // ⭐ null BY DEFAULT: oto ships no classes, so a Finding carries none until an
+    // operator writes a set (ADR 0053 §5).
+    classification: null,
     partial: false,
     requested_by_label: "Priya R.",
     requested_at: "2026-08-09T09:10:00.000Z",

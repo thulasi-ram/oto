@@ -122,7 +122,9 @@ type PriorFinding struct {
 	VersionNumber    int
 	Status           Status
 	Finding          string
-	EndedAt          time.Time
+	// Classification is the class that Finding was given, "" for none (ADR 0053 §5).
+	Classification string
+	EndedAt        time.Time
 }
 
 // PublishedFinding is a Finding as it is published to the enrichment store
@@ -141,9 +143,12 @@ type PublishedFinding struct {
 	Status    Status
 	Reason    Reason
 	Summary   string
-	Partial   bool
-	Spent     Usage
-	ToolCalls int
-	StartedAt time.Time
-	EndedAt   time.Time
+	// Classification is the class the Finding was given, "" when the org had no
+	// classes (ADR 0053 §5). It travels with the Finding, outbound included.
+	Classification string
+	Partial        bool
+	Spent          Usage
+	ToolCalls      int
+	StartedAt      time.Time
+	EndedAt        time.Time
 }

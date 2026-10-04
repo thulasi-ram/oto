@@ -261,6 +261,10 @@ func (p findingPublisher) PublishFinding(ctx context.Context, s db.TenantScope, 
 			"tokens_in":               f.Spent.InputTokens,
 			"tokens_out":              f.Spent.OutputTokens,
 			"tool_calls":              f.ToolCalls,
+			// ⭐ THE CLASS TRAVELS WITH THE FINDING (ADR 0053 §5): one of the operator's
+			// classes or `unclassified`, and null when the org had none — so a Case's
+			// webhook envelope carries it in `enrichments` exactly as the card's API does.
+			"classification": nullableClass(f.Classification),
 		},
 		Warnings:   warnings,
 		Duration:   f.EndedAt.Sub(f.StartedAt),
@@ -270,6 +274,15 @@ func (p findingPublisher) PublishFinding(ctx context.Context, s db.TenantScope, 
 		return err
 	}
 	return p.repo.UpsertMany(ctx, s, []enrichdomain.Enrichment{e})
+}
+
+// nullableClass is a Finding's classification as JSON: null when none was asked for,
+// never "" — an empty string would read as a class with no name.
+func nullableClass(c string) any {
+	if c == "" {
+		return nil
+	}
+	return c
 }
 
 // investigationControls is `investigator/service.OrgControls` over the org's settings,
