@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 99 {
-		t.Fatalf("latest migration is %d, want 99 — this test pins the number so that a "+
+	if latest != 100 {
+		t.Fatalf("latest migration is %d, want 100 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1563,12 +1563,13 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 			"`all_resolved` stays because a Case resolving is a fact about the Case", def)
 	}
 	// The ceiling follows the enum, as it has in both directions since 00046. 00069
-	// left it at fifteen; 00084 added the five Incident facts and 00095 `finding`, so
-	// the top of the stack reads twenty-one, twenty is asserted once 00095's Down has
-	// run, and fifteen once 00084's has.
-	if def := policyReasonsCheck(); !strings.Contains(def, "21") {
-		t.Fatalf("policies_reasons_ck does not bound reasons at 21 at the top of the stack: "+
-			"%s — the enum has twenty-one values now, and twenty-two is a cardinality no row can "+
+	// left it at fifteen; 00084 added the five Incident facts, 00095 `finding` and 00100
+	// the six Remedy transitions, so the top of the stack reads twenty-seven, twenty-one
+	// is asserted once 00100's Down has run, twenty once 00095's has, and fifteen once
+	// 00084's has.
+	if def := policyReasonsCheck(); !strings.Contains(def, "27") {
+		t.Fatalf("policies_reasons_ck does not bound reasons at 27 at the top of the stack: "+
+			"%s — the enum has twenty-seven values now, and twenty-eight is a cardinality no row can "+
 			"reach. ⛔ The ceiling moving is only half of it: the constraint does NOT test "+
 			"membership, so 00069 also has to strip the two values out of the arrays by hand",
 			def)
@@ -1632,6 +1633,78 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// accepts a kind the release below it cannot interpret. No column reading can
 	// see that, and it is the half most likely to be forgotten because nothing
 	// references it.
+	// ⭐ 00100 LETS AN INVESTIGATOR PROPOSE A REMEDY THAT TWO DIFFERENT APPROVERS MUST SAY YES
+	// TO (ADR 0054, git-bug 4148256): three tables, two trigger functions, the six Remedy
+	// facts on `notifications_reason_ck` with the snapshot column and its CHECK, the reasons
+	// ceiling raised to 27, and the settings comment's eleventh key. The CHECKs are read for
+	// their BODY on both sides, for 00075's reason; the one-person-one-approval index and the
+	// hash CHECK are read because they ARE the rules — a Down that left either, or an Up that
+	// lost one, is the defect. The trigger functions are counted because a Down that dropped
+	// the tables and left a function behind is green everywhere else.
+	remedyFunctions := func() int {
+		t.Helper()
+		var n int
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT count(*) FROM pg_proc WHERE proname IN ('remedies_refuse_rewrite','remedy_record_refuse_change')`).
+			Scan(&n); err != nil {
+			t.Fatalf("introspect the Remedy trigger functions: %v", err)
+		}
+		return n
+	}
+	if n := countTables("remedies", "remedy_approvals", "remedy_transitions"); n != 3 {
+		t.Fatalf("%d of 00100's three tables exist at migration 100", n)
+	}
+	if n := remedyFunctions(); n != 2 {
+		t.Fatalf("%d of 00100's two trigger functions exist at migration 100", n)
+	}
+	if def := indexDef("remedy_approvals_user_uniq"); !strings.Contains(def, "UNIQUE") ||
+		!strings.Contains(def, "remedy_id, user_id") {
+		t.Fatalf("remedy_approvals_user_uniq does not hold one approval per person per Remedy: %s", def)
+	}
+	if def := constraintDef("remedies_arguments_hash_ck", "remedies"); !strings.Contains(def, "sha256") {
+		t.Fatalf("remedies_arguments_hash_ck does not pin the hash to the arguments: %s", def)
+	}
+	if def := constraintDef("remedies_no_tool_ck", "remedies"); !strings.Contains(def, "'proposed'") ||
+		strings.Contains(def, "'approved'") {
+		t.Fatalf("remedies_no_tool_ck lets a Remedy with no Tool be approved: %s", def)
+	}
+	if def := constraintDef("notifications_reason_ck", "notifications"); !strings.Contains(def, "'remedy_failed'") ||
+		!strings.Contains(def, "'finding'") {
+		t.Fatalf("notifications_reason_ck does not admit the Remedy facts beside `finding` at migration 100: %s", def)
+	}
+	if def := constraintDef("notifications_remedy_ck", "notifications"); !strings.Contains(def, "'remedy_proposed'") {
+		t.Fatalf("notifications_remedy_ck does not tie the snapshot to the Remedy facts: %s", def)
+	}
+	if c := columnComment("orgs", "settings"); !strings.Contains(c, "remedy_approval_window_s") ||
+		!strings.Contains(c, "eleven keys") {
+		t.Fatalf("orgs.settings's comment at migration 100 does not name remedy_approval_window_s: %s", c)
+	}
+
+	down(100)
+
+	if n := countTables("remedies", "remedy_approvals", "remedy_transitions"); n != 0 {
+		t.Fatalf("%d of 00100's three tables survived its Down", n)
+	}
+	if n := remedyFunctions(); n != 0 {
+		t.Fatalf("%d of 00100's two trigger functions survived its Down", n)
+	}
+	if def := constraintDef("notifications_reason_ck", "notifications"); strings.Contains(def, "'remedy_") ||
+		!strings.Contains(def, "'finding'") {
+		t.Fatalf("00100's Down did not restore 00095's notifications_reason_ck: %s", def)
+	}
+	if n := countColumns("notifications", "remedy"); n != 0 {
+		t.Fatalf("notifications.remedy survived 00100's Down")
+	}
+	if def := policyReasonsCheck(); !strings.Contains(def, "21") || !strings.Contains(def, "oto_array_is_set") {
+		t.Fatalf("policies_reasons_ck did not go back to a set of 1..21 after 00100's Down: %s", def)
+	}
+	if c := columnComment("notifications", "reason"); !strings.Contains(c, "twenty-one") || strings.Contains(c, "remedy") {
+		t.Fatalf("00100's Down did not restore 00095's notifications.reason comment: %s", c)
+	}
+	if c := columnComment("orgs", "settings"); strings.Contains(c, "remedy_approval_window_s") || !strings.Contains(c, "ten keys") {
+		t.Fatalf("00100's Down did not restore 00094's orgs.settings comment: %s", c)
+	}
+
 	// ⭐ 00099 GRANTS A REMEDY APPROVER FROM THE HOST SHELL (ADR 0054 §4, git-bug 47f67c8):
 	// one table with its two CHECKs and two composite foreign keys, a user index, and the
 	// two unique indexes those keys target (`tool_servers (org_id, id, access)` and

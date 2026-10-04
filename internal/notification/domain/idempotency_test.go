@@ -183,6 +183,8 @@ func TestOnlyTheSnoozeReasonsNeedAnOccasion(t *testing.T) {
 		domain.ReasonSnoozed, domain.ReasonUnsnoozed,
 		domain.ReasonDrawn, domain.ReasonCaseAdded, domain.ReasonCaseRemoved,
 		domain.ReasonQuiet, domain.ReasonActiveAgain, domain.ReasonFinding,
+		domain.ReasonRemedyProposed, domain.ReasonRemedyApproved, domain.ReasonRemedyDeclined,
+		domain.ReasonRemedyExpired, domain.ReasonRemedyExecuted, domain.ReasonRemedyFailed,
 	}, need)
 	for _, r := range need {
 		if r.Subject() == domain.SubjectIncident {

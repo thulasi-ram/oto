@@ -604,6 +604,25 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
       "Nothing in alertmanager.yml bears on this, and it never changes a notification. A run waiting for a slot is still queued, and says so.",
   },
 
+  remedy_approval_window_s: {
+    key: "remedy_approval_window_s",
+    kind: "seconds",
+    label: "Remedy approval window",
+    what: "How long a Remedy an Investigator proposed waits for its two approvals, and then — once approved — for oto to execute it. Past it the Remedy is recorded as expired, said on the Incident, and can no longer be approved or executed; a new Investigation can propose it again.",
+    risks: [
+      {
+        label: "Too short",
+        text: "Two people holding the grant on the ToolServer have to read the exact command and approve it inside the window, or it expires and the change is not made. An expired Remedy is recorded and declared, never silent, and nothing about it is retried.",
+      },
+      {
+        label: "Too long",
+        text: "A Remedy approved now can be executed against a cluster that has moved on since the Investigator looked: the change was right for what it saw, not for what is there. The window is the age past which oto refuses to act on a proposal.",
+      },
+    ],
+    amRule:
+      "Nothing in alertmanager.yml bears on this, and it never changes a notification. Approval is the grant on a write ToolServer, given only by `oto grant remedy-approver` on the host; this is how long that approval stays good.",
+  },
+
   /* ---- retention --------------------------------------------------------- */
 
   raw_retention_days: {
@@ -682,6 +701,13 @@ export const KNOB_GROUPS: readonly KnobGroup[] = [
     blurb:
       "Whether an Investigator may start a new Investigation in this org, how many tokens a day they may spend between them, and how many may run at once. An Investigation reads oto's own history and writes a Finding beside the Case; it never decides whether anyone is notified. Each limit is recorded, never silent: a run that was asked for and did not start says why, and one waiting for a slot stays queued.",
     keys: ["investigations_enabled", "investigation_daily_tokens", "investigation_concurrency"],
+  },
+  {
+    id: "remedies",
+    title: "Remedies",
+    blurb:
+      "How long a Remedy — a change to a cluster an Investigator proposed — waits for the two different approvers it needs, and then for oto to execute it. A Remedy past the window is recorded expired and declared on its Incident; it is never retried.",
+    keys: ["remedy_approval_window_s"],
   },
 ];
 

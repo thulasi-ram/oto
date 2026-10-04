@@ -176,6 +176,12 @@ var bindings = []binding{
 	{"investigator", "ToolServerToolDTO", investigatorapi.ToolServerToolDTO{}},
 	// The Remedy approval grant (git-bug 47f67c8): read-only; `oto grant` is the only writer.
 	{"investigator", "RemedyApproverDTO", investigatorapi.RemedyApproverDTO{}},
+	// Remedies (git-bug 4148256): read, approved by the hash of the arguments approved, declined.
+	{"investigator", "RemedyDTO", investigatorapi.RemedyDTO{}},
+	{"investigator", "RemedyToolDTO", investigatorapi.RemedyToolDTO{}},
+	{"investigator", "RemedyApprovalDTO", investigatorapi.RemedyApprovalDTO{}},
+	{"investigator", "RemedyTransitionDTO", investigatorapi.RemedyTransitionDTO{}},
+	{"investigator", "ApproveRemedyRequest", investigatorapi.ApproveRemedyRequest{}},
 
 	// ------------------------------------------------------------ sources
 	{"sources", "ClusterDTO", sourcesapi.ClusterDTO{}},

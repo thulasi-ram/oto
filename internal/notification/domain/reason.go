@@ -167,7 +167,44 @@ const (
 	// carries, never an input to whether anything about any signal is sent (ADR 0053
 	// §2). Its occasion is the Investigation, so one run is declared once.
 	ReasonFinding Reason = "finding"
+
+	// The six Remedy facts (ADR 0054 §2, migration 00100, git-bug 4148256): every
+	// transition of a Remedy on the Incident — or on a Case it holds — is declared to it,
+	// "each by a named actor". FACTS like the rest: a Remedy's approval happens in oto, and
+	// nothing here asks the incident tool for one or reads its answer back (§2: "oto cannot
+	// know that someone in the incident tool said no"). Each carries the transition's
+	// snapshot (`Notification.Remedy`); its occasion is the transition, so each one is
+	// declared once.
+
+	// ReasonRemedyProposed is an Investigator proposing a Remedy with its Finding — one
+	// that names a write Tool and its exact arguments, or one that says no configured Tool
+	// can carry it out.
+	ReasonRemedyProposed Reason = "remedy_proposed"
+	// ReasonRemedyApproved is the last of its required approvals arriving, from a
+	// different holder of the grant on its ToolServer.
+	ReasonRemedyApproved Reason = "remedy_approved"
+	// ReasonRemedyDeclined is a human saying no.
+	ReasonRemedyDeclined Reason = "remedy_declined"
+	// ReasonRemedyExpired is its window passing unapproved, or approved and not executed.
+	ReasonRemedyExpired Reason = "remedy_expired"
+	// ReasonRemedyExecuted is the write Tool answering without reporting a failure.
+	ReasonRemedyExecuted Reason = "remedy_executed"
+	// ReasonRemedyFailed is it not being executed, the write Tool reporting a failure, or
+	// its outcome being unknown. Never retried.
+	ReasonRemedyFailed Reason = "remedy_failed"
 )
+
+// IsRemedy reports whether the Reason is one of the six Remedy facts, which — and only
+// which — carry a Remedy snapshot (`notifications_remedy_ck`).
+func (r Reason) IsRemedy() bool {
+	switch r {
+	case ReasonRemedyProposed, ReasonRemedyApproved, ReasonRemedyDeclined,
+		ReasonRemedyExpired, ReasonRemedyExecuted, ReasonRemedyFailed:
+		return true
+	default:
+		return false
+	}
+}
 
 // ⛔ THERE IS NO `severity_raised`, AND ADDING ONE WOULD BE ADDING AN ENUM VALUE
 // NOTHING CAN EVER WRITE.
@@ -205,6 +242,10 @@ var allReasons = []Reason{
 	ReasonDrawn, ReasonCaseAdded, ReasonCaseRemoved, ReasonQuiet, ReasonActiveAgain,
 	// `finding` is APPENDED after them, for the same reason (migration 00095).
 	ReasonFinding,
+	// The six Remedy facts are APPENDED after `finding`, for the same reason (migration
+	// 00100).
+	ReasonRemedyProposed, ReasonRemedyApproved, ReasonRemedyDeclined,
+	ReasonRemedyExpired, ReasonRemedyExecuted, ReasonRemedyFailed,
 }
 
 // AllReasons returns the closed Reason set. The slice is freshly built so a
@@ -385,6 +426,14 @@ var reasonSubjects = map[Reason]SubjectKind{
 	// A new Finding is about the Incident it investigated as a whole, not about any
 	// one of its Cases.
 	ReasonFinding: SubjectIncident,
+	// A Remedy's transitions are declared to the Incident it is about, or to the one
+	// holding its Case: facts about the story's response, never about one signal.
+	ReasonRemedyProposed: SubjectIncident,
+	ReasonRemedyApproved: SubjectIncident,
+	ReasonRemedyDeclined: SubjectIncident,
+	ReasonRemedyExpired:  SubjectIncident,
+	ReasonRemedyExecuted: SubjectIncident,
+	ReasonRemedyFailed:   SubjectIncident,
 }
 
 // Subject is what a Notification carrying this Reason is ABOUT — the value its

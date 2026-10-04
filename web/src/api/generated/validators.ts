@@ -100,7 +100,7 @@ export const ActorKindSchema = v.picklist(["system", "ingest", "reconciler", "re
 
 export const AlertEventTypeSchema = v.picklist(["alert.created", "alert.mutated", "case.opened", "case.reopened", "case.suppressed", "case.unsuppressed", "case.resolved", "case.expired", "case.acknowledged", "case.unacknowledged", "alert.snoozed", "alert.unsnoozed", "group.opened", "group.closed", "group.member_joined", "group.member_left", "rule.snapshot_captured", "rule.definition_changed", "rule.lookup_failed", "enrichment.completed", "enrichment.failed", "notification.created", "notification.suppressed", "delivery.sent", "delivery.updated", "delivery.failed", "delivery.skipped", "delivery.dead", "comment.added", "source.unreachable", "source.recovered", "source.clock_skew", "incident.case_added", "incident.case_removed", "incident.case_moved"]);
 
-export const NotificationReasonSchema = v.picklist(["fired", "all_resolved", "repeat", "suppressed", "unsuppressed", "expired", "refired", "acked", "unacked", "snoozed", "unsnoozed", "enriched", "rule_changed", "comment", "digest", "drawn", "case_added", "case_removed", "quiet", "active_again", "finding"]);
+export const NotificationReasonSchema = v.picklist(["fired", "all_resolved", "repeat", "suppressed", "unsuppressed", "expired", "refired", "acked", "unacked", "snoozed", "unsnoozed", "enriched", "rule_changed", "comment", "digest", "drawn", "case_added", "case_removed", "quiet", "active_again", "finding", "remedy_proposed", "remedy_approved", "remedy_declined", "remedy_expired", "remedy_executed", "remedy_failed"]);
 
 export const NotificationStatusSchema = v.picklist(["pending", "dispatched", "partial", "delivered", "failed", "suppressed"]);
 
@@ -1597,7 +1597,7 @@ export const PolicyDTOSchema = v.looseObject({
   "reasons": v.pipe(
     v.array(NotificationReasonSchema),
     v.minLength(1),
-    v.maxLength(21),
+    v.maxLength(27),
     v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
   ),
   "channel_ids": v.pipe(
@@ -2113,6 +2113,12 @@ export const OrgSettingsDTOSchema = v.looseObject({
     v.integer(),
     v.minValue(1),
     v.maxValue(32),
+  ),
+  "remedy_approval_window_s": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(60),
+    v.maxValue(86400),
   ),
 });
 
@@ -3037,7 +3043,7 @@ export const CreatePolicyRequestSchema = v.strictObject({
   "reasons": v.pipe(
     v.array(NotificationReasonSchema),
     v.minLength(1),
-    v.maxLength(21),
+    v.maxLength(27),
     v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
   ),
   "channel_ids": v.pipe(
@@ -3101,7 +3107,7 @@ export const UpdatePolicyRequestSchema = v.pipe(
     "reasons": v.exactOptional(v.pipe(
       v.array(NotificationReasonSchema),
       v.minLength(1),
-      v.maxLength(21),
+      v.maxLength(27),
       v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
     )),
     "channel_ids": v.exactOptional(v.pipe(
@@ -3955,6 +3961,143 @@ export const SuggestionResponseSchema = v.looseObject({
   "meta": MetaSchema,
 });
 
+export const RemedyToolDTOSchema = v.looseObject({
+  "tool_server_id": UuidSchema,
+  "tool_server_name": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(24),
+  ),
+  "tool_name": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(128),
+  ),
+});
+
+export const RemedyApprovalDTOSchema = v.looseObject({
+  "user_id": v.nullable(UuidSchema),
+  "label": v.pipe(
+    v.string(),
+    v.maxLength(200),
+  ),
+  "approved_at": v.pipe(
+    v.string(),
+    v.isoTimestamp(),
+  ),
+});
+
+export const RemedyTransitionDTOSchema = v.looseObject({
+  "from": v.nullable(v.picklist(["proposed", "approved", "executing"])),
+  "to": v.picklist(["proposed", "approved", "executing", "executed", "failed", "declined", "expired"]),
+  "actor_kind": v.picklist(["investigator", "user", "system"]),
+  "actor_label": v.pipe(
+    v.string(),
+    v.maxLength(200),
+  ),
+  "at": v.pipe(
+    v.string(),
+    v.isoTimestamp(),
+  ),
+  "failure_reason": v.nullable(v.picklist(["tool_error", "outcome_unknown", "tool_unavailable", "arguments_changed", "approvals_withdrawn"])),
+  "detail": v.nullable(v.pipe(
+    v.string(),
+    v.maxLength(2000),
+  )),
+  "declared_incident_id": v.nullable(UuidSchema),
+});
+
+export const RemedyDTOSchema = v.looseObject({
+  "id": UuidSchema,
+  "investigation_id": UuidSchema,
+  "subject_kind": v.picklist(["case", "incident"]),
+  "subject_id": UuidSchema,
+  "state": v.picklist(["proposed", "approved", "executing", "executed", "failed", "declined", "expired"]),
+  "tool": v.nullable(RemedyToolDTOSchema),
+  "no_tool": v.nullable(v.string()),
+  "blocked": v.nullable(v.string()),
+  "arguments": v.nullable(v.pipe(
+    v.string(),
+    v.maxLength(16384),
+  )),
+  "arguments_display": v.nullable(v.string()),
+  "arguments_sha256": v.nullable(v.pipe(
+    v.string(),
+    v.regex(/^[0-9a-f]{64}$/),
+  )),
+  "target": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(500),
+  ),
+  "description": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(2000),
+  ),
+  "proposed_by_label": v.pipe(
+    v.string(),
+    v.maxLength(200),
+  ),
+  "required_approvals": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+    v.maxValue(2),
+  ),
+  "approvals": v.array(RemedyApprovalDTOSchema),
+  "proposed_at": v.pipe(
+    v.string(),
+    v.isoTimestamp(),
+  ),
+  "expires_at": v.pipe(
+    v.string(),
+    v.isoTimestamp(),
+  ),
+  "approved_at": v.nullable(v.pipe(
+    v.string(),
+    v.isoTimestamp(),
+  )),
+  "executing_at": v.nullable(v.pipe(
+    v.string(),
+    v.isoTimestamp(),
+  )),
+  "ended_at": v.nullable(v.pipe(
+    v.string(),
+    v.isoTimestamp(),
+  )),
+  "failure_reason": v.nullable(v.picklist(["tool_error", "outcome_unknown", "tool_unavailable", "arguments_changed", "approvals_withdrawn"])),
+  "detail": v.nullable(v.pipe(
+    v.string(),
+    v.maxLength(2000),
+  )),
+  "result": v.nullable(v.pipe(
+    v.string(),
+    v.maxLength(16384),
+  )),
+  "transitions": v.array(RemedyTransitionDTOSchema),
+});
+
+export const ApproveRemedyRequestSchema = v.strictObject({
+  "arguments_sha256": v.pipe(
+    v.string(),
+    v.minLength(64),
+    v.maxLength(64),
+    v.regex(/^[0-9a-f]{64}$/),
+  ),
+});
+
+export const RemedyListResponseSchema = v.looseObject({
+  "data": v.array(RemedyDTOSchema),
+  "page": PageInfoSchema,
+  "meta": MetaSchema,
+});
+
+export const RemedyResponseSchema = v.looseObject({
+  "data": RemedyDTOSchema,
+  "meta": MetaSchema,
+});
+
 export const IncidentListResponseSchema = v.looseObject({
   "data": v.array(IncidentDTOSchema),
   "page": PageInfoSchema,
@@ -4175,6 +4318,10 @@ export const OrgSettingsPatchDTOSchema = v.looseObject({
     v.number(),
     v.integer(),
   )),
+  "remedy_approval_window_s": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+  )),
 });
 
 export const OrgSettingsViewDTOSchema = v.looseObject({
@@ -4243,6 +4390,12 @@ export const UpdateOrgSettingsRequestSchema = v.strictObject({
     v.integer(),
     v.minValue(1),
     v.maxValue(32),
+  )),
+  "remedy_approval_window_s": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(60),
+    v.maxValue(86400),
   )),
   "reset": v.exactOptional(v.pipe(
     v.array(v.pipe(

@@ -185,7 +185,9 @@ func (r Reason) NeedsOccasion() bool {
 	switch r {
 	case ReasonSnoozed, ReasonUnsnoozed:
 		return true
-	case ReasonDrawn, ReasonCaseAdded, ReasonCaseRemoved, ReasonQuiet, ReasonActiveAgain, ReasonFinding:
+	case ReasonDrawn, ReasonCaseAdded, ReasonCaseRemoved, ReasonQuiet, ReasonActiveAgain, ReasonFinding,
+		ReasonRemedyProposed, ReasonRemedyApproved, ReasonRemedyDeclined,
+		ReasonRemedyExpired, ReasonRemedyExecuted, ReasonRemedyFailed:
 		// ⭐ AN INCIDENT HAS NO `state_version`, AND EVERY ONE OF ITS FACTS IS AN
 		// OCCASION. Nothing about an Incident is a compare-and-set, so the version is a
 		// constant and the occasion is the whole of what tells two facts apart: one Case

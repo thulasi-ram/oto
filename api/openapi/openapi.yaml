@@ -3270,6 +3270,184 @@ paths:
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
 
+  /api/v1/investigations/{id}/remedies:
+    get:
+      operationId: listInvestigationRemedies
+      summary: The Remedies an Investigation's Finding proposes
+      tags: [Investigators]
+      description: |
+        The Remedies this run's Finding proposed (ADR 0054), in the order they were proposed, whatever state
+        each is in: a change to a cluster that an Investigator proposes and oto executes **only after
+        approval**. An Investigator proposes one through the built-in Tool `oto_propose_remedy`, held only
+        when its allowlist names it; **it never holds or calls the write Tool**.
+
+        ⭐ **The exact command comes first.** A Remedy names the write Tool that would carry it out —
+        `tool`, a Tool a `write` ToolServer listed — with the exact `arguments` it would be sent, byte for
+        byte, and their `arguments_sha256`; then the `target` and the Investigator's `description`. Or it
+        names no Tool, and `no_tool` says *"no configured Tool can carry this out"*: such a Remedy **can
+        never be approved**, can still be declined, and expires.
+
+        `state` is read at the request: a `proposed` or `approved` Remedy past `expires_at` is `expired`
+        even before the sweep records it. `blocked` says why it cannot be approved now — no Tool, or its
+        Tool removed from configuration since it was proposed — and is null when it can. Every Remedy needs
+        `required_approvals` (two) approvals from **different** holders of the grant on its ToolServer.
+        An Investigation this org does not have is a `404`.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      responses:
+        '200':
+          description: The Investigation's Remedies, in the order proposed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RemedyListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/remedies/{id}:
+    get:
+      operationId: getRemedy
+      summary: One Remedy, with its approvals and every transition
+      tags: [Investigators]
+      description: |
+        One Remedy (ADR 0054) — the exact command first, then what it is for — with the approvals it has and
+        every transition it made, each by a named actor: the Investigator proposed it, a user approved or
+        declined it, and oto (`system`) expired it, claimed it for execution, and recorded what the write
+        Tool answered. Each transition says the Incident it was declared to as a fact, or null when its
+        subject was in no Incident. A Remedy this org does not have is `404 remedy_not_found`.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      responses:
+        '200':
+          description: The Remedy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RemedyResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/remedies/{id}/approve:
+    post:
+      operationId: approveRemedy
+      summary: Approve a Remedy — one of the two different approvals it needs
+      tags: [Investigators]
+      description: |
+        One human approves one Remedy, having been shown its exact arguments: the body names their
+        `arguments_sha256`, and an approval of any other arguments is refused. When **different** holders
+        of the grant on the Remedy's ToolServer reach its `required_approvals`, the Remedy is `approved`,
+        its window to execution starts (`remedy_approval_window_s`), and the transition is declared to its
+        Incident as a fact. The same person approving twice counts once.
+
+        Refusals, each typed and none of them a write: `404 remedy_not_found`; `409 remedy_has_no_tool` —
+        *no configured Tool can carry this out*, so it can never be approved; `409 remedy_expired`;
+        `409 remedy_not_proposed`; `409 remedy_tool_unavailable` when its ToolServer was removed or
+        re-declared `read`, or no longer lists the Tool; `403 remedy_approver_required` when the user does
+        not hold a counting grant on that ToolServer (a grant is given only by `oto grant` on the host);
+        `409 remedy_already_approved` for a second approval by the same person; and
+        `409 remedy_arguments_changed` when the hash is not this Remedy's. Needs a human: a system
+        principal is a `403`.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApproveRemedyRequest'
+      responses:
+        '200':
+          description: The Remedy, with this approval — and `approved` when it was the last one it needed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RemedyResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/remedies/{id}/decline:
+    post:
+      operationId: declineRemedy
+      summary: Decline a Remedy
+      tags: [Investigators]
+      description: |
+        One human says no to a Remedy that is `proposed` or `approved` and not yet being executed. It is
+        `declined` from then on, the transition is declared to its Incident as a fact, and nothing is ever
+        sent for it. Any member may decline — saying no is the safe direction — and a Remedy no configured
+        Tool can carry out is declinable like any other. Takes no body.
+
+        Refusals: `404 remedy_not_found`; `409 remedy_expired`; `409 remedy_not_open` once it is being
+        executed or has ended. Needs a human: a system principal is a `403`.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      responses:
+        '200':
+          description: The Remedy, declined.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RemedyResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   /api/v1/investigation-classes:
     get:
       operationId: getInvestigationClasses
@@ -5128,7 +5306,7 @@ paths:
           description: Comma-separated reasons.
           schema:
             type: array
-            maxItems: 21
+            maxItems: 27
             uniqueItems: true
             items:
               $ref: '#/components/schemas/NotificationReason'
@@ -7476,6 +7654,12 @@ components:
         - quiet
         - active_again
         - finding
+        - remedy_proposed
+        - remedy_approved
+        - remedy_declined
+        - remedy_expired
+        - remedy_executed
+        - remedy_failed
       description: |
         Why a Notification exists. Distinct from Alertmanager's wire `notification_reason` string, which
         is mapped onto this enum on ingest.
@@ -7511,6 +7695,15 @@ components:
         which Investigator version, and when. Like the other five it is a fact, never a command, and a
         Finding never decides whether anything about any signal is sent; whether `finding` itself goes
         anywhere is a policy's word.
+
+        The last six — `remedy_proposed`, `remedy_approved`, `remedy_declined`, `remedy_expired`,
+        `remedy_executed` and `remedy_failed` — are the transitions of a **Remedy** (ADR 0054 §2), each
+        declared to the Incident the Remedy is about, or to the Incident holding its Case; a Remedy on a
+        Case in no Incident is declared nowhere. The envelope's `incident.remedy` carries the transition:
+        the exact command first — the write Tool and the exact arguments, or *"no configured Tool can
+        carry this out"* — then its target and the Investigator's description, its approvals so far, and
+        who made the transition when. Facts, never commands: approval happens in oto, and oto reads
+        nothing back from the incident tool.
 
         ⛔ **There is no `severity_raised`, and there was.** ADR 0020 proposed it as the purest case for
         broadcasting — a card going amber to red under a silent `chat.update` — and a migration was
@@ -10862,7 +11055,7 @@ components:
         reasons:
           type: array
           minItems: 1
-          maxItems: 21
+          maxItems: 27
           uniqueItems: true
           items:
             $ref: '#/components/schemas/NotificationReason'
@@ -11762,6 +11955,7 @@ components:
         - investigations_enabled
         - investigation_daily_tokens
         - investigation_concurrency
+        - remedy_approval_window_s
       properties:
         resolve_grace_s:
           type: integer
@@ -11879,6 +12073,18 @@ components:
             The most Investigations `running` at once in this org (ADR 0053 §6). One past it **waits** —
             it stays `queued` and is never dropped. Each oto process works at most two at once (the
             `investigate` queue's width), so a number above the workers you run never binds.
+        remedy_approval_window_s:
+          type: integer
+          format: int32
+          minimum: 60
+          maximum: 86400
+          default: 3600
+          description: |
+            How long a **Remedy** waits (ADR 0054 §2): a proposed Remedy that has not had its required
+            approvals within this long after it was proposed, or an approved one not executed within this
+            long after its approval, is recorded `expired` and can no longer be approved or executed. It
+            reads as expired the moment the window passes; the `remedies.sweep` job records it and declares
+            the fact.
       description: |
         Org-level tuning, as **effective values**. **Grouping is on by default and flap scoring is on by
         default** — oto defaults to quiet, and every damping decision it makes is a visible state rather
@@ -13742,7 +13948,7 @@ components:
         reasons:
           type: array
           minItems: 1
-          maxItems: 21
+          maxItems: 27
           uniqueItems: true
           items:
             $ref: '#/components/schemas/NotificationReason'
@@ -13869,7 +14075,7 @@ components:
         reasons:
           type: array
           minItems: 1
-          maxItems: 21
+          maxItems: 27
           uniqueItems: true
           items:
             $ref: '#/components/schemas/NotificationReason'
@@ -15377,6 +15583,225 @@ components:
         meta:
           $ref: '#/components/schemas/Meta'
 
+    RemedyDTO:
+      type: object
+      required: [id, investigation_id, subject_kind, subject_id, state, tool, no_tool, blocked, arguments,
+                 arguments_display, arguments_sha256, target, description, proposed_by_label, required_approvals,
+                 approvals, proposed_at, expires_at, approved_at, executing_at, ended_at, failure_reason, detail,
+                 result, transitions]
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        investigation_id:
+          $ref: '#/components/schemas/Uuid'
+          description: The Investigation whose Finding proposed it — its provenance.
+        subject_kind:
+          type: string
+          enum: [case, incident]
+        subject_id:
+          $ref: '#/components/schemas/Uuid'
+        state:
+          type: string
+          enum: [proposed, approved, executing, executed, failed, declined, expired]
+          description: |
+            Where it is, read at the request: a `proposed` or `approved` Remedy past `expires_at` is `expired`
+            whether or not the sweep has recorded it yet. `executing` is oto's claim, made before the write
+            Tool is called; `executed`, `failed`, `declined` and `expired` are final.
+        tool:
+          oneOf:
+            - $ref: '#/components/schemas/RemedyToolDTO'
+            - type: 'null'
+        no_tool:
+          type: ['string', 'null']
+          description: '"no configured Tool can carry this out" when it names no Tool — and then it can never be approved; null otherwise.'
+        blocked:
+          type: ['string', 'null']
+          description: |
+            Why it cannot be approved now — it names no Tool, or its Tool was removed from configuration, or
+            its ToolServer is no longer `write` — and null when nothing about its Tool stands in the way.
+        arguments:
+          type: ['string', 'null']
+          maxLength: 16384
+          description: The EXACT arguments the write Tool would be sent, as compact JSON, byte for byte. Null with no Tool.
+        arguments_display:
+          type: ['string', 'null']
+          description: The same arguments indented for reading — whitespace only, the same keys, order and values.
+        arguments_sha256:
+          type: ['string', 'null']
+          pattern: '^[0-9a-f]{64}$'
+          description: The SHA-256 of `arguments`. An approval names it; the executor sends only when it still matches.
+        target:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: What the change is made to.
+        description:
+          type: string
+          minLength: 1
+          maxLength: 2000
+          description: The Investigator's description of the change and why — a model's words, shown after the exact command.
+        proposed_by_label:
+          type: string
+          maxLength: 200
+          description: The Investigator and version that proposed it.
+        required_approvals:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 2
+          description: How many DIFFERENT holders of the grant on its ToolServer must approve it. Two, until risk rules exist.
+        approvals:
+          type: array
+          items:
+            $ref: '#/components/schemas/RemedyApprovalDTO'
+        proposed_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+          description: When it expires if it has not been approved, or — once approved — executed.
+        approved_at:
+          type: ['string', 'null']
+          format: date-time
+        executing_at:
+          type: ['string', 'null']
+          format: date-time
+        ended_at:
+          type: ['string', 'null']
+          format: date-time
+        failure_reason:
+          type: ['string', 'null']
+          enum: [tool_error, outcome_unknown, tool_unavailable, arguments_changed, approvals_withdrawn, null]
+          description: |
+            Why it failed: the write Tool reported a failure (`tool_error`); it was sent, or may have been, and
+            no answer was recorded (`outcome_unknown`); or it was not sent, because its Tool was gone
+            (`tool_unavailable`), its arguments no longer hashed to what was approved (`arguments_changed`), or
+            fewer approvers than it needs still held the grant (`approvals_withdrawn`). A failed Remedy is
+            never retried.
+        detail:
+          type: ['string', 'null']
+          maxLength: 2000
+        result:
+          type: ['string', 'null']
+          maxLength: 16384
+          description: What the write Tool answered, redacted with the org's rules and capped. Null until it was sent.
+        transitions:
+          type: array
+          items:
+            $ref: '#/components/schemas/RemedyTransitionDTO'
+      description: |
+        A change to a cluster an Investigator proposed and oto executes only after the required approvals
+        (ADR 0054): `proposed → approved → executing → executed | failed`, or `declined`, or `expired`, each
+        by a named actor, and each declared to its Incident as a fact.
+
+    RemedyToolDTO:
+      type: object
+      required: [tool_server_id, tool_server_name, tool_name]
+      properties:
+        tool_server_id:
+          $ref: '#/components/schemas/Uuid'
+        tool_server_name:
+          type: string
+          minLength: 1
+          maxLength: 24
+          description: The write ToolServer's name when the Remedy was proposed.
+        tool_name:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: The ToolServer's own name for the write Tool.
+      description: The write Tool a Remedy would be carried out by.
+
+    RemedyApprovalDTO:
+      type: object
+      required: [user_id, label, approved_at]
+      properties:
+        user_id:
+          oneOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
+          description: Null once the user is deleted; the label is frozen.
+        label:
+          type: string
+          maxLength: 200
+        approved_at:
+          type: string
+          format: date-time
+      description: One person's approval.
+
+    RemedyTransitionDTO:
+      type: object
+      required: [from, to, actor_kind, actor_label, at, failure_reason, detail, declared_incident_id]
+      properties:
+        from:
+          type: ['string', 'null']
+          enum: [proposed, approved, executing, null]
+          description: Null for the proposal itself.
+        to:
+          type: string
+          enum: [proposed, approved, executing, executed, failed, declined, expired]
+        actor_kind:
+          type: string
+          enum: [investigator, user, system]
+        actor_label:
+          type: string
+          maxLength: 200
+        at:
+          type: string
+          format: date-time
+        failure_reason:
+          type: ['string', 'null']
+          enum: [tool_error, outcome_unknown, tool_unavailable, arguments_changed, approvals_withdrawn, null]
+        detail:
+          type: ['string', 'null']
+          maxLength: 2000
+        declared_incident_id:
+          oneOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
+          description: |
+            The Incident this transition was declared to as a fact; null when the Remedy's subject was in no
+            Incident — recorded, never invented. The executor's claim (`executing`) is never declared.
+      description: One transition of one Remedy, by a named actor.
+
+    ApproveRemedyRequest:
+      type: object
+      additionalProperties: false
+      required: [arguments_sha256]
+      properties:
+        arguments_sha256:
+          type: string
+          minLength: 64
+          maxLength: 64
+          pattern: '^[0-9a-f]{64}$'
+          description: The `arguments_sha256` of the arguments the approver was shown — what they approve.
+      description: Approving a Remedy names the exact arguments approved, by their hash.
+
+    RemedyListResponse:
+      type: object
+      required: [data, page, meta]
+      additionalProperties: false
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/RemedyDTO'
+        page:
+          $ref: '#/components/schemas/PageInfo'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    RemedyResponse:
+      type: object
+      required: [data, meta]
+      additionalProperties: false
+      properties:
+        data:
+          $ref: '#/components/schemas/RemedyDTO'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
     IncidentListResponse:
       type: object
       required: [data, page, meta]
@@ -15849,6 +16274,7 @@ components:
         investigations_enabled: {type: boolean}
         investigation_daily_tokens: {type: integer, format: int32}
         investigation_concurrency: {type: integer, format: int32}
+        remedy_approval_window_s: {type: integer, format: int32}
       description: |
         A **partial** tuning: every field is optional and an absent field means "this key is not set".
 
@@ -15923,6 +16349,12 @@ components:
           minimum: 1
           maximum: 32
           description: The most Investigations running at once (ADR 0053 §6).
+        remedy_approval_window_s:
+          type: integer
+          format: int32
+          minimum: 60
+          maximum: 86400
+          description: How long a Remedy waits for its approvals, and then for its execution, before it expires (ADR 0054 §2).
         reset:
           type: array
           maxItems: 32

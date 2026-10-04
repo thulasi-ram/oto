@@ -357,7 +357,7 @@ type CreatePolicyRequest struct {
 	// `test/contract/dto_schema_test.go`'s enum-ceiling gate.
 	//
 	// It moved to 17 when 00067 deleted `unacked_reminder` (git-bug bd0fb1d).
-	Reasons []string `json:"reasons" validate:"required,min=1,max=21,unique"`
+	Reasons []string `json:"reasons" validate:"required,min=1,max=27,unique"`
 	// ChannelIDs references `channels` and NOTHING ELSE.
 	ChannelIDs []uuid.UUID `json:"channel_ids" validate:"required,min=1,max=16,unique"`
 	// TemplateID names a NotificationTemplate. Omit it for oto's built-in card.
@@ -416,7 +416,7 @@ type UpdatePolicyRequest struct {
 	Enabled  *bool   `json:"enabled,omitempty"`
 
 	Matchers   *[]MatcherDTO `json:"matchers,omitempty"    validate:"omitempty,max=32,dive"`
-	Reasons    *[]string     `json:"reasons,omitempty"     validate:"omitempty,min=1,max=21,unique"`
+	Reasons    *[]string     `json:"reasons,omitempty"     validate:"omitempty,min=1,max=27,unique"`
 	ChannelIDs *[]uuid.UUID  `json:"channel_ids,omitempty" validate:"omitempty,min=1,max=16,unique"`
 	// TemplateID is nullable: `"template_id": null` CLEARS it and puts the policy
 	// back on oto's built-in card, while omitting the key leaves it alone.

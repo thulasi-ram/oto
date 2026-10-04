@@ -1472,6 +1472,124 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/investigations/{id}/remedies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The Remedies an Investigation's Finding proposes
+         * @description The Remedies this run's Finding proposed (ADR 0054), in the order they were proposed, whatever state
+         *     each is in: a change to a cluster that an Investigator proposes and oto executes **only after
+         *     approval**. An Investigator proposes one through the built-in Tool `oto_propose_remedy`, held only
+         *     when its allowlist names it; **it never holds or calls the write Tool**.
+         *
+         *     ⭐ **The exact command comes first.** A Remedy names the write Tool that would carry it out —
+         *     `tool`, a Tool a `write` ToolServer listed — with the exact `arguments` it would be sent, byte for
+         *     byte, and their `arguments_sha256`; then the `target` and the Investigator's `description`. Or it
+         *     names no Tool, and `no_tool` says *"no configured Tool can carry this out"*: such a Remedy **can
+         *     never be approved**, can still be declined, and expires.
+         *
+         *     `state` is read at the request: a `proposed` or `approved` Remedy past `expires_at` is `expired`
+         *     even before the sweep records it. `blocked` says why it cannot be approved now — no Tool, or its
+         *     Tool removed from configuration since it was proposed — and is null when it can. Every Remedy needs
+         *     `required_approvals` (two) approvals from **different** holders of the grant on its ToolServer.
+         *     An Investigation this org does not have is a `404`.
+         */
+        get: operations["listInvestigationRemedies"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/remedies/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One Remedy, with its approvals and every transition
+         * @description One Remedy (ADR 0054) — the exact command first, then what it is for — with the approvals it has and
+         *     every transition it made, each by a named actor: the Investigator proposed it, a user approved or
+         *     declined it, and oto (`system`) expired it, claimed it for execution, and recorded what the write
+         *     Tool answered. Each transition says the Incident it was declared to as a fact, or null when its
+         *     subject was in no Incident. A Remedy this org does not have is `404 remedy_not_found`.
+         */
+        get: operations["getRemedy"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/remedies/{id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve a Remedy — one of the two different approvals it needs
+         * @description One human approves one Remedy, having been shown its exact arguments: the body names their
+         *     `arguments_sha256`, and an approval of any other arguments is refused. When **different** holders
+         *     of the grant on the Remedy's ToolServer reach its `required_approvals`, the Remedy is `approved`,
+         *     its window to execution starts (`remedy_approval_window_s`), and the transition is declared to its
+         *     Incident as a fact. The same person approving twice counts once.
+         *
+         *     Refusals, each typed and none of them a write: `404 remedy_not_found`; `409 remedy_has_no_tool` —
+         *     *no configured Tool can carry this out*, so it can never be approved; `409 remedy_expired`;
+         *     `409 remedy_not_proposed`; `409 remedy_tool_unavailable` when its ToolServer was removed or
+         *     re-declared `read`, or no longer lists the Tool; `403 remedy_approver_required` when the user does
+         *     not hold a counting grant on that ToolServer (a grant is given only by `oto grant` on the host);
+         *     `409 remedy_already_approved` for a second approval by the same person; and
+         *     `409 remedy_arguments_changed` when the hash is not this Remedy's. Needs a human: a system
+         *     principal is a `403`.
+         */
+        post: operations["approveRemedy"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/remedies/{id}/decline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Decline a Remedy
+         * @description One human says no to a Remedy that is `proposed` or `approved` and not yet being executed. It is
+         *     `declined` from then on, the transition is declared to its Incident as a fact, and nothing is ever
+         *     sent for it. Any member may decline — saying no is the safe direction — and a Remedy no configured
+         *     Tool can carry out is declinable like any other. Takes no body.
+         *
+         *     Refusals: `404 remedy_not_found`; `409 remedy_expired`; `409 remedy_not_open` once it is being
+         *     executed or has ended. Needs a human: a system principal is a `403`.
+         */
+        post: operations["declineRemedy"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/investigation-classes": {
         parameters: {
             query?: never;
@@ -3350,6 +3468,15 @@ export interface components {
          *     Finding never decides whether anything about any signal is sent; whether `finding` itself goes
          *     anywhere is a policy's word.
          *
+         *     The last six — `remedy_proposed`, `remedy_approved`, `remedy_declined`, `remedy_expired`,
+         *     `remedy_executed` and `remedy_failed` — are the transitions of a **Remedy** (ADR 0054 §2), each
+         *     declared to the Incident the Remedy is about, or to the Incident holding its Case; a Remedy on a
+         *     Case in no Incident is declared nowhere. The envelope's `incident.remedy` carries the transition:
+         *     the exact command first — the write Tool and the exact arguments, or *"no configured Tool can
+         *     carry this out"* — then its target and the Investigator's description, its approvals so far, and
+         *     who made the transition when. Facts, never commands: approval happens in oto, and oto reads
+         *     nothing back from the incident tool.
+         *
          *     ⛔ **There is no `severity_raised`, and there was.** ADR 0020 proposed it as the purest case for
          *     broadcasting — a card going amber to red under a silent `chat.update` — and a migration was
          *     written for it. The premise does not survive SPEC §C.2: in Prometheus `severity` is an ordinary
@@ -3388,7 +3515,7 @@ export interface components {
          * @example fired
          * @enum {string}
          */
-        NotificationReason: "fired" | "all_resolved" | "repeat" | "suppressed" | "unsuppressed" | "expired" | "refired" | "acked" | "unacked" | "snoozed" | "unsnoozed" | "enriched" | "rule_changed" | "comment" | "digest" | "drawn" | "case_added" | "case_removed" | "quiet" | "active_again" | "finding";
+        NotificationReason: "fired" | "all_resolved" | "repeat" | "suppressed" | "unsuppressed" | "expired" | "refired" | "acked" | "unacked" | "snoozed" | "unsnoozed" | "enriched" | "rule_changed" | "comment" | "digest" | "drawn" | "case_added" | "case_removed" | "quiet" | "active_again" | "finding" | "remedy_proposed" | "remedy_approved" | "remedy_declined" | "remedy_expired" | "remedy_executed" | "remedy_failed";
         /**
          * @example delivered
          * @enum {string}
@@ -6469,6 +6596,16 @@ export interface components {
              * @default 2
              */
             investigation_concurrency: number;
+            /**
+             * Format: int32
+             * @description How long a **Remedy** waits (ADR 0054 §2): a proposed Remedy that has not had its required
+             *     approvals within this long after it was proposed, or an approved one not executed within this
+             *     long after its approval, is recorded `expired` and can no longer be approved or executed. It
+             *     reads as expired the moment the window passes; the `remedies.sweep` job records it and declares
+             *     the fact.
+             * @default 3600
+             */
+            remedy_approval_window_s: number;
         };
         /**
          * @description A human principal. Password hashes and token material never appear in any response.
@@ -8525,6 +8662,131 @@ export interface components {
             data: components["schemas"]["SuggestionDTO"];
             meta: components["schemas"]["Meta"];
         };
+        /**
+         * @description A change to a cluster an Investigator proposed and oto executes only after the required approvals
+         *     (ADR 0054): `proposed → approved → executing → executed | failed`, or `declined`, or `expired`, each
+         *     by a named actor, and each declared to its Incident as a fact.
+         */
+        RemedyDTO: {
+            id: components["schemas"]["Uuid"];
+            /** @description The Investigation whose Finding proposed it — its provenance. */
+            investigation_id: components["schemas"]["Uuid"];
+            /** @enum {string} */
+            subject_kind: "case" | "incident";
+            subject_id: components["schemas"]["Uuid"];
+            /**
+             * @description Where it is, read at the request: a `proposed` or `approved` Remedy past `expires_at` is `expired`
+             *     whether or not the sweep has recorded it yet. `executing` is oto's claim, made before the write
+             *     Tool is called; `executed`, `failed`, `declined` and `expired` are final.
+             * @enum {string}
+             */
+            state: "proposed" | "approved" | "executing" | "executed" | "failed" | "declined" | "expired";
+            tool: components["schemas"]["RemedyToolDTO"] | null;
+            /** @description "no configured Tool can carry this out" when it names no Tool — and then it can never be approved; null otherwise. */
+            no_tool: string | null;
+            /**
+             * @description Why it cannot be approved now — it names no Tool, or its Tool was removed from configuration, or
+             *     its ToolServer is no longer `write` — and null when nothing about its Tool stands in the way.
+             */
+            blocked: string | null;
+            /** @description The EXACT arguments the write Tool would be sent, as compact JSON, byte for byte. Null with no Tool. */
+            arguments: string | null;
+            /** @description The same arguments indented for reading — whitespace only, the same keys, order and values. */
+            arguments_display: string | null;
+            /** @description The SHA-256 of `arguments`. An approval names it; the executor sends only when it still matches. */
+            arguments_sha256: string | null;
+            /** @description What the change is made to. */
+            target: string;
+            /** @description The Investigator's description of the change and why — a model's words, shown after the exact command. */
+            description: string;
+            /** @description The Investigator and version that proposed it. */
+            proposed_by_label: string;
+            /**
+             * Format: int32
+             * @description How many DIFFERENT holders of the grant on its ToolServer must approve it. Two, until risk rules exist.
+             */
+            required_approvals: number;
+            approvals: components["schemas"]["RemedyApprovalDTO"][];
+            /** Format: date-time */
+            proposed_at: string;
+            /**
+             * Format: date-time
+             * @description When it expires if it has not been approved, or — once approved — executed.
+             */
+            expires_at: string;
+            /** Format: date-time */
+            approved_at: string | null;
+            /** Format: date-time */
+            executing_at: string | null;
+            /** Format: date-time */
+            ended_at: string | null;
+            /**
+             * @description Why it failed: the write Tool reported a failure (`tool_error`); it was sent, or may have been, and
+             *     no answer was recorded (`outcome_unknown`); or it was not sent, because its Tool was gone
+             *     (`tool_unavailable`), its arguments no longer hashed to what was approved (`arguments_changed`), or
+             *     fewer approvers than it needs still held the grant (`approvals_withdrawn`). A failed Remedy is
+             *     never retried.
+             * @enum {string|null}
+             */
+            failure_reason: "tool_error" | "outcome_unknown" | "tool_unavailable" | "arguments_changed" | "approvals_withdrawn" | null;
+            detail: string | null;
+            /** @description What the write Tool answered, redacted with the org's rules and capped. Null until it was sent. */
+            result: string | null;
+            transitions: components["schemas"]["RemedyTransitionDTO"][];
+        };
+        /** @description The write Tool a Remedy would be carried out by. */
+        RemedyToolDTO: {
+            tool_server_id: components["schemas"]["Uuid"];
+            /** @description The write ToolServer's name when the Remedy was proposed. */
+            tool_server_name: string;
+            /** @description The ToolServer's own name for the write Tool. */
+            tool_name: string;
+        };
+        /** @description One person's approval. */
+        RemedyApprovalDTO: {
+            /** @description Null once the user is deleted; the label is frozen. */
+            user_id: components["schemas"]["Uuid"] | null;
+            label: string;
+            /** Format: date-time */
+            approved_at: string;
+        };
+        /** @description One transition of one Remedy, by a named actor. */
+        RemedyTransitionDTO: {
+            /**
+             * @description Null for the proposal itself.
+             * @enum {string|null}
+             */
+            from: "proposed" | "approved" | "executing" | null;
+            /** @enum {string} */
+            to: "proposed" | "approved" | "executing" | "executed" | "failed" | "declined" | "expired";
+            /** @enum {string} */
+            actor_kind: "investigator" | "user" | "system";
+            actor_label: string;
+            /** Format: date-time */
+            at: string;
+            /** @enum {string|null} */
+            failure_reason: "tool_error" | "outcome_unknown" | "tool_unavailable" | "arguments_changed" | "approvals_withdrawn" | null;
+            detail: string | null;
+            /**
+             * @description The Incident this transition was declared to as a fact; null when the Remedy's subject was in no
+             *     Incident — recorded, never invented. The executor's claim (`executing`) is never declared.
+             */
+            declared_incident_id: components["schemas"]["Uuid"] | null;
+        };
+        /** @description Approving a Remedy names the exact arguments approved, by their hash. */
+        ApproveRemedyRequest: {
+            /** @description The `arguments_sha256` of the arguments the approver was shown — what they approve. */
+            arguments_sha256: string;
+        };
+        RemedyListResponse: {
+            data: components["schemas"]["RemedyDTO"][];
+            page: components["schemas"]["PageInfo"];
+            meta: components["schemas"]["Meta"];
+        };
+        RemedyResponse: {
+            data: components["schemas"]["RemedyDTO"];
+            meta: components["schemas"]["Meta"];
+        };
         IncidentListResponse: {
             data: components["schemas"]["IncidentDTO"][];
             page: components["schemas"]["PageInfo"];
@@ -8770,6 +9032,8 @@ export interface components {
             investigation_daily_tokens?: number;
             /** Format: int32 */
             investigation_concurrency?: number;
+            /** Format: int32 */
+            remedy_approval_window_s?: number;
         };
         OrgSettingsViewResponse: {
             data: components["schemas"]["OrgSettingsViewDTO"];
@@ -8806,6 +9070,11 @@ export interface components {
              * @description The most Investigations running at once (ADR 0053 §6).
              */
             investigation_concurrency?: number;
+            /**
+             * Format: int32
+             * @description How long a Remedy waits for its approvals, and then for its execution, before it expires (ADR 0054 §2).
+             */
+            remedy_approval_window_s?: number;
             /**
              * @description Settings keys to return to oto's shipped default. After a reset the key's origin reports
              *     `default` again. An unknown key is rejected with 422, never ignored.
@@ -12167,6 +12436,135 @@ export interface operations {
             413: components["responses"]["PayloadTooLarge"];
             415: components["responses"]["UnsupportedMediaType"];
             422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    listInvestigationRemedies: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The Investigation's Remedies, in the order proposed. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemedyListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    getRemedy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The Remedy. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemedyResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    approveRemedy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApproveRemedyRequest"];
+            };
+        };
+        responses: {
+            /** @description The Remedy, with this approval — and `approved` when it was the last one it needed. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemedyResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    declineRemedy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The Remedy, declined. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemedyResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
             429: components["responses"]["RateLimited"];
             500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];

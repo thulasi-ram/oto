@@ -84,6 +84,7 @@ type OrgSettingsPatchDTO struct {
 	InvestigationsEnabled    *bool `json:"investigations_enabled,omitempty"`
 	InvestigationDailyTokens *int  `json:"investigation_daily_tokens,omitempty"`
 	InvestigationConcurrency *int  `json:"investigation_concurrency,omitempty"`
+	RemedyApprovalWindowS    *int  `json:"remedy_approval_window_s,omitempty"`
 
 	// ⛔⛔ `refire_grace_s` AND `group_close_delay_s` WERE THE FIRST AND THIRD
 	// FIELDS AND BOTH ARE DELETED (git-bug 7287b28). An override of a key that
@@ -108,6 +109,7 @@ func toOrgSettingsPatchDTO(p domain.SettingsPatch) OrgSettingsPatchDTO {
 		InvestigationsEnabled:    p.InvestigationsEnabled,
 		InvestigationDailyTokens: p.InvestigationDailyTokens,
 		InvestigationConcurrency: p.InvestigationConcurrency,
+		RemedyApprovalWindowS:    p.RemedyApprovalWindowS,
 	}
 }
 
@@ -155,6 +157,10 @@ type UpdateOrgSettingsRequest struct {
 	InvestigationDailyTokens *int `json:"investigation_daily_tokens,omitempty"`
 	InvestigationConcurrency *int `json:"investigation_concurrency,omitempty"`
 
+	// RemedyApprovalWindowS is how long a Remedy waits for its approvals, and then for
+	// its execution (ADR 0054 §2). Bounded by `domain.Bounds`.
+	RemedyApprovalWindowS *int `json:"remedy_approval_window_s,omitempty"`
+
 	// ⛔⛔ `refire_grace_s` AND `group_close_delay_s` WERE HERE AND BOTH ARE DELETED
 	// (git-bug 7287b28). ⚠️ THIS SCHEMA IS `additionalProperties: false`, so a
 	// PATCH still naming either is now a 400 rather than a stored number nothing
@@ -196,6 +202,7 @@ func (r UpdateOrgSettingsRequest) toDomain() (domain.SettingsPatch, []domain.Set
 		InvestigationsEnabled:    r.InvestigationsEnabled,
 		InvestigationDailyTokens: r.InvestigationDailyTokens,
 		InvestigationConcurrency: r.InvestigationConcurrency,
+		RemedyApprovalWindowS:    r.RemedyApprovalWindowS,
 	}
 
 	known := make(map[string]domain.SettingKey, len(domain.AllSettingKeys()))

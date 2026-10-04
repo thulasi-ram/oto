@@ -89,6 +89,7 @@ import { PANEL_CODE_BLOCK, PANEL_HEADER, PANEL_ROW } from "~/features/alerts/det
 import { cn } from "~/lib/cn";
 import { absoluteTime, count } from "~/lib/format";
 import { IN_PROGRESS, OUTCOME, REASON_SENTENCE, STATUS_LABEL, finishNote } from "./copy";
+import { RemediesView } from "./RemediesView";
 
 /** How often a run in progress is re-read. */
 export const POLL_MS = 3_000;
@@ -481,6 +482,8 @@ const RunView: Component<{
       {/* What the Finding suggests: only a run that reached one made any. */}
       <Show when={r().finding !== null && (r().status === "completed" || r().status === "exhausted")}>
         <SuggestionsView investigationId={r().id} />
+        {/* The changes to the cluster it proposes, the exact command first (ADR 0054). */}
+        <RemediesView investigationId={r().id} />
       </Show>
 
       {/* What it cost and who asked — facts on the record, not a verdict. */}

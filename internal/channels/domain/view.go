@@ -230,6 +230,48 @@ type IncidentView struct {
 	// renderer says when it was concluded every time it says what: a model's
 	// sentence reads as present tense unless the card stops it.
 	Finding *IncidentFindingView
+	// Remedy is the Remedy transition a `remedy_*` fact declares (ADR 0054 §2), nil on
+	// every other fact. A SNAPSHOT of the transition as it was made. ⭐ A renderer says the
+	// exact command — the Tool and its arguments, or that no configured Tool can carry it
+	// out — BEFORE the Investigator's description of it.
+	Remedy *IncidentRemedyView
+}
+
+// IncidentRemedyView is one Remedy transition as a card carries it: the Remedy as it stood
+// once the transition was made, and who made it when.
+type IncidentRemedyView struct {
+	RemedyID        string
+	InvestigationID string
+	// State is the state the transition reached; From where it came from ("" for the
+	// proposal).
+	State string
+	From  string
+	// ToolServer and Tool name the write Tool, or are "" and NoTool says that no configured
+	// Tool can carry it out.
+	ToolServer string
+	Tool       string
+	NoTool     string
+	// Arguments is the exact compact JSON object the Tool would be — or was — sent.
+	Arguments         string
+	ArgumentsSHA256   string
+	Target            string
+	Description       string
+	ProposedBy        string
+	RequiredApprovals int
+	Approvals         []IncidentRemedyApprovalView
+	// ActorKind is investigator, user or system; ActorLabel names who.
+	ActorKind     string
+	ActorLabel    string
+	At            time.Time
+	ExpiresAt     time.Time
+	FailureReason string
+	Detail        string
+}
+
+// IncidentRemedyApprovalView is one approval: who, and when.
+type IncidentRemedyApprovalView struct {
+	Label      string
+	ApprovedAt time.Time
 }
 
 // IncidentFindingView is an Incident's latest Finding: what was concluded, by which

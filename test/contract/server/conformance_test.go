@@ -185,7 +185,12 @@ func TestTheRunningServerMatchesTheContract(t *testing.T) {
 // ⬆️ 111 → 112 (ADR 0054 §4, git-bug 47f67c8). A ToolServer's Remedy approvers — one read,
 // answering 2xx with an empty list. There is no write operation to drive: a grant is
 // given only by `oto grant` on the host.
-const minimumSuccessfulOperations = 112
+//
+// ⬆️ 112 → 113 (ADR 0054, git-bug 4148256). Four Remedy operations — list, read, approve and
+// decline — landed, and ONE answers 2xx: the list, empty, because this world works no runs. A
+// Remedy is made only by a run's Finding, so the other three are driven to their typed 404s
+// and not credited, which is why the floor rises by one and not four.
+const minimumSuccessfulOperations = 113
 
 /* -------------------------------------------------------------------------- */
 /* The three assertions                                                       */

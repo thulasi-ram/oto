@@ -1,6 +1,8 @@
 package service
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"strings"
 	"time"
 
@@ -211,7 +213,46 @@ func SyntheticFactView(inst domain.Instance, now time.Time, baseURL, fact string
 		if base != "" {
 			incident.Link = base + "/incidents/1"
 		}
+		if domain.RemedyFact(fact) {
+			incident.Remedy = syntheticRemedy(fact, now)
+		}
 		return &domain.NotificationView{Org: v.Org, Reason: fact, Incident: incident, RenderedAt: now}
 	}
 	return v
 }
+
+// syntheticRemedy is the Remedy a test send of a Remedy fact carries: a harmless command on
+// the test Deployment, named as the test, in the shape `ViewService.incidentCard` copies off
+// a fact's row. Nothing is proposed, approved or executed by sending it.
+func syntheticRemedy(fact string, now time.Time) *domain.IncidentRemedyView {
+	state := strings.TrimPrefix(fact, "remedy_")
+	r := &domain.IncidentRemedyView{
+		RemedyID: "00000000-0000-7000-8000-000000000006", InvestigationID: "00000000-0000-7000-8000-000000000007",
+		State: state, ToolServer: "oto-channel-test", Tool: "rollout_restart",
+		Arguments: syntheticRemedyArguments, ArgumentsSHA256: syntheticArgumentsHash,
+		Target:            "Deployment oto-channel-test/oto-channel-test",
+		Description:       "oto channel test: no Remedy was proposed, and nothing is executed by this message.",
+		ProposedBy:        "oto channel test",
+		RequiredApprovals: 2, Approvals: []domain.IncidentRemedyApprovalView{},
+		ActorKind: "system", ActorLabel: "oto channel test", At: now, ExpiresAt: now.Add(time.Hour),
+	}
+	switch fact {
+	case "remedy_proposed":
+		r.ActorKind = "investigator"
+	case "remedy_approved", "remedy_declined":
+		r.ActorKind = "user"
+	}
+	if fact == "remedy_failed" {
+		r.FailureReason, r.Detail = "tool_error", "oto channel test: the write Tool reported a failure"
+	}
+	return r
+}
+
+// syntheticRemedyArguments are the test Remedy's arguments, and syntheticArgumentsHash their
+// SHA-256 — computed the way investigator/domain.HashArguments computes a real one.
+const syntheticRemedyArguments = `{"namespace":"oto-channel-test","deployment":"oto-channel-test"}`
+
+var syntheticArgumentsHash = func() string {
+	sum := sha256.Sum256([]byte(syntheticRemedyArguments))
+	return hex.EncodeToString(sum[:])
+}()

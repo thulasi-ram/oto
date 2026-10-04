@@ -106,6 +106,10 @@ type (
 	IncidentExternalView = chdomain.IncidentExternalView
 	// IncidentFindingView is an Incident's latest Finding (ADR 0053 §4).
 	IncidentFindingView = chdomain.IncidentFindingView
+	// IncidentRemedyView is a Remedy transition a `remedy_*` fact declares (ADR 0054 §2).
+	IncidentRemedyView = chdomain.IncidentRemedyView
+	// IncidentRemedyApprovalView is one approval it had.
+	IncidentRemedyApprovalView = chdomain.IncidentRemedyApprovalView
 	// InIncidentView names the Incident conversation a Case fact is posted into
 	// (ADR 0052 §6).
 	InIncidentView = chdomain.InIncidentView

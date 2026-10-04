@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"strconv"
 	"strings"
 	"time"
 
@@ -58,7 +59,8 @@ const (
 	//
 	// ⬆️ IT IS 20 AT MIGRATION 00084: the five Incident facts joined (ADR 0052 §5).
 	// ⬆️ IT IS 21 AT MIGRATION 00095: `finding` joined (ADR 0053 §4).
-	MaxPolicyReasons = 21
+	// ⬆️ IT IS 27 AT MIGRATION 00100: the six Remedy facts joined (ADR 0054 §2).
+	MaxPolicyReasons = 27
 	// MaxPolicyChannels is policies_chan_ck.
 	MaxPolicyChannels = 16
 	// MinPolicyPriority and MaxPolicyPriority are policies_prio_ck. LOWER IS
@@ -556,7 +558,7 @@ func (p Policy) Validate() error {
 		})
 	case len(p.Reasons) > MaxPolicyReasons:
 		v = append(v, errs.Violation{
-			Field: "reasons", Code: "max_items", Message: "at most 21 reasons",
+			Field: "reasons", Code: "max_items", Message: "at most " + strconv.Itoa(MaxPolicyReasons) + " reasons",
 		})
 	}
 	// ⭐ `reasons` IS A SET, and this loop is the layer that says so where it

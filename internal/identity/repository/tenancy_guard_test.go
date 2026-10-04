@@ -113,6 +113,10 @@ var notARequestResolver = map[string]string{
 		"so the row maps whole, and it never runs bare. Every caller appends `WHERE n.org_id = $1` with " +
 		"`s.OrgID()` from a TenantScope it already holds (Get, ListBySubject), so it CONSUMES a tenancy " +
 		"the same way selectOrgSQL does. The scan sees the constant before the suffix is concatenated",
+	"investigator/repository.remedyColumns": "the same prefix shape as investigationSelect above, for a " +
+		"Remedy (git-bug 4148256): it projects `r.org_id` so the row maps whole and never runs bare — every " +
+		"caller appends `WHERE r.org_id = $1` from a scope it already holds (ListRemedies, GetRemedy, " +
+		"LockRemedy). A consumer, never a resolver",
 	"investigator/repository.investigatorSelect": "the same prefix shape as investigationSelect above, " +
 		"for an Investigator joined to its current version: every caller appends `WHERE i.org_id = $1` " +
 		"from a scope it already holds (Get and Lock via getOne, List), and the LATERAL it carries is itself bound to " +

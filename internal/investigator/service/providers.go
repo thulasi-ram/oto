@@ -55,6 +55,9 @@ type Service struct {
 	policies    PolicyEditor
 	memberships MembershipEditor
 	approvers   RemedyApprovers
+
+	remedies       RemedyStore
+	remedyDeclarer RemedyDeclarer
 }
 
 // Deps are the Service's collaborators. Every one but Clock and Limits is required:
@@ -108,6 +111,11 @@ type Deps struct {
 	// Approvers reads who holds the Remedy approval grant on a write ToolServer (ADR 0054
 	// §4, git-bug 47f67c8). Read-only: a grant is written only from the host shell.
 	Approvers RemedyApprovers
+
+	// Remedies are a Finding's proposed cluster changes, their approvals and transitions
+	// (ADR 0054, git-bug 4148256); RemedyDeclarer declares each transition outbound.
+	Remedies       RemedyStore
+	RemedyDeclarer RemedyDeclarer
 }
 
 // New builds the Service.
@@ -155,6 +163,9 @@ func New(d Deps) (*Service, error) {
 	case d.Approvers == nil:
 		return nil, errors.New("investigator: the Remedy approver grants are required; who may approve a Remedy " +
 			"is read through them")
+	case d.Remedies == nil || d.RemedyDeclarer == nil:
+		return nil, errors.New("investigator: the Remedy store and declarer are required; a Remedy's every transition " +
+			"is recorded and goes outbound as a fact")
 	}
 	if d.Clock == nil {
 		d.Clock = clock.New()
@@ -169,10 +180,14 @@ func New(d Deps) (*Service, error) {
 		toolServers: d.ToolServers, tokens: d.Tokens, toolDialer: d.ToolDialer, redaction: d.Redaction,
 		suggestions: d.Suggestions, policies: d.Policies, memberships: d.Memberships,
 		approvers: d.Approvers,
+		remedies:  d.Remedies, remedyDeclarer: d.RemedyDeclarer,
 	}
 	// The proposing Tools are built in too, and held only when an allowlist names them
 	// (git-bug 8327c00).
 	s.tools = append(builtinTools(s), proposingTools(s)...)
+	// So are the two Remedy Tools (git-bug 4148256): one that lists the write Tools a Remedy
+	// may name, and one that proposes. ⛔ Neither calls a write Tool.
+	s.tools = append(s.tools, remedyTools(s)...)
 	return s, nil
 }
 

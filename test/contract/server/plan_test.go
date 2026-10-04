@@ -732,6 +732,33 @@ func plan() []probe {
 			body: map[string]any{}, want: http.StatusNotFound,
 			why: "a Suggestion is made only by a run's Finding, and this world works no runs; suggestion_not_found",
 		},
+		// ADR 0054 (git-bug 4148256): a Finding's Remedies. The run above has no Finding, so
+		// its list is EMPTY — still a 2xx validated against RemedyListResponse. A Remedy is
+		// made only by a run's Finding, so the read, the approve and the decline are driven
+		// to their typed 404s: driven, not credited.
+		{
+			method: http.MethodGet, tmpl: "/api/v1/investigations/{id}/remedies",
+			url: "/api/v1/investigations/{{investigation}}/remedies", want: http.StatusOK,
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/investigations/{id}/remedies",
+			url: "/api/v1/investigations/{{stranger}}/remedies", want: http.StatusNotFound,
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/remedies/{id}", url: "/api/v1/remedies/{{stranger}}",
+			want: http.StatusNotFound,
+			why:  "a Remedy is made only by a run's Finding, and this world works no runs; remedy_not_found",
+		},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/remedies/{id}/approve", url: "/api/v1/remedies/{{stranger}}/approve",
+			body: map[string]any{"arguments_sha256": "0000000000000000000000000000000000000000000000000000000000000000"}, want: http.StatusNotFound,
+			why: "a Remedy is made only by a run's Finding, and this world works no runs; remedy_not_found",
+		},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/remedies/{id}/decline", url: "/api/v1/remedies/{{stranger}}/decline",
+			want: http.StatusNotFound,
+			why:  "a Remedy is made only by a run's Finding, and this world works no runs; remedy_not_found",
+		},
 		// ADR 0053 §4 (git-bug 74ea849): an Incident investigated as a whole, asked
 		// about by the number the incident probes above captured. Nothing is dialled,
 		// for the Case request's reason: the run is recorded `queued` and its job is

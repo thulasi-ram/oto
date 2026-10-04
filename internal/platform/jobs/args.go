@@ -218,11 +218,49 @@ type NotifyIncidentArgs struct {
 	Payload
 	// IncidentID is the subject, and what the tenant is resolved through.
 	IncidentID uuid.UUID `json:"incident_id"`
-	// Reason is one of the five Incident Reasons.
+	// Reason is one of the twelve Incident Reasons.
 	Reason string `json:"reason"`
 	// OccasionID is WHICH TIME this fact happened. Required for every Incident
 	// Reason (`notification/domain.Reason.NeedsOccasion`).
 	OccasionID uuid.UUID `json:"occasion_id"`
+	// Remedy is the Remedy transition a `remedy_*` fact declares (ADR 0054 §2, git-bug
+	// 4148256), copied by `investigator` in the transaction that made the transition —
+	// absent on every other Reason. ⭐ ADDITIVE: a new optional field, so payload v1 still
+	// says what it said, and the occasion is the transition.
+	Remedy *RemedyFact `json:"remedy,omitempty"`
+}
+
+// RemedyFact is one Remedy transition as `notify.incident` carries it: the Remedy as it stood
+// once the transition was made — its write Tool and exact arguments, or the sentence that no
+// configured Tool can carry it out — and who made the transition when. A snapshot: nothing
+// downstream re-reads the Remedy.
+type RemedyFact struct {
+	RemedyID          uuid.UUID            `json:"remedy_id"`
+	InvestigationID   uuid.UUID            `json:"investigation_id"`
+	State             string               `json:"state"`
+	From              string               `json:"from,omitempty"`
+	ToolServer        string               `json:"tool_server,omitempty"`
+	Tool              string               `json:"tool,omitempty"`
+	NoTool            string               `json:"no_tool,omitempty"`
+	Arguments         string               `json:"arguments,omitempty"`
+	ArgumentsSHA256   string               `json:"arguments_sha256,omitempty"`
+	Target            string               `json:"target"`
+	Description       string               `json:"description"`
+	ProposedBy        string               `json:"proposed_by"`
+	RequiredApprovals int                  `json:"required_approvals"`
+	Approvals         []RemedyFactApproval `json:"approvals"`
+	ActorKind         string               `json:"actor_kind"`
+	ActorLabel        string               `json:"actor_label"`
+	At                time.Time            `json:"at"`
+	ExpiresAt         time.Time            `json:"expires_at"`
+	FailureReason     string               `json:"failure_reason,omitempty"`
+	Detail            string               `json:"detail,omitempty"`
+}
+
+// RemedyFactApproval is one approval a Remedy had when the fact was made.
+type RemedyFactApproval struct {
+	Label      string    `json:"label"`
+	ApprovedAt time.Time `json:"approved_at"`
 }
 
 // Kind implements db.JobArgs and river.JobArgs.
@@ -881,5 +919,32 @@ func (InvestigationsDigestArgs) Kind() string { return KindInvestigationsDigest 
 
 // InsertOpts pins the queue, priority, retry ceiling and tick uniqueness.
 func (InvestigationsDigestArgs) InsertOpts() river.InsertOpts {
+	return periodicOpts(QueueLifecycle, PriorityBackground, time.Minute)
+}
+
+// RemediesSweepArgs records what the clock decided about Remedies (ADR 0054 §2, git-bug
+// 4148256): once a minute, per tenant, every Remedy still `proposed` or `approved` whose
+// approval window has passed is moved to `expired` by `system`, in its own transaction, and
+// the transition is declared outbound like any other. Periodic, 60 s, zero payload.
+//
+// Queue: lifecycle · Priority: BACKGROUND · Retry: periodic (3) · Payload v1
+//
+// ⭐ RECORDED, NEVER SILENT, AND NEVER THE GATE. A Remedy past its window already reads as
+// expired the moment the window passes — nothing can approve, decline or execute it from
+// then — so a late or missed sweep delays only the record and the fact, never the refusal.
+// ⛔ IT CALLS NO TOOLSERVER.
+//
+// IDEMPOTENCY: by state. Each Remedy is locked and moved only from the state it was read in;
+// one already moved — approved, declined, claimed, or expired by an earlier tick — is left.
+type RemediesSweepArgs struct {
+	Payload
+	TenantFanOut
+}
+
+// Kind implements db.JobArgs and river.JobArgs.
+func (RemediesSweepArgs) Kind() string { return KindRemediesSweep }
+
+// InsertOpts pins the queue, priority, retry ceiling and tick uniqueness.
+func (RemediesSweepArgs) InsertOpts() river.InsertOpts {
 	return periodicOpts(QueueLifecycle, PriorityBackground, time.Minute)
 }

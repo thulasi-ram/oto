@@ -150,6 +150,8 @@ type Handlers struct {
 	InvestigationsRun      Handler[InvestigationsRunArgs]
 	InvestigationsIncident Handler[InvestigationsIncidentArgs]
 	InvestigationsDigest   Handler[InvestigationsDigestArgs]
+
+	RemediesSweep Handler[RemediesSweepArgs]
 }
 
 // stub returns the not-implemented handler for a kind.
@@ -298,6 +300,12 @@ func RegisterAll(r *Registry, h Handlers) error {
 			return Register(r, Spec{Queue: QueueLifecycle, PayloadVersion: 1, Timeout: 2 * time.Minute},
 				orStub(h.InvestigationsDigest, KindInvestigationsDigest))
 		},
+		func() error {
+			// Two minutes, like `investigations.digest`: one tenant's Remedies past their
+			// window, one short transaction each. It never reaches a ToolServer.
+			return Register(r, Spec{Queue: QueueLifecycle, PayloadVersion: 1, Timeout: 2 * time.Minute},
+				orStub(h.RemediesSweep, KindRemediesSweep))
+		},
 	}
 
 	for _, reg := range regs {
@@ -375,6 +383,12 @@ func AddDefaultPeriodic(r *Registry, clk clock.Clock) {
 	// sent by `notify.digest` whatever this does.
 	add(time.Minute, KindInvestigationsDigest, func() (river.JobArgs, *river.InsertOpts) {
 		return InvestigationsDigestArgs{}, nil
+	})
+	// The Remedy sweep (git-bug 4148256), on the same minute: a window is an hour by
+	// default and a minute at its shortest, so a minute is the resolution the record
+	// needs. The refusal does not wait for it — a Remedy past its window reads expired.
+	add(time.Minute, KindRemediesSweep, func() (river.JobArgs, *river.InsertOpts) {
+		return RemediesSweepArgs{}, nil
 	})
 	add(time.Hour, KindPartitionsManage, func() (river.JobArgs, *river.InsertOpts) {
 		return PartitionsManageArgs{}, nil

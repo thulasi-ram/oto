@@ -423,6 +423,11 @@ export const FRESHNESS: Readonly<Record<string, Freshness>> = {
   // apply on the same panel writes — and it invalidates the key. A lapse writes nothing
   // and needs no frame: the next read simply does not list it.
   "cases.suggestions": { by: "live" },
+  // A run's Remedies ride the same prefix, so the frames that reach `["cases"]` reach
+  // them. Another approver, the expiry sweep and the executor each move one with no frame
+  // of its own, and `RemediesView` polls for exactly that window — while any Remedy on
+  // screen is proposed, approved or executing — as `InvestigationPanel` does for a run.
+  "cases.remedies": { by: "live" },
 
   // Incidents. No frame is ABOUT one, but every frame that can turn one quiet or
   // active is about one of its Cases: `case.upserted` closes a member, and

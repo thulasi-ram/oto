@@ -52,8 +52,11 @@ type notificationRow struct {
 	// digestFinding is the COPY a digest carried (migration 00098), NULL for the
 	// built-in body.
 	digestFinding []byte
-	createdAt     time.Time
-	updatedAt     time.Time
+	// remedy is the Remedy transition a `remedy_*` fact declares (migration 00100), NULL on
+	// every other Reason.
+	remedy    []byte
+	createdAt time.Time
+	updatedAt time.Time
 }
 
 // scanInto is the ONE argument list for `notificationColumns`. Five queries across
@@ -69,7 +72,7 @@ func (r *notificationRow) scanInto() []any {
 		&r.stateVersion, &r.idempotencyKey, &r.status, &r.suppressedReason,
 		&r.digestWindowStart, &r.digestCount,
 		&r.digestCoveredFrom, &r.digestCoveredTo,
-		&r.digestFinding,
+		&r.digestFinding, &r.remedy,
 		&r.createdAt, &r.updatedAt,
 	}
 }
@@ -115,6 +118,80 @@ func decodeDigestFinding(b []byte) *domain.DigestFinding {
 	}
 }
 
+// remedyJSON is `notifications.remedy` as stored (migration 00100).
+type remedyJSON struct {
+	RemedyID          uuid.UUID            `json:"remedy_id"`
+	InvestigationID   uuid.UUID            `json:"investigation_id"`
+	State             string               `json:"state"`
+	From              string               `json:"from,omitempty"`
+	ToolServer        string               `json:"tool_server,omitempty"`
+	Tool              string               `json:"tool,omitempty"`
+	NoTool            string               `json:"no_tool,omitempty"`
+	Arguments         string               `json:"arguments,omitempty"`
+	ArgumentsSHA256   string               `json:"arguments_sha256,omitempty"`
+	Target            string               `json:"target"`
+	Description       string               `json:"description"`
+	ProposedBy        string               `json:"proposed_by"`
+	RequiredApprovals int                  `json:"required_approvals"`
+	Approvals         []remedyApprovalJSON `json:"approvals"`
+	ActorKind         string               `json:"actor_kind"`
+	ActorLabel        string               `json:"actor_label"`
+	At                time.Time            `json:"at"`
+	ExpiresAt         time.Time            `json:"expires_at"`
+	FailureReason     string               `json:"failure_reason,omitempty"`
+	Detail            string               `json:"detail,omitempty"`
+}
+
+type remedyApprovalJSON struct {
+	Label      string    `json:"label"`
+	ApprovedAt time.Time `json:"approved_at"`
+}
+
+func encodeRemedy(r *domain.IncidentRemedy) ([]byte, error) {
+	if r == nil {
+		return nil, nil
+	}
+	j := remedyJSON{
+		RemedyID: r.RemedyID, InvestigationID: r.InvestigationID, State: r.State, From: r.From,
+		ToolServer: r.ToolServer, Tool: r.Tool, NoTool: r.NoTool,
+		Arguments: r.Arguments, ArgumentsSHA256: r.ArgumentsSHA256,
+		Target: r.Target, Description: r.Description, ProposedBy: r.ProposedBy,
+		RequiredApprovals: r.RequiredApprovals, Approvals: make([]remedyApprovalJSON, 0, len(r.Approvals)),
+		ActorKind: r.ActorKind, ActorLabel: r.ActorLabel, At: r.At.UTC(), ExpiresAt: r.ExpiresAt.UTC(),
+		FailureReason: r.FailureReason, Detail: r.Detail,
+	}
+	for _, a := range r.Approvals {
+		j.Approvals = append(j.Approvals, remedyApprovalJSON{Label: a.Label, ApprovedAt: a.ApprovedAt.UTC()})
+	}
+	return json.Marshal(j)
+}
+
+// decodeRemedy reads the copy back. A row that cannot be decoded reads as nil, for
+// decodeDigestFinding's reason: `notifications_remedy_ck` admits only an object, and the
+// card without its Remedy is still the Incident's card.
+func decodeRemedy(b []byte) *domain.IncidentRemedy {
+	if len(b) == 0 {
+		return nil
+	}
+	var j remedyJSON
+	if err := json.Unmarshal(b, &j); err != nil {
+		return nil
+	}
+	out := &domain.IncidentRemedy{
+		RemedyID: j.RemedyID, InvestigationID: j.InvestigationID, State: j.State, From: j.From,
+		ToolServer: j.ToolServer, Tool: j.Tool, NoTool: j.NoTool,
+		Arguments: j.Arguments, ArgumentsSHA256: j.ArgumentsSHA256,
+		Target: j.Target, Description: j.Description, ProposedBy: j.ProposedBy,
+		RequiredApprovals: j.RequiredApprovals, Approvals: make([]domain.IncidentRemedyApproval, 0, len(j.Approvals)),
+		ActorKind: j.ActorKind, ActorLabel: j.ActorLabel, At: j.At.UTC(), ExpiresAt: j.ExpiresAt.UTC(),
+		FailureReason: j.FailureReason, Detail: j.Detail,
+	}
+	for _, a := range j.Approvals {
+		out.Approvals = append(out.Approvals, domain.IncidentRemedyApproval{Label: a.Label, ApprovedAt: a.ApprovedAt.UTC()})
+	}
+	return out
+}
+
 func (r notificationRow) toDomain() domain.Notification {
 	n := domain.Notification{
 		ID:                r.id,
@@ -135,6 +212,7 @@ func (r notificationRow) toDomain() domain.Notification {
 		DigestCoveredFrom: r.digestCoveredFrom,
 		DigestCoveredTo:   r.digestCoveredTo,
 		DigestFinding:     decodeDigestFinding(r.digestFinding),
+		Remedy:            decodeRemedy(r.remedy),
 		CreatedAt:         r.createdAt,
 		UpdatedAt:         r.updatedAt,
 	}
@@ -177,7 +255,7 @@ const notificationColumns = `
   alert_id, case_id,
   reason, policy_id, state_version, idempotency_key, status, suppressed_reason,
   digest_window_start, digest_count, digest_covered_from, digest_covered_to,
-  digest_finding,
+  digest_finding, remedy,
   created_at, updated_at`
 
 // ⚠️ THE ARBITER STAYS `(org_id, idempotency_key)` EVEN THOUGH A DIGEST HAS A
@@ -197,9 +275,9 @@ INSERT INTO notifications (
   alert_id, case_id,
   reason, policy_id, state_version, idempotency_key, status, suppressed_reason,
   digest_window_start, digest_count, digest_covered_from, digest_covered_to,
-  digest_finding,
+  digest_finding, remedy,
   created_at, updated_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$20,$19,$19)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$20,$21,$19,$19)
 ON CONFLICT (org_id, idempotency_key) DO NOTHING
 RETURNING` + notificationColumns
 
@@ -237,6 +315,11 @@ func (r *NotificationRepository) Insert(
 		return domain.Notification{}, false, mapErr(err, "notification_not_found", "encode a digest's Finding")
 	}
 
+	remedy, err := encodeRemedy(n.Remedy)
+	if err != nil {
+		return domain.Notification{}, false, mapErr(err, "notification_not_found", "encode a Remedy fact")
+	}
+
 	var row notificationRow
 	err = r.db(ctx).QueryRow(ctx, insertNotificationSQL,
 		n.ID, s.OrgID(), string(n.SubjectKind), n.SubjectID,
@@ -245,7 +328,7 @@ func (r *NotificationRepository) Insert(
 		n.IdempotencyKey, string(n.Status), suppressed,
 		n.DigestWindowStart, n.DigestCount,
 		n.DigestCoveredFrom, n.DigestCoveredTo, n.CreatedAt,
-		finding,
+		finding, remedy,
 	).Scan(row.scanInto()...)
 	switch {
 	case err == nil:

@@ -183,10 +183,18 @@ func TestApplyIsTheOnlyVerbOnASuggestion(t *testing.T) {
 
 	var onSuggestions []string
 	refusals := []string{"declin", "reject", "dismiss", "ignor", "hide", "snooze", "refus", "veto"}
+	// ⭐ ONE REFUSAL VERB IS MOUNTED, AND IT IS NOT A SUGGESTION'S. ADR 0054 §2 gives a
+	// REMEDY a decline — "saying no happens in oto" — because a change to a cluster is not
+	// a noise-reduction proposal that may as well lapse: a human's no is a fact that goes
+	// outbound (git-bug 4148256). Named here, so any other route that refuses is still caught.
+	exempt := map[string]bool{"POST /remedies/{id}/decline": true}
 	err := chi.Walk(r, func(method, pattern string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
 		route := method + " " + pattern
 		if strings.Contains(pattern, "suggestion") {
 			onSuggestions = append(onSuggestions, route)
+		}
+		if exempt[route] {
+			return nil
 		}
 		for _, seg := range strings.Split(strings.ToLower(pattern), "/") {
 			for _, verb := range refusals {

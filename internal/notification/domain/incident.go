@@ -66,6 +66,50 @@ type IncidentFinding struct {
 	ConcludedAt time.Time
 }
 
+// IncidentRemedy is one Remedy transition as an Incident fact declares it (ADR 0054 §2,
+// migration 00100): the Remedy as it stood once the transition was made, and the transition
+// — what, by whom, when. A SNAPSHOT copied onto the fact's row in the transaction that made
+// the transition, never re-read: a retried delivery renders the same fact.
+//
+// ⭐ THE EXACT COMMAND COMES FIRST. A Remedy that names a write Tool carries the Tool and the
+// exact arguments it would be (or was) sent; one that names none carries NoTool, the sentence
+// "no configured Tool can carry this out", and no arguments.
+type IncidentRemedy struct {
+	RemedyID        uuid.UUID
+	InvestigationID uuid.UUID
+	// State is the state the transition reached; From is where it came from ("" for the
+	// proposal).
+	State string
+	From  string
+	// ToolServer and Tool name the write Tool; both "" when NoTool is set.
+	ToolServer string
+	Tool       string
+	NoTool     string
+	// Arguments is the exact compact JSON object the Tool would be sent, and
+	// ArgumentsSHA256 its hash.
+	Arguments         string
+	ArgumentsSHA256   string
+	Target            string
+	Description       string
+	ProposedBy        string
+	RequiredApprovals int
+	Approvals         []IncidentRemedyApproval
+	// ActorKind is investigator, user or system; ActorLabel names them.
+	ActorKind  string
+	ActorLabel string
+	At         time.Time
+	ExpiresAt  time.Time
+	// FailureReason and Detail say why it failed, expired or was not sent; "" otherwise.
+	FailureReason string
+	Detail        string
+}
+
+// IncidentRemedyApproval is one approval a Remedy had when the fact was made: who, and when.
+type IncidentRemedyApproval struct {
+	Label      string
+	ApprovedAt time.Time
+}
+
 // IncidentOutbound is one receipt: the incident a destination's tool opened for
 // this Incident, as that tool named it in its 2xx response.
 type IncidentOutbound struct {

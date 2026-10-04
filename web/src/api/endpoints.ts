@@ -78,6 +78,7 @@ import type {
   Rejection,
   RejectionListQuery,
   ReplaceInvestigationClassesRequest,
+  Remedy,
   Suggestion,
   ResolvedConversation,
   ResolveConversationRequest,
@@ -609,6 +610,33 @@ export function applySuggestion(id: Uuid, movesFrom: number | null = null): Prom
     `${V1}/suggestions/${id}/apply`,
     movesFrom === null ? {} : { moves_from_incident_number: movesFrom },
   );
+}
+
+/**
+ * The Remedies one run's Finding proposed (ADR 0054), in the order proposed, whatever
+ * state each is in: the exact command first — the write Tool and its exact arguments, or
+ * `no_tool`, "no configured Tool can carry this out" — then what it is for.
+ */
+export function listInvestigationRemedies(
+  investigationId: Uuid,
+  c: Ctx = {},
+): Promise<ListEnvelope<Remedy>> {
+  return getList<Remedy>(`${V1}/investigations/${investigationId}/remedies`, ctx(c));
+}
+
+/**
+ * Approve one Remedy, naming the hash of the arguments this human was shown: an approval
+ * of any other arguments is refused (`409 remedy_arguments_changed`). Only a holder of the
+ * grant on the Remedy's ToolServer may, and it takes two DIFFERENT holders; the same one
+ * twice counts once. A Remedy with no Tool is refused (`409 remedy_has_no_tool`).
+ */
+export function approveRemedy(id: Uuid, argumentsSha256: string): Promise<Remedy> {
+  return postItem<Remedy>(`${V1}/remedies/${id}/approve`, { arguments_sha256: argumentsSha256 });
+}
+
+/** Decline one Remedy that is proposed or approved and not yet being executed. No body. */
+export function declineRemedy(id: Uuid): Promise<Remedy> {
+  return getItem<Remedy>(`${V1}/remedies/${id}/decline`, { method: "POST" });
 }
 
 /**

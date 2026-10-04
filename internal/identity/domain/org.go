@@ -168,6 +168,10 @@ type Settings struct {
 	// InvestigationConcurrency is the most Investigations `running` at once in the
 	// org (ADR 0053 §6). One past it waits, queued; it is never dropped.
 	InvestigationConcurrency int
+
+	// RemedyApprovalWindow is how long a proposed Remedy waits for its approvals, and an
+	// approved one for its execution, before it is recorded expired (ADR 0054 §2).
+	RemedyApprovalWindow time.Duration
 }
 
 // The defaults of SPEC §D.1, restated as the values a brand-new org boots with.
@@ -275,8 +279,15 @@ func DefaultSettings() Settings {
 
 		InvestigationDailyTokens: DefaultInvestigationDailyTokens,
 		InvestigationConcurrency: DefaultInvestigationConcurrency,
+
+		RemedyApprovalWindow: DefaultRemedyApprovalWindow,
 	}
 }
+
+// DefaultRemedyApprovalWindow is `remedy_approval_window_s`'s shipped value (ADR 0054 §2): an
+// hour — long enough for two people to read an exact command and approve it, short enough
+// that what they approve still describes the cluster it changes.
+const DefaultRemedyApprovalWindow = time.Hour
 
 // DefaultInvestigationsEnabled is `investigations_enabled`'s shipped value. Only
 // identity reads it, so it lives here rather than in `platform/tuning`.
@@ -331,6 +342,9 @@ func (s Settings) Normalise() Settings {
 	}
 	if s.InvestigationConcurrency <= 0 {
 		s.InvestigationConcurrency = d.InvestigationConcurrency
+	}
+	if s.RemedyApprovalWindow <= 0 {
+		s.RemedyApprovalWindow = d.RemedyApprovalWindow
 	}
 	// ⚠️ InvestigationsEnabled IS NOT REPAIRED HERE, AND CANNOT BE. A false is
 	// either "this org pulled the switch" or "a zero Settings" and the struct cannot

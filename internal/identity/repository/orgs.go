@@ -57,6 +57,9 @@ type settingsJSON struct {
 	// the shipped default — a finite ceiling, never "unlimited".
 	InvestigationDailyTokens *int `json:"investigation_daily_tokens,omitempty"`
 	InvestigationConcurrency *int `json:"investigation_concurrency,omitempty"`
+	// The Remedy approval window (ADR 0054 §2, migration 00100). Absent reads as the
+	// shipped hour.
+	RemedyApprovalWindowS *int `json:"remedy_approval_window_s,omitempty"`
 
 	// ⛔ `broadcast_on_resolved` FOLLOWED `default_verbosity` AND IS DELETED
 	// (git-bug 7570090). It was the last non-integer key besides the verbosity, and
@@ -69,7 +72,8 @@ type settingsJSON struct {
 	// ABOVE — the first and third fields — AND BOTH ARE DELETED (git-bug 7287b28,
 	// migration 00071). The struct closes here; the ten keys above are the whole
 	// of `orgs.settings` (`investigations_enabled`, ADR 0053 §6, made it eight;
-	// `investigation_daily_tokens` and `investigation_concurrency` made it ten).
+	// `investigation_daily_tokens` and `investigation_concurrency` made it ten;
+	// `remedy_approval_window_s`, ADR 0054 §2, made it eleven).
 	//
 	// ⚠️ NOTHING HERE DELETES A STORED KEY. `orgs.settings` is one JSONB document,
 	// so a row written before this commit still HOLDS `broadcast_on_resolved`,
@@ -98,6 +102,7 @@ func (s settingsJSON) toPatch() domain.SettingsPatch {
 		InvestigationsEnabled:    s.InvestigationsEnabled,
 		InvestigationDailyTokens: s.InvestigationDailyTokens,
 		InvestigationConcurrency: s.InvestigationConcurrency,
+		RemedyApprovalWindowS:    s.RemedyApprovalWindowS,
 	}
 }
 
@@ -115,6 +120,7 @@ func fromPatch(p domain.SettingsPatch) settingsJSON {
 		InvestigationsEnabled:    p.InvestigationsEnabled,
 		InvestigationDailyTokens: p.InvestigationDailyTokens,
 		InvestigationConcurrency: p.InvestigationConcurrency,
+		RemedyApprovalWindowS:    p.RemedyApprovalWindowS,
 	}
 }
 

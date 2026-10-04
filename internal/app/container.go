@@ -853,6 +853,14 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		// ⛔ READ THROUGH `identity`, WRITTEN BY NOTHING IN THIS PROCESS. `oto grant` /
 		// `oto revoke` are the only writers, from the host shell.
 		Approvers: remedyApprovers{identity: c.Identity},
+
+		// ---- Remedies (ADR 0054, git-bug 4148256) ---------------------------
+		//
+		// ⭐ EVERY TRANSITION IS AN INCIDENT FACT, enqueued as `notify.incident` in the
+		// transaction that made it, carrying the snapshot it declares. ⛔ No run reaches
+		// a write Tool: a Remedy only names one.
+		Remedies:       investigatorrepo.NewRemedyRepository(general),
+		RemedyDeclarer: remedyDeclarer{enq: c.enqueuer},
 	})
 	if err != nil {
 		return nil, err

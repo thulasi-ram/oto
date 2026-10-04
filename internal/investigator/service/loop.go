@@ -56,6 +56,13 @@ package service
 // (suggestions.go): a proposal that holds is an `ok` Step and is kept for the Finding, one
 // that does not is REFUSED on the record with the reason. Neither costs a step. ⛔ Nothing
 // a run does applies one.
+//
+// ⭐⭐ SO IS A REMEDY, AND THE WRITE TOOL IS NEVER IN THE RUN'S HANDS (ADR 0054 §5, git-bug
+// 4148256). `oto_propose_remedy` is answered by the loop (remedies.go): it NAMES a write Tool
+// with the exact arguments it would be sent, and is kept for the Finding. A write ToolServer's
+// Tools are never offered — `offered` is built from read ToolServers only — so a call to one
+// is refused like any Tool the run does not hold. Executing an approved Remedy is a separate
+// job, after two different approvers.
 
 import (
 	"context"
@@ -135,6 +142,11 @@ type outcome struct {
 	// suggestions are the proposals the run made that held (git-bug 8327c00), in order.
 	// They are written with the Finding, and only when there is one.
 	suggestions []domain.SuggestionDraft
+	// remedies are the Remedies the run proposed that held (git-bug 4148256), in order —
+	// written with the Finding, and only when there is one — and remedyWindow is the org's
+	// approval window as the run read it, which starts each one's clock.
+	remedies     []domain.RemedyDraft
+	remedyWindow time.Duration
 }
 
 // stepSink records one Step. An error from it is oto failing to keep its record,
@@ -194,11 +206,21 @@ func (s *Service) runLoop(ctx context.Context, p plan, startedAt time.Time, reco
 	// classification it is the shape of the answer, so it is not a Tool call against the
 	// step budget, and it never ends the run (git-bug 8327c00).
 	takeProposal := func(call domain.ToolCall) (bool, error) {
-		pt, ok := byName[call.Name].(proposingTool)
-		if !ok {
+		var (
+			o      domain.ToolOutcome
+			result string
+		)
+		switch pt := byName[call.Name].(type) {
+		case proposingTool:
+			o, result = s.answerSuggestion(wallCtx, p, pt, call, &out)
+		case remedyProposingTool:
+			// ⭐ A REMEDY IS PROPOSED THE SAME WAY (git-bug 4148256): the shape of the
+			// answer, checked and kept for the Finding. ⛔ It names a write Tool and calls
+			// none.
+			o, result = s.answerRemedy(wallCtx, p, pt, call, &out)
+		default:
 			return false, nil
 		}
-		o, result := s.answerSuggestion(wallCtx, p, pt, call, &out)
 		if err := record(ctx, domain.NewToolStep(next(), call, o, result, 0, s.now())); err != nil {
 			return true, err
 		}

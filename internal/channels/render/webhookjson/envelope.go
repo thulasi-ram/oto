@@ -1,6 +1,7 @@
 package webhookjson
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/thulasiram/oto/internal/channels/domain"
@@ -221,6 +222,56 @@ type Incident struct {
 	// one exists — the card is the Incident as it is now — and `finding` is the fact
 	// that says a new one arrived.
 	Finding *IncidentFinding `json:"finding,omitempty"`
+	// Remedy is the Remedy transition a `remedy_*` fact declares (ADR 0054 §2), ABSENT on
+	// every other fact. ⛔ ADDITIVE, for `finding`'s reason. A FACT, NEVER A COMMAND: it says
+	// what oto's approvers and oto did, and oto reads nothing back — a "no" said in the
+	// incident tool is not one oto can hear.
+	Remedy *IncidentRemedy `json:"remedy,omitempty"`
+}
+
+// IncidentRemedy is one Remedy transition as a consumer sees it. ⭐ THE EXACT COMMAND COMES
+// FIRST: `tool` — the write Tool and the exact arguments it would be, or was, sent, with their
+// SHA-256 — or `no_tool`, the sentence "no configured Tool can carry this out". Then what it
+// is for, then who moved it where.
+type IncidentRemedy struct {
+	ID                string                   `json:"id"`
+	Tool              *IncidentRemedyTool      `json:"tool,omitempty"`
+	NoTool            string                   `json:"no_tool,omitempty"`
+	Target            string                   `json:"target"`
+	Description       string                   `json:"description"`
+	InvestigationID   string                   `json:"investigation_id"`
+	ProposedBy        string                   `json:"proposed_by"`
+	State             string                   `json:"state"`
+	From              string                   `json:"from,omitempty"`
+	Actor             IncidentRemedyActor      `json:"actor"`
+	At                time.Time                `json:"at"`
+	ExpiresAt         time.Time                `json:"expires_at"`
+	RequiredApprovals int                      `json:"required_approvals"`
+	Approvals         []IncidentRemedyApproval `json:"approvals"`
+	FailureReason     string                   `json:"failure_reason,omitempty"`
+	Detail            string                   `json:"detail,omitempty"`
+}
+
+// IncidentRemedyTool is the write Tool a Remedy names, with the exact arguments — as the JSON
+// object itself, byte for byte what is sent — and their SHA-256.
+type IncidentRemedyTool struct {
+	ToolServer      string          `json:"tool_server"`
+	Tool            string          `json:"tool"`
+	Arguments       json.RawMessage `json:"arguments"`
+	ArgumentsSHA256 string          `json:"arguments_sha256"`
+}
+
+// IncidentRemedyActor is who made the transition: `investigator`, `user` or `system`, with the
+// label frozen when they acted.
+type IncidentRemedyActor struct {
+	Kind  string `json:"kind"`
+	Label string `json:"label"`
+}
+
+// IncidentRemedyApproval is one approval the Remedy had.
+type IncidentRemedyApproval struct {
+	Label      string    `json:"label"`
+	ApprovedAt time.Time `json:"approved_at"`
 }
 
 // IncidentFinding is what an Investigation of the Incident concluded, as a consumer

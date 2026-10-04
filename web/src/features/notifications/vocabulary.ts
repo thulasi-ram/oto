@@ -74,6 +74,15 @@ export const REASON_LABEL: Record<NotificationReason, string> = {
   // The sixth (ADR 0053 §4): an Investigation of the Incident reached a new
   // Finding. A fact about the story, never a verdict on whether anyone is told.
   finding: "an Investigation of an Incident reached a new Finding",
+  // The six Remedy transitions (ADR 0054 §2): a change to a cluster an Investigator
+  // proposed, and what oto's approvers and oto did with it. Facts, never commands —
+  // approval happens in oto, and oto reads nothing back from the incident tool.
+  remedy_proposed: "an Investigator proposed a Remedy",
+  remedy_approved: "a Remedy got its approvals",
+  remedy_declined: "a Remedy was declined",
+  remedy_expired: "a Remedy expired unapproved or unexecuted",
+  remedy_executed: "a Remedy was executed",
+  remedy_failed: "a Remedy failed",
 };
 
 /**

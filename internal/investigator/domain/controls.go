@@ -35,6 +35,10 @@ type OrgControls struct {
 	DailyTokens int64
 	// Concurrency is `investigation_concurrency`: the most runs `running` at once.
 	Concurrency int
+	// RemedyApprovalWindow is `remedy_approval_window_s` (ADR 0054 §2, git-bug 4148256):
+	// how long a proposed Remedy waits for its approvals, and an approved one for its
+	// execution, before it expires. Zero reads as the shipped default (RemedyWindow).
+	RemedyApprovalWindow time.Duration
 }
 
 // DayStart is the UTC midnight that began the day t is in: the moment the daily

@@ -542,6 +542,7 @@ func (s *Service) RunInvestigation(ctx context.Context, scope db.TenantScope, id
 		return nil
 	}
 	inv.StartedAt = startedAt
+	out.remedyWindow = controls.RemedyWindow()
 	return s.finish(ctx, scope, inv, out)
 }
 
@@ -630,6 +631,13 @@ func (s *Service) finish(ctx context.Context, scope db.TenantScope, inv domain.I
 		if len(out.suggestions) > 0 {
 			if err := s.suggestions.InsertSuggestions(ctx, scope, inv.ID, out.suggestions,
 				at, at.Add(domain.SuggestionLapse)); err != nil {
+				return err
+			}
+		}
+		if len(out.remedies) > 0 {
+			// ⭐ NO FINDING, NO REMEDY, for the Suggestion's reason; each one proposed here is
+			// declared outbound in this same transaction (git-bug 4148256).
+			if err := s.proposeRemedies(ctx, scope, inv, out.remedies, at, out.remedyWindow); err != nil {
 				return err
 			}
 		}

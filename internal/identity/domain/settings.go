@@ -69,6 +69,13 @@ const (
 	// it stays `queued` and its job is snoozed — and is never dropped.
 	KeyInvestigationConcurrency SettingKey = "investigation_concurrency"
 
+	// KeyRemedyApprovalWindow is ADR 0054 §2's "operator-set time" (git-bug 4148256): how
+	// long a proposed Remedy waits for its approvals, and an approved one for its
+	// execution, before it is recorded `expired`. A Remedy is a change to a cluster, and
+	// one approved an afternoon ago describes an afternoon-old cluster: the window is the
+	// age past which oto refuses to act on it.
+	KeyRemedyApprovalWindow SettingKey = "remedy_approval_window_s"
+
 	// ⛔⛔ `refire_grace_s` AND `group_close_delay_s` WERE HERE AND BOTH ARE DELETED
 	// (git-bug 7287b28, migration 00071). They were org-facing, bounds-validated,
 	// patchable, origin-reporting settings that DECIDED NOTHING:
@@ -279,6 +286,11 @@ var settingBounds = map[SettingKey]Bound{
 		Why: "input + output tokens per UTC day, 1000..1000000000: once the day's recorded spend reaches it, a new Investigation is recorded skipped with reason budget and never queued, until 00:00 UTC. Below 1000 not even one run's smallest budget fits; there is no unlimited, because a ceiling nobody can read back is not a control. A run already going is bounded by its own token budget, so the day can overrun by at most what the runs in flight still had left"},
 	// The ceiling is a sanity bound, not a capacity: the `investigate` queue is two
 	// workers wide per process, so this many runs at once needs that many workers.
+	// ⭐ THE REMEDY WINDOW (ADR 0054 §2). A minute is the floor — two people cannot read an
+	// exact command and approve it faster — and a day the ceiling: a change approved
+	// yesterday is not a change about today's cluster.
+	KeyRemedyApprovalWindow: {Min: 60, Max: 86400,
+		Why: "seconds, 60..86400: a proposed Remedy that has not had its required approvals within this long after it was proposed, or an approved one not executed within this long after its approval, is recorded expired and can no longer be approved or executed. Below a minute two people cannot read the exact command and approve it; above a day the cluster it was proposed for is not the cluster it would change"},
 	KeyInvestigationConcurrency: {Min: 1, Max: 32,
 		Why: "running Investigations, 1..32: one past it waits queued and is never dropped. Zero would be a kill switch that queues forever, and that is investigations_enabled's job, said by name. Each oto process works at most two at once (the investigate queue's width), so a number above the workers you run never binds"},
 }
@@ -339,6 +351,9 @@ type SettingsPatch struct {
 	// §6 controls: the day's token ceiling and the most runs at once.
 	InvestigationDailyTokens *int
 	InvestigationConcurrency *int
+	// RemedyApprovalWindowS is how long a Remedy waits for its approvals, and then for
+	// its execution, in seconds (ADR 0054 §2).
+	RemedyApprovalWindowS *int
 
 	// ⛔⛔ `RefireGraceS` AND `GroupCloseDelayS` WERE HERE AND BOTH ARE DELETED
 	// (git-bug 7287b28). See the key block above for why neither decided anything.
@@ -375,6 +390,8 @@ func (p *SettingsPatch) intPtr(k SettingKey) **int {
 		return &p.InvestigationDailyTokens
 	case KeyInvestigationConcurrency:
 		return &p.InvestigationConcurrency
+	case KeyRemedyApprovalWindow:
+		return &p.RemedyApprovalWindowS
 	case KeyDefaultVerbosity, KeyInvestigationsEnabled:
 		return nil
 	default:
@@ -554,6 +571,7 @@ func (p SettingsPatch) Settings() Settings {
 	s.EventRetention = time.Duration(pick(KeyEventRetention, int(d.EventRetention/(30*24*time.Hour)))) * 30 * 24 * time.Hour
 	s.InvestigationDailyTokens = pick(KeyInvestigationDailyTokens, d.InvestigationDailyTokens)
 	s.InvestigationConcurrency = pick(KeyInvestigationConcurrency, d.InvestigationConcurrency)
+	s.RemedyApprovalWindow = time.Duration(pick(KeyRemedyApprovalWindow, int(d.RemedyApprovalWindow/time.Second))) * time.Second
 
 	s.DefaultVerbosity = DefaultChannelVerbosity
 	if p.DefaultVerbosity != nil && channelVerbosities[*p.DefaultVerbosity] {
@@ -594,6 +612,8 @@ func (p SettingsPatch) EffectiveInt(k SettingKey) (int, Origin, bool) {
 		v = s.InvestigationDailyTokens
 	case KeyInvestigationConcurrency:
 		v = s.InvestigationConcurrency
+	case KeyRemedyApprovalWindow:
+		v = int(s.RemedyApprovalWindow / time.Second)
 	default:
 		return 0, OriginDefault, false
 	}

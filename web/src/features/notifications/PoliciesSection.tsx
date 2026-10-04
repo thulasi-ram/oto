@@ -638,6 +638,14 @@ const REASON_LABEL: Record<NotificationReason, string> = {
   // The sixth (ADR 0053 §4, git-bug 74ea849): an Investigation of the Incident
   // reached a new Finding. A fact to declare, never a decision about delivery.
   finding: "New Finding on an Incident",
+  // The six Remedy transitions (ADR 0054 §2, git-bug 4148256): declared to the
+  // Incident the Remedy is about, each a fact about what was proposed, decided or done.
+  remedy_proposed: "Remedy proposed",
+  remedy_approved: "Remedy approved",
+  remedy_declined: "Remedy declined",
+  remedy_expired: "Remedy expired",
+  remedy_executed: "Remedy executed",
+  remedy_failed: "Remedy failed",
 };
 
 /**

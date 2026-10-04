@@ -140,6 +140,12 @@ export const qk = {
      * Incident and policy roots the edit touched.
      */
     suggestions: (investigationId: string) => ["cases", "suggestions", investigationId] as const,
+    /**
+     * One run's Remedies (ADR 0054, git-bug 4148256), keyed by the run's id like its
+     * Suggestions. Another approver, the expiry sweep and the executor all move one with
+     * no frame, so the panel that reads it polls while any is open.
+     */
+    remedies: (investigationId: string) => ["cases", "remedies", investigationId] as const,
   },
   /**
    * Incidents (ADR 0052) — a root of their own, beside `["cases"]` and not under

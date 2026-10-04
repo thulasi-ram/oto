@@ -53,6 +53,13 @@ type InvestigatorService interface {
 	ListSuggestions(ctx context.Context, s db.TenantScope, investigationID uuid.UUID) ([]domain.Suggestion, error)
 	ApplySuggestion(ctx context.Context, s db.TenantScope, id uuid.UUID, by domain.Requester, movesFrom int64) (domain.Suggestion, error)
 
+	// Remedies (ADR 0054, git-bug 4148256): read, approved by a holder of the grant on the
+	// Remedy's ToolServer, declined by any human. ⛔ No method here executes one.
+	ListRemedies(ctx context.Context, s db.TenantScope, investigationID uuid.UUID) ([]domain.Remedy, error)
+	GetRemedy(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Remedy, error)
+	ApproveRemedy(ctx context.Context, s db.TenantScope, id uuid.UUID, by domain.Requester, argumentsSHA256 string) (domain.Remedy, error)
+	DeclineRemedy(ctx context.Context, s db.TenantScope, id uuid.UUID, by domain.Requester) (domain.Remedy, error)
+
 	ClassSet(ctx context.Context, s db.TenantScope) (domain.ClassSet, error)
 	ReplaceClassSet(ctx context.Context, s db.TenantScope, set domain.ClassSet) (domain.ClassSet, error)
 }
@@ -117,6 +124,13 @@ func (rt *Router) Mount(r chi.Router) {
 	// waited on a human's answer would be a queue.
 	r.Get("/investigations/{id}/suggestions", rt.listInvestigationSuggestions)
 	r.Post("/suggestions/{id}/apply", rt.applySuggestion)
+	// ⭐ A REMEDY IS APPROVED OR DECLINED, AND EXECUTED BY NO ROUTE (ADR 0054, git-bug
+	// 4148256). Approval is a human holding the grant on its ToolServer; two DIFFERENT ones
+	// make it `approved`, and execution is a separate job after that — never a request.
+	r.Get("/investigations/{id}/remedies", rt.listInvestigationRemedies)
+	r.Get("/remedies/{id}", rt.getRemedy)
+	r.Post("/remedies/{id}/approve", rt.approveRemedy)
+	r.Post("/remedies/{id}/decline", rt.declineRemedy)
 	r.Get("/investigation-classes", rt.getInvestigationClasses)
 	r.Put("/investigation-classes", rt.replaceInvestigationClasses)
 }

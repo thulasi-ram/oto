@@ -54,6 +54,8 @@ function mount(world: World = {}): FetchStub {
     net.on(`GET /api/v1/investigations/${id}/suggestions`, () => ({
       json: list(world.suggestions?.[id] ?? []),
     }));
+    // The Remedies sit under the Suggestions (ADR 0054); their own suite is RemediesView's.
+    net.on(`GET /api/v1/investigations/${id}/remedies`, () => ({ json: list([]) }));
   }
   renderScreen(() => <InvestigationPanel subject={{ kind: "case", id: CASE }} pollMs={20} />);
   return net;

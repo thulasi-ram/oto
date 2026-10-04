@@ -461,6 +461,7 @@ export function orgSettings(
     investigations_enabled: true,
     investigation_daily_tokens: 2000000,
     investigation_concurrency: 2,
+    remedy_approval_window_s: 3600,
     // ⛔ `refire_grace_s` AND `group_close_delay_s` LED THIS BAG AND BOTH ARE
     // DELETED (git-bug 7287b28) — off the wire, not merely off the screen.
     //

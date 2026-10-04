@@ -310,6 +310,8 @@ func (a investigationControls) InvestigationControls(ctx context.Context, s db.T
 		Enabled:     org.Settings.InvestigationsEnabled,
 		DailyTokens: int64(org.Settings.InvestigationDailyTokens),
 		Concurrency: org.Settings.InvestigationConcurrency,
+		// The Remedy approval window (ADR 0054 §2): bounded and clamped like the rest.
+		RemedyApprovalWindow: org.Settings.RemedyApprovalWindow,
 	}, nil
 }
 
@@ -660,6 +662,71 @@ func (c *Container) armDigestInvestigations(ctx context.Context, job *jobs.Job[j
 		func(f jobs.TenantFanOut) db.JobArgs { return jobs.InvestigationsDigestArgs{TenantFanOut: f} },
 		func(ctx context.Context, scope db.TenantScope) error {
 			_, err := c.Investigator.ArmDigestInvestigations(ctx, scope)
+			return err
+		})
+}
+
+// remedyDeclarer is `investigator/service.RemedyDeclarer` over the outbox (ADR 0054 §2, git-bug
+// 4148256): one Remedy transition is one `notify.incident` job with its `remedy_*` Reason,
+// keyed on the transition as its occasion and carrying the transition's snapshot, enqueued in
+// the transaction that made the transition. A redelivered job is the same occasion and the
+// same key; a second transition is a second fact.
+//
+// ⛔ WHETHER IT GOES ANYWHERE IS A POLICY'S QUESTION, as for every Incident fact: an org with
+// no policy naming the Reason records the intent `no_policy` and sends nothing. It is a
+// fact, never a command — nothing reads an answer back.
+type remedyDeclarer struct {
+	enq db.Enqueuer
+}
+
+func (d remedyDeclarer) DeclareRemedy(ctx context.Context, _ db.TenantScope, incidentID uuid.UUID, f investigatordomain.RemedyFact) error {
+	r, t := f.Remedy, f.Transition
+	fact := &jobs.RemedyFact{
+		RemedyID:          r.ID,
+		InvestigationID:   r.InvestigationID,
+		State:             string(t.To),
+		From:              string(t.From),
+		Target:            r.Target,
+		Description:       r.Description,
+		ProposedBy:        r.ProposedBy,
+		RequiredApprovals: r.RequiredApprovals,
+		Approvals:         make([]jobs.RemedyFactApproval, 0, len(r.Approvals)),
+		ActorKind:         string(t.Actor.Kind),
+		ActorLabel:        t.Actor.Label,
+		At:                t.At.UTC(),
+		ExpiresAt:         r.ExpiresAt.UTC(),
+		FailureReason:     string(t.Failure),
+		Detail:            t.Detail,
+	}
+	if r.Tool.Named() {
+		fact.ToolServer, fact.Tool = r.Tool.ToolServerName, r.Tool.Tool
+		fact.Arguments, fact.ArgumentsSHA256 = r.Arguments, r.ArgumentsSHA256
+	} else {
+		// ⭐ A REMEDY NO CONFIGURED TOOL CAN CARRY OUT SAYS SO OUTBOUND, in the same words.
+		fact.NoTool = investigatordomain.NoToolCanCarryItOut
+	}
+	for _, a := range r.Approvals {
+		fact.Approvals = append(fact.Approvals, jobs.RemedyFactApproval{Label: a.Label, ApprovedAt: a.ApprovedAt.UTC()})
+	}
+	_, err := d.enq.Enqueue(ctx, jobs.NotifyIncidentArgs{
+		IncidentID: incidentID,
+		Reason:     t.To.FactReason(),
+		OccasionID: t.ID,
+		Remedy:     fact,
+	})
+	return err
+}
+
+// sweepRemedies is `remedies.sweep` (ADR 0054 §2, git-bug 4148256): the per-tenant tick that
+// records every Remedy past its approval window as expired. ⛔ It reaches no ToolServer.
+func (c *Container) sweepRemedies(ctx context.Context, job *jobs.Job[jobs.RemediesSweepArgs]) error {
+	if c.Investigator == nil {
+		return jobs.ErrNotImplemented(jobs.KindRemediesSweep)
+	}
+	return c.perTenantSweep(ctx, jobs.KindRemediesSweep, job.Args.TenantFanOut,
+		func(f jobs.TenantFanOut) db.JobArgs { return jobs.RemediesSweepArgs{TenantFanOut: f} },
+		func(ctx context.Context, scope db.TenantScope) error {
+			_, err := c.Investigator.ExpireRemedies(ctx, scope)
 			return err
 		})
 }

@@ -152,6 +152,11 @@ const (
 	// per-tenant periodic that records runs and calls no model; nothing on the digest
 	// path enqueues it, waits for it, or reads it.
 	KindInvestigationsDigest = "investigations.digest"
+	// KindRemediesSweep records what the clock decided about Remedies (ADR 0054 §2,
+	// git-bug 4148256): every Remedy still proposed or approved past its approval window
+	// is recorded `expired` by `system`, and declared. A per-tenant periodic; it never
+	// reaches a ToolServer.
+	KindRemediesSweep = "remedies.sweep"
 )
 
 // Priority levels. River orders 1 (highest) before 4 (lowest) within a queue.

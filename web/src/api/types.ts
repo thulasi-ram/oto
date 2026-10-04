@@ -284,6 +284,12 @@ export type InvestigationClass = S["InvestigationClassDTO"];
  * unapplied is never listed. There is no other verb on it.
  */
 export type Suggestion = S["SuggestionDTO"];
+/**
+ * A change to a cluster an Investigator proposed and oto executes only after two
+ * DIFFERENT holders of the grant on its ToolServer approve it (ADR 0054). The exact
+ * command first: `tool` and the exact `arguments`, or `no_tool`.
+ */
+export type Remedy = S["RemedyDTO"];
 
 /* ---- requests ----------------------------------------------------------- */
 
@@ -296,6 +302,7 @@ export type CreateCorrelatorRequest = S["CreateCorrelatorRequest"];
 export type RequestInvestigationRequest = S["RequestInvestigationRequest"];
 export type ReplaceInvestigationClassesRequest = S["ReplaceInvestigationClassesRequest"];
 export type ApplySuggestionRequest = S["ApplySuggestionRequest"];
+export type ApproveRemedyRequest = S["ApproveRemedyRequest"];
 export type UpdateCorrelatorRequest = S["UpdateCorrelatorRequest"];
 export type CommentRequest = S["CommentRequest"];
 /** Exactly one of `until` and `duration_seconds`. Both, or neither, is a 422. */

@@ -117,7 +117,7 @@ which fields below you can rely on.
 An Incident is a set of one or more Cases drawn as one story
 ([ADR 0052](../adr/0052-an-incident-is-drawn-over-cases-and-its-response-is-handed-off.md)). An
 Incident fact carries `incident` and no `group`, `digest`, `occurrence` or `focus`; `reason` is one
-of exactly six:
+of exactly twelve:
 
 | `reason` | The fact |
 |---|---|
@@ -127,6 +127,12 @@ of exactly six:
 | `quiet` | Every current member Case has closed. |
 | `active_again` | A member Case is open again after the Incident was quiet. |
 | `finding` | An Investigation of the Incident as a whole reached a new Finding (ADR 0053 §4), carried in `incident.finding`. |
+| `remedy_proposed` | An Investigator proposed a **Remedy** — a change to the cluster — with its Finding (ADR 0054), carried in `incident.remedy`. |
+| `remedy_approved` | A Remedy got the approvals it needs: two different holders of the grant on its write ToolServer. |
+| `remedy_declined` | A person in oto said no to a Remedy. |
+| `remedy_expired` | A Remedy's approval window passed before it was approved, or before it was executed. |
+| `remedy_executed` | oto sent a Remedy's exact arguments to its write Tool, and the Tool did not report a failure. |
+| `remedy_failed` | A Remedy was not executed, its write Tool reported a failure, or what happened is not known. It is never retried. |
 
 ⛔ **These are facts, never commands.** None of them means resolve, close or acknowledge, and no
 envelope oto sends carries a status for your tool to adopt. **`quiet` is not `fixed`**: it says the
@@ -134,6 +140,11 @@ signals stopped, not that the response is over. If you want your incident tool t
 `quiet`, that is a rule *you* write in your tool or bridge, and it ends a response the moment the
 signals go quiet — including the times they went quiet because the thing that was emitting them
 died.
+
+The six `remedy_*` facts are the same: approval happens **in oto**, and oto reads nothing back.
+Someone saying no in your incident tool is a fact oto cannot hear — say it in oto, where
+**Decline** is. A Remedy on a Case that is in no Incident is declared nowhere. See
+[Remedies](remedies.md).
 
 The `incident` object:
 
@@ -146,6 +157,7 @@ The `incident` object:
 | `drawn_by` | `{kind: "human", label}` or `{kind: "correlator", correlator_id}`. |
 | `members` | Every spell of every Case that has been in it, current and removed, in the order they joined. |
 | `link` | oto's own page for it, when oto has a public URL configured. |
+| `remedy` | On the six `remedy_*` facts only: the transition. ⭐ **The exact command first** — `tool` is `{tool_server, tool, arguments, arguments_sha256}`, where `arguments` is the JSON object the write Tool would be (or was) sent, byte for byte; or `no_tool` says *"no configured Tool can carry this out"*, and there is no `tool`. Then `target`, the Investigator's `description`, `proposed_by`, `required_approvals`, `approvals` (`label`, `approved_at`), the `state` reached and the one it came `from`, the `actor` (`kind` is `investigator`, `user` or `system`, with a `label`), `at`, `expires_at`, and — when it failed or expired — `failure_reason` and `detail`. A snapshot of the transition, never re-read. |
 | `finding` | The latest Finding an Investigation of the Incident reached, absent until one has: `investigation_id`, `investigator`, `version`, `summary`, `classification`, `partial` (a budget stopped the run first) and `concluded_at`. It is what a model concluded **at `concluded_at`**, never live state — and paging on it is paging on a model's judgement. It is on every Incident fact once one exists; `finding` is the fact that says a new one arrived. `classification` is one of **your** classes (Settings → Classification) or `unclassified`, and is absent when your org has written no classes — see *Classification*, below. |
 
 Each member: `case_id`, `case_number`, `case_state` (`open`/`closed`), `alert_id`, `alert_name`,

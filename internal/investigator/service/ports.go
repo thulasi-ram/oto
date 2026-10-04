@@ -339,3 +339,47 @@ type RemedyApprovers interface {
 	// human's user id; double approval calls it for each of two DIFFERENT users.
 	RequireRemedyApprover(ctx context.Context, s db.TenantScope, toolServerID, userID uuid.UUID) error
 }
+
+// ---------------------------------------------------------------- Remedies
+//
+// The ports below carry git-bug 4148256: a Finding's Remedies, their approvals and their
+// transitions, and the declaration of each transition outbound. ⛔ None of them reaches a
+// ToolServer's write Tool during a run: the Investigator only NAMES one; executing an approved
+// Remedy is a separate job (ADR 0054 §5).
+
+// RemedyStore is where Remedies, their approvals and their transitions are kept, satisfied by
+// `investigator/repository.RemedyRepository`.
+type RemedyStore interface {
+	// InsertRemedy writes one proposed Remedy and its proposal transition, in the caller's
+	// transaction — the one that records its Finding.
+	InsertRemedy(ctx context.Context, s db.TenantScope, r domain.Remedy, proposal domain.RemedyTransition) error
+	// ListRemedies reads one Investigation's Remedies in the order proposed, each with its
+	// approvals and transitions.
+	ListRemedies(ctx context.Context, s db.TenantScope, investigationID uuid.UUID) ([]domain.Remedy, error)
+	// GetRemedy reads one, with its approvals and transitions.
+	GetRemedy(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Remedy, error)
+	// LockRemedy reads one FOR UPDATE, inside a transaction.
+	LockRemedy(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Remedy, error)
+	// AddApproval records one human's approval; a second by the same user is refused
+	// `remedy_already_approved`.
+	AddApproval(ctx context.Context, s db.TenantScope, remedyID uuid.UUID, a domain.RemedyApproval) error
+	// Transition moves a Remedy from t.From to t.To and records t, refusing `remedy_moved` when
+	// it is no longer in t.From. expiresAt, when set, re-stamps the deadline; result, when set,
+	// is what the write Tool answered.
+	Transition(ctx context.Context, s db.TenantScope, remedyID uuid.UUID, t domain.RemedyTransition,
+		expiresAt time.Time, result string) error
+	// PastDeadline lists the Remedies still proposed or approved whose window passed at `now`.
+	PastDeadline(ctx context.Context, s db.TenantScope, now time.Time, limit int) ([]uuid.UUID, error)
+}
+
+// RemedyDeclarer declares one Remedy transition outbound as an Incident fact — `remedy_proposed`,
+// `remedy_approved`, `remedy_declined`, `remedy_expired`, `remedy_executed`, `remedy_failed` —
+// INSIDE the caller's transaction, so the transition and its declaration are one fact or
+// neither (ADR 0052 §5, ADR 0054 §2). Satisfied in `internal/app` by enqueueing
+// `notify.incident`, keyed on the transition as its occasion and carrying the snapshot.
+//
+// ⭐ A REMEDY ON A CASE IN NO INCIDENT HAS NO OUTBOUND TARGET, and is declared nowhere: the
+// transition row records that (`declared_incident_id` NULL), and nothing invents a target.
+type RemedyDeclarer interface {
+	DeclareRemedy(ctx context.Context, s db.TenantScope, incidentID uuid.UUID, fact domain.RemedyFact) error
+}

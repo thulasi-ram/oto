@@ -66,7 +66,18 @@ const (
 	reasonQuiet       = "quiet"
 	reasonActiveAgain = "active_again"
 	reasonFinding     = "finding"
+	// remedyReasonPrefix begins each of the six Remedy facts (ADR 0054 §2):
+	// remedy_proposed, remedy_approved, and so on.
+	remedyReasonPrefix = "remedy_"
 )
+
+// remedyEmoji marks a Remedy transition: a change to the cluster, proposed, decided or made.
+// Not one of §H.2's state emoji, for the jigsaw's reason.
+const remedyEmoji = ":wrench:"
+
+// maxRemedyArgumentsRunes bounds the exact arguments quoted in a reply. The whole of them is
+// on the Remedy's page; a reply that cut them says so.
+const maxRemedyArgumentsRunes = 1500
 
 // findingEmoji marks an Investigation's Finding. A magnifying glass because it is what
 // somebody LOOKED at and concluded — and, like the jigsaw, not one of §H.2's state
@@ -98,6 +109,11 @@ func incidentNonce(v *domain.NotificationView, o domain.RenderOptions) string {
 	// so every card without a Finding hashes exactly as it did before there could be.
 	if f := iv.Finding; f != nil {
 		h.Write([]byte("finding:" + f.InvestigationID))
+		h.Write([]byte{0})
+	}
+	// A Remedy fact is about one transition; hashed only on those six facts.
+	if rm := iv.Remedy; rm != nil {
+		h.Write([]byte("remedy:" + rm.RemedyID + ":" + rm.State))
 		h.Write([]byte{0})
 	}
 	return hex.EncodeToString(h.Sum(nil))[:10]
@@ -330,21 +346,21 @@ func (r *Renderer) renderIncidentReply(v *domain.NotificationView, o domain.Rend
 	now := plural(current, "case", "cases") + ", " + strconv.Itoa(open) + " open"
 
 	var body, sentence string
-	switch v.Reason {
-	case reasonCaseAdded:
+	switch {
+	case v.Reason == reasonCaseAdded:
 		body = ":heavy_plus_sign: *A case joined* — now " + now
 		sentence = "A case joined " + incidentName(iv) + "; it now has " + now
-	case reasonCaseRemoved:
+	case v.Reason == reasonCaseRemoved:
 		body = ":heavy_minus_sign: *A case left* — now " + now
 		sentence = "A case left " + incidentName(iv) + "; it now has " + now
-	case reasonQuiet:
+	case v.Reason == reasonQuiet:
 		body = incidentQuietEmoji + " *Quiet* — every member case has closed. _Whether the " +
 			"response is over is for the incident tool to say._"
 		sentence = incidentName(iv) + " is quiet: every member case has closed"
-	case reasonActiveAgain:
+	case v.Reason == reasonActiveAgain:
 		body = CardFiring.Emoji() + " *Active again* — " + plural(open, "case open", "cases open")
 		sentence = incidentName(iv) + " is active again: " + plural(open, "case", "cases") + " open"
-	case reasonFinding:
+	case v.Reason == reasonFinding:
 		// The Finding as of claim time — the newest, which is the one this fact
 		// announced unless a later run has already overtaken it.
 		body = findingEmoji + " *A new Finding* — " + now
@@ -353,7 +369,9 @@ func (r *Renderer) renderIncidentReply(v *domain.NotificationView, o domain.Rend
 			body = incidentFinding(*f)
 			sentence += " by " + f.Investigator + " v" + strconv.Itoa(f.Version)
 		}
-	case reasonDrawn:
+	case strings.HasPrefix(v.Reason, remedyReasonPrefix):
+		body, sentence = incidentRemedy(v.Reason, iv)
+	case v.Reason == reasonDrawn:
 		// `incidentModes` never gives `drawn` a reply — the card says it all — so this
 		// arm is for a preview or a future mode, and it still says something true.
 		body = incidentEmoji + " *" + escape(incidentName(iv)) + " drawn* — " + now
@@ -443,6 +461,51 @@ func incidentCaseClause(v *domain.NotificationView) string {
 		return " (case #" + strconv.FormatInt(in.CaseNumber, 10) + " in " + incident + ")"
 	}
 	return " (in " + incident + ")"
+}
+
+// incidentRemedy is a Remedy fact's reply: the transition and who made it, then ⭐ THE EXACT
+// COMMAND — the write Tool and its arguments, or that no configured Tool can carry it out —
+// then what it is made to, and only then the Investigator's description of it (ADR 0054 §3).
+func incidentRemedy(reason string, iv domain.IncidentView) (body, sentence string) {
+	verb := strings.ReplaceAll(strings.TrimPrefix(reason, remedyReasonPrefix), "_", " ")
+	sentence = "A Remedy on " + incidentName(iv) + " was " + verb
+	r := iv.Remedy
+	if r == nil {
+		return remedyEmoji + " *Remedy " + escape(verb) + "*", sentence
+	}
+	var b strings.Builder
+	b.WriteString(remedyEmoji + " *Remedy " + escape(verb) + "*")
+	if r.ActorLabel != "" {
+		b.WriteString(" by " + escape(r.ActorLabel))
+		sentence += " by " + r.ActorLabel
+	}
+	if r.RequiredApprovals > 0 {
+		b.WriteString(" — " + strconv.Itoa(len(r.Approvals)) + " of " + strconv.Itoa(r.RequiredApprovals) + " approvals")
+	}
+	if r.Tool != "" {
+		b.WriteString("\n" + code(r.ToolServer+"__"+r.Tool))
+		args := r.Arguments
+		cut := truncateRunes(args, maxRemedyArgumentsRunes)
+		b.WriteString("\n```" + strings.ReplaceAll(escape(cut), "```", "'''") + "```")
+		if cut != args {
+			b.WriteString("\n_the arguments are cut here; the Remedy's page shows them whole_")
+		}
+	} else {
+		b.WriteString("\n_" + escape(r.NoTool) + "_")
+	}
+	b.WriteString("\non " + escape(r.Target))
+	if r.FailureReason != "" {
+		b.WriteString("\n*" + escape(r.FailureReason) + "*")
+		if r.Detail != "" {
+			b.WriteString(": " + escape(r.Detail))
+		}
+	} else if r.Detail != "" {
+		b.WriteString("\n" + escape(r.Detail))
+	}
+	if text := strings.TrimSpace(r.Description); text != "" {
+		b.WriteString("\n>" + strings.ReplaceAll(escape(truncateRunes(text, maxFindingRunes)), "\n", "\n>"))
+	}
+	return b.String(), sentence
 }
 
 // incidentFinding is an Investigation's latest Finding as a card says it (ADR 0053

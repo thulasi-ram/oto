@@ -221,6 +221,8 @@ func TestAllKeysCanBeSetDeclaratively(t *testing.T) {
 		// spelling an integer arrives in.
 		domain.KeyInvestigationDailyTokens: "500000",
 		domain.KeyInvestigationConcurrency: 1,
+		// ADR 0054 §2: the Remedy approval window.
+		domain.KeyRemedyApprovalWindow: 1800,
 	}
 
 	entries := make([]domain.DeclaredEntry, 0, len(values))

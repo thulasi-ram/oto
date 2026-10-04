@@ -83,6 +83,9 @@ type OrgSettingsDTO struct {
 	// InvestigationConcurrency is the most Investigations running at once; one past
 	// it waits, queued, and is never dropped.
 	InvestigationConcurrency int `json:"investigation_concurrency"`
+	// RemedyApprovalWindowS is how long a proposed Remedy waits for its approvals, and an
+	// approved one for its execution, before it is recorded expired (ADR 0054 §2).
+	RemedyApprovalWindowS int `json:"remedy_approval_window_s"`
 
 	// ⛔⛔ `refire_grace_s` AND `group_close_delay_s` WERE HERE AND BOTH ARE DELETED
 	// (git-bug 7287b28), off the wire as well as out of the struct: both are gone

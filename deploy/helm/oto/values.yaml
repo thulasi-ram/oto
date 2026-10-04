@@ -635,7 +635,7 @@ config:
 # Keys are the ones on docs/setup/tuning.md, e.g.
 #   resolve_grace_s, raw_retention_days, event_retention_months,
 #   default_verbosity, investigations_enabled, investigation_daily_tokens,
-#   investigation_concurrency
+#   investigation_concurrency, remedy_approval_window_s
 #   (investigations_enabled is the org-wide Investigation kill switch, ADR 0053
 #   §6: `false` stops every new Investigation and records it `skipped`; it never
 #   changes a notification. Set it here to pull the switch for every org at once.)
@@ -643,6 +643,9 @@ config:
 #   input + output tokens per UTC day — past it a new Investigation is recorded
 #   `skipped` with reason `budget` — and investigation_concurrency, 1..32, default
 #   2, is the most running at once; one past it waits queued. ADR 0053 §6.)
+#   (remedy_approval_window_s, 60..86400, default 3600, is how long a Remedy waits
+#   for its two approvals and then for its execution before it is recorded
+#   `expired`. ADR 0054 §2; see docs/setup/remedies.md.)
 #   (the five unacked_reminder_* keys were here and are gone — git-bug bd0fb1d;
 #   a config still naming one is refused with unknown_key)
 #   (refire_grace_s and group_close_delay_s were here and are gone the same way —

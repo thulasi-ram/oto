@@ -249,10 +249,11 @@ func TestTheIncidentCardIsBuiltFromTheIncident(t *testing.T) {
 	assert.Equal(t, "https://oto.example/cases/"+r.fx.caseID.String(), m.Link)
 }
 
-// TestTheIncidentFactsAreTheSixAndNoneIsACommand pins the vocabulary: the five 00084
-// declared, and `finding` (00095, git-bug 74ea849) — a new Finding is a fact about the
-// Incident, never a command and never a verdict on delivery.
-func TestTheIncidentFactsAreTheSixAndNoneIsACommand(t *testing.T) {
+// TestTheIncidentFactsAreTheTwelveAndNoneIsACommand pins the vocabulary: the five 00084
+// declared, `finding` (00095, git-bug 74ea849) — a new Finding is a fact about the
+// Incident, never a command and never a verdict on delivery — and the six Remedy
+// transitions (00100, git-bug 4148256), facts about what oto's approvers and oto did.
+func TestTheIncidentFactsAreTheTwelveAndNoneIsACommand(t *testing.T) {
 	t.Parallel()
 	var got []domain.Reason
 	for _, r := range domain.AllReasons() {
@@ -263,6 +264,8 @@ func TestTheIncidentFactsAreTheSixAndNoneIsACommand(t *testing.T) {
 	assert.Equal(t, []domain.Reason{
 		domain.ReasonDrawn, domain.ReasonCaseAdded, domain.ReasonCaseRemoved,
 		domain.ReasonQuiet, domain.ReasonActiveAgain, domain.ReasonFinding,
+		domain.ReasonRemedyProposed, domain.ReasonRemedyApproved, domain.ReasonRemedyDeclined,
+		domain.ReasonRemedyExpired, domain.ReasonRemedyExecuted, domain.ReasonRemedyFailed,
 	}, got)
 	for _, r := range got {
 		for _, command := range []string{"resolve", "close", "mitigat", "status"} {
@@ -270,4 +273,52 @@ func TestTheIncidentFactsAreTheSixAndNoneIsACommand(t *testing.T) {
 		}
 		assert.True(t, r.NeedsOccasion(), "an Incident has no version; the occasion is its key")
 	}
+}
+
+// TestARemedyFactCarriesItsTransitionAndOnlyARemedyFactDoes — ADR 0054 §2 (git-bug 4148256):
+// a `remedy_*` fact is routed like every Incident fact, its row carries the transition's
+// snapshot, and the card reads it off that row — the exact command first. A Remedy fact
+// without its snapshot, and a snapshot on any other fact, are refused before anything is
+// written.
+func TestARemedyFactCarriesItsTransitionAndOnlyARemedyFactDoes(t *testing.T) {
+	t.Parallel()
+	r := newIncidentRig(t, 0, func(fx fixture) domain.Policy {
+		p := incidentPolicy(fx)
+		p.Reasons = append(p.Reasons, domain.ReasonRemedyApproved)
+		return p
+	})
+	ctx := t.Context()
+	snapshot := &domain.IncidentRemedy{
+		RemedyID: id.New(), InvestigationID: id.New(), State: "approved", From: "proposed",
+		ToolServer: "k8s-write", Tool: "rollout_restart",
+		Arguments:       `{"namespace":"checkout","deployment":"api"}`,
+		ArgumentsSHA256: "524bbf6f79faeb40f6b7bf21913d076e37ad70c570aef46870fa570113e95198",
+		Target:          "Deployment checkout/api", Description: "Restart it.", ProposedBy: "Investigator firstlook v2",
+		RequiredApprovals: 2, ActorKind: "user", ActorLabel: "Grace Hopper",
+		Approvals: []domain.IncidentRemedyApproval{{Label: "Ada Lovelace"}, {Label: "Grace Hopper"}},
+	}
+
+	_, err := r.notifier.EvaluateIncident(ctx, r.fx.scope, service.IncidentIntent{
+		IncidentID: r.facts.ID, Reason: domain.ReasonRemedyApproved, OccasionID: id.New(),
+	})
+	require.Error(t, err, "a Remedy fact with no snapshot declares a transition of nothing")
+	_, err = r.notifier.EvaluateIncident(ctx, r.fx.scope, service.IncidentIntent{
+		IncidentID: r.facts.ID, Reason: domain.ReasonDrawn, OccasionID: id.New(), Remedy: snapshot,
+	})
+	require.Error(t, err, "a snapshot on any other fact is a Remedy no Reason announced")
+	require.Zero(t, dispatches(r.jobs))
+
+	res, err := r.notifier.EvaluateIncident(ctx, r.fx.scope, service.IncidentIntent{
+		IncidentID: r.facts.ID, Reason: domain.ReasonRemedyApproved, OccasionID: id.New(), Remedy: snapshot,
+	})
+	require.NoError(t, err)
+	require.True(t, res.Created)
+	require.Equal(t, 1, dispatches(r.jobs))
+
+	v, err := r.views.Build(ctx, r.fx.scope, service.ViewRequest{Notification: res.Notification})
+	require.NoError(t, err)
+	require.NotNil(t, v.Incident.Remedy, "the card carries the transition off the fact's row")
+	assert.Equal(t, snapshot.Arguments, v.Incident.Remedy.Arguments)
+	assert.Equal(t, "Grace Hopper", v.Incident.Remedy.ActorLabel)
+	assert.Len(t, v.Incident.Remedy.Approvals, 2)
 }

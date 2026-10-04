@@ -102,6 +102,10 @@ var (
 	_ investigatorservice.ToolServerDialer = mcpclient.Dialer{}
 	_ investigatorservice.RedactionRules   = toolResultRedaction{}
 
+	// Remedies (git-bug 4148256).
+	_ investigatorservice.RemedyStore    = (*investigatorrepo.RemedyRepository)(nil)
+	_ investigatorservice.RemedyDeclarer = remedyDeclarer{}
+
 	// Suggestions (git-bug 8327c00).
 	_ investigatorservice.SuggestionStore  = (*investigatorrepo.SuggestionRepository)(nil)
 	_ investigatorservice.PolicyEditor     = suggestionPolicies{}

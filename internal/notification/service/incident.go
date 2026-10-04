@@ -25,9 +25,9 @@ import (
 // input (labels the whole story shares), and the destinations an Incident can reach
 // today.
 //
-// ⛔ NOTHING HERE SENDS A COMMAND. The six Reasons are facts — drawn, a Case added
-// or removed, quiet, active again, a new Finding — and none of them means resolve or
-// close. An org that wants its incident tool to resolve on `quiet` writes that in the
+// ⛔ NOTHING HERE SENDS A COMMAND. The twelve Reasons are facts — drawn, a Case added
+// or removed, quiet, active again, a new Finding, and a Remedy's six transitions — and
+// none of them means resolve or close. An org that wants its incident tool to resolve on `quiet` writes that in the
 // tool.
 
 // IncidentReader is the port this module declares to read the Incident a fact is
@@ -55,6 +55,9 @@ type IncidentIntent struct {
 	// OccasionID is WHICH TIME this fact happened, and for an Incident it is the
 	// whole discriminator: an Incident has no `state_version`. Required.
 	OccasionID uuid.UUID
+	// Remedy is the Remedy transition a `remedy_*` fact declares (ADR 0054 §2), copied by
+	// its producer in the transaction that made it. Required on exactly those six Reasons.
+	Remedy *domain.IncidentRemedy
 }
 
 // incidentSkipReason is the sentence a threaded destination's delivery is recorded
@@ -97,6 +100,11 @@ func (s *NotificationService) EvaluateIncident(
 		// on one Incident would collapse into the first one forever.
 		return Result{}, errs.Validation("occasion_required", "an Incident fact names its occasion",
 			errs.Violation{Field: "occasion_id", Code: "required", Message: "an occasion id is required"})
+	case in.Reason.IsRemedy() != (in.Remedy != nil):
+		// ⛔ A Remedy fact without its snapshot would declare a transition of nothing, and a
+		// snapshot on any other fact would be a Remedy no Reason announced.
+		return Result{}, errs.Validation("remedy_fact_invalid", "a Remedy fact, and only a Remedy fact, carries its Remedy",
+			errs.Violation{Field: "remedy", Code: "required", Message: string(in.Reason)})
 	case s.incidents == nil:
 		return Result{}, errs.New(errs.KindInternal, "incident_reader_unwired",
 			"the notification service has no Incident reader, so it cannot evaluate an Incident fact")
@@ -148,8 +156,10 @@ func (s *NotificationService) evaluateIncident(
 		// admits.
 		StateVersion: 1,
 		Status:       domain.StatusPending,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		// The Remedy transition a `remedy_*` fact declares, copied onto its row.
+		Remedy:    in.Remedy,
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 	n.IdempotencyKey = domain.IdempotencyKey(
 		scope.OrgID(), n.SubjectKind, n.SubjectID, n.Reason, n.StateVersion, in.OccasionID)
@@ -530,11 +540,46 @@ func (v *ViewService) incidentCard(
 			ConcludedAt:     fd.ConcludedAt.UTC(),
 		}
 	}
+	if rm := n.Remedy; rm != nil {
+		// ⭐ READ OFF THE FACT'S OWN ROW, NEVER OFF THE REMEDY: the card declares the
+		// transition as it was made, whatever the Remedy has done since.
+		iv.Remedy = incidentRemedyView(*rm)
+	}
 	return &NotificationView{
 		Reason:     string(n.Reason),
 		Incident:   iv,
 		RenderedAt: v.clk.Now().UTC(),
 	}, nil
+}
+
+// incidentRemedyView is a Remedy fact's snapshot as a card carries it.
+func incidentRemedyView(r domain.IncidentRemedy) *IncidentRemedyView {
+	out := &IncidentRemedyView{
+		RemedyID:          r.RemedyID.String(),
+		InvestigationID:   r.InvestigationID.String(),
+		State:             r.State,
+		From:              r.From,
+		ToolServer:        r.ToolServer,
+		Tool:              r.Tool,
+		NoTool:            r.NoTool,
+		Arguments:         r.Arguments,
+		ArgumentsSHA256:   r.ArgumentsSHA256,
+		Target:            r.Target,
+		Description:       r.Description,
+		ProposedBy:        r.ProposedBy,
+		RequiredApprovals: r.RequiredApprovals,
+		Approvals:         make([]IncidentRemedyApprovalView, 0, len(r.Approvals)),
+		ActorKind:         r.ActorKind,
+		ActorLabel:        r.ActorLabel,
+		At:                r.At.UTC(),
+		ExpiresAt:         r.ExpiresAt.UTC(),
+		FailureReason:     r.FailureReason,
+		Detail:            r.Detail,
+	}
+	for _, a := range r.Approvals {
+		out.Approvals = append(out.Approvals, IncidentRemedyApprovalView{Label: a.Label, ApprovedAt: a.ApprovedAt.UTC()})
+	}
+	return out
 }
 
 func incidentAuthor(label string, correlator uuid.UUID) IncidentAuthorView {

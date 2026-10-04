@@ -37,6 +37,8 @@ func toOrgSettingsDTO(s domain.Settings) OrgSettingsDTO {
 		InvestigationsEnabled:    s.InvestigationsEnabled,
 		InvestigationDailyTokens: s.InvestigationDailyTokens,
 		InvestigationConcurrency: s.InvestigationConcurrency,
+
+		RemedyApprovalWindowS: int(s.RemedyApprovalWindow / time.Second),
 	}
 }
 

@@ -282,6 +282,10 @@ type Notification struct {
 	// delivery renders the same body and the card is drawn without a read (ViewService.
 	// digest).
 	DigestFinding *DigestFinding
+	// Remedy is the Remedy transition a `remedy_*` Incident fact declares (migration 00100,
+	// ADR 0054 §2), COPIED in the transaction that made it — nil on every other Reason
+	// (`notifications_remedy_ck`). The card reads it off the row, never off the Remedy.
+	Remedy *IncidentRemedy
 
 	CreatedAt time.Time
 	UpdatedAt time.Time
