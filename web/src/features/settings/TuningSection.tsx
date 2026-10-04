@@ -1347,7 +1347,7 @@ function shadowedText(knob: KnobCopy, raw: unknown): string {
   // ⛔ AN `Array.isArray` ARM WAS HERE AND IS UNREACHABLE: the array was
   // `unacked_reminder_mention_list` (git-bug bd0fb1d). The boolean arm above was
   // deleted with `broadcast_on_resolved` (git-bug 7570090) and came back for
-  // `investigations_enabled`. `OrgSettingsPatchDTO` publishes six integers,
+  // `investigations_enabled`. `OrgSettingsPatchDTO` publishes eight integers,
   // `default_verbosity` and that one boolean; `String(raw)` funnels the verbosity.
   return String(raw);
 }

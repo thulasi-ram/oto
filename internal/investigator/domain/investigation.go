@@ -56,7 +56,8 @@ const (
 	StatusExhausted Status = "exhausted"
 	// StatusFailed ended on an error: no usage, a model error, the subject gone.
 	StatusFailed Status = "failed"
-	// StatusSkipped never started, and says why (the kill switch).
+	// StatusSkipped never started, and says why: a kill switch, or the org's daily
+	// token budget.
 	StatusSkipped Status = "skipped"
 )
 
@@ -107,6 +108,10 @@ const (
 	// ReasonDisabled: the org's or the Investigator's kill switch was off when the
 	// run would have begun (ADR 0053 §6: "Nothing starts").
 	ReasonDisabled Reason = "disabled"
+	// ReasonBudget: the org's daily token budget was spent when the run was asked
+	// for, or when it would have begun (ADR 0053 §6: "recorded as skipped with reason
+	// budget, not queued. Resets at UTC midnight"). git-bug bf172fe.
+	ReasonBudget Reason = "budget"
 )
 
 func (r Reason) status() Status {
@@ -115,7 +120,7 @@ func (r Reason) status() Status {
 		return StatusExhausted
 	case ReasonUsageMissing, ReasonModelError, ReasonModelChanged, ReasonSubjectGone, ReasonInterrupted, ReasonInternal:
 		return StatusFailed
-	case ReasonDisabled:
+	case ReasonDisabled, ReasonBudget:
 		return StatusSkipped
 	default:
 		return ""
@@ -234,8 +239,12 @@ type Investigation struct {
 
 	RequestedBy Requester
 	RequestedAt time.Time
-	StartedAt   time.Time
-	EndedAt     time.Time
+	// NotBefore is the earliest a `queued` run may start: set when an Investigator's
+	// minimum interval deferred it (ADR 0053 §6), zero otherwise. Its job is
+	// scheduled for the same moment, so a run waiting on it says what it waits for.
+	NotBefore time.Time
+	StartedAt time.Time
+	EndedAt   time.Time
 }
 
 // Partial reports whether the Finding was cut short by a budget.

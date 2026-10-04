@@ -39,7 +39,7 @@ func (m *memInvestigators) Create(_ context.Context, s db.TenantScope, d domain.
 		}
 	}
 	inv := domain.Investigator{ID: uuid.New(), OrgID: s.OrgID(), Name: d.Name, Enabled: d.Enabled,
-		Budgets: d.Budgets, CreatedAt: at, UpdatedAt: at}
+		Budgets: d.Budgets, MinInterval: d.MinInterval, CreatedAt: at, UpdatedAt: at}
 	m.rows[inv.ID] = inv
 	m.addVersionLocked(inv.ID, 1, d.Spec, model, at)
 	return m.getLocked(s, inv.ID)
@@ -117,14 +117,14 @@ func (m *memInvestigators) GetVersion(_ context.Context, s db.TenantScope, vid u
 	return domain.Version{}, errs.NotFound("investigator_not_found", "no such version")
 }
 
-func (m *memInvestigators) Update(_ context.Context, s db.TenantScope, id uuid.UUID, enabled bool, b domain.Budgets, at time.Time) error {
+func (m *memInvestigators) Update(_ context.Context, s db.TenantScope, id uuid.UUID, enabled bool, b domain.Budgets, interval time.Duration, at time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	r, ok := m.rows[id]
 	if !ok || r.OrgID != s.OrgID() {
 		return errs.NotFound("investigator_not_found", "no such Investigator")
 	}
-	r.Enabled, r.Budgets, r.UpdatedAt = enabled, b, at
+	r.Enabled, r.Budgets, r.MinInterval, r.UpdatedAt = enabled, b, interval, at
 	m.rows[id] = r
 	return nil
 }
@@ -186,16 +186,86 @@ func (m *memInvestigations) ListBySubject(_ context.Context, s db.TenantScope, k
 	return out, db.Cursor{}, nil
 }
 
-func (m *memInvestigations) Start(_ context.Context, s db.TenantScope, id uuid.UUID, at time.Time) (bool, error) {
+// Start counts and starts under one mutex, which is what the advisory lock is to the
+// SQL: no second Start can count between this one's count and its write.
+func (m *memInvestigations) Start(_ context.Context, s db.TenantScope, id uuid.UUID, at time.Time, maxRunning int) (domain.StartOutcome, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.countRunningLocked(s) >= maxRunning {
+		return domain.StartAtCapacity, nil
+	}
 	r, ok := m.rows[id]
 	if !ok || r.OrgID != s.OrgID() || r.Status != domain.StatusQueued {
-		return false, nil
+		return domain.StartNotQueued, nil
 	}
 	r.Status, r.StartedAt = domain.StatusRunning, at
 	m.rows[id] = r
-	return true, nil
+	return domain.StartBegan, nil
+}
+
+func (m *memInvestigations) countRunningLocked(s db.TenantScope) int {
+	n := 0
+	for _, r := range m.rows {
+		if r.OrgID == s.OrgID() && r.Status == domain.StatusRunning {
+			n++
+		}
+	}
+	return n
+}
+
+func (m *memInvestigations) CountRunning(_ context.Context, s db.TenantScope) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.countRunningLocked(s), nil
+}
+
+func (m *memInvestigations) SpentSince(_ context.Context, s db.TenantScope, since time.Time) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var n int64
+	for id, steps := range m.steps {
+		if m.rows[id].OrgID != s.OrgID() {
+			continue
+		}
+		for _, st := range steps {
+			if st.Kind == domain.StepModelTurn && !st.RecordedAt.Before(since) {
+				n += st.Usage.Total()
+			}
+		}
+	}
+	return n, nil
+}
+
+func (m *memInvestigations) LockSubjectRuns(_ context.Context, s db.TenantScope, investigatorID uuid.UUID,
+	kind domain.SubjectKind, subjectID uuid.UUID,
+) (domain.SubjectRuns, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out domain.SubjectRuns
+	for _, r := range m.rows {
+		if r.OrgID != s.OrgID() || r.InvestigatorID != investigatorID || r.SubjectKind != kind || r.SubjectID != subjectID {
+			continue
+		}
+		r := r
+		switch {
+		case r.Status == domain.StatusQueued:
+			if out.Queued == nil || r.RequestedAt.After(out.Queued.RequestedAt) {
+				out.Queued = &r
+			}
+		case r.Status != domain.StatusSkipped:
+			if out.Last == nil || anchor(r).After(anchor(*out.Last)) {
+				out.Last = &r
+			}
+		}
+	}
+	return out, nil
+}
+
+func anchor(r domain.Investigation) time.Time {
+	if !r.StartedAt.IsZero() {
+		return r.StartedAt
+	}
+	return r.RequestedAt
 }
 
 func (m *memInvestigations) Finish(_ context.Context, s db.TenantScope, id uuid.UUID, end domain.Ending, spent domain.Usage, calls int, finding string, at time.Time) error {
@@ -297,21 +367,29 @@ func (m *memFindings) PublishFinding(_ context.Context, _ db.TenantScope, f doma
 	return nil
 }
 
-type memSwitch struct{ on bool }
+// memControls is the org's §6 controls as a test sets them.
+type memControls struct {
+	on          bool
+	dailyTokens int64
+	concurrency int
+}
 
-func (m *memSwitch) InvestigationsEnabled(context.Context, db.TenantScope) (bool, error) {
-	return m.on, nil
+func (m *memControls) InvestigationControls(context.Context, db.TenantScope) (domain.OrgControls, error) {
+	return domain.OrgControls{Enabled: m.on, DailyTokens: m.dailyTokens, Concurrency: m.concurrency}, nil
 }
 
 type memQueue struct {
 	mu   sync.Mutex
 	jobs []db.JobArgs
+	// opts are each job's applied options, by index — when it was scheduled for.
+	opts []db.JobOptions
 }
 
-func (m *memQueue) Enqueue(_ context.Context, args db.JobArgs, _ ...db.JobOption) (db.EnqueueResult, error) {
+func (m *memQueue) Enqueue(_ context.Context, args db.JobArgs, opts ...db.JobOption) (db.EnqueueResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.jobs = append(m.jobs, args)
+	m.opts = append(m.opts, db.ApplyJobOptions(db.JobOptions{}, opts...))
 	return db.EnqueueResult{}, nil
 }
 

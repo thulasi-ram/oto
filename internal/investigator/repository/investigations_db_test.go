@@ -6,6 +6,7 @@ package repository_test
 // status, a version number is taken once, and another org's rows are a 404.
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -56,6 +57,19 @@ func (w world) queued(t *testing.T, alertKey string, at time.Time) domain.Invest
 	return run
 }
 
+// start starts a run the way the service does: inside a transaction, under the org's
+// advisory lock, with room for `maxRunning` at once.
+func (w world) start(t *testing.T, id uuid.UUID, at time.Time, maxRunning int) domain.StartOutcome {
+	t.Helper()
+	var out domain.StartOutcome
+	require.NoError(t, db.NewTxRunner(w.h.Pool).InTx(w.h.Ctx, func(ctx context.Context) error {
+		var err error
+		out, err = w.runs.Start(ctx, w.scope, id, at, maxRunning)
+		return err
+	}))
+	return out
+}
+
 func TestAnInvestigatorIsVersionedAndAVersionIsNeverRewritten(t *testing.T) {
 	t.Parallel()
 	w := newWorld(t)
@@ -90,9 +104,7 @@ func TestAStepIsAppendOnly(t *testing.T) {
 	t.Parallel()
 	w := newWorld(t)
 	run := w.queued(t, "k", w.h.Now())
-	ok, err := w.runs.Start(w.h.Ctx, w.scope, run.ID, w.h.Now())
-	require.NoError(t, err)
-	require.True(t, ok)
+	require.Equal(t, domain.StartBegan, w.start(t, run.ID, w.h.Now(), 2))
 
 	turn, err := domain.NewTurn(domain.ModelIdentity{}, "Reading.", []domain.ToolCall{{ID: "c1", Name: "oto_case_timeline", Arguments: "{}"}},
 		&domain.Usage{InputTokens: 100, OutputTokens: 10}, domain.FinishToolCalls)
@@ -131,11 +143,10 @@ func TestAnEndedRunIsFrozenAndItsReasonBelongsToItsStatus(t *testing.T) {
 	t.Parallel()
 	w := newWorld(t)
 	run := w.queued(t, "k", w.h.Now())
-	_, err := w.runs.Start(w.h.Ctx, w.scope, run.ID, w.h.Now())
-	require.NoError(t, err)
+	w.start(t, run.ID, w.h.Now(), 2)
 
 	// ⛔ exhausted/disabled is not a pair.
-	err = w.runs.Finish(w.h.Ctx, w.scope, run.ID, domain.Ending{Status: domain.StatusExhausted, Reason: domain.ReasonDisabled, Detail: "x"},
+	err := w.runs.Finish(w.h.Ctx, w.scope, run.ID, domain.Ending{Status: domain.StatusExhausted, Reason: domain.ReasonDisabled, Detail: "x"},
 		domain.Usage{}, 0, "", w.h.Now())
 	require.Error(t, err)
 
@@ -195,8 +206,7 @@ func TestASubjectsRunsAreLatestFirstAndPriorFindingsStayInTheirKey(t *testing.T)
 			RequestedAt: w.h.Now().Add(time.Duration(i) * time.Minute),
 		})
 		require.NoError(t, err)
-		_, err = w.runs.Start(w.h.Ctx, w.scope, run.ID, run.RequestedAt)
-		require.NoError(t, err)
+		require.Equal(t, domain.StartBegan, w.start(t, run.ID, run.RequestedAt, 2))
 		require.NoError(t, w.runs.Finish(w.h.Ctx, w.scope, run.ID, domain.Completed(), domain.Usage{}, 0,
 			"finding "+string(rune('a'+i)), run.RequestedAt.Add(time.Second)))
 		ids = append(ids, run.ID)
@@ -223,4 +233,147 @@ func TestASubjectsRunsAreLatestFirstAndPriorFindingsStayInTheirKey(t *testing.T)
 
 	_, err = w.runs.Get(w.h.Ctx, w.h.Org().Scope, ids[0])
 	require.True(t, errs.IsKind(err, errs.KindNotFound))
+}
+
+// ------------------------------------------------------------------ ADR 0053 §6
+//
+// git-bug bf172fe: the org's daily budget, its concurrency, and an Investigator's
+// minimum interval, as the SQL holds them (migration 00094).
+
+func TestASkippedBudgetRunIsAdmittedAndADisabledReasonStaysSkippedOnly(t *testing.T) {
+	t.Parallel()
+	w := newWorld(t)
+	at := w.h.Now()
+	run, err := w.runs.Insert(w.h.Ctx, w.scope, domain.Investigation{
+		SubjectKind: domain.SubjectCase, SubjectID: uuid.New(), InvestigatorID: w.inv.ID, VersionID: w.inv.Current.ID,
+		Status: domain.StatusSkipped, Ending: domain.EndedBy(domain.ReasonBudget, "the day is spent"), EndedAt: at,
+		Budgets: w.inv.Budgets, RequestedBy: domain.Requester{Label: "Ada"}, RequestedAt: at,
+	})
+	require.NoError(t, err)
+	require.Equal(t, domain.ReasonBudget, run.Ending.Reason)
+	require.True(t, run.StartedAt.IsZero())
+
+	// ⛔ `budget` belongs to `skipped`, and nothing else.
+	q := w.queued(t, "k", at)
+	w.start(t, q.ID, at, 2)
+	_, err = w.h.Pool.Exec(w.h.Ctx,
+		`UPDATE investigations SET status = 'failed', reason = 'budget', reason_detail = 'x', ended_at = $2 WHERE id = $1`, q.ID, at)
+	require.Error(t, err)
+}
+
+func TestTheDaysSpendIsTodaysModelTurns(t *testing.T) {
+	t.Parallel()
+	w := newWorld(t)
+	midnight := domain.DayStart(w.h.Now())
+	turn := func(in, out int64) domain.Turn {
+		tr, err := domain.NewTurn(domain.ModelIdentity{}, "x", nil, &domain.Usage{InputTokens: in, OutputTokens: out}, domain.FinishStop)
+		require.NoError(t, err)
+		return tr
+	}
+	run := w.queued(t, "k", midnight.Add(-time.Hour))
+	w.start(t, run.ID, midnight.Add(-time.Hour), 2)
+	// Yesterday's turn is yesterday's; today's two count, and a Tool call has no tokens.
+	require.NoError(t, w.runs.AppendStep(w.h.Ctx, w.scope, run.ID, domain.NewModelTurnStep(1, turn(1000, 100), 0, midnight.Add(-time.Minute))))
+	require.NoError(t, w.runs.AppendStep(w.h.Ctx, w.scope, run.ID, domain.NewModelTurnStep(2, turn(300, 30), 0, midnight)))
+	require.NoError(t, w.runs.AppendStep(w.h.Ctx, w.scope, run.ID,
+		domain.NewToolStep(3, domain.ToolCall{ID: "c", Name: "oto_case_timeline", Arguments: "{}"}, domain.OutcomeOK, "ok", 0, midnight)))
+	require.NoError(t, w.runs.AppendStep(w.h.Ctx, w.scope, run.ID, domain.NewModelTurnStep(4, turn(50, 5), 0, midnight.Add(time.Hour))))
+
+	spent, err := w.runs.SpentSince(w.h.Ctx, w.scope, midnight)
+	require.NoError(t, err)
+	require.Equal(t, int64(385), spent, "a run still going is counted, from its Steps")
+
+	other, err := w.runs.SpentSince(w.h.Ctx, w.h.Org().Scope, midnight)
+	require.NoError(t, err)
+	require.Zero(t, other, "another org's spend is not this org's")
+}
+
+func TestStartHoldsTheOrgsConcurrencyAndNeedsATransaction(t *testing.T) {
+	t.Parallel()
+	w := newWorld(t)
+	at := w.h.Now()
+	a, b, c := w.queued(t, "a", at), w.queued(t, "b", at), w.queued(t, "c", at)
+
+	require.Equal(t, domain.StartBegan, w.start(t, a.ID, at, 2))
+	require.Equal(t, domain.StartBegan, w.start(t, b.ID, at, 2))
+	require.Equal(t, domain.StartAtCapacity, w.start(t, c.ID, at, 2))
+	got, err := w.runs.Get(w.h.Ctx, w.scope, c.ID)
+	require.NoError(t, err)
+	require.Equal(t, domain.StatusQueued, got.Status, "a run past the concurrency waits; it is never dropped")
+	n, err := w.runs.CountRunning(w.h.Ctx, w.scope)
+	require.NoError(t, err)
+	require.Equal(t, 2, n)
+
+	// A slot frees; the waiting run takes it. A run already started is not queued.
+	require.NoError(t, w.runs.Finish(w.h.Ctx, w.scope, a.ID, domain.Completed(), domain.Usage{}, 0, "", at))
+	require.Equal(t, domain.StartBegan, w.start(t, c.ID, at, 2))
+	require.Equal(t, domain.StartNotQueued, w.start(t, b.ID, at, 3))
+
+	// ⛔ Outside a transaction the advisory lock would guard nothing, so it is refused.
+	_, err = w.runs.Start(w.h.Ctx, w.scope, w.queued(t, "d", at).ID, at, 10)
+	require.Error(t, err)
+}
+
+func TestTheIntervalReadsTheSubjectsQueuedAndLastRunsAndNotBeforeRoundTrips(t *testing.T) {
+	t.Parallel()
+	w := newWorld(t)
+	at := w.h.Now()
+	subject := uuid.New()
+	insert := func(status domain.Status, requested time.Time, notBefore time.Time) domain.Investigation {
+		inv := domain.Investigation{
+			SubjectKind: domain.SubjectCase, SubjectID: subject, InvestigatorID: w.inv.ID, VersionID: w.inv.Current.ID,
+			Status: status, Budgets: w.inv.Budgets, RequestedBy: domain.Requester{Label: "Correlator"},
+			RequestedAt: requested, NotBefore: notBefore,
+		}
+		if status == domain.StatusSkipped {
+			inv.Ending, inv.EndedAt = domain.EndedBy(domain.ReasonBudget, "spent"), requested
+		}
+		out, err := w.runs.Insert(w.h.Ctx, w.scope, inv)
+		require.NoError(t, err)
+		return out
+	}
+	lock := func() domain.SubjectRuns {
+		var out domain.SubjectRuns
+		require.NoError(t, db.NewTxRunner(w.h.Pool).InTx(w.h.Ctx, func(ctx context.Context) error {
+			var err error
+			out, err = w.runs.LockSubjectRuns(ctx, w.scope, w.inv.ID, domain.SubjectCase, subject)
+			return err
+		}))
+		return out
+	}
+
+	none := lock()
+	require.Nil(t, none.Queued)
+	require.Nil(t, none.Last)
+
+	first := insert(domain.StatusQueued, at, time.Time{})
+	w.start(t, first.ID, at.Add(time.Minute), 2)
+	insert(domain.StatusSkipped, at.Add(2*time.Minute), time.Time{}) // a skip opens no interval
+	deferred := insert(domain.StatusQueued, at.Add(3*time.Minute), at.Add(11*time.Minute))
+	require.Equal(t, at.Add(11*time.Minute).UTC(), deferred.NotBefore)
+
+	runs := lock()
+	require.NotNil(t, runs.Queued)
+	require.Equal(t, deferred.ID, runs.Queued.ID)
+	require.NotNil(t, runs.Last)
+	require.Equal(t, first.ID, runs.Last.ID)
+	require.Equal(t, at.Add(time.Minute).UTC(), runs.Last.StartedAt)
+
+	// ⛔ A not_before earlier than the request is refused at the row.
+	_, err := w.h.Pool.Exec(w.h.Ctx, `UPDATE investigations SET not_before = requested_at - interval '1 second' WHERE id = $1`, deferred.ID)
+	require.Error(t, err)
+}
+
+func TestAnInvestigatorsMinimumIntervalIsStoredAndBounded(t *testing.T) {
+	t.Parallel()
+	w := newWorld(t)
+	require.Equal(t, time.Duration(0), w.inv.MinInterval, "the draft named none, and the repository writes what it is given")
+	require.NoError(t, w.invs.Update(w.h.Ctx, w.scope, w.inv.ID, true, w.inv.Budgets, 15*time.Minute, w.h.Now()))
+	got, err := w.invs.Get(w.h.Ctx, w.scope, w.inv.ID)
+	require.NoError(t, err)
+	require.Equal(t, 15*time.Minute, got.MinInterval)
+	require.Equal(t, 1, got.Current.Number, "an interval is not a version")
+
+	_, err = w.h.Pool.Exec(w.h.Ctx, `UPDATE investigators SET min_interval_s = 86401 WHERE id = $1`, w.inv.ID)
+	require.Error(t, err)
 }

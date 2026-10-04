@@ -19,6 +19,24 @@ package service
 // reason `disabled` and a sentence saying WHICH switch, and nothing calls a model. A run
 // already going when the switch flips is not cut off mid-turn: the switch governs what
 // starts.
+//
+// ⭐ THE REST OF §6's TABLE IS ENFORCED HERE TOO (git-bug bf172fe), and each breach has
+// its own verb:
+//
+//   - DAILY TOKEN BUDGET — SKIPPED, ON THE RECORD. Read when the run is asked for and
+//     again when its job begins, like the kill switch: a request once the org's
+//     recorded spend since 00:00 UTC has reached `investigation_daily_tokens` is a row
+//     `skipped` with reason `budget`, never enqueued; a queued run that finds the day
+//     spent when it would begin ends the same way. A run already going is bounded by
+//     its own per-run token budget, not cut off.
+//   - CONCURRENCY — WAITS. A job that finds the org's `investigation_concurrency`
+//     running SNOOZES (no attempt consumed; River snoozes indefinitely) and the run
+//     stays `queued`. The decisive count and the start are one transaction under the
+//     org's advisory lock, so two workers cannot share one slot.
+//   - MINIMUM INTERVAL — COALESCES. A membership-change trigger inside an
+//     Investigator's interval resolves to the run already queued for that subject, or
+//     becomes ONE run whose job is scheduled for when the interval is up (NotBefore).
+//     A human's request is not held to it (domain.TriggerHuman).
 
 import (
 	"context"
@@ -43,11 +61,21 @@ type InvestigationDetail struct {
 // RequestCaseInvestigation records a human's request for one Investigator to run
 // against one Case, and enqueues it.
 //
-// The returned run is `queued` — or `skipped` with reason `disabled` when the org's or
-// the Investigator's kill switch is off, in which case nothing is enqueued and the row
-// is the record that somebody asked.
+// The returned run is `queued` — or `skipped`, with reason `disabled` when the org's
+// or the Investigator's kill switch is off, or `budget` when the org's daily token
+// budget is spent, in which case nothing is enqueued and the row is the record that
+// somebody asked.
 func (s *Service) RequestCaseInvestigation(
 	ctx context.Context, scope db.TenantScope, caseID, investigatorID uuid.UUID, by domain.Requester,
+) (domain.Investigation, error) {
+	return s.requestCase(ctx, scope, caseID, investigatorID, by, domain.TriggerHuman)
+}
+
+// requestCase records one trigger's run against one Case. A human's is always a new
+// run; a membership change is admitted under the Investigator's minimum interval and
+// may resolve to a run already queued (domain.Admit).
+func (s *Service) requestCase(
+	ctx context.Context, scope db.TenantScope, caseID, investigatorID uuid.UUID, by domain.Requester, trigger domain.Trigger,
 ) (domain.Investigation, error) {
 	if err := db.RequireScope(scope); err != nil {
 		return domain.Investigation{}, err
@@ -60,7 +88,7 @@ func (s *Service) RequestCaseInvestigation(
 	if err != nil {
 		return domain.Investigation{}, err
 	}
-	off, err := s.switchedOff(ctx, scope, investigator)
+	controls, err := s.orgControls.InvestigationControls(ctx, scope)
 	if err != nil {
 		return domain.Investigation{}, err
 	}
@@ -81,14 +109,38 @@ func (s *Service) RequestCaseInvestigation(
 		RequestedBy:      by,
 		RequestedAt:      at,
 	}
-	if off != "" {
-		inv.Status = domain.StatusSkipped
-		inv.Ending = domain.EndedBy(domain.ReasonDisabled, off)
-		inv.EndedAt = at
+	skip := func(r domain.Reason, why string) {
+		inv.Status, inv.Ending, inv.EndedAt, inv.NotBefore = domain.StatusSkipped, domain.EndedBy(r, why), at, time.Time{}
+	}
+	if off := switchedOff(controls, investigator); off != "" {
+		skip(domain.ReasonDisabled, off)
 	}
 
 	var out domain.Investigation
 	err = s.tx.InTx(ctx, func(ctx context.Context) error {
+		if inv.Status == domain.StatusQueued && trigger != domain.TriggerHuman {
+			// Under the (Investigator, subject) lock, so two changes at once cannot
+			// both find nothing queued and both insert.
+			runs, err := s.investigations.LockSubjectRuns(ctx, scope, investigator.ID, inv.SubjectKind, inv.SubjectID)
+			if err != nil {
+				return err
+			}
+			adm := domain.Admit(trigger, investigator.MinInterval, runs, at)
+			if adm.Coalesced() {
+				out = *runs.Queued
+				return nil
+			}
+			inv.NotBefore = adm.NotBefore
+		}
+		if inv.Status == domain.StatusQueued {
+			spent, err := s.investigations.SpentSince(ctx, scope, domain.DayStart(at))
+			if err != nil {
+				return err
+			}
+			if why := controls.BudgetSpent(spent, at); why != "" {
+				skip(domain.ReasonBudget, why)
+			}
+		}
 		stored, err := s.investigations.Insert(ctx, scope, inv)
 		if err != nil {
 			return err
@@ -97,7 +149,11 @@ func (s *Service) RequestCaseInvestigation(
 		if stored.Status != domain.StatusQueued {
 			return nil
 		}
-		_, err = s.queue.Enqueue(ctx, jobs.InvestigationsRunArgs{OrgID: scope.OrgID(), InvestigationID: stored.ID})
+		var opts []db.JobOption
+		if !stored.NotBefore.IsZero() {
+			opts = append(opts, db.WithScheduledAt(stored.NotBefore))
+		}
+		_, err = s.queue.Enqueue(ctx, jobs.InvestigationsRunArgs{OrgID: scope.OrgID(), InvestigationID: stored.ID}, opts...)
 		return err
 	})
 	if err != nil {
@@ -108,20 +164,28 @@ func (s *Service) RequestCaseInvestigation(
 
 // switchedOff returns why a run may not start — the org's switch or the
 // Investigator's — or "" when both are on.
-func (s *Service) switchedOff(ctx context.Context, scope db.TenantScope, investigator domain.Investigator) (string, error) {
-	on, err := s.orgSwitch.InvestigationsEnabled(ctx, scope)
-	if err != nil {
-		return "", err
-	}
+func switchedOff(controls domain.OrgControls, investigator domain.Investigator) string {
 	switch {
-	case !on:
-		return "Investigations are switched off for this org (investigations_enabled is false)", nil
+	case !controls.Enabled:
+		return "Investigations are switched off for this org (investigations_enabled is false)"
 	case !investigator.Enabled:
-		return fmt.Sprintf("the Investigator %s is disabled", investigator.Name), nil
+		return fmt.Sprintf("the Investigator %s is disabled", investigator.Name)
 	default:
-		return "", nil
+		return ""
 	}
 }
+
+// ConcurrencyWait is how long a run's job waits before it looks for a free slot
+// again, when the org already has its `investigation_concurrency` running. A snooze,
+// not a failure: it consumes no attempt, so a run can wait out any backlog and is
+// never dropped (ADR 0053 §6).
+const ConcurrencyWait = 15 * time.Second
+
+// The snooze reasons, as `oto_jobs_snoozed_total` labels them.
+const (
+	snoozeConcurrency = "investigation_concurrency"
+	snoozeInterval    = "investigation_interval"
+)
 
 // GetInvestigation reads one run and its Steps, in order.
 func (s *Service) GetInvestigation(ctx context.Context, scope db.TenantScope, id uuid.UUID) (InvestigationDetail, error) {
@@ -151,8 +215,11 @@ func (s *Service) ListCaseInvestigations(
 // it.
 //
 // It returns an error only when the run could not be begun or its ending could not be
-// recorded — both of which a retry can fix. Every way the RUN goes wrong (no usage, a
-// model error, a budget) is an ending, recorded, and a nil return.
+// recorded — both of which a retry can fix — or a jobs.Snooze when it must wait: for
+// a free slot under the org's concurrency, or for the time an interval deferred it
+// to. A snooze consumes no attempt, and the run stays `queued`. Every way the RUN
+// goes wrong (no usage, a model error, a budget) is an ending, recorded, and a nil
+// return.
 func (s *Service) RunInvestigation(ctx context.Context, scope db.TenantScope, id uuid.UUID) error {
 	inv, err := s.investigations.Get(ctx, scope, id)
 	if err != nil {
@@ -177,10 +244,33 @@ func (s *Service) RunInvestigation(ctx context.Context, scope db.TenantScope, id
 	if err != nil {
 		return err
 	}
-	if off, err := s.switchedOff(ctx, scope, investigator); err != nil {
+	controls, err := s.orgControls.InvestigationControls(ctx, scope)
+	if err != nil {
 		return err
-	} else if off != "" {
+	}
+	if off := switchedOff(controls, investigator); off != "" {
 		return s.finish(ctx, scope, inv, outcome{ending: domain.EndedBy(domain.ReasonDisabled, off)})
+	}
+	// ⭐ THE INTERVAL, THEN THE DAY, THEN THE SLOT — in the order each would let it run.
+	// A run the interval deferred is not due yet: its job was scheduled for NotBefore,
+	// and one that arrives early (a redelivery, a rescue) waits the rest.
+	now := s.now()
+	if inv.NotBefore.After(now) {
+		return jobs.Snooze(inv.NotBefore.Sub(now), snoozeInterval)
+	}
+	spent, err := s.investigations.SpentSince(ctx, scope, domain.DayStart(now))
+	if err != nil {
+		return err
+	}
+	if why := controls.BudgetSpent(spent, now); why != "" {
+		return s.finish(ctx, scope, inv, outcome{ending: domain.EndedBy(domain.ReasonBudget, why)})
+	}
+	// A peek before the ToolServers are dialled, so a run waiting on a slot does not
+	// open a session with every one of them every ConcurrencyWait. Start decides.
+	if running, err := s.investigations.CountRunning(ctx, scope); err != nil {
+		return err
+	} else if controls.AtCapacity(running) {
+		return jobs.Snooze(ConcurrencyWait, snoozeConcurrency)
 	}
 
 	version, err := s.investigators.GetVersion(ctx, scope, inv.VersionID)
@@ -223,9 +313,18 @@ func (s *Service) RunInvestigation(ctx context.Context, scope db.TenantScope, id
 	defer closeSessions()
 
 	startedAt := s.now()
-	started, err := s.investigations.Start(ctx, scope, inv.ID, startedAt)
-	if err != nil || !started {
-		return err // not started: another worker has it, or it ended meanwhile.
+	var start domain.StartOutcome
+	err = s.tx.InTx(ctx, func(ctx context.Context) error {
+		start, err = s.investigations.Start(ctx, scope, inv.ID, startedAt, controls.Concurrency)
+		return err
+	})
+	switch {
+	case err != nil:
+		return err
+	case start == domain.StartAtCapacity:
+		return jobs.Snooze(ConcurrencyWait, snoozeConcurrency) // still queued; never dropped
+	case start != domain.StartBegan:
+		return nil // not started: another worker has it, or it ended meanwhile.
 	}
 
 	p := plan{

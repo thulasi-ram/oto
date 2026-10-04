@@ -2101,6 +2101,18 @@ export const OrgSettingsDTOSchema = v.looseObject({
   ),
   "default_verbosity": VerbositySchema,
   "investigations_enabled": v.boolean(),
+  "investigation_daily_tokens": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1000),
+    v.maxValue(1000000000),
+  ),
+  "investigation_concurrency": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+    v.maxValue(32),
+  ),
 });
 
 export const OrgDTOSchema = v.looseObject({
@@ -3430,6 +3442,12 @@ export const InvestigatorDTOSchema = v.looseObject({
   "enricher": v.string(),
   "enabled": v.boolean(),
   "budgets": InvestigatorBudgetsDTOSchema,
+  "min_interval_seconds": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+    v.maxValue(86400),
+  ),
   "current_version": InvestigatorVersionDTOSchema,
   "created_at": TimestampSchema,
   "updated_at": TimestampSchema,
@@ -3454,6 +3472,12 @@ export const CreateInvestigatorRequestSchema = v.strictObject({
   ),
   "enabled": v.exactOptional(v.boolean(), true),
   "budgets": v.exactOptional(InvestigatorBudgetsDTOSchema),
+  "min_interval_seconds": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+    v.maxValue(86400),
+  ), 600),
   "model_provider_id": UuidSchema,
   "prompt": v.pipe(
     v.string(),
@@ -3475,6 +3499,12 @@ export const CreateInvestigatorRequestSchema = v.strictObject({
 export const UpdateInvestigatorRequestSchema = v.strictObject({
   "enabled": v.exactOptional(v.boolean()),
   "budgets": v.exactOptional(InvestigatorBudgetsDTOSchema),
+  "min_interval_seconds": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+    v.maxValue(86400),
+  )),
   "model_provider_id": v.exactOptional(UuidSchema),
   "prompt": v.exactOptional(v.pipe(
     v.string(),
@@ -3499,7 +3529,7 @@ export const RequestInvestigationRequestSchema = v.strictObject({
 
 export const InvestigationStatusSchema = v.picklist(["queued", "running", "completed", "exhausted", "failed", "skipped"]);
 
-export const InvestigationReasonSchema = v.picklist(["step_budget", "token_budget", "wall_time_budget", "usage_missing", "model_error", "model_changed", "subject_gone", "interrupted", "internal", "disabled"]);
+export const InvestigationReasonSchema = v.picklist(["step_budget", "token_budget", "wall_time_budget", "usage_missing", "model_error", "model_changed", "subject_gone", "interrupted", "internal", "disabled", "budget"]);
 
 export const InvestigationDTOSchema = v.looseObject({
   "id": UuidSchema,
@@ -3550,6 +3580,7 @@ export const InvestigationDTOSchema = v.looseObject({
     v.maxLength(200),
   ),
   "requested_at": TimestampSchema,
+  "not_before": v.nullable(TimestampSchema),
   "started_at": v.nullable(TimestampSchema),
   "ended_at": v.nullable(TimestampSchema),
 });
@@ -3957,6 +3988,14 @@ export const OrgSettingsPatchDTOSchema = v.looseObject({
   )),
   "default_verbosity": v.exactOptional(VerbositySchema),
   "investigations_enabled": v.exactOptional(v.boolean()),
+  "investigation_daily_tokens": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+  )),
+  "investigation_concurrency": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+  )),
 });
 
 export const OrgSettingsViewDTOSchema = v.looseObject({
@@ -4014,6 +4053,18 @@ export const UpdateOrgSettingsRequestSchema = v.strictObject({
   )),
   "default_verbosity": v.exactOptional(VerbositySchema),
   "investigations_enabled": v.exactOptional(v.boolean()),
+  "investigation_daily_tokens": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1000),
+    v.maxValue(1000000000),
+  )),
+  "investigation_concurrency": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+    v.maxValue(32),
+  )),
   "reset": v.exactOptional(v.pipe(
     v.array(v.pipe(
       v.string(),

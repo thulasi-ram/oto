@@ -83,7 +83,7 @@ var (
 	_ investigatorservice.TimelineReader     = investigationCases{}
 	_ investigatorservice.RuleReader         = investigationRules{}
 	_ investigatorservice.FindingPublisher   = findingPublisher{}
-	_ investigatorservice.OrgSwitch          = investigationSwitch{}
+	_ investigatorservice.OrgControls        = investigationControls{}
 	_ investigatorservice.JobQueue           = (*lateEnqueuer)(nil)
 
 	// ToolServers (git-bug 2e9a086).

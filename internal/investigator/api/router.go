@@ -328,7 +328,13 @@ func (dto CreateInvestigatorRequest) toDomain() (domain.InvestigatorDraft, error
 	if dto.Enabled != nil {
 		enabled = *dto.Enabled
 	}
-	return domain.InvestigatorDraft{Name: name, Enabled: enabled, Budgets: budgets, Spec: spec}, nil
+	interval := domain.DefaultMinInterval()
+	if dto.MinIntervalSeconds != nil {
+		if interval, err = domain.NewMinInterval(*dto.MinIntervalSeconds); err != nil {
+			return domain.InvestigatorDraft{}, err
+		}
+	}
+	return domain.InvestigatorDraft{Name: name, Enabled: enabled, Budgets: budgets, MinInterval: interval, Spec: spec}, nil
 }
 
 // getInvestigator serves GET /api/v1/investigators/{id}.
@@ -385,6 +391,13 @@ func (dto UpdateInvestigatorRequest) toDomain() (domain.InvestigatorChange, erro
 			return domain.InvestigatorChange{}, err
 		}
 		change.Budgets = &b
+	}
+	if dto.MinIntervalSeconds != nil {
+		d, err := domain.NewMinInterval(*dto.MinIntervalSeconds)
+		if err != nil {
+			return domain.InvestigatorChange{}, err
+		}
+		change.MinInterval = &d
 	}
 	if dto.Tools != nil {
 		tools, err := domain.NewAllowlist(*dto.Tools)

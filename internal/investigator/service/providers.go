@@ -37,7 +37,7 @@ type Service struct {
 	timeline       TimelineReader
 	rules          RuleReader
 	findings       FindingPublisher
-	orgSwitch      OrgSwitch
+	orgControls    OrgControls
 	queue          JobQueue
 	limits         Limits
 	tools          []Tool
@@ -66,7 +66,7 @@ type Deps struct {
 	Timeline       TimelineReader
 	Rules          RuleReader
 	Findings       FindingPublisher
-	OrgSwitch      OrgSwitch
+	OrgControls    OrgControls
 	Queue          JobQueue
 	// Limits are the built-in Tools' per-call controls. Zero fields take
 	// DefaultLimits. A ToolServer's Tools run under the ToolServer's own.
@@ -102,8 +102,8 @@ func New(d Deps) (*Service, error) {
 		return nil, errors.New("investigator: the Case, timeline and rule readers are required; they are the built-in Tools")
 	case d.Findings == nil:
 		return nil, errors.New("investigator: a Finding publisher is required")
-	case d.OrgSwitch == nil:
-		return nil, errors.New("investigator: the org kill switch is required; a run must be stoppable")
+	case d.OrgControls == nil:
+		return nil, errors.New("investigator: the org's controls are required; a run must be stoppable and budgeted")
 	case d.Queue == nil:
 		return nil, errors.New("investigator: a job queue is required; an Investigation runs asynchronously")
 	case d.ToolServers == nil || d.Tokens == nil || d.ToolDialer == nil:
@@ -119,7 +119,7 @@ func New(d Deps) (*Service, error) {
 		dial: d.Dialer, tx: d.Tx, clock: d.Clock,
 		investigators: d.Investigators, investigations: d.Investigations,
 		cases: d.Cases, timeline: d.Timeline, rules: d.Rules, findings: d.Findings,
-		orgSwitch: d.OrgSwitch, queue: d.Queue, limits: d.Limits.orDefault(),
+		orgControls: d.OrgControls, queue: d.Queue, limits: d.Limits.orDefault(),
 		toolServers: d.ToolServers, tokens: d.Tokens, toolDialer: d.ToolDialer, redaction: d.Redaction,
 	}
 	s.tools = builtinTools(s)

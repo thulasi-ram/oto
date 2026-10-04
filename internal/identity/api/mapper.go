@@ -34,7 +34,9 @@ func toOrgSettingsDTO(s domain.Settings) OrgSettingsDTO {
 
 		DefaultVerbosity: s.DefaultVerbosity,
 
-		InvestigationsEnabled: s.InvestigationsEnabled,
+		InvestigationsEnabled:    s.InvestigationsEnabled,
+		InvestigationDailyTokens: s.InvestigationDailyTokens,
+		InvestigationConcurrency: s.InvestigationConcurrency,
 	}
 }
 

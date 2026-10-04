@@ -172,23 +172,29 @@ func (p findingPublisher) PublishFinding(ctx context.Context, s db.TenantScope, 
 	return p.repo.UpsertMany(ctx, s, []enrichdomain.Enrichment{e})
 }
 
-// investigationSwitch is `investigator/service.OrgSwitch` over the org's settings,
-// declarative overlay included (`identity/service.GetOrg`).
+// investigationControls is `investigator/service.OrgControls` over the org's settings,
+// declarative overlay included (`identity/service.GetOrg`): the kill switch, the daily
+// token budget and the concurrency (ADR 0053 §6), as their effective — bounded and
+// clamped — values.
 //
 // ⛔ AN UNREADABLE SETTING IS AN ERROR, NOT A DEFAULT. The notification adapters fall
 // back to shipped defaults because a settings lookup must never stop a notification;
-// this is the opposite case — a kill switch that cannot be read must not be read as
-// "on". The request fails, and a job retries until it can tell.
-type investigationSwitch struct {
+// this is the opposite case — a kill switch or a budget that cannot be read must not be
+// read as "on" or "unspent". The request fails, and a job retries until it can tell.
+type investigationControls struct {
 	identity *identityservice.Service
 }
 
-func (a investigationSwitch) InvestigationsEnabled(ctx context.Context, s db.TenantScope) (bool, error) {
+func (a investigationControls) InvestigationControls(ctx context.Context, s db.TenantScope) (investigatordomain.OrgControls, error) {
 	org, err := a.identity.GetOrg(ctx, s)
 	if err != nil {
-		return false, err
+		return investigatordomain.OrgControls{}, err
 	}
-	return org.Settings.InvestigationsEnabled, nil
+	return investigatordomain.OrgControls{
+		Enabled:     org.Settings.InvestigationsEnabled,
+		DailyTokens: int64(org.Settings.InvestigationDailyTokens),
+		Concurrency: org.Settings.InvestigationConcurrency,
+	}, nil
 }
 
 // toolResultRedaction is `investigator/service.RedactionRules` (git-bug 2e9a086): the

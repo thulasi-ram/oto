@@ -245,6 +245,11 @@ type Investigator struct {
 	Name    string
 	Enabled bool
 	Budgets Budgets
+	// MinInterval is the least time between two runs on one subject (ADR 0053 §6):
+	// membership-change triggers inside it coalesce into one run. ⭐ IT IS NOT
+	// VERSIONED: it decides WHEN a run may start, not what produced a Finding, so it
+	// lives on this mutable half beside the kill switch and the budgets.
+	MinInterval time.Duration
 	// Current is the latest version: the one a new Investigation pins.
 	Current   Version
 	CreatedAt time.Time
@@ -256,21 +261,23 @@ func (i Investigator) EnricherName() string { return EnricherPrefix + i.Name }
 
 // InvestigatorDraft is a new Investigator, validated, before it is stored.
 type InvestigatorDraft struct {
-	Name    string
-	Enabled bool
-	Budgets Budgets
-	Spec    VersionSpec
+	Name        string
+	Enabled     bool
+	Budgets     Budgets
+	MinInterval time.Duration
+	Spec        VersionSpec
 }
 
 // InvestigatorChange is a write over an existing Investigator. A nil field is left as
 // it is. The three versioned fields are folded over the current version into a whole
 // VersionSpec (Apply), and the service writes a new version only when that differs.
 type InvestigatorChange struct {
-	Enabled    *bool
-	Budgets    *Budgets
-	ProviderID *uuid.UUID
-	Prompt     *string
-	Tools      *Allowlist
+	Enabled     *bool
+	Budgets     *Budgets
+	MinInterval *time.Duration
+	ProviderID  *uuid.UUID
+	Prompt      *string
+	Tools       *Allowlist
 }
 
 // TouchesVersion reports whether the change names any of the versioned fields.

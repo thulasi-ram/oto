@@ -564,6 +564,46 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
       "Nothing in alertmanager.yml bears on this, and it never changes a notification. Each Investigator also carries its own enabled flag; this switch is the brake for all of them at once.",
   },
 
+  investigation_daily_tokens: {
+    key: "investigation_daily_tokens",
+    kind: "count",
+    label: "Daily token budget",
+    unit: "tokens per UTC day",
+    what: "The input and output tokens every Investigation in this org may spend between two midnights UTC, counted from each model turn as it is recorded. Once the day's spend reaches it, a new Investigation is recorded as skipped, with the reason budget, and never queued; the budget resets at 00:00 UTC.",
+    risks: [
+      {
+        label: "Too low",
+        text: "Investigations stop early in the day and each later request is recorded as skipped (budget) until midnight UTC — visible on the Case, never silent. A run already under way is not cut off: it finishes under its own per-run token budget, so the day can overrun by what the runs in flight still had left.",
+      },
+      {
+        label: "Too high",
+        text: "A storm that asks for many Investigations can spend this much in a day before anything stops it. There is no unlimited: the default is ten runs at the default per-run budget, and every number here is a ceiling you can read back.",
+      },
+    ],
+    amRule:
+      "Nothing in alertmanager.yml bears on this, and it never changes a notification. It is the org's ceiling; each Investigator's own token budget still bounds every single run.",
+  },
+
+  investigation_concurrency: {
+    key: "investigation_concurrency",
+    kind: "count",
+    label: "Investigations at once",
+    unit: "running",
+    what: "The most Investigations running at the same time in this org. One past it waits — it stays queued until a run ends — and is never dropped.",
+    risks: [
+      {
+        label: "Too low",
+        text: "Requests queue behind each other and a Finding arrives later than it could have. Nothing is lost: a waiting run starts as soon as a slot frees.",
+      },
+      {
+        label: "Too high",
+        text: "More model calls run at once, which spends the daily budget faster and puts more load on your model endpoint and ToolServers at the moment a storm is already loading them. Each oto process works at most two at once, so a number above the workers you run never binds.",
+      },
+    ],
+    amRule:
+      "Nothing in alertmanager.yml bears on this, and it never changes a notification. A run waiting for a slot is still queued, and says so.",
+  },
+
   /* ---- retention --------------------------------------------------------- */
 
   raw_retention_days: {
@@ -640,8 +680,8 @@ export const KNOB_GROUPS: readonly KnobGroup[] = [
     id: "investigations",
     title: "Investigations",
     blurb:
-      "Whether an Investigator may start a new Investigation in this org at all. An Investigation reads oto's own history and writes a Finding beside the Case; it never decides whether anyone is notified. Off is recorded, never silent: a run that was asked for and did not start says so.",
-    keys: ["investigations_enabled"],
+      "Whether an Investigator may start a new Investigation in this org, how many tokens a day they may spend between them, and how many may run at once. An Investigation reads oto's own history and writes a Finding beside the Case; it never decides whether anyone is notified. Each limit is recorded, never silent: a run that was asked for and did not start says why, and one waiting for a slot stays queued.",
+    keys: ["investigations_enabled", "investigation_daily_tokens", "investigation_concurrency"],
   },
 ];
 

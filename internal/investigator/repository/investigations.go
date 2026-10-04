@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -56,7 +57,7 @@ SELECT n.id, n.org_id, n.subject_kind, n.subject_id, coalesce(n.alert_key, ''),
        n.status, coalesce(n.reason, ''), coalesce(n.reason_detail, ''),
        n.max_steps, n.max_tokens, n.max_wall_s, n.tokens_in, n.tokens_out, n.tool_calls,
        coalesce(n.finding, ''), n.requested_by, n.requested_by_label,
-       n.requested_at, n.started_at, n.ended_at
+       n.requested_at, n.not_before, n.started_at, n.ended_at
   FROM investigations n
   JOIN investigators i         ON i.id = n.investigator_id
   JOIN investigator_versions v ON v.id = n.investigator_version_id`
@@ -65,8 +66,8 @@ const insertInvestigationSQL = `
 INSERT INTO investigations (id, org_id, subject_kind, subject_id, alert_key, investigator_id,
                             investigator_version_id, status, reason, reason_detail,
                             max_steps, max_tokens, max_wall_s, tokens_in, tokens_out, tool_calls,
-                            requested_by, requested_by_label, requested_at, ended_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 0, 0, 0, $14, $15, $16, $17)`
+                            requested_by, requested_by_label, requested_at, not_before, ended_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 0, 0, 0, $14, $15, $16, $17, $18)`
 
 // Insert writes a new run: `queued`, or `skipped` with its Ending and EndedAt set.
 func (r *InvestigationRepository) Insert(ctx context.Context, s db.TenantScope, inv domain.Investigation) (domain.Investigation, error) {
@@ -75,7 +76,11 @@ func (r *InvestigationRepository) Insert(ctx context.Context, s db.TenantScope, 
 	}
 	nid := id.New()
 	var reason, detail *string
-	var ended *time.Time
+	var ended, notBefore *time.Time
+	if !inv.NotBefore.IsZero() {
+		nb := inv.NotBefore.UTC()
+		notBefore = &nb
+	}
 	if inv.Status.Terminal() {
 		reason, detail = nullable(string(inv.Ending.Reason)), nullable(inv.Ending.Detail)
 		at := inv.EndedAt.UTC()
@@ -85,7 +90,7 @@ func (r *InvestigationRepository) Insert(ctx context.Context, s db.TenantScope, 
 		nid, s.OrgID(), string(inv.SubjectKind), inv.SubjectID, nullable(inv.AlertKey), inv.InvestigatorID,
 		inv.VersionID, string(inv.Status), reason, detail,
 		inv.Budgets.MaxSteps, inv.Budgets.MaxTokens, inv.Budgets.WallSeconds(),
-		nullableID(inv.RequestedBy.UserID), inv.RequestedBy.Label, inv.RequestedAt.UTC(), ended); err != nil {
+		nullableID(inv.RequestedBy.UserID), inv.RequestedBy.Label, inv.RequestedAt.UTC(), notBefore, ended); err != nil {
 		return domain.Investigation{}, mapInvestigationErr(err, "record an Investigation")
 	}
 	return r.Get(ctx, s, nid)
@@ -156,18 +161,123 @@ func (r *InvestigationRepository) ListBySubject(
 	return page, cursor, nil
 }
 
-// Start moves a `queued` run to `running`. False means it was not queued.
-func (r *InvestigationRepository) Start(ctx context.Context, s db.TenantScope, nid uuid.UUID, at time.Time) (bool, error) {
+// Start moves a `queued` run to `running` — unless the org already has `maxRunning`
+// running, in which case it stays queued and StartAtCapacity says so (ADR 0053 §6:
+// "Concurrency — waits in the job queue; never dropped").
+//
+// ⭐ RACE-SAFE BY AN ADVISORY LOCK, AND ONLY INSIDE A TRANSACTION. The count and the
+// UPDATE are two statements; under READ COMMITTED two workers would each count one
+// free slot and both take it. So Start first takes the org's transaction-scoped
+// advisory lock (LockNamespaceInvestigations, "runs/<org>"), and the lock is released
+// by the COMMIT that makes this run's `running` visible to the next counter. Outside
+// a transaction the lock would guard nothing, and db.AdvisoryXactLock refuses it.
+func (r *InvestigationRepository) Start(
+	ctx context.Context, s db.TenantScope, nid uuid.UUID, at time.Time, maxRunning int,
+) (domain.StartOutcome, error) {
 	if err := db.RequireScope(s); err != nil {
-		return false, err
+		return 0, err
+	}
+	if err := db.AdvisoryXactLock(ctx, r.db(ctx), orgRunsKey(s)); err != nil {
+		return 0, errs.Internal("investigation_lock", err)
+	}
+	running, err := r.CountRunning(ctx, s)
+	if err != nil {
+		return 0, err
+	}
+	if running >= maxRunning {
+		return domain.StartAtCapacity, nil
 	}
 	tag, err := r.db(ctx).Exec(ctx, `
 UPDATE investigations SET status = 'running', started_at = $3
  WHERE org_id = $1 AND id = $2 AND status = 'queued'`, s.OrgID(), nid, at.UTC())
 	if err != nil {
-		return false, mapInvestigationErr(err, "start an Investigation")
+		return 0, mapInvestigationErr(err, "start an Investigation")
 	}
-	return tag.RowsAffected() == 1, nil
+	if tag.RowsAffected() != 1 {
+		return domain.StartNotQueued, nil
+	}
+	return domain.StartBegan, nil
+}
+
+// CountRunning counts the org's `running` runs, served by `investigations_running_idx`.
+// Read alone it is a peek — Start is the count that decides.
+func (r *InvestigationRepository) CountRunning(ctx context.Context, s db.TenantScope) (int, error) {
+	if err := db.RequireScope(s); err != nil {
+		return 0, err
+	}
+	var n int
+	if err := r.db(ctx).QueryRow(ctx,
+		`SELECT count(*) FROM investigations WHERE org_id = $1 AND status = 'running'`, s.OrgID()).Scan(&n); err != nil {
+		return 0, mapInvestigationErr(err, "count running Investigations")
+	}
+	return n, nil
+}
+
+// SpentSince sums the input + output tokens of every model turn the org's runs have
+// recorded at or after `since`, served by `investigation_steps_spend_idx`.
+//
+// ⭐ STEPS, NOT RUNS: a turn's tokens are on its Step the moment it happens, so a run
+// still going is counted, and a run that crossed midnight counts in each day it spent
+// in. A run's own tokens_in / tokens_out are written only when it ends.
+func (r *InvestigationRepository) SpentSince(ctx context.Context, s db.TenantScope, since time.Time) (int64, error) {
+	if err := db.RequireScope(s); err != nil {
+		return 0, err
+	}
+	var n int64
+	if err := r.db(ctx).QueryRow(ctx, `
+SELECT coalesce(sum(tokens_in + tokens_out), 0)::bigint
+  FROM investigation_steps
+ WHERE org_id = $1 AND kind = 'model_turn' AND recorded_at >= $2`, s.OrgID(), since.UTC()).Scan(&n); err != nil {
+		return 0, mapInvestigationErr(err, "sum the day's Investigation tokens")
+	}
+	return n, nil
+}
+
+// LockSubjectRuns takes the advisory lock for one (Investigator, subject) and reads
+// what the minimum interval decides on: the latest `queued` run, and the latest run
+// that neither waits nor skipped. Inside a transaction only, for Start's reason: two
+// membership changes at once must not both find nothing queued and both insert.
+func (r *InvestigationRepository) LockSubjectRuns(
+	ctx context.Context, s db.TenantScope, investigatorID uuid.UUID, kind domain.SubjectKind, subjectID uuid.UUID,
+) (domain.SubjectRuns, error) {
+	if err := db.RequireScope(s); err != nil {
+		return domain.SubjectRuns{}, err
+	}
+	key := db.AdvisoryKey(db.LockNamespaceInvestigations,
+		"subject/"+investigatorID.String()+"/"+string(kind)+"/"+subjectID.String())
+	if err := db.AdvisoryXactLock(ctx, r.db(ctx), key); err != nil {
+		return domain.SubjectRuns{}, errs.Internal("investigation_lock", err)
+	}
+	const where = ` WHERE n.org_id = $1 AND n.investigator_id = $2 AND n.subject_kind = $3 AND n.subject_id = $4`
+	var out domain.SubjectRuns
+	queued, err := r.oneOrNone(ctx, investigationSelect+where+` AND n.status = 'queued'
+ ORDER BY n.requested_at DESC, n.id DESC LIMIT 1`, s.OrgID(), investigatorID, string(kind), subjectID)
+	if err != nil {
+		return domain.SubjectRuns{}, err
+	}
+	last, err := r.oneOrNone(ctx, investigationSelect+where+` AND n.status NOT IN ('queued','skipped')
+ ORDER BY coalesce(n.started_at, n.requested_at) DESC, n.id DESC LIMIT 1`, s.OrgID(), investigatorID, string(kind), subjectID)
+	if err != nil {
+		return domain.SubjectRuns{}, err
+	}
+	out.Queued, out.Last = queued, last
+	return out, nil
+}
+
+func (r *InvestigationRepository) oneOrNone(ctx context.Context, sql string, args ...any) (*domain.Investigation, error) {
+	inv, err := scanInvestigation(r.db(ctx).QueryRow(ctx, sql, args...))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil // "no such run" is an answer here, not a failure
+	}
+	if err != nil {
+		return nil, mapInvestigationErr(err, "read a subject's Investigations")
+	}
+	return &inv, nil
+}
+
+// orgRunsKey is the advisory key Start serialises an org's starts on.
+func orgRunsKey(s db.TenantScope) int64 {
+	return db.AdvisoryKey(db.LockNamespaceInvestigations, "runs/"+s.OrgID().String())
 }
 
 // Finish ends a run that has not ended. A run that never started (`queued`) gets
@@ -354,7 +464,7 @@ func scanInvestigation(row pgx.Row) (domain.Investigation, error) {
 		maxSteps, maxWall         int
 		maxTokens                 int64
 		requestedBy               *uuid.UUID
-		started, ended            *time.Time
+		notBefore, started, ended *time.Time
 	)
 	if err := row.Scan(&out.ID, &out.OrgID, &kind, &out.SubjectID, &out.AlertKey,
 		&out.InvestigatorID, &out.InvestigatorName, &out.VersionID, &out.VersionNumber,
@@ -362,7 +472,7 @@ func scanInvestigation(row pgx.Row) (domain.Investigation, error) {
 		&status, &reason, &det, &maxSteps, &maxTokens, &maxWall,
 		&out.Spent.InputTokens, &out.Spent.OutputTokens, &out.ToolCalls,
 		&out.Finding, &requestedBy, &out.RequestedBy.Label,
-		&out.RequestedAt, &started, &ended); err != nil {
+		&out.RequestedAt, &notBefore, &started, &ended); err != nil {
 		return domain.Investigation{}, err
 	}
 	sk, err := domain.ParseSubjectKind(kind)
@@ -389,6 +499,9 @@ func scanInvestigation(row pgx.Row) (domain.Investigation, error) {
 		out.RequestedBy.UserID = *requestedBy
 	}
 	out.RequestedAt = out.RequestedAt.UTC()
+	if notBefore != nil {
+		out.NotBefore = notBefore.UTC()
+	}
 	if started != nil {
 		out.StartedAt = started.UTC()
 	}

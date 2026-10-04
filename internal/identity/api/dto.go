@@ -76,6 +76,13 @@ type OrgSettingsDTO struct {
 	// while false, no new Investigation starts and each one asked for is recorded
 	// `skipped` with reason `disabled`. It never changes a notification.
 	InvestigationsEnabled bool `json:"investigations_enabled"`
+	// InvestigationDailyTokens is the org's daily token budget (ADR 0053 §6): past
+	// it, a new Investigation is recorded `skipped` with reason `budget` until 00:00
+	// UTC.
+	InvestigationDailyTokens int `json:"investigation_daily_tokens"`
+	// InvestigationConcurrency is the most Investigations running at once; one past
+	// it waits, queued, and is never dropped.
+	InvestigationConcurrency int `json:"investigation_concurrency"`
 
 	// ⛔⛔ `refire_grace_s` AND `group_close_delay_s` WERE HERE AND BOTH ARE DELETED
 	// (git-bug 7287b28), off the wire as well as out of the struct: both are gone

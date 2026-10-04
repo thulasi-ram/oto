@@ -459,6 +459,8 @@ export function orgSettings(
     event_retention_months: 13,
     default_verbosity: "status_changes",
     investigations_enabled: true,
+    investigation_daily_tokens: 2000000,
+    investigation_concurrency: 2,
     // ⛔ `refire_grace_s` AND `group_close_delay_s` LED THIS BAG AND BOTH ARE
     // DELETED (git-bug 7287b28) — off the wire, not merely off the screen.
     //
@@ -562,6 +564,7 @@ export function investigator(patch: Partial<Investigator> = {}): Investigator {
     enricher: "investigator.firstlook",
     enabled: true,
     budgets: { max_steps: 20, max_tokens: 200000, max_wall_seconds: 300 },
+    min_interval_seconds: 600,
     current_version: {
       id: "6a1b2c3d-4e5f-4a6b-9c7d-8e9f0a1b2c3d",
       version: 3,
@@ -606,6 +609,7 @@ export function investigation(patch: Partial<Investigation> = {}): Investigation
     partial: false,
     requested_by_label: "Priya R.",
     requested_at: "2026-08-09T09:10:00.000Z",
+    not_before: null,
     started_at: "2026-08-09T09:10:02.000Z",
     ended_at: "2026-08-09T09:11:30.000Z",
     ...patch,

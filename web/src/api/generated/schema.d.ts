@@ -1283,7 +1283,13 @@ export interface paths {
          *
          *     When the org's `investigations_enabled` or the Investigator's `enabled` is off, **nothing
          *     starts**, and the request is still recorded: the answer is a run with status `skipped` and reason
-         *     `disabled`, never a silent drop.
+         *     `disabled`, never a silent drop. When the org has already spent its `investigation_daily_tokens`
+         *     since 00:00 UTC, the answer is a run `skipped` with reason `budget` — recorded, never queued —
+         *     until the budget resets at UTC midnight (ADR 0053 §6).
+         *
+         *     A run past the org's `investigation_concurrency` **waits**: it stays `queued` until a slot is
+         *     free, and is never dropped. A human's request is not held to the Investigator's
+         *     `min_interval_seconds`, which coalesces automatic triggers only.
          *
          *     Needs a human: a system principal is a `403`. A Case or an Investigator this org does not have is
          *     a `404`.
@@ -6245,6 +6251,25 @@ export interface components {
              * @default true
              */
             investigations_enabled: boolean;
+            /**
+             * Format: int32
+             * @description The org's **daily token budget** for Investigations (ADR 0053 §6): input + output tokens across
+             *     every run between two UTC midnights, counted from each model turn as it is recorded. Once the
+             *     day's spend reaches it, a new Investigation is recorded `skipped` with reason `budget` and is
+             *     never queued, until 00:00 UTC. A run already going is bounded by its own per-run token budget,
+             *     so the day can overrun by at most what the runs in flight still had left. There is no
+             *     "unlimited": the default is ten runs at the default per-run budget.
+             * @default 2000000
+             */
+            investigation_daily_tokens: number;
+            /**
+             * Format: int32
+             * @description The most Investigations `running` at once in this org (ADR 0053 §6). One past it **waits** —
+             *     it stays `queued` and is never dropped. Each oto process works at most two at once (the
+             *     `investigate` queue's width), so a number above the workers you run never binds.
+             * @default 2
+             */
+            investigation_concurrency: number;
         };
         /**
          * @description A human principal. Password hashes and token material never appear in any response.
@@ -7807,6 +7832,14 @@ export interface components {
             /** @description This Investigator's kill switch. Off, nothing starts and a request is recorded `skipped`. */
             enabled: boolean;
             budgets: components["schemas"]["InvestigatorBudgetsDTO"];
+            /**
+             * Format: int32
+             * @description The least time between two runs on one subject (ADR 0053 §6), measured from when the last one
+             *     started. Membership-change triggers inside it coalesce into one run that starts when it is up;
+             *     0 runs on every trigger. A human's request is not held to it. Not versioned.
+             * @example 600
+             */
+            min_interval_seconds: number;
             current_version: components["schemas"]["InvestigatorVersionDTO"];
             created_at: components["schemas"]["Timestamp"];
             updated_at: components["schemas"]["Timestamp"];
@@ -7822,6 +7855,12 @@ export interface components {
             /** @default true */
             enabled: boolean;
             budgets?: components["schemas"]["InvestigatorBudgetsDTO"];
+            /**
+             * Format: int32
+             * @description The least time between two runs on one subject; membership-change triggers inside it coalesce.
+             * @default 600
+             */
+            min_interval_seconds: number;
             model_provider_id: components["schemas"]["Uuid"];
             prompt: string;
             /**
@@ -7831,12 +7870,14 @@ export interface components {
             tools: string[];
         };
         /**
-         * @description A partial update. `enabled` and `budgets` change in place; a differing model, prompt or Tool list
-         *     writes a new version.
+         * @description A partial update. `enabled`, `budgets` and `min_interval_seconds` change in place; a differing
+         *     model, prompt or Tool list writes a new version.
          */
         UpdateInvestigatorRequest: {
             enabled?: boolean;
             budgets?: components["schemas"]["InvestigatorBudgetsDTO"];
+            /** Format: int32 */
+            min_interval_seconds?: number;
             model_provider_id?: components["schemas"]["Uuid"];
             prompt?: string;
             tools?: string[];
@@ -7847,7 +7888,9 @@ export interface components {
         };
         /**
          * @description `queued` → `running` → `completed` (the model answered), `exhausted` (a per-run budget stopped
-         *     it; its Finding is partial), or `failed`. `skipped` never started: a kill switch was off.
+         *     it; its Finding is partial), or `failed`. `skipped` never started: a kill switch was off, or the
+         *     org's daily token budget was spent. A `queued` run may be waiting — for a slot under the org's
+         *     concurrency, or for `not_before`.
          * @enum {string}
          */
         InvestigationStatus: "queued" | "running" | "completed" | "exhausted" | "failed" | "skipped";
@@ -7856,10 +7899,11 @@ export interface components {
          *     `wall_time_budget`. `failed`: `usage_missing` (the model reported no token usage, so the run could
          *     not be budgeted), `model_error`, `model_changed` (the endpoint no longer reports the model the
          *     version pinned), `subject_gone`, `interrupted` (its worker stopped; it is not re-run, which would
-         *     pay twice), `internal`. `skipped`: `disabled`.
+         *     pay twice), `internal`. `skipped`: `disabled` (a kill switch was off) or `budget` (the org had
+         *     spent its `investigation_daily_tokens` since 00:00 UTC; it resets at UTC midnight).
          * @enum {string}
          */
-        InvestigationReason: "step_budget" | "token_budget" | "wall_time_budget" | "usage_missing" | "model_error" | "model_changed" | "subject_gone" | "interrupted" | "internal" | "disabled";
+        InvestigationReason: "step_budget" | "token_budget" | "wall_time_budget" | "usage_missing" | "model_error" | "model_changed" | "subject_gone" | "interrupted" | "internal" | "disabled" | "budget";
         /** @description One run of one Investigator version against one subject (ADR 0053 §1), frozen once it ends. */
         InvestigationDTO: {
             id: components["schemas"]["Uuid"];
@@ -7909,6 +7953,11 @@ export interface components {
             /** @description Who asked, frozen when they asked. */
             requested_by_label: string;
             requested_at: components["schemas"]["Timestamp"];
+            /**
+             * @description The earliest this run may start, when an Investigator's minimum interval deferred it (ADR 0053
+             *     §6); null when nothing did. Membership changes before then coalesce into this run.
+             */
+            not_before: components["schemas"]["Timestamp"] | null;
             started_at: components["schemas"]["Timestamp"] | null;
             ended_at: components["schemas"]["Timestamp"] | null;
         };
@@ -8329,6 +8378,10 @@ export interface components {
             event_retention_months?: number;
             default_verbosity?: components["schemas"]["Verbosity"];
             investigations_enabled?: boolean;
+            /** Format: int32 */
+            investigation_daily_tokens?: number;
+            /** Format: int32 */
+            investigation_concurrency?: number;
         };
         OrgSettingsViewResponse: {
             data: components["schemas"]["OrgSettingsViewDTO"];
@@ -8355,6 +8408,16 @@ export interface components {
             default_verbosity?: components["schemas"]["Verbosity"];
             /** @description `false` pulls the org's Investigation kill switch (ADR 0053 §6); `true` releases it. */
             investigations_enabled?: boolean;
+            /**
+             * Format: int32
+             * @description The org's daily Investigation token budget (ADR 0053 §6).
+             */
+            investigation_daily_tokens?: number;
+            /**
+             * Format: int32
+             * @description The most Investigations running at once (ADR 0053 §6).
+             */
+            investigation_concurrency?: number;
             /**
              * @description Settings keys to return to oto's shipped default. After a reset the key's origin reports
              *     `default` again. An unknown key is rejected with 422, never ignored.
@@ -11488,7 +11551,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description The Investigation as recorded — `queued`, or `skipped` when a kill switch is off. */
+            /** @description The Investigation as recorded — `queued`, or `skipped` when a kill switch is off or the org's daily token budget is spent. */
             202: {
                 headers: {
                     [name: string]: unknown;

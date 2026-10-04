@@ -60,6 +60,8 @@ export const REASON_SENTENCE: Record<InvestigationReason, string> = {
   internal: "oto failed while running it. This is a fault on oto's side.",
   disabled:
     "Investigations are switched off — for this organisation, or for this Investigator — so nothing ran. The request is still recorded.",
+  budget:
+    "This organisation had already spent its daily Investigation token budget, so nothing ran. The request is still recorded; the budget resets at midnight UTC.",
 };
 
 /** What came of one Tool call: the word, and what it meant for the run. */

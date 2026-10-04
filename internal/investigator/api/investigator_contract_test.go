@@ -56,6 +56,7 @@ type fakeInvestigators struct {
 	calls     []string
 	gotKey    string
 	off       bool
+	spent     bool
 	requester domain.Requester
 	change    domain.InvestigatorChange
 }
@@ -176,12 +177,19 @@ func (f *fakeInvestigators) RequestCaseInvestigation(
 	}
 	f.mu.Lock()
 	f.requester = by
-	off := f.off
+	off, spent := f.off, f.spent
 	f.mu.Unlock()
-	if off {
+	switch {
+	case off:
 		return fxInvestigationValue(domain.StatusSkipped), nil
+	case spent:
+		inv := fxInvestigationValue(domain.StatusSkipped)
+		inv.Ending = domain.EndedBy(domain.ReasonBudget,
+			"this org has spent 2000000 of its 2000000 daily Investigation tokens (investigation_daily_tokens) since 00:00 UTC")
+		return inv, nil
+	default:
+		return fxInvestigationValue(domain.StatusQueued), nil
 	}
-	return fxInvestigationValue(domain.StatusQueued), nil
 }
 
 func (f *fakeInvestigators) ListCaseInvestigations(
@@ -327,6 +335,25 @@ func TestARequestIsAcceptedAndASwitchedOffOneIsRecordedNotDropped(t *testing.T) 
 	}
 }
 
+// TestARequestPastTheDailyBudgetIsRecordedNotDropped — ADR 0053 §6 (git-bug bf172fe):
+// past the org's daily token budget a request is still a 202, whose run is
+// `skipped`/`budget` — and the contract's reason enum admits it.
+func TestARequestPastTheDailyBudgetIsRecordedNotDropped(t *testing.T) {
+	t.Parallel()
+
+	f, c := newClient(t)
+	f.mu.Lock()
+	f.spent = true
+	f.mu.Unlock()
+	resp := c.POST(t, "/cases/"+fxCase.String()+"/investigations",
+		map[string]any{"investigator_id": fxInvestigator.String()}).MustStatus(t, http.StatusAccepted)
+	schema.Assert(t, "requestCaseInvestigation", http.StatusAccepted, resp.Body())
+	data := resp.JSON(t)["data"].(map[string]any)
+	if data["status"] != "skipped" || data["reason"] != "budget" || data["not_before"] != nil {
+		t.Fatalf("a request past the budget answered %v, want skipped/budget", data)
+	}
+}
+
 // TestAskingNeedsAHuman — a run spends money; spending attributed to nobody cannot be
 // asked about.
 func TestAskingNeedsAHuman(t *testing.T) {
@@ -395,6 +422,31 @@ func TestAPatchReachesTheServiceFieldByField(t *testing.T) {
 	}
 	if ch.Budgets == nil || ch.Budgets.MaxSteps != 5 || ch.Budgets.MaxWall != time.Minute {
 		t.Fatalf("budgets reached the service as %+v", ch.Budgets)
+	}
+	if ch.MinInterval != nil {
+		t.Fatalf("an omitted interval reached the service as %v", *ch.MinInterval)
+	}
+}
+
+// TestAMinimumIntervalIsBoundedAndChangesInPlace — ADR 0053 §6: a number an operator
+// reads back, 0 to 86400 seconds; it reaches the service as a change, not a version.
+func TestAMinimumIntervalIsBoundedAndChangesInPlace(t *testing.T) {
+	t.Parallel()
+
+	f, c := newClient(t)
+	c.PATCH(t, "/investigators/"+fxInvestigator.String(), map[string]any{"min_interval_seconds": 0}).
+		MustStatus(t, http.StatusOK)
+	f.mu.Lock()
+	ch := f.change
+	f.mu.Unlock()
+	if ch.MinInterval == nil || *ch.MinInterval != 0 || ch.TouchesVersion() {
+		t.Fatalf("the change reached the service as %+v", ch)
+	}
+	for _, bad := range []int{-1, 86401} {
+		resp := c.PATCH(t, "/investigators/"+fxInvestigator.String(), map[string]any{"min_interval_seconds": bad}).
+			MustStatus(t, http.StatusUnprocessableEntity)
+		schema.AssertProblem(t, "updateInvestigator", http.StatusUnprocessableEntity, resp.Body())
+		resp.MustViolate(t, "min_interval_seconds")
 	}
 }
 

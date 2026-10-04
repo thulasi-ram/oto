@@ -56,6 +56,19 @@ const (
 	// runs, so the org switch is the brake, not the opt-in.
 	KeyInvestigationsEnabled SettingKey = "investigations_enabled"
 
+	// KeyInvestigationDailyTokens is ADR 0053 §6's org "Daily token budget": the
+	// input + output tokens every Investigation in the org may spend between two
+	// UTC midnights. Once the day's recorded spend reaches it, a NEW Investigation
+	// is recorded `skipped` with reason `budget` and is never queued; a run already
+	// under way finishes under its own per-run budget. There is no "unlimited": a
+	// ceiling an operator cannot read back is not a control (§6: "every control is
+	// a number an operator can read back").
+	KeyInvestigationDailyTokens SettingKey = "investigation_daily_tokens"
+	// KeyInvestigationConcurrency is ADR 0053 §6's org "Concurrency": the most
+	// Investigations that may be `running` in the org at once. One past it WAITS —
+	// it stays `queued` and its job is snoozed — and is never dropped.
+	KeyInvestigationConcurrency SettingKey = "investigation_concurrency"
+
 	// ⛔⛔ `refire_grace_s` AND `group_close_delay_s` WERE HERE AND BOTH ARE DELETED
 	// (git-bug 7287b28, migration 00071). They were org-facing, bounds-validated,
 	// patchable, origin-reporting settings that DECIDED NOTHING:
@@ -253,6 +266,21 @@ var settingBounds = map[SettingKey]Bound{
 	// hurts, so 13 months is the longest default that stays inside it.
 	KeyEventRetention: {Min: 1, Max: 120,
 		Why: "months, 1..120: dropping a monthly partition of alert_events destroys the instant-by-instant timeline for that month — every human comment, every unack note, the ordered narrative and the actor on each transition. What survives is the projection: the alert, every episode with its ack and its outcome, the rule text, and who was told on which channel. 13 is the longest default that keeps one org inside ADR 0014's scale envelope; raise it to 120 if you must keep timelines for years, and expect ADR 0014's revisit triggers"},
+
+	// ⭐ THE TWO INVESTIGATION CONTROLS (ADR 0053 §6). Neither changes whether or how
+	// anyone is notified; both decide only whether a model is called.
+	//
+	// The daily floor is one run's own floor (`investigators_tokens_ck`, 1 000): a day
+	// smaller than the smallest run could never admit one, and "no Investigations" is
+	// the kill switch's job, said by its own name. The ceiling is a billion tokens — a
+	// number, not a sentinel for "unlimited", because §6 says every control is one an
+	// operator can read back. It fits the contract's int32.
+	KeyInvestigationDailyTokens: {Min: 1000, Max: 1_000_000_000,
+		Why: "input + output tokens per UTC day, 1000..1000000000: once the day's recorded spend reaches it, a new Investigation is recorded skipped with reason budget and never queued, until 00:00 UTC. Below 1000 not even one run's smallest budget fits; there is no unlimited, because a ceiling nobody can read back is not a control. A run already going is bounded by its own token budget, so the day can overrun by at most what the runs in flight still had left"},
+	// The ceiling is a sanity bound, not a capacity: the `investigate` queue is two
+	// workers wide per process, so this many runs at once needs that many workers.
+	KeyInvestigationConcurrency: {Min: 1, Max: 32,
+		Why: "running Investigations, 1..32: one past it waits queued and is never dropped. Zero would be a kill switch that queues forever, and that is investigations_enabled's job, said by name. Each oto process works at most two at once (the investigate queue's width), so a number above the workers you run never binds"},
 }
 
 // Bounds returns the bound for an integer key.
@@ -307,6 +335,10 @@ type SettingsPatch struct {
 	// InvestigationsEnabled is the org's Investigation kill switch (ADR 0053 §6).
 	// nil means the org never wrote it and the shipped default (true) is in force.
 	InvestigationsEnabled *bool
+	// InvestigationDailyTokens and InvestigationConcurrency are the org's other two
+	// §6 controls: the day's token ceiling and the most runs at once.
+	InvestigationDailyTokens *int
+	InvestigationConcurrency *int
 
 	// ⛔⛔ `RefireGraceS` AND `GroupCloseDelayS` WERE HERE AND BOTH ARE DELETED
 	// (git-bug 7287b28). See the key block above for why neither decided anything.
@@ -339,6 +371,10 @@ func (p *SettingsPatch) intPtr(k SettingKey) **int {
 		return &p.RawRetentionDays
 	case KeyEventRetention:
 		return &p.EventRetentionMonth
+	case KeyInvestigationDailyTokens:
+		return &p.InvestigationDailyTokens
+	case KeyInvestigationConcurrency:
+		return &p.InvestigationConcurrency
 	case KeyDefaultVerbosity, KeyInvestigationsEnabled:
 		return nil
 	default:
@@ -516,6 +552,8 @@ func (p SettingsPatch) Settings() Settings {
 	s.RawRetention = time.Duration(pick(KeyRawRetention, int(d.RawRetention/(24*time.Hour)))) * 24 * time.Hour
 	// §D.1 stores a month count and oto reads a month as 30 days, uniformly.
 	s.EventRetention = time.Duration(pick(KeyEventRetention, int(d.EventRetention/(30*24*time.Hour)))) * 30 * 24 * time.Hour
+	s.InvestigationDailyTokens = pick(KeyInvestigationDailyTokens, d.InvestigationDailyTokens)
+	s.InvestigationConcurrency = pick(KeyInvestigationConcurrency, d.InvestigationConcurrency)
 
 	s.DefaultVerbosity = DefaultChannelVerbosity
 	if p.DefaultVerbosity != nil && channelVerbosities[*p.DefaultVerbosity] {
@@ -552,6 +590,10 @@ func (p SettingsPatch) EffectiveInt(k SettingKey) (int, Origin, bool) {
 		v = int(s.RawRetention / (24 * time.Hour))
 	case KeyEventRetention:
 		v = int(s.EventRetention / (30 * 24 * time.Hour))
+	case KeyInvestigationDailyTokens:
+		v = s.InvestigationDailyTokens
+	case KeyInvestigationConcurrency:
+		v = s.InvestigationConcurrency
 	default:
 		return 0, OriginDefault, false
 	}

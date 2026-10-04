@@ -160,6 +160,14 @@ type Settings struct {
 	// kill switch: the cost is a skipped Investigation that says why, never a
 	// model call nobody allowed.
 	InvestigationsEnabled bool
+
+	// InvestigationDailyTokens is the org's daily token budget (ADR 0053 §6): the
+	// input + output tokens every Investigation may spend between two UTC midnights.
+	// Past it, a new Investigation is recorded `skipped` with reason `budget`.
+	InvestigationDailyTokens int
+	// InvestigationConcurrency is the most Investigations `running` at once in the
+	// org (ADR 0053 §6). One past it waits, queued; it is never dropped.
+	InvestigationConcurrency int
 }
 
 // The defaults of SPEC §D.1, restated as the values a brand-new org boots with.
@@ -264,12 +272,27 @@ func DefaultSettings() Settings {
 		// it configures a model endpoint and an enabled Investigator, so this is
 		// the brake, not the opt-in.
 		InvestigationsEnabled: DefaultInvestigationsEnabled,
+
+		InvestigationDailyTokens: DefaultInvestigationDailyTokens,
+		InvestigationConcurrency: DefaultInvestigationConcurrency,
 	}
 }
 
 // DefaultInvestigationsEnabled is `investigations_enabled`'s shipped value. Only
 // identity reads it, so it lives here rather than in `platform/tuning`.
 const DefaultInvestigationsEnabled = true
+
+// The shipped §6 org controls. Only identity reads them, so they live here.
+//
+// ⭐ TWO MILLION TOKENS IS TEN RUNS AT THE DEFAULT PER-RUN BUDGET (200 000), which is
+// a storm's worth of curiosity and not an afternoon of it: an org that wants more
+// raises a number it can read back, and an org that set nothing cannot be surprised
+// by its bill. TWO AT ONCE is the `investigate` queue's own width in one process, so
+// the default never queues behind a limit the workers would not have reached anyway.
+const (
+	DefaultInvestigationDailyTokens = 2_000_000
+	DefaultInvestigationConcurrency = 2
+)
 
 // Normalise replaces any non-positive value with its default.
 //
@@ -299,6 +322,15 @@ func (s Settings) Normalise() Settings {
 	}
 	if !channelVerbosities[s.DefaultVerbosity] {
 		s.DefaultVerbosity = d.DefaultVerbosity
+	}
+	// A zero budget or concurrency is "never written", and repairing it to the
+	// default fails SAFE in both directions: the default is a finite ceiling, never
+	// "unlimited", and neither is the brake — investigations_enabled is.
+	if s.InvestigationDailyTokens <= 0 {
+		s.InvestigationDailyTokens = d.InvestigationDailyTokens
+	}
+	if s.InvestigationConcurrency <= 0 {
+		s.InvestigationConcurrency = d.InvestigationConcurrency
 	}
 	// ⚠️ InvestigationsEnabled IS NOT REPAIRED HERE, AND CANNOT BE. A false is
 	// either "this org pulled the switch" or "a zero Settings" and the struct cannot

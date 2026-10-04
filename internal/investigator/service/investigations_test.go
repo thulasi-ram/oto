@@ -328,7 +328,7 @@ func TestTheKillSwitchStopsNewRunsAndIsRecorded(t *testing.T) {
 	t.Run("org off at request", func(t *testing.T) {
 		r := newRig(t)
 		inv, c := r.setup(t, domain.DefaultBudgets())
-		r.orgSwitch.on = false
+		r.orgControls.on = false
 		run := r.request(t, inv, c)
 		if run.Status != domain.StatusSkipped || run.Ending.Reason != domain.ReasonDisabled ||
 			!strings.Contains(run.Ending.Detail, "investigations_enabled") {
@@ -355,7 +355,7 @@ func TestTheKillSwitchStopsNewRunsAndIsRecorded(t *testing.T) {
 		inv, c := r.setup(t, domain.DefaultBudgets())
 		r.dial.script = []modelfake.Step{modelfake.Text("should not run", 1, 1)}
 		run := r.request(t, inv, c)
-		r.orgSwitch.on = false
+		r.orgControls.on = false
 		got, steps := r.run(t, run.ID)
 		if got.Status != domain.StatusSkipped || got.Ending.Reason != domain.ReasonDisabled || len(steps) != 0 {
 			t.Fatalf("run = %+v, steps %s", got, kinds(steps))
@@ -422,7 +422,7 @@ func TestARunFoundRunningIsInterruptedNotRunAgain(t *testing.T) {
 	inv, c := r.setup(t, domain.DefaultBudgets())
 	r.dial.script = []modelfake.Step{modelfake.Text("should not run", 1, 1)}
 	run := r.request(t, inv, c)
-	if ok, err := r.investigations.Start(context.Background(), r.scope, run.ID, r.clock.Now()); !ok || err != nil {
+	if got, err := r.investigations.Start(context.Background(), r.scope, run.ID, r.clock.Now(), 2); got != domain.StartBegan || err != nil {
 		t.Fatal("could not start", err)
 	}
 	got, _ := r.run(t, run.ID)

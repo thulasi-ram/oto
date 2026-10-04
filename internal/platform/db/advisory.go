@@ -43,6 +43,12 @@ const (
 	// LockNamespaceReconcile serialises one source's reconciler run so two pods
 	// cannot both walk the same Alertmanager (SPEC §G.8).
 	LockNamespaceReconcile LockNamespace = 0x6F74_0004
+
+	// LockNamespaceInvestigations serialises the two ADR 0053 §6 decisions that read
+	// a count and then write against it: starting a run under the org's concurrency
+	// (keyed by org) and admitting a trigger under an Investigator's minimum interval
+	// (keyed by Investigator and subject). git-bug bf172fe.
+	LockNamespaceInvestigations LockNamespace = 0x6F74_0005
 )
 
 // JobsAdvisoryLockPrefix is the value river.Config.AdvisoryLockPrefix MUST be set

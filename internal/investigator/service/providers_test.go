@@ -121,7 +121,7 @@ type rig struct {
 	investigations *memInvestigations
 	history        *memHistory
 	findings       *memFindings
-	orgSwitch      *memSwitch
+	orgControls    *memControls
 	queue          *memQueue
 	toolServers    *memToolServers
 	toolDialer     *switchDialer
@@ -132,7 +132,7 @@ func (r *rig) deps() Deps {
 	return Deps{Providers: r.store, Credentials: r.creds, Keys: r.creds, Dialer: r.dial, Tx: r.tx, Clock: r.clock,
 		Investigators: r.investigators, Investigations: r.investigations,
 		Cases: r.history, Timeline: r.history, Rules: r.history, Findings: r.findings,
-		OrgSwitch: r.orgSwitch, Queue: r.queue,
+		OrgControls: r.orgControls, Queue: r.queue,
 		Limits:      Limits{ToolTimeout: 50 * time.Millisecond, MaxToolResult: 4096},
 		ToolServers: r.toolServers, Tokens: r.creds, ToolDialer: r.toolDialer, Redaction: r.redaction}
 }
@@ -149,7 +149,7 @@ func newRig(t *testing.T) *rig {
 		investigations: newMemInvestigations(),
 		history:        &memHistory{cases: map[uuid.UUID]domain.CaseSubject{}},
 		findings:       &memFindings{},
-		orgSwitch:      &memSwitch{on: true},
+		orgControls:    &memControls{on: true, dailyTokens: 2_000_000, concurrency: 2},
 		queue:          &memQueue{},
 		toolServers:    newMemToolServers(),
 		toolDialer:     &switchDialer{},
@@ -267,7 +267,7 @@ func TestNewRequiresEveryPort(t *testing.T) {
 		"timeline":       func(d *Deps) { d.Timeline = nil },
 		"rules":          func(d *Deps) { d.Rules = nil },
 		"findings":       func(d *Deps) { d.Findings = nil },
-		"org switch":     func(d *Deps) { d.OrgSwitch = nil },
+		"org controls":   func(d *Deps) { d.OrgControls = nil },
 		"queue":          func(d *Deps) { d.Queue = nil },
 		"tool servers":   func(d *Deps) { d.ToolServers = nil },
 		"tokens":         func(d *Deps) { d.Tokens = nil },

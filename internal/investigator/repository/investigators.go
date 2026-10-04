@@ -47,7 +47,7 @@ func mapInvestigatorErr(err error, what string) error {
 // investigatorSelect reads an Investigator joined to its CURRENT version — the one
 // with the highest number, which is the one a new run pins.
 const investigatorSelect = `
-SELECT i.id, i.org_id, i.name, i.enabled, i.max_steps, i.max_tokens, i.max_wall_s,
+SELECT i.id, i.org_id, i.name, i.enabled, i.max_steps, i.max_tokens, i.max_wall_s, i.min_interval_s,
        i.created_at, i.updated_at,
        v.id, v.version, v.model_provider_id, v.model_endpoint, v.model_name, v.prompt,
        v.tool_allowlist, v.created_at
@@ -58,8 +58,9 @@ SELECT i.id, i.org_id, i.name, i.enabled, i.max_steps, i.max_tokens, i.max_wall_
          ORDER BY v.version DESC LIMIT 1) v ON true`
 
 const insertInvestigatorSQL = `
-INSERT INTO investigators (id, org_id, name, enabled, max_steps, max_tokens, max_wall_s, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)`
+INSERT INTO investigators (id, org_id, name, enabled, max_steps, max_tokens, max_wall_s, min_interval_s,
+                           created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)`
 
 const insertVersionSQL = `
 INSERT INTO investigator_versions (id, org_id, investigator_id, version, model_provider_id,
@@ -76,7 +77,7 @@ func (r *InvestigatorRepository) Create(
 	}
 	invID := id.New()
 	if _, err := r.db(ctx).Exec(ctx, insertInvestigatorSQL, invID, s.OrgID(), d.Name, d.Enabled,
-		d.Budgets.MaxSteps, d.Budgets.MaxTokens, d.Budgets.WallSeconds(), at.UTC()); err != nil {
+		d.Budgets.MaxSteps, d.Budgets.MaxTokens, d.Budgets.WallSeconds(), intervalSeconds(d.MinInterval), at.UTC()); err != nil {
 		return domain.Investigator{}, mapInvestigatorErr(err, "store an Investigator")
 	}
 	if _, err := r.AddVersion(ctx, s, invID, 1, d.Spec, model, at); err != nil {
@@ -156,16 +157,16 @@ func (r *InvestigatorRepository) List(ctx context.Context, s db.TenantScope) ([]
 	return out, nil
 }
 
-// Update writes the mutable half.
+// Update writes the mutable half: the kill switch, the budgets and the minimum interval.
 func (r *InvestigatorRepository) Update(
-	ctx context.Context, s db.TenantScope, invID uuid.UUID, enabled bool, b domain.Budgets, at time.Time,
+	ctx context.Context, s db.TenantScope, invID uuid.UUID, enabled bool, b domain.Budgets, interval time.Duration, at time.Time,
 ) error {
 	if err := db.RequireScope(s); err != nil {
 		return err
 	}
 	tag, err := r.db(ctx).Exec(ctx, `
-UPDATE investigators SET enabled = $3, max_steps = $4, max_tokens = $5, max_wall_s = $6, updated_at = $7
- WHERE org_id = $1 AND id = $2`, s.OrgID(), invID, enabled, b.MaxSteps, b.MaxTokens, b.WallSeconds(), at.UTC())
+UPDATE investigators SET enabled = $3, max_steps = $4, max_tokens = $5, max_wall_s = $6, min_interval_s = $7, updated_at = $8
+ WHERE org_id = $1 AND id = $2`, s.OrgID(), invID, enabled, b.MaxSteps, b.MaxTokens, b.WallSeconds(), intervalSeconds(interval), at.UTC())
 	if err != nil {
 		return mapInvestigatorErr(err, "update an Investigator")
 	}
@@ -244,10 +245,11 @@ func scanInvestigator(row pgx.Row) (domain.Investigator, error) {
 		maxSteps  int
 		maxTokens int64
 		maxWall   int
+		interval  int
 		tools     []string
 	)
 	v := &out.Current
-	if err := row.Scan(&out.ID, &out.OrgID, &out.Name, &out.Enabled, &maxSteps, &maxTokens, &maxWall,
+	if err := row.Scan(&out.ID, &out.OrgID, &out.Name, &out.Enabled, &maxSteps, &maxTokens, &maxWall, &interval,
 		&out.CreatedAt, &out.UpdatedAt,
 		&v.ID, &v.Number, &v.ProviderID, &v.Model.Endpoint, &v.Model.Model, &v.Prompt, &tools, &v.CreatedAt); err != nil {
 		return domain.Investigator{}, err
@@ -260,7 +262,14 @@ func scanInvestigator(row pgx.Row) (domain.Investigator, error) {
 	if err != nil {
 		return domain.Investigator{}, errs.Internal("investigator_version_corrupt", err)
 	}
-	out.Budgets, v.Tools, v.InvestigatorID = b, allow, out.ID
+	minInterval, err := domain.NewMinInterval(interval)
+	if err != nil {
+		return domain.Investigator{}, errs.Internal("investigator_corrupt", err)
+	}
+	out.Budgets, out.MinInterval, v.Tools, v.InvestigatorID = b, minInterval, allow, out.ID
 	out.CreatedAt, out.UpdatedAt, v.CreatedAt = out.CreatedAt.UTC(), out.UpdatedAt.UTC(), v.CreatedAt.UTC()
 	return out, nil
 }
+
+// intervalSeconds is a minimum interval as `investigators.min_interval_s` stores it.
+func intervalSeconds(d time.Duration) int { return int(d / time.Second) }

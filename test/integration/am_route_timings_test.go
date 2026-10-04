@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 93 {
-		t.Fatalf("latest migration is %d, want 93 — this test pins the number so that a "+
+	if latest != 94 {
+		t.Fatalf("latest migration is %d, want 94 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1631,6 +1631,57 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// accepts a kind the release below it cannot interpret. No column reading can
 	// see that, and it is the half most likely to be forgotten because nothing
 	// references it.
+	// ⭐ 00094 HOLDS AN INVESTIGATION TO THE ORG'S DAY, ITS CONCURRENCY AND AN INVESTIGATOR'S
+	// INTERVAL (ADR 0053 §6, git-bug bf172fe): a column and its CHECK on each of
+	// `investigators` and `investigations`, a reason CHECK widened by `budget`, two partial
+	// indexes, and two comments. The reason CHECK is read for its BODY on both sides, for
+	// 00075's reason: a Down that kept `budget` admitted leaves a database that accepts a
+	// reason the release below cannot read back. The two comments are read because they
+	// are the half of a Down nothing references — the table's says `budget`, the settings
+	// document's says ten keys, and both must go back to 00092's words.
+	if n := countColumns("investigators", "min_interval_s") + countColumns("investigations", "not_before"); n != 2 {
+		t.Fatalf("%d of 00094's two columns exist at migration 94", n)
+	}
+	if n := countConstraints("investigators_interval_ck", "investigations_not_before_ck"); n != 2 {
+		t.Fatalf("%d of 00094's two new CHECKs exist at migration 94", n)
+	}
+	if def := constraintDef("investigations_reason_ck", "investigations"); !strings.Contains(def, "'budget'") {
+		t.Fatalf("investigations_reason_ck at migration 94 does not admit skipped/budget: %s", def)
+	}
+	if n := countIndexes("investigation_steps_spend_idx", "investigations_running_idx"); n != 2 {
+		t.Fatalf("%d of 00094's two indexes exist at migration 94", n)
+	}
+	if c := columnComment("orgs", "settings"); !strings.Contains(c, "The ten keys are") ||
+		!strings.Contains(c, "investigation_daily_tokens") || !strings.Contains(c, "investigation_concurrency") {
+		t.Fatalf("orgs.settings' comment at migration 94 does not name the two Investigation controls: %s", c)
+	}
+	if c := tableComment("investigations"); !strings.Contains(c, "daily token budget") {
+		t.Fatalf("investigations' comment at migration 94 does not say a run can skip on the budget: %s", c)
+	}
+
+	down(94)
+
+	if n := countColumns("investigators", "min_interval_s") + countColumns("investigations", "not_before"); n != 0 {
+		t.Fatalf("%d of 00094's columns survived its Down", n)
+	}
+	if n := countConstraints("investigators_interval_ck", "investigations_not_before_ck"); n != 0 {
+		t.Fatalf("%d of 00094's CHECKs survived its Down", n)
+	}
+	if def := constraintDef("investigations_reason_ck", "investigations"); strings.Contains(def, "'budget'") ||
+		!strings.Contains(def, "'disabled'") {
+		t.Fatalf("00094's Down did not restore 00092's investigations_reason_ck: %s", def)
+	}
+	if n := countIndexes("investigation_steps_spend_idx", "investigations_running_idx"); n != 0 {
+		t.Fatalf("%d of 00094's indexes survived its Down", n)
+	}
+	if c := columnComment("orgs", "settings"); !strings.Contains(c, "The eight keys are") ||
+		strings.Contains(c, "investigation_daily_tokens") {
+		t.Fatalf("00094's Down did not restore 00092's orgs.settings comment: %s", c)
+	}
+	if c := tableComment("investigations"); strings.Contains(c, "daily token budget") {
+		t.Fatalf("00094's Down did not restore 00092's investigations comment: %s", c)
+	}
+
 	// ⭐ 00093 LETS AN INVESTIGATOR READ THE CLUSTER THROUGH A TOOLSERVER (ADR 0053, 0054 §5,
 	// git-bug 2e9a086): two tables with their named CHECKs and the per-org name index, and
 	// a widened `channel_credentials_kind_ck` admitting `tool_server_token`. The kind CHECK

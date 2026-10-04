@@ -785,7 +785,7 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		Timeline:       investigationCases{alerts: c.Alerts},
 		Rules:          investigationRules{rules: c.Rules},
 		Findings:       findingPublisher{repo: enrichmentRepo},
-		OrgSwitch:      investigationSwitch{identity: c.Identity},
+		OrgControls:    investigationControls{identity: c.Identity},
 		Queue:          c.enqueuer,
 		// The built-in Tools' per-call controls (ADR 0053 §6), stated where every
 		// other deployment number is chosen. A ToolServer's Tools run under the

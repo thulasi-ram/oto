@@ -81,7 +81,9 @@ type OrgSettingsPatchDTO struct {
 
 	DefaultVerbosity *string `json:"default_verbosity,omitempty"`
 
-	InvestigationsEnabled *bool `json:"investigations_enabled,omitempty"`
+	InvestigationsEnabled    *bool `json:"investigations_enabled,omitempty"`
+	InvestigationDailyTokens *int  `json:"investigation_daily_tokens,omitempty"`
+	InvestigationConcurrency *int  `json:"investigation_concurrency,omitempty"`
 
 	// ⛔⛔ `refire_grace_s` AND `group_close_delay_s` WERE THE FIRST AND THIRD
 	// FIELDS AND BOTH ARE DELETED (git-bug 7287b28). An override of a key that
@@ -103,7 +105,9 @@ func toOrgSettingsPatchDTO(p domain.SettingsPatch) OrgSettingsPatchDTO {
 		EventRetentionMonth: p.EventRetentionMonth,
 		DefaultVerbosity:    p.DefaultVerbosity,
 
-		InvestigationsEnabled: p.InvestigationsEnabled,
+		InvestigationsEnabled:    p.InvestigationsEnabled,
+		InvestigationDailyTokens: p.InvestigationDailyTokens,
+		InvestigationConcurrency: p.InvestigationConcurrency,
 	}
 }
 
@@ -145,6 +149,12 @@ type UpdateOrgSettingsRequest struct {
 	// `false` stops every new Investigation; it never changes a notification.
 	InvestigationsEnabled *bool `json:"investigations_enabled,omitempty"`
 
+	// InvestigationDailyTokens is the org's daily token budget and
+	// InvestigationConcurrency the most Investigations running at once (ADR 0053
+	// §6). Bounded by `domain.Bounds`, like every integer here.
+	InvestigationDailyTokens *int `json:"investigation_daily_tokens,omitempty"`
+	InvestigationConcurrency *int `json:"investigation_concurrency,omitempty"`
+
 	// ⛔⛔ `refire_grace_s` AND `group_close_delay_s` WERE HERE AND BOTH ARE DELETED
 	// (git-bug 7287b28). ⚠️ THIS SCHEMA IS `additionalProperties: false`, so a
 	// PATCH still naming either is now a 400 rather than a stored number nothing
@@ -183,7 +193,9 @@ func (r UpdateOrgSettingsRequest) toDomain() (domain.SettingsPatch, []domain.Set
 		EventRetentionMonth: r.EventRetentionMonth,
 		DefaultVerbosity:    r.DefaultVerbosity,
 
-		InvestigationsEnabled: r.InvestigationsEnabled,
+		InvestigationsEnabled:    r.InvestigationsEnabled,
+		InvestigationDailyTokens: r.InvestigationDailyTokens,
+		InvestigationConcurrency: r.InvestigationConcurrency,
 	}
 
 	known := make(map[string]domain.SettingKey, len(domain.AllSettingKeys()))

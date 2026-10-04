@@ -87,20 +87,24 @@ func versionDTO(v domain.Version) InvestigatorVersionDTO {
 // InvestigatorDTO renders `InvestigatorDTO`: one Investigator and the version new
 // runs use.
 type InvestigatorDTO struct {
-	ID             uuid.UUID              `json:"id"`
-	Name           string                 `json:"name"`
-	Enricher       string                 `json:"enricher"`
-	Enabled        bool                   `json:"enabled"`
-	Budgets        InvestigatorBudgetsDTO `json:"budgets"`
-	CurrentVersion InvestigatorVersionDTO `json:"current_version"`
-	CreatedAt      time.Time              `json:"created_at"`
-	UpdatedAt      time.Time              `json:"updated_at"`
+	ID       uuid.UUID              `json:"id"`
+	Name     string                 `json:"name"`
+	Enricher string                 `json:"enricher"`
+	Enabled  bool                   `json:"enabled"`
+	Budgets  InvestigatorBudgetsDTO `json:"budgets"`
+	// MinIntervalSeconds is the least time between two runs on one subject (ADR 0053
+	// §6): membership-change triggers inside it coalesce into one run.
+	MinIntervalSeconds int                    `json:"min_interval_seconds"`
+	CurrentVersion     InvestigatorVersionDTO `json:"current_version"`
+	CreatedAt          time.Time              `json:"created_at"`
+	UpdatedAt          time.Time              `json:"updated_at"`
 }
 
 func investigatorDTO(i domain.Investigator) InvestigatorDTO {
 	return InvestigatorDTO{ID: i.ID, Name: i.Name, Enricher: i.EnricherName(), Enabled: i.Enabled,
-		Budgets: budgetsDTO(i.Budgets), CurrentVersion: versionDTO(i.Current),
-		CreatedAt: i.CreatedAt, UpdatedAt: i.UpdatedAt}
+		Budgets: budgetsDTO(i.Budgets), MinIntervalSeconds: int(i.MinInterval / time.Second),
+		CurrentVersion: versionDTO(i.Current),
+		CreatedAt:      i.CreatedAt, UpdatedAt: i.UpdatedAt}
 }
 
 // InvestigatorDetailDTO renders `InvestigatorDetailDTO`: the Investigator and every
@@ -122,12 +126,14 @@ func investigatorDetailDTO(d service.InvestigatorDetail) InvestigatorDetailDTO {
 
 // CreateInvestigatorRequest is the body of `POST /api/v1/investigators`.
 type CreateInvestigatorRequest struct {
-	Name            string                  `json:"name"              validate:"required,min=1,max=63"`
-	Enabled         *bool                   `json:"enabled,omitempty"`
-	Budgets         *InvestigatorBudgetsDTO `json:"budgets,omitempty"`
-	ModelProviderID uuid.UUID               `json:"model_provider_id" validate:"required"`
-	Prompt          string                  `json:"prompt"            validate:"required,notblank,min=1,max=32768"`
-	Tools           []string                `json:"tools"             validate:"max=64,dive,min=1,max=64"`
+	Name    string                  `json:"name"              validate:"required,min=1,max=63"`
+	Enabled *bool                   `json:"enabled,omitempty"`
+	Budgets *InvestigatorBudgetsDTO `json:"budgets,omitempty"`
+	// MinIntervalSeconds defaults to 600 (domain.DefaultIntervalSeconds).
+	MinIntervalSeconds *int      `json:"min_interval_seconds,omitempty" validate:"omitempty,min=0,max=86400"`
+	ModelProviderID    uuid.UUID `json:"model_provider_id" validate:"required"`
+	Prompt             string    `json:"prompt"            validate:"required,notblank,min=1,max=32768"`
+	Tools              []string  `json:"tools"             validate:"max=64,dive,min=1,max=64"`
 }
 
 // UpdateInvestigatorRequest is the body of `PATCH /api/v1/investigators/{id}`.
@@ -135,13 +141,15 @@ type CreateInvestigatorRequest struct {
 // ⭐ A NEW VERSION IS THE SERVER'S CALL, NOT THE CLIENT'S. Any of `model_provider_id`,
 // `prompt` and `tools` is folded over the current version, and only a result that
 // differs from it — a different endpoint or model, prompt or allowlist — writes version
-// N+1 (ADR 0053 §6). `enabled` and `budgets` change in place and never version.
+// N+1 (ADR 0053 §6). `enabled`, `budgets` and `min_interval_seconds` change in place
+// and never version.
 type UpdateInvestigatorRequest struct {
-	Enabled         *bool                   `json:"enabled,omitempty"`
-	Budgets         *InvestigatorBudgetsDTO `json:"budgets,omitempty"`
-	ModelProviderID *uuid.UUID              `json:"model_provider_id,omitempty"`
-	Prompt          *string                 `json:"prompt,omitempty" validate:"omitempty,notblank,min=1,max=32768"`
-	Tools           *[]string               `json:"tools,omitempty"  validate:"omitempty,max=64,dive,min=1,max=64"`
+	Enabled            *bool                   `json:"enabled,omitempty"`
+	Budgets            *InvestigatorBudgetsDTO `json:"budgets,omitempty"`
+	MinIntervalSeconds *int                    `json:"min_interval_seconds,omitempty" validate:"omitempty,min=0,max=86400"`
+	ModelProviderID    *uuid.UUID              `json:"model_provider_id,omitempty"`
+	Prompt             *string                 `json:"prompt,omitempty" validate:"omitempty,notblank,min=1,max=32768"`
+	Tools              *[]string               `json:"tools,omitempty"  validate:"omitempty,max=64,dive,min=1,max=64"`
 }
 
 // RequestInvestigationRequest is the body of `POST /api/v1/cases/{id}/investigations`.
@@ -170,6 +178,7 @@ type InvestigationDTO struct {
 	Partial               bool                   `json:"partial"`
 	RequestedByLabel      string                 `json:"requested_by_label"`
 	RequestedAt           time.Time              `json:"requested_at"`
+	NotBefore             *time.Time             `json:"not_before"`
 	StartedAt             *time.Time             `json:"started_at"`
 	EndedAt               *time.Time             `json:"ended_at"`
 }
@@ -183,7 +192,7 @@ func investigationDTO(i domain.Investigation) InvestigationDTO {
 		Reason: optString(string(i.Ending.Reason)), ReasonDetail: optString(i.Ending.Detail),
 		Budgets: budgetsDTO(i.Budgets), TokensIn: i.Spent.InputTokens, TokensOut: i.Spent.OutputTokens,
 		ToolCalls: i.ToolCalls, Finding: optString(i.Finding), Partial: i.Partial(),
-		RequestedByLabel: i.RequestedBy.Label, RequestedAt: i.RequestedAt,
+		RequestedByLabel: i.RequestedBy.Label, RequestedAt: i.RequestedAt, NotBefore: optTime(i.NotBefore),
 		StartedAt: optTime(i.StartedAt), EndedAt: optTime(i.EndedAt),
 	}
 }

@@ -70,8 +70,10 @@ type InvestigatorStore interface {
 	// Versions lists an Investigator's versions, newest first.
 	Versions(ctx context.Context, s db.TenantScope, id uuid.UUID) ([]domain.Version, error)
 	GetVersion(ctx context.Context, s db.TenantScope, versionID uuid.UUID) (domain.Version, error)
-	// Update writes the mutable half: the kill switch and the budgets.
-	Update(ctx context.Context, s db.TenantScope, id uuid.UUID, enabled bool, b domain.Budgets, at time.Time) error
+	// Update writes the mutable half: the kill switch, the budgets and the minimum
+	// interval.
+	Update(ctx context.Context, s db.TenantScope, id uuid.UUID, enabled bool, b domain.Budgets,
+		interval time.Duration, at time.Time) error
 	// AddVersion writes version `number`.
 	AddVersion(ctx context.Context, s db.TenantScope, investigatorID uuid.UUID, number int,
 		spec domain.VersionSpec, model domain.ModelIdentity, at time.Time) (domain.Version, error)
@@ -86,9 +88,20 @@ type InvestigationStore interface {
 	// ListBySubject is one subject's runs, latest first.
 	ListBySubject(ctx context.Context, s db.TenantScope, kind domain.SubjectKind, subjectID uuid.UUID,
 		p db.Keyset) ([]domain.Investigation, db.Cursor, error)
-	// Start moves a `queued` run to `running`, and reports false when it was not
-	// queued — another worker took it, or it already ended.
-	Start(ctx context.Context, s db.TenantScope, id uuid.UUID, at time.Time) (bool, error)
+	// Start moves a `queued` run to `running` unless the org already has maxRunning
+	// running — then it stays queued and says StartAtCapacity — or it was not queued
+	// (another worker took it, or it already ended). It counts and starts under the
+	// org's advisory lock, so it is called inside a transaction (ADR 0053 §6).
+	Start(ctx context.Context, s db.TenantScope, id uuid.UUID, at time.Time, maxRunning int) (domain.StartOutcome, error)
+	// CountRunning counts the org's `running` runs: a peek, not the decision.
+	CountRunning(ctx context.Context, s db.TenantScope) (int, error)
+	// SpentSince is the input + output tokens of every model turn the org's runs
+	// recorded at or after `since` — the day's spend against its daily budget.
+	SpentSince(ctx context.Context, s db.TenantScope, since time.Time) (int64, error)
+	// LockSubjectRuns takes the (Investigator, subject) advisory lock and reads what
+	// the minimum interval decides on. Inside a transaction.
+	LockSubjectRuns(ctx context.Context, s db.TenantScope, investigatorID uuid.UUID, kind domain.SubjectKind,
+		subjectID uuid.UUID) (domain.SubjectRuns, error)
 	// Finish ends a run that has not ended. The row is frozen from then on.
 	Finish(ctx context.Context, s db.TenantScope, id uuid.UUID, end domain.Ending, spent domain.Usage,
 		toolCalls int, finding string, at time.Time) error
@@ -124,10 +137,12 @@ type FindingPublisher interface {
 	PublishFinding(ctx context.Context, s db.TenantScope, f domain.PublishedFinding) error
 }
 
-// OrgSwitch reads the org's Investigation kill switch (`investigations_enabled`,
-// ADR 0053 §6), satisfied in `internal/app` over `identity/service`.
-type OrgSwitch interface {
-	InvestigationsEnabled(ctx context.Context, s db.TenantScope) (bool, error)
+// OrgControls reads the org's ADR 0053 §6 controls — the kill switch
+// (`investigations_enabled`), the daily token budget (`investigation_daily_tokens`)
+// and the concurrency (`investigation_concurrency`) — as their effective values,
+// satisfied in `internal/app` over `identity/service`.
+type OrgControls interface {
+	InvestigationControls(ctx context.Context, s db.TenantScope) (domain.OrgControls, error)
 }
 
 // JobQueue enqueues `investigations.run` inside the caller's transaction, so a run
