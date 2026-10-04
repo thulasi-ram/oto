@@ -1,0 +1,88 @@
+{
+  "schema": "oto.notification.v1",
+  "reason": "finding",
+  "mode": "post_root",
+  "delivered_at": "2026-08-07T17:57:29Z",
+  "org": {
+    "id": "",
+    "slug": "",
+    "name": ""
+  },
+  "incident": {
+    "id": "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
+    "number": 4,
+    "state": "active",
+    "drawn_at": "2026-08-07T17:37:29Z",
+    "drawn_by": {
+      "kind": "human",
+      "label": "Priya R."
+    },
+    "members": [
+      {
+        "case_id": "0199a1b2-0000-7000-8000-000000000412",
+        "case_number": 412,
+        "case_state": "open",
+        "alert_id": "a1",
+        "alert_name": "KubePodCrashLooping",
+        "labels": {
+          "alertname": "KubePodCrashLooping",
+          "namespace": "checkout"
+        },
+        "added_at": "2026-08-07T17:37:29Z",
+        "added_by": {
+          "kind": "human",
+          "label": "Priya R."
+        },
+        "link": "http://localhost:8080/cases/0199a1b2-0000-7000-8000-000000000412"
+      },
+      {
+        "case_id": "0199a1b2-0000-7000-8000-000000000413",
+        "case_number": 413,
+        "case_state": "closed",
+        "alert_id": "a2",
+        "alert_name": "HighErrorRate",
+        "labels": {
+          "alertname": "HighErrorRate",
+          "namespace": "checkout"
+        },
+        "added_at": "2026-08-07T17:42:29Z",
+        "added_by": {
+          "kind": "human",
+          "label": "Priya R."
+        },
+        "link": "http://localhost:8080/cases/0199a1b2-0000-7000-8000-000000000413"
+      },
+      {
+        "case_id": "0199a1b2-0000-7000-8000-000000000409",
+        "case_number": 409,
+        "case_state": "closed",
+        "alert_id": "a3",
+        "alert_name": "DiskFull",
+        "labels": {
+          "alertname": "DiskFull",
+          "namespace": "storage"
+        },
+        "added_at": "2026-08-07T17:37:29Z",
+        "added_by": {
+          "kind": "human",
+          "label": "Priya R."
+        },
+        "removed_at": "2026-08-07T17:47:29Z",
+        "removed_by_label": "Sam K.",
+        "moved_to_number": 7,
+        "link": "http://localhost:8080/cases/0199a1b2-0000-7000-8000-000000000409"
+      }
+    ],
+    "link": "http://localhost:8080/incidents/4",
+    "finding": {
+      "investigation_id": "0199a1b2-c3d4-7e5f-8a9b-00000000f1d1",
+      "investigator": "firstlook",
+      "version": 2,
+      "summary": "The checkout deploy at 17:35 doubled the error rate; the crash loop began two minutes later.",
+      "partial": false,
+      "concluded_at": "2026-08-07T17:55:29Z"
+    }
+  },
+  "alerts": [],
+  "summary": "[INCIDENT] #4 has a new Finding by firstlook v2 — 1 of 2 Cases open (active)"
+}

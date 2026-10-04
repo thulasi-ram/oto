@@ -120,6 +120,8 @@ type rig struct {
 	investigators  *memInvestigators
 	investigations *memInvestigations
 	history        *memHistory
+	incidents      *memIncidents
+	declarer       *memDeclarer
 	findings       *memFindings
 	orgControls    *memControls
 	queue          *memQueue
@@ -131,7 +133,8 @@ type rig struct {
 func (r *rig) deps() Deps {
 	return Deps{Providers: r.store, Credentials: r.creds, Keys: r.creds, Dialer: r.dial, Tx: r.tx, Clock: r.clock,
 		Investigators: r.investigators, Investigations: r.investigations,
-		Cases: r.history, Timeline: r.history, Rules: r.history, Findings: r.findings,
+		Cases: r.history, Incidents: r.incidents, Declarer: r.declarer,
+		Timeline: r.history, Rules: r.history, Findings: r.findings,
 		OrgControls: r.orgControls, Queue: r.queue,
 		Limits:      Limits{ToolTimeout: 50 * time.Millisecond, MaxToolResult: 4096},
 		ToolServers: r.toolServers, Tokens: r.creds, ToolDialer: r.toolDialer, Redaction: r.redaction}
@@ -148,6 +151,8 @@ func newRig(t *testing.T) *rig {
 		investigators:  newMemInvestigators(),
 		investigations: newMemInvestigations(),
 		history:        &memHistory{cases: map[uuid.UUID]domain.CaseSubject{}},
+		incidents:      newMemIncidents(),
+		declarer:       &memDeclarer{},
 		findings:       &memFindings{},
 		orgControls:    &memControls{on: true, dailyTokens: 2_000_000, concurrency: 2},
 		queue:          &memQueue{},

@@ -317,6 +317,30 @@ func TestTheQuietIncidentEnvelopeIsFrozen(t *testing.T) {
 	golden(t, "incident_quiet.golden.json", render(t, v).Payload)
 }
 
+// TestAnIncidentFindingEnvelopeIsFrozen pins the sixth Incident fact (ADR 0052 §5,
+// ADR 0053 §4, git-bug 74ea849): `finding`, with the latest Finding on the Incident —
+// what was concluded, by which Investigator version, whether a budget cut it short, and
+// when — and a sentence that names who concluded it.
+func TestAnIncidentFindingEnvelopeIsFrozen(t *testing.T) {
+	t.Parallel()
+	golden(t, "incident_finding.golden.json", render(t, incidentFindingView()).Payload)
+}
+
+// incidentFindingView is incidentView("finding") carrying the Finding its card shows.
+// ⚠️ The Finding's text avoids every command word the test below hunts for, so the
+// hunt stays a test of the envelope and not of a model's vocabulary.
+func incidentFindingView() *domain.NotificationView {
+	v := incidentView("finding")
+	v.Incident.Finding = &domain.IncidentFindingView{
+		InvestigationID: "0199a1b2-c3d4-7e5f-8a9b-00000000f1d1",
+		Investigator:    "firstlook",
+		Version:         2,
+		Summary:         "The checkout deploy at 17:35 doubled the error rate; the crash loop began two minutes later.",
+		ConcludedAt:     renderedAt.Add(-2 * time.Minute),
+	}
+	return v
+}
+
 // TestAnIncidentEnvelopeNamesNoSignalAndNoCommand reads the KEYS and the sentence.
 //
 // ⭐ AN INCIDENT IS NOT A CASE, so `incident` is present and every Case-shaped key is
@@ -327,8 +351,12 @@ func TestTheQuietIncidentEnvelopeIsFrozen(t *testing.T) {
 // which is the one most likely to be "helpfully" rendered as resolved.
 func TestAnIncidentEnvelopeNamesNoSignalAndNoCommand(t *testing.T) {
 	t.Parallel()
-	for _, reason := range []string{"drawn", "case_added", "case_removed", "quiet", "active_again"} {
-		payload := render(t, incidentView(reason)).Payload
+	for _, reason := range []string{"drawn", "case_added", "case_removed", "quiet", "active_again", "finding"} {
+		view := incidentView(reason)
+		if reason == "finding" {
+			view = incidentFindingView()
+		}
+		payload := render(t, view).Payload
 
 		var envelope map[string]json.RawMessage
 		if err := json.Unmarshal(payload, &envelope); err != nil {
@@ -373,7 +401,7 @@ func TestEveryFixtureValidates(t *testing.T) {
 		// it proves only that it is legal — that the keys are absent is the golden's
 		// job — but a legal digest is the precondition for the golden meaning anything.
 		"digest.golden.json", "digest_no_span.golden.json",
-		"incident_case_added.golden.json", "incident_quiet.golden.json",
+		"incident_case_added.golden.json", "incident_quiet.golden.json", "incident_finding.golden.json",
 	} {
 		raw, err := os.ReadFile(filepath.Join("testdata", name))
 		if err != nil {

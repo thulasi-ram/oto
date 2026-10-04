@@ -63,7 +63,7 @@ type Envelope struct {
 	Digest *Digest `json:"digest,omitempty"`
 	// Incident is an Incident fact's subject (ADR 0052 §5): the Incident, its
 	// derived state, who drew it and every Case that has been in it. It is non-nil on
-	// exactly the envelopes whose `reason` is one of the five Incident facts, and on
+	// exactly the envelopes whose `reason` is one of the six Incident facts, and on
 	// those `group`, `digest`, `occurrence` and `focus` are absent — an Incident is
 	// not a Case and names no single signal.
 	//
@@ -208,6 +208,26 @@ type Incident struct {
 	// and removed, in the order they joined. A removed spell carries `removed_at`.
 	Members []IncidentMember `json:"members"`
 	Link    string           `json:"link,omitempty"`
+	// Finding is the latest Finding an Investigation of the Incident reached (ADR 0053
+	// §4), absent when none has. ⛔ ADDITIVE, for `incident`'s own reason above: a new
+	// `omitempty` key adds a promise and alters none. It is on every Incident fact once
+	// one exists — the card is the Incident as it is now — and `finding` is the fact
+	// that says a new one arrived.
+	Finding *IncidentFinding `json:"finding,omitempty"`
+}
+
+// IncidentFinding is what an Investigation of the Incident concluded, as a consumer
+// sees it: a snapshot of what was seen at `concluded_at`, never live state, and the
+// Investigator version that saw it. ⛔ IT CARRIES NO VERDICT ON DELIVERY: a Finding
+// never decides whether anyone is told (ADR 0053 §2), and a receiver that pages on one
+// is paging on a model's judgement.
+type IncidentFinding struct {
+	InvestigationID string    `json:"investigation_id"`
+	Investigator    string    `json:"investigator"`
+	Version         int       `json:"version"`
+	Summary         string    `json:"summary"`
+	Partial         bool      `json:"partial"`
+	ConcludedAt     time.Time `json:"concluded_at"`
 }
 
 // IncidentAuthor is who decided: a human (`kind: human`, with the label frozen

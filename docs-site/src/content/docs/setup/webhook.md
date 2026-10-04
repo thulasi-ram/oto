@@ -95,7 +95,7 @@ which fields below you can rely on.
 | `org` | object | `id`, `slug`, `name` of the tenant. |
 | `summary` | string | One human sentence. For display and logs — **do not parse it**. |
 | `alerts` | array | The Alerts the message is about; `[]` on a digest and on every Incident fact. |
-| `incident` | object, optional | Present on exactly the five Incident facts. See below. |
+| `incident` | object, optional | Present on exactly the six Incident facts. See below. |
 | `group` | object, optional | The conversation a Case fact belongs to: title, receiver, labels, `state`, counts. Absent on a digest and on an Incident fact. |
 | `digest` | object, optional | A periodic summary: `count` and the half-open span `[covered_from, covered_to)`. |
 | `occurrence` | object, optional | The Case (one firing episode) a Case fact is about: `id`, `state`, `ack_state`, `started_at`, `ended_at`, … The key keeps its v1 spelling. |
@@ -118,7 +118,7 @@ which fields below you can rely on.
 An Incident is a set of one or more Cases drawn as one story
 ([ADR 0052](/oto/adr/0052-an-incident-is-drawn-over-cases-and-its-response-is-handed-off/)). An
 Incident fact carries `incident` and no `group`, `digest`, `occurrence` or `focus`; `reason` is one
-of exactly five:
+of exactly six:
 
 | `reason` | The fact |
 |---|---|
@@ -127,6 +127,7 @@ of exactly five:
 | `case_removed` | A Case left it (removed, or moved to another Incident). |
 | `quiet` | Every current member Case has closed. |
 | `active_again` | A member Case is open again after the Incident was quiet. |
+| `finding` | An Investigation of the Incident as a whole reached a new Finding (ADR 0053 §4), carried in `incident.finding`. |
 
 ⛔ **These are facts, never commands.** None of them means resolve, close or acknowledge, and no
 envelope oto sends carries a status for your tool to adopt. **`quiet` is not `fixed`**: it says the
@@ -146,6 +147,7 @@ The `incident` object:
 | `drawn_by` | `{kind: "human", label}` or `{kind: "correlator", correlator_id}`. |
 | `members` | Every spell of every Case that has been in it, current and removed, in the order they joined. |
 | `link` | oto's own page for it, when oto has a public URL configured. |
+| `finding` | The latest Finding an Investigation of the Incident reached, absent until one has: `investigation_id`, `investigator`, `version`, `summary`, `partial` (a budget stopped the run first) and `concluded_at`. It is what a model concluded **at `concluded_at`**, never live state — and paging on it is paging on a model's judgement. It is on every Incident fact once one exists; `finding` is the fact that says a new one arrived. |
 
 Each member: `case_id`, `case_number`, `case_state` (`open`/`closed`), `alert_id`, `alert_name`,
 `labels`, `added_at`, `added_by`, and on a removed spell `removed_at`, `removed_by_label` and — when

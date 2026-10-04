@@ -368,12 +368,78 @@ func TestAnInvestigatorsMinimumIntervalIsStoredAndBounded(t *testing.T) {
 	t.Parallel()
 	w := newWorld(t)
 	require.Equal(t, time.Duration(0), w.inv.MinInterval, "the draft named none, and the repository writes what it is given")
-	require.NoError(t, w.invs.Update(w.h.Ctx, w.scope, w.inv.ID, true, w.inv.Budgets, 15*time.Minute, w.h.Now()))
+	require.NoError(t, w.invs.Update(w.h.Ctx, w.scope, w.inv.ID, true, w.inv.Budgets, 15*time.Minute, false, w.h.Now()))
 	got, err := w.invs.Get(w.h.Ctx, w.scope, w.inv.ID)
 	require.NoError(t, err)
 	require.Equal(t, 15*time.Minute, got.MinInterval)
 	require.Equal(t, 1, got.Current.Number, "an interval is not a version")
 
 	_, err = w.h.Pool.Exec(w.h.Ctx, `UPDATE investigators SET min_interval_s = 86401 WHERE id = $1`, w.inv.ID)
+	require.Error(t, err)
+}
+
+// TestAnIncidentIsInvestigatedAsAWholeAtTheRow — git-bug 74ea849, migration 00095: an
+// Investigator opts in to Incidents and the flag is not a version; an Investigation's
+// subject may be an Incident and nothing else new; and the read an Incident's run
+// makes of its member Cases' earlier Findings — and of its own — is one query over
+// this module's table, newest first, and never another org's.
+func TestAnIncidentIsInvestigatedAsAWholeAtTheRow(t *testing.T) {
+	t.Parallel()
+	w := newWorld(t)
+	require.False(t, w.inv.InvestigatesIncidents, "an Investigator is not opted in until an operator says so")
+	require.NoError(t, w.invs.Update(w.h.Ctx, w.scope, w.inv.ID, true, w.inv.Budgets, 0, true, w.h.Now()))
+	got, err := w.invs.Get(w.h.Ctx, w.scope, w.inv.ID)
+	require.NoError(t, err)
+	require.True(t, got.InvestigatesIncidents)
+	require.Equal(t, 1, got.Current.Number, "opting in is not a version")
+
+	at := w.h.Now()
+	ended := func(kind domain.SubjectKind, subject uuid.UUID, finding string, endedAt time.Time) domain.Investigation {
+		t.Helper()
+		run, err := w.runs.Insert(w.h.Ctx, w.scope, domain.Investigation{
+			SubjectKind: kind, SubjectID: subject, InvestigatorID: w.inv.ID, VersionID: w.inv.Current.ID,
+			Status: domain.StatusQueued, Budgets: w.inv.Budgets,
+			RequestedBy: domain.Requester{Label: "oto: Incident #4 was drawn"}, RequestedAt: at,
+		})
+		require.NoError(t, err)
+		require.Equal(t, kind, run.SubjectKind)
+		require.Equal(t, "", run.AlertKey, "a run with no Alert key stores none")
+		require.Equal(t, domain.StartBegan, w.start(t, run.ID, at, 10))
+		require.NoError(t, w.runs.Finish(w.h.Ctx, w.scope, run.ID, domain.Completed(), domain.Usage{}, 0, finding, endedAt))
+		return run
+	}
+	incident, caseA, caseB, outsider := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	a := ended(domain.SubjectCase, caseA, "A ran out of memory.", at.Add(time.Minute))
+	b := ended(domain.SubjectCase, caseB, "B followed A.", at.Add(2*time.Minute))
+	ended(domain.SubjectCase, outsider, "Not in the story.", at.Add(3*time.Minute))
+	whole := ended(domain.SubjectIncident, incident, "One OOM explains the storm.", at.Add(4*time.Minute))
+
+	members, err := w.runs.SubjectFindings(w.h.Ctx, w.scope, domain.SubjectCase, []uuid.UUID{caseA, caseB}, uuid.Nil, 10)
+	require.NoError(t, err)
+	require.Len(t, members, 2)
+	require.Equal(t, b.ID, members[0].InvestigationID, "newest first")
+	require.Equal(t, a.ID, members[1].InvestigationID)
+	require.Equal(t, domain.SubjectCase, members[0].SubjectKind)
+	require.Equal(t, "B followed A.", members[0].Finding)
+
+	own, err := w.runs.SubjectFindings(w.h.Ctx, w.scope, domain.SubjectIncident, []uuid.UUID{incident}, uuid.Nil, 1)
+	require.NoError(t, err)
+	require.Len(t, own, 1)
+	require.Equal(t, whole.ID, own[0].InvestigationID)
+	require.Equal(t, domain.SubjectIncident, own[0].SubjectKind)
+
+	none, err := w.runs.SubjectFindings(w.h.Ctx, w.scope, domain.SubjectIncident, []uuid.UUID{incident}, whole.ID, 5)
+	require.NoError(t, err)
+	require.Empty(t, none, "a run never reads its own Finding as a prior one")
+	none, err = w.runs.SubjectFindings(w.h.Ctx, w.scope, domain.SubjectCase, nil, uuid.Nil, 5)
+	require.NoError(t, err)
+	require.Empty(t, none, "an Incident with no current member has no member Findings")
+	none, err = w.runs.SubjectFindings(w.h.Ctx, w.h.Org().Scope, domain.SubjectCase, []uuid.UUID{caseA, caseB}, uuid.Nil, 5)
+	require.NoError(t, err)
+	require.Empty(t, none, "another org reads none of them")
+
+	// ⛔ `investigations_subjkind_ck` admits exactly `case` and `incident`.
+	waiting := w.queued(t, "k", at)
+	_, err = w.h.Pool.Exec(w.h.Ctx, `UPDATE investigations SET subject_kind = 'digest' WHERE id = $1`, waiting.ID)
 	require.Error(t, err)
 }

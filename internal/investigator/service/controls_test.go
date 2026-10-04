@@ -12,8 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/thulasiram/oto/internal/investigator/domain"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/test/modelfake"
@@ -128,71 +126,9 @@ func TestPastTheConcurrencyARunWaitsAndIsNeverDropped(t *testing.T) {
 	}
 }
 
-// TestMembershipChangesInsideTheIntervalProduceOneRun — §6: "Membership-change
-// triggers inside the interval coalesce into one run", which then runs once the
-// interval is up.
-func TestMembershipChangesInsideTheIntervalProduceOneRun(t *testing.T) {
-	r := newRig(t)
-	inv, c := r.setup(t, domain.DefaultBudgets())
-	every := 10 * time.Minute
-	if _, err := r.svc.UpdateInvestigator(context.Background(), r.scope, inv.ID, domain.InvestigatorChange{MinInterval: &every}); err != nil {
-		t.Fatal(err)
-	}
-	inv, _ = r.svc.investigators.Get(context.Background(), r.scope, inv.ID)
-	if inv.MinInterval != every || inv.Current.Number != 1 {
-		t.Fatalf("interval %s at version %d; an interval is not a version", inv.MinInterval, inv.Current.Number)
-	}
-	by, _ := domain.NewRequester(uuid.Nil, "Correlator payments")
-	trigger := func() domain.Investigation {
-		t.Helper()
-		run, err := r.svc.requestCase(context.Background(), r.scope, c.CaseID, inv.ID, by, domain.TriggerMembership)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return run
-	}
-	r.dial.script = []modelfake.Step{modelfake.Text("first look", 100, 10)}
-
-	// Drawn: one run, now. Two changes before it starts: the same run.
-	first := trigger()
-	if again := trigger(); again.ID != first.ID {
-		t.Fatal("a change while the run was still queued made a second run")
-	}
-	if len(r.queue.jobs) != 1 {
-		t.Fatalf("%d jobs for one run", len(r.queue.jobs))
-	}
-	r.run(t, first.ID)
-	startedAt := r.clock.Now()
-
-	// Churn two to nine minutes later: ONE follow-up, scheduled for when the interval is up.
-	r.clock.Advance(2 * time.Minute)
-	follow := trigger()
-	if follow.ID == first.ID || follow.Status != domain.StatusQueued || !follow.NotBefore.Equal(startedAt.Add(every)) {
-		t.Fatalf("the first change inside the interval = %+v, want a run not before %s", follow, startedAt.Add(every))
-	}
-	if n := len(r.queue.jobs); n != 2 || !r.queue.opts[1].ScheduledAt.Equal(startedAt.Add(every)) {
-		t.Fatalf("%d jobs; the follow-up's is scheduled for %v", n, r.queue.opts[n-1].ScheduledAt)
-	}
-	for _, d := range []time.Duration{time.Minute, 6 * time.Minute} {
-		r.clock.Advance(d)
-		if again := trigger(); again.ID != follow.ID {
-			t.Fatalf("a change at +%s made another run", d)
-		}
-	}
-	if len(r.queue.jobs) != 2 {
-		t.Fatalf("%d jobs: coalesced changes enqueued work", len(r.queue.jobs))
-	}
-
-	// Its job, arriving early, waits the rest; at the interval, it runs.
-	if err := r.svc.RunInvestigation(context.Background(), r.scope, follow.ID); !isSnooze(err) ||
-		!strings.Contains(err.Error(), "investigation_interval") {
-		t.Fatalf("an early job: err = %v, want an interval snooze", err)
-	}
-	r.clock.Set(startedAt.Add(every))
-	if got, _ := r.run(t, follow.ID); got.Status != domain.StatusCompleted {
-		t.Fatalf("the follow-up ended %+v", got.Ending)
-	}
-}
+// (TestMembershipChangesInsideTheIntervalProduceOneRun moved to incidents_test.go when
+// git-bug 74ea849 gave the membership trigger a subject that has members: an
+// Incident. It drives the same coalescing through IncidentChanged.)
 
 // TestAHumanAskingIsNotCoalesced — ADR 0053 §6 scopes the interval to
 // membership-change triggers; "a human asks" (§4) gets a run, under the kill switch,

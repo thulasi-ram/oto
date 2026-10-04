@@ -48,7 +48,7 @@ func mapInvestigatorErr(err error, what string) error {
 // with the highest number, which is the one a new run pins.
 const investigatorSelect = `
 SELECT i.id, i.org_id, i.name, i.enabled, i.max_steps, i.max_tokens, i.max_wall_s, i.min_interval_s,
-       i.created_at, i.updated_at,
+       i.investigates_incidents, i.created_at, i.updated_at,
        v.id, v.version, v.model_provider_id, v.model_endpoint, v.model_name, v.prompt,
        v.tool_allowlist, v.created_at
   FROM investigators i
@@ -59,8 +59,8 @@ SELECT i.id, i.org_id, i.name, i.enabled, i.max_steps, i.max_tokens, i.max_wall_
 
 const insertInvestigatorSQL = `
 INSERT INTO investigators (id, org_id, name, enabled, max_steps, max_tokens, max_wall_s, min_interval_s,
-                           created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)`
+                           investigates_incidents, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)`
 
 const insertVersionSQL = `
 INSERT INTO investigator_versions (id, org_id, investigator_id, version, model_provider_id,
@@ -77,7 +77,8 @@ func (r *InvestigatorRepository) Create(
 	}
 	invID := id.New()
 	if _, err := r.db(ctx).Exec(ctx, insertInvestigatorSQL, invID, s.OrgID(), d.Name, d.Enabled,
-		d.Budgets.MaxSteps, d.Budgets.MaxTokens, d.Budgets.WallSeconds(), intervalSeconds(d.MinInterval), at.UTC()); err != nil {
+		d.Budgets.MaxSteps, d.Budgets.MaxTokens, d.Budgets.WallSeconds(), intervalSeconds(d.MinInterval),
+		d.InvestigatesIncidents, at.UTC()); err != nil {
 		return domain.Investigator{}, mapInvestigatorErr(err, "store an Investigator")
 	}
 	if _, err := r.AddVersion(ctx, s, invID, 1, d.Spec, model, at); err != nil {
@@ -157,16 +158,20 @@ func (r *InvestigatorRepository) List(ctx context.Context, s db.TenantScope) ([]
 	return out, nil
 }
 
-// Update writes the mutable half: the kill switch, the budgets and the minimum interval.
+// Update writes the mutable half: the kill switch, the budgets, the minimum interval
+// and whether Incidents start runs of it.
 func (r *InvestigatorRepository) Update(
-	ctx context.Context, s db.TenantScope, invID uuid.UUID, enabled bool, b domain.Budgets, interval time.Duration, at time.Time,
+	ctx context.Context, s db.TenantScope, invID uuid.UUID, enabled bool, b domain.Budgets, interval time.Duration,
+	incidents bool, at time.Time,
 ) error {
 	if err := db.RequireScope(s); err != nil {
 		return err
 	}
 	tag, err := r.db(ctx).Exec(ctx, `
-UPDATE investigators SET enabled = $3, max_steps = $4, max_tokens = $5, max_wall_s = $6, min_interval_s = $7, updated_at = $8
- WHERE org_id = $1 AND id = $2`, s.OrgID(), invID, enabled, b.MaxSteps, b.MaxTokens, b.WallSeconds(), intervalSeconds(interval), at.UTC())
+UPDATE investigators SET enabled = $3, max_steps = $4, max_tokens = $5, max_wall_s = $6, min_interval_s = $7,
+                         investigates_incidents = $8, updated_at = $9
+ WHERE org_id = $1 AND id = $2`, s.OrgID(), invID, enabled, b.MaxSteps, b.MaxTokens, b.WallSeconds(), intervalSeconds(interval),
+		incidents, at.UTC())
 	if err != nil {
 		return mapInvestigatorErr(err, "update an Investigator")
 	}
@@ -250,7 +255,7 @@ func scanInvestigator(row pgx.Row) (domain.Investigator, error) {
 	)
 	v := &out.Current
 	if err := row.Scan(&out.ID, &out.OrgID, &out.Name, &out.Enabled, &maxSteps, &maxTokens, &maxWall, &interval,
-		&out.CreatedAt, &out.UpdatedAt,
+		&out.InvestigatesIncidents, &out.CreatedAt, &out.UpdatedAt,
 		&v.ID, &v.Number, &v.ProviderID, &v.Model.Endpoint, &v.Model.Model, &v.Prompt, &tools, &v.CreatedAt); err != nil {
 		return domain.Investigator{}, err
 	}

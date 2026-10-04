@@ -6,7 +6,8 @@ package domain
 //
 // ⛔ THESE ARE COPIES, NOT THE OTHER MODULES' TYPES. `investigator` imports no other
 // module (CONTEXT.md §4): `internal/app` reads a Case, its timeline and its rule
-// snapshot through the alerts and rules services and hands them over in these shapes,
+// snapshot through the alerts and rules services, and an Incident through the incidents
+// service, and hands them over in these shapes,
 // so what an Investigation can see is exactly what is spelled here — and a field the
 // model was never shown cannot leak into a Finding.
 
@@ -37,6 +38,54 @@ type CaseSubject struct {
 	RuleSnapshotID uuid.UUID
 }
 
+// IncidentSubject is an Incident as an Investigation is told about it (ADR 0052, 0053
+// §4): the story, and every Case that has been in it.
+//
+// ⛔ NO STATUS, LEAD OR SEVERITY, BECAUSE THERE IS NONE ANYWHERE (ADR 0052 §3). What an
+// Incident says about itself is `Active`, read off its member Cases.
+type IncidentSubject struct {
+	IncidentID uuid.UUID
+	// Number is the Incident's name within the org — what a human quotes.
+	Number int64
+	// Active is true while any current member Case is open; quiet otherwise.
+	Active  bool
+	DrawnAt time.Time
+	// DrawnBy is who decided this is one story: a human's frozen label, or
+	// "Correlator <name>".
+	DrawnBy string
+	// Members is every spell of every Case that has been in it, in the order they
+	// joined. A removed spell carries RemovedAt.
+	Members []IncidentMember
+}
+
+// IncidentMember is one spell of one Case inside an Incident.
+type IncidentMember struct {
+	CaseID     uuid.UUID
+	CaseNumber int64
+	Alertname  string
+	Labels     map[string]string
+	// State is the Case's own `open` or `closed`.
+	State   string
+	AddedAt time.Time
+	// RemovedAt is zero while the Case is a member.
+	RemovedAt time.Time
+}
+
+// Current reports whether the spell is still running.
+func (m IncidentMember) Current() bool { return m.RemovedAt.IsZero() }
+
+// CurrentCases is the Cases in the Incident now — the ones whose earlier Findings an
+// Investigation of it reads (oto_member_findings).
+func (s IncidentSubject) CurrentCases() []uuid.UUID {
+	out := make([]uuid.UUID, 0, len(s.Members))
+	for _, m := range s.Members {
+		if m.Current() {
+			out = append(out, m.CaseID)
+		}
+	}
+	return out
+}
+
 // TimelineEntry is one thing that happened to a Case, as the timeline recorded it.
 type TimelineEntry struct {
 	At      time.Time
@@ -63,9 +112,11 @@ type RuleAtFire struct {
 	Available bool
 }
 
-// PriorFinding is one earlier Investigation's Finding on the same alert_key.
+// PriorFinding is one earlier Investigation's Finding: on the same alert_key, on the
+// same subject, or on one of an Incident's member Cases.
 type PriorFinding struct {
 	InvestigationID  uuid.UUID
+	SubjectKind      SubjectKind
 	SubjectID        uuid.UUID
 	InvestigatorName string
 	VersionNumber    int
@@ -75,10 +126,12 @@ type PriorFinding struct {
 }
 
 // PublishedFinding is a Finding as it is published to the enrichment store
-// (`investigator.<name>`), with the provenance an Enrichment carries.
+// (`investigator.<name>`) on its subject — the Case, or the Incident — with the
+// provenance an Enrichment carries.
 type PublishedFinding struct {
 	InvestigationID uuid.UUID
-	CaseID          uuid.UUID
+	SubjectKind     SubjectKind
+	SubjectID       uuid.UUID
 	// Enricher is `investigator.<name>`; Version is the Investigator version number,
 	// which is the Enrichment's own version.
 	Enricher  string

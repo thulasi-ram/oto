@@ -414,6 +414,13 @@ SELECT id, seq, kind, coalesce(text, ''), tool_calls, coalesce(finish_reason, ''
 	return out, nil
 }
 
+// priorFindingSelect is one ended run that reached a Finding, as a later run reads it.
+const priorFindingSelect = `
+SELECT n.id, n.subject_kind, n.subject_id, i.name, v.version, n.status, n.finding, n.ended_at
+  FROM investigations n
+  JOIN investigators i         ON i.id = n.investigator_id
+  JOIN investigator_versions v ON v.id = n.investigator_version_id`
+
 // PriorFindings reads earlier runs' Findings on the same alert_key, newest first,
 // served by `investigations_alert_key_idx`.
 func (r *InvestigationRepository) PriorFindings(
@@ -422,14 +429,33 @@ func (r *InvestigationRepository) PriorFindings(
 	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
-	rows, err := r.db(ctx).Query(ctx, `
-SELECT n.id, n.subject_id, i.name, v.version, n.status, n.finding, n.ended_at
-  FROM investigations n
-  JOIN investigators i         ON i.id = n.investigator_id
-  JOIN investigator_versions v ON v.id = n.investigator_version_id
+	return r.priorFindings(ctx, priorFindingSelect+`
  WHERE n.org_id = $1 AND n.alert_key = $2 AND n.finding IS NOT NULL AND n.id <> $3
  ORDER BY n.ended_at DESC, n.id DESC
  LIMIT $4`, s.OrgID(), alertKey, except, limit)
+}
+
+// SubjectFindings reads earlier runs' Findings on any of the named subjects of one
+// kind, newest first, served by `investigations_subject_idx`: an Incident's own
+// earlier Findings, and its member Cases' (ADR 0053 §3, §4; git-bug 74ea849).
+func (r *InvestigationRepository) SubjectFindings(
+	ctx context.Context, s db.TenantScope, kind domain.SubjectKind, subjectIDs []uuid.UUID, except uuid.UUID, limit int,
+) ([]domain.PriorFinding, error) {
+	if err := db.RequireScope(s); err != nil {
+		return nil, err
+	}
+	if len(subjectIDs) == 0 {
+		return []domain.PriorFinding{}, nil
+	}
+	return r.priorFindings(ctx, priorFindingSelect+`
+ WHERE n.org_id = $1 AND n.subject_kind = $2 AND n.subject_id = ANY($3::uuid[])
+   AND n.finding IS NOT NULL AND n.id <> $4
+ ORDER BY n.ended_at DESC, n.id DESC
+ LIMIT $5`, s.OrgID(), string(kind), subjectIDs, except, limit)
+}
+
+func (r *InvestigationRepository) priorFindings(ctx context.Context, sql string, args ...any) ([]domain.PriorFinding, error) {
+	rows, err := r.db(ctx).Query(ctx, sql, args...)
 	if err != nil {
 		return nil, mapInvestigationErr(err, "read prior Findings")
 	}
@@ -437,18 +463,22 @@ SELECT n.id, n.subject_id, i.name, v.version, n.status, n.finding, n.ended_at
 	out := []domain.PriorFinding{}
 	for rows.Next() {
 		var (
-			p      domain.PriorFinding
-			status string
+			p            domain.PriorFinding
+			kind, status string
 		)
-		if err := rows.Scan(&p.InvestigationID, &p.SubjectID, &p.InvestigatorName, &p.VersionNumber,
+		if err := rows.Scan(&p.InvestigationID, &kind, &p.SubjectID, &p.InvestigatorName, &p.VersionNumber,
 			&status, &p.Finding, &p.EndedAt); err != nil {
 			return nil, mapInvestigationErr(err, "read prior Findings")
+		}
+		sk, err := domain.ParseSubjectKind(kind)
+		if err != nil {
+			return nil, err
 		}
 		st, err := domain.ParseStatus(status)
 		if err != nil {
 			return nil, err
 		}
-		p.Status, p.EndedAt = st, p.EndedAt.UTC()
+		p.SubjectKind, p.Status, p.EndedAt = sk, st, p.EndedAt.UTC()
 		out = append(out, p)
 	}
 	if err := rows.Err(); err != nil {

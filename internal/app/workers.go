@@ -138,6 +138,12 @@ func (c *Container) handlers() jobs.Handlers {
 		// on the `investigate` queue, never `enrich` or `notify`: a run can take
 		// minutes, and it must not hold a slot a Case's notification waits on.
 		InvestigationsRun: c.runInvestigation,
+
+		// ⭐ investigations.incident (ADR 0053 §4, git-bug 74ea849) — an Incident drawn,
+		// or a Case joining or leaving it, becomes the runs of the Investigators that
+		// investigate Incidents. On `lifecycle`, enqueued by the membership change and
+		// never awaited by it; it records runs and calls no model.
+		InvestigationsIncident: c.triggerIncidentInvestigations,
 	}
 
 	// notification fills its own four fields (notify.evaluate, deliver.dispatch,

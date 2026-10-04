@@ -142,6 +142,11 @@ const (
 	// is enqueued by `investigator` in the transaction that recorded the request, and
 	// nothing on the notification path enqueues it or waits for it.
 	KindInvestigationsRun = "investigations.run"
+	// KindInvestigationsIncident turns one Incident fact — drawn, or a Case joining or
+	// leaving — into the runs of the Investigators that investigate Incidents (ADR
+	// 0053 §4, git-bug 74ea849). It is enqueued by the Incident's own membership
+	// change, in its transaction, and decides and records runs; it runs none.
+	KindInvestigationsIncident = "investigations.incident"
 )
 
 // Priority levels. River orders 1 (highest) before 4 (lowest) within a queue.

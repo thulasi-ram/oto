@@ -37,6 +37,18 @@ package service
 //     Investigator's interval resolves to the run already queued for that subject, or
 //     becomes ONE run whose job is scheduled for when the interval is up (NotBefore).
 //     A human's request is not held to it (domain.TriggerHuman).
+//
+// ⭐⭐ AN INCIDENT IS INVESTIGATED AS A WHOLE (ADR 0053 §4, git-bug 74ea849). Its draw
+// and its membership changes reach IncidentChanged through `investigations.incident`,
+// a job the membership change enqueued in its own transaction — so nothing here ever
+// runs on, or holds up, the Incident's write. Each Investigator an operator opted in
+// (`investigates_incidents`) gets one run per draw and one more per burst of churn
+// under its minimum interval; going quiet raises nothing. And a Case IN an Incident
+// starts nothing of its own automatically — requestCase refuses every automatic
+// trigger on a held Case (domain.CoveredByIncident) — while a human may still ask
+// about it. The Incident's run reads its member Cases' earlier Findings through the
+// built-in Tool `oto_member_findings`, publishes its own Finding as an `incident`
+// Enrichment, and declares it outbound as the Incident fact `finding`.
 
 import (
 	"context"
@@ -65,26 +77,147 @@ type InvestigationDetail struct {
 // or the Investigator's kill switch is off, or `budget` when the org's daily token
 // budget is spent, in which case nothing is enqueued and the row is the record that
 // somebody asked.
+//
+// ⭐ A CASE IN AN INCIDENT CAN STILL BE ASKED ABOUT. The Incident's run covers it only
+// for what starts AUTOMATICALLY (ADR 0053 §4); a person asking about one Case of a
+// storm gets a run about that Case.
 func (s *Service) RequestCaseInvestigation(
 	ctx context.Context, scope db.TenantScope, caseID, investigatorID uuid.UUID, by domain.Requester,
 ) (domain.Investigation, error) {
-	return s.requestCase(ctx, scope, caseID, investigatorID, by, domain.TriggerHuman)
+	inv, _, err := s.requestCase(ctx, scope, caseID, investigatorID, by, domain.TriggerHuman)
+	return inv, err
 }
 
-// requestCase records one trigger's run against one Case. A human's is always a new
-// run; a membership change is admitted under the Investigator's minimum interval and
-// may resolve to a run already queued (domain.Admit).
+// requestCase records one trigger's run against one Case, and reports whether one
+// was recorded at all.
+//
+// ⛔ AN AUTOMATIC TRIGGER ON A CASE THAT IS IN AN INCIDENT RECORDS NOTHING (ADR 0053
+// §4: "A Case already in an Incident gets no Investigation of its own automatically —
+// the Incident's covers it"). No automatic trigger reaches a Case today — the Incident
+// is the only subject one is raised for — and this is the one door any future one must
+// come through, so the rule is held here rather than at each caller. It is not a
+// control being hit (§6), so there is no `skipped` row: nobody asked, and the
+// Incident's own run is the record of the look the Case got.
 func (s *Service) requestCase(
 	ctx context.Context, scope db.TenantScope, caseID, investigatorID uuid.UUID, by domain.Requester, trigger domain.Trigger,
+) (domain.Investigation, bool, error) {
+	if err := db.RequireScope(scope); err != nil {
+		return domain.Investigation{}, false, err
+	}
+	subject, err := s.cases.InvestigationCase(ctx, scope, caseID)
+	if err != nil {
+		return domain.Investigation{}, false, err
+	}
+	if trigger.Automatic() {
+		holding, err := s.incidents.HoldingIncident(ctx, scope, subject.CaseID)
+		if err != nil {
+			return domain.Investigation{}, false, err
+		}
+		if domain.CoveredByIncident(trigger, holding) {
+			return domain.Investigation{}, false, nil
+		}
+	}
+	inv, err := s.request(ctx, scope, subjectRef{kind: domain.SubjectCase, id: subject.CaseID, alertKey: subject.AlertKey},
+		investigatorID, by, trigger)
+	return inv, err == nil, err
+}
+
+// RequestIncidentInvestigation records a human's request for one Investigator to run
+// against one Incident as a whole, addressed by the number a human quotes, and
+// enqueues it — under the kill switch, the daily budget and the concurrency, exactly
+// as a Case's request is (RequestCaseInvestigation).
+func (s *Service) RequestIncidentInvestigation(
+	ctx context.Context, scope db.TenantScope, number int64, investigatorID uuid.UUID, by domain.Requester,
 ) (domain.Investigation, error) {
 	if err := db.RequireScope(scope); err != nil {
 		return domain.Investigation{}, err
 	}
-	investigator, err := s.investigators.Get(ctx, scope, investigatorID)
+	incident, err := s.incidents.InvestigationIncidentNumbered(ctx, scope, number)
 	if err != nil {
 		return domain.Investigation{}, err
 	}
-	subject, err := s.cases.InvestigationCase(ctx, scope, caseID)
+	return s.request(ctx, scope, incidentRef(incident), investigatorID, by, domain.TriggerHuman)
+}
+
+// IncidentChanged is the `investigations.incident` job: one Incident fact — drawn, or
+// a Case joining or leaving — becomes at most one run per Investigator that
+// investigates Incidents (ADR 0053 §4). It returns how many runs the trigger was
+// recorded as or resolved to.
+//
+// ⭐ WHICH INVESTIGATORS IS THE OPERATOR'S WORD: every Investigator that is switched on
+// AND says `investigates_incidents`. An Investigator switched off is not asked at all
+// — it is not subscribed — while the org's own switch and daily budget are hit and
+// recorded like any request's (`skipped`, with the reason). A draw resolves to the run
+// a first delivery made; a membership change coalesces under each Investigator's
+// minimum interval (domain.Admit).
+//
+// An Incident this org no longer has is done, not retried: there is nothing to look at.
+func (s *Service) IncidentChanged(
+	ctx context.Context, scope db.TenantScope, incidentID uuid.UUID, trigger domain.Trigger,
+) (int, error) {
+	if err := db.RequireScope(scope); err != nil {
+		return 0, err
+	}
+	if trigger != domain.TriggerDrawn && trigger != domain.TriggerMembership {
+		return 0, errs.Validation("investigation_trigger_invalid", "an Incident starts Investigations when it is drawn or its membership changes",
+			errs.Violation{Field: "trigger", Code: "enum", Message: string(trigger)})
+	}
+	incident, err := s.incidents.InvestigationIncident(ctx, scope, incidentID)
+	if errs.IsKind(err, errs.KindNotFound) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	investigators, err := s.investigators.List(ctx, scope)
+	if err != nil {
+		return 0, err
+	}
+	by, err := domain.NewRequester(uuid.Nil, triggerLabel(trigger, incident.Number))
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, inv := range investigators {
+		if !inv.Enabled || !inv.InvestigatesIncidents {
+			continue
+		}
+		if _, err := s.request(ctx, scope, incidentRef(incident), inv.ID, by, trigger); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
+}
+
+// triggerLabel is who "asked" for an automatic run: oto, and why — frozen on the run
+// as its requester label, so the run says what started it.
+func triggerLabel(trigger domain.Trigger, number int64) string {
+	if trigger == domain.TriggerDrawn {
+		return fmt.Sprintf("oto: Incident #%d was drawn", number)
+	}
+	return fmt.Sprintf("oto: Incident #%d's membership changed", number)
+}
+
+// subjectRef is what a request needs to know about its subject.
+type subjectRef struct {
+	kind domain.SubjectKind
+	id   uuid.UUID
+	// alertKey is a Case's Alert's key; "" for an Incident.
+	alertKey string
+}
+
+func incidentRef(i domain.IncidentSubject) subjectRef {
+	return subjectRef{kind: domain.SubjectIncident, id: i.IncidentID}
+}
+
+// request records one trigger's run against one subject. A human's is always a new
+// run; an automatic trigger is admitted under the Investigator's minimum interval and
+// may resolve to a run already made (domain.Admit).
+func (s *Service) request(
+	ctx context.Context, scope db.TenantScope, subj subjectRef, investigatorID uuid.UUID, by domain.Requester, trigger domain.Trigger,
+) (domain.Investigation, error) {
+	investigator, err := s.investigators.Get(ctx, scope, investigatorID)
 	if err != nil {
 		return domain.Investigation{}, err
 	}
@@ -96,9 +229,9 @@ func (s *Service) requestCase(
 	at := s.now()
 	inv := domain.Investigation{
 		OrgID:            scope.OrgID(),
-		SubjectKind:      domain.SubjectCase,
-		SubjectID:        subject.CaseID,
-		AlertKey:         subject.AlertKey,
+		SubjectKind:      subj.kind,
+		SubjectID:        subj.id,
+		AlertKey:         subj.alertKey,
 		InvestigatorID:   investigator.ID,
 		InvestigatorName: investigator.Name,
 		VersionID:        investigator.Current.ID,
@@ -118,7 +251,7 @@ func (s *Service) requestCase(
 
 	var out domain.Investigation
 	err = s.tx.InTx(ctx, func(ctx context.Context) error {
-		if inv.Status == domain.StatusQueued && trigger != domain.TriggerHuman {
+		if inv.Status == domain.StatusQueued && trigger.Automatic() {
 			// Under the (Investigator, subject) lock, so two changes at once cannot
 			// both find nothing queued and both insert.
 			runs, err := s.investigations.LockSubjectRuns(ctx, scope, investigator.ID, inv.SubjectKind, inv.SubjectID)
@@ -127,7 +260,7 @@ func (s *Service) requestCase(
 			}
 			adm := domain.Admit(trigger, investigator.MinInterval, runs, at)
 			if adm.Coalesced() {
-				out = *runs.Queued
+				out = resolvedRun(runs, adm.Onto)
 				return nil
 			}
 			inv.NotBefore = adm.NotBefore
@@ -160,6 +293,15 @@ func (s *Service) requestCase(
 		return domain.Investigation{}, err
 	}
 	return out, nil
+}
+
+// resolvedRun is the run an admission resolved to: the queued one, or — for a
+// redelivered draw — the one that already began.
+func resolvedRun(runs domain.SubjectRuns, id uuid.UUID) domain.Investigation {
+	if runs.Queued != nil && runs.Queued.ID == id {
+		return *runs.Queued
+	}
+	return *runs.Last
 }
 
 // switchedOff returns why a run may not start — the org's switch or the
@@ -209,6 +351,31 @@ func (s *Service) ListCaseInvestigations(
 		return nil, db.Cursor{}, err
 	}
 	return s.investigations.ListBySubject(ctx, scope, domain.SubjectCase, caseID, p)
+}
+
+// ListIncidentInvestigations reads an Incident's runs, latest first, by the number a
+// human quotes. An Incident this org does not have is a 404, like the Incident itself.
+func (s *Service) ListIncidentInvestigations(
+	ctx context.Context, scope db.TenantScope, number int64, p db.Keyset,
+) ([]domain.Investigation, db.Cursor, error) {
+	incident, err := s.incidents.InvestigationIncidentNumbered(ctx, scope, number)
+	if err != nil {
+		return nil, db.Cursor{}, err
+	}
+	return s.investigations.ListBySubject(ctx, scope, domain.SubjectIncident, incident.IncidentID, p)
+}
+
+// LatestIncidentFinding is the newest Finding any run reached on the Incident — the
+// one its card shows and its `finding` fact carries (ADR 0053 §4: "the latest is
+// shown") — and false when none has.
+func (s *Service) LatestIncidentFinding(
+	ctx context.Context, scope db.TenantScope, incidentID uuid.UUID,
+) (domain.PriorFinding, bool, error) {
+	found, err := s.investigations.SubjectFindings(ctx, scope, domain.SubjectIncident, []uuid.UUID{incidentID}, uuid.Nil, 1)
+	if err != nil || len(found) == 0 {
+		return domain.PriorFinding{}, false, err
+	}
+	return found[0], true, nil
 }
 
 // RunInvestigation is the `investigations.run` job: start one queued run, run it, end
@@ -277,13 +444,12 @@ func (s *Service) RunInvestigation(ctx context.Context, scope db.TenantScope, id
 	if err != nil {
 		return err
 	}
-	subject, err := s.cases.InvestigationCase(ctx, scope, inv.SubjectID)
+	subject, message, gone, err := s.readSubject(ctx, scope, inv)
 	if err != nil {
-		if errs.IsKind(err, errs.KindNotFound) {
-			return s.finish(ctx, scope, inv, outcome{ending: domain.EndedBy(domain.ReasonSubjectGone,
-				"the Case no longer exists")})
-		}
 		return err
+	}
+	if gone != "" {
+		return s.finish(ctx, scope, inv, outcome{ending: domain.EndedBy(domain.ReasonSubjectGone, gone)})
 	}
 	model, err := s.OpenProvider(ctx, scope, version.ProviderID)
 	if err != nil {
@@ -311,6 +477,10 @@ func (s *Service) RunInvestigation(ctx context.Context, scope db.TenantScope, id
 		return err
 	}
 	defer closeSessions()
+	builtin, inapplicable := s.offeredTools(version.Tools, inv.SubjectKind)
+	for name, why := range inapplicable {
+		unavailable[name] = why
+	}
 
 	startedAt := s.now()
 	var start domain.StartOutcome
@@ -330,14 +500,14 @@ func (s *Service) RunInvestigation(ctx context.Context, scope db.TenantScope, id
 	p := plan{
 		model:       model,
 		prompt:      version.Prompt,
-		subject:     renderCaseSubject(subject),
-		offered:     append(s.offeredTools(version.Tools), fromServers...),
+		subject:     message,
+		offered:     append(builtin, fromServers...),
 		allow:       version.Tools,
 		unavailable: unavailable,
 		redact:      redact,
 		budgets:     inv.Budgets,
 		scope:       scope,
-		run:         RunSubject{InvestigationID: inv.ID, Case: subject},
+		run:         subject,
 	}
 	out, err := s.runLoop(ctx, p, startedAt, func(ctx context.Context, step domain.Step) error {
 		return s.investigations.AppendStep(ctx, scope, inv.ID, step)
@@ -361,15 +531,54 @@ func (s *Service) RunInvestigation(ctx context.Context, scope db.TenantScope, id
 	return s.finish(ctx, scope, inv, out)
 }
 
-// offeredTools are the built-in Tools the allowlist names, in allowlist order.
-func (s *Service) offeredTools(allow domain.Allowlist) []Tool {
-	out := []Tool{}
-	for _, t := range s.tools {
-		if allow.Allows(t.Schema().Name) {
-			out = append(out, t)
+// readSubject reads what one run is about and renders the message that tells the
+// model so. A subject this org no longer has is not an error: `gone` says which, and
+// the run ends `subject_gone`.
+func (s *Service) readSubject(
+	ctx context.Context, scope db.TenantScope, inv domain.Investigation,
+) (run RunSubject, message, gone string, err error) {
+	run = RunSubject{InvestigationID: inv.ID, Kind: inv.SubjectKind}
+	switch inv.SubjectKind {
+	case domain.SubjectIncident:
+		run.Incident, err = s.incidents.InvestigationIncident(ctx, scope, inv.SubjectID)
+		if errs.IsKind(err, errs.KindNotFound) {
+			return run, "", "the Incident no longer exists", nil
 		}
+		return run, renderIncidentSubject(run.Incident), "", err
+	default:
+		run.Case, err = s.cases.InvestigationCase(ctx, scope, inv.SubjectID)
+		if errs.IsKind(err, errs.KindNotFound) {
+			return run, "", "the Case no longer exists", nil
+		}
+		return run, renderCaseSubject(run.Case), "", err
 	}
-	return out
+}
+
+// offeredTools are the built-in Tools the allowlist names that can read this kind of
+// subject, in registration order — and, for each allowlisted one that cannot, why, so
+// a call to it is refused with the reason rather than as an unknown name.
+func (s *Service) offeredTools(allow domain.Allowlist, kind domain.SubjectKind) ([]Tool, map[string]string) {
+	out, inapplicable := []Tool{}, map[string]string{}
+	for _, t := range s.tools {
+		name := t.Schema().Name
+		if !allow.Allows(name) {
+			continue
+		}
+		if st, ok := t.(subjectTool); ok && !st.reads(kind) {
+			inapplicable[name] = fmt.Sprintf("it reads a %s, and this Investigation is about %s", st.subjectNoun(), subjectNoun(kind))
+			continue
+		}
+		out = append(out, t)
+	}
+	return out, inapplicable
+}
+
+// subjectNoun is a subject kind with its article, for a sentence.
+func subjectNoun(kind domain.SubjectKind) string {
+	if kind == domain.SubjectIncident {
+		return "an Incident"
+	}
+	return "a Case"
 }
 
 // finish ends a run and — when it reached a Finding — publishes it, in one
@@ -391,9 +600,19 @@ func (s *Service) finish(ctx context.Context, scope db.TenantScope, inv domain.I
 		if started.IsZero() {
 			started = at
 		}
+		if inv.SubjectKind == domain.SubjectIncident {
+			// ⭐ THE NEW FINDING GOES OUTBOUND AS A FACT ABOUT THE INCIDENT (ADR 0052 §5),
+			// in this same transaction: published and declared together, or neither.
+			// What a policy does with it is the notification layer's question; nothing
+			// about any member Case's own notifications is decided here (ADR 0053 §2).
+			if err := s.declarer.DeclareIncidentFinding(ctx, scope, inv.SubjectID, inv.ID); err != nil {
+				return err
+			}
+		}
 		return s.findings.PublishFinding(ctx, scope, domain.PublishedFinding{
 			InvestigationID: inv.ID,
-			CaseID:          inv.SubjectID,
+			SubjectKind:     inv.SubjectKind,
+			SubjectID:       inv.SubjectID,
 			Enricher:        inv.EnricherName(),
 			Version:         inv.VersionNumber,
 			VersionID:       inv.VersionID,
@@ -408,6 +627,57 @@ func (s *Service) finish(ctx context.Context, scope db.TenantScope, inv domain.I
 			EndedAt:         at,
 		})
 	})
+}
+
+// maxRenderedMembers bounds how many current member Cases the subject message lists.
+// A Correlator can grow an Incident past any number a model should be handed at once;
+// the rest are counted, and `oto_member_findings` still reads every member.
+const maxRenderedMembers = 100
+
+// renderIncidentSubject is the user message for an Incident: the story as oto recorded
+// it — its derived state, who drew it, and its member Cases — as JSON, after the
+// sentence saying it is to be investigated as a whole.
+func renderIncidentSubject(i domain.IncidentSubject) string {
+	type member struct {
+		CaseNumber int64             `json:"case_number"`
+		CaseID     string            `json:"case_id"`
+		Alertname  string            `json:"alertname"`
+		State      string            `json:"state"`
+		Labels     map[string]string `json:"labels"`
+		AddedAt    any               `json:"added_at"`
+	}
+	state := "quiet"
+	if i.Active {
+		state = "active"
+	}
+	members, more, left := []member{}, 0, 0
+	for _, m := range i.Members {
+		switch {
+		case !m.Current():
+			left++
+		case len(members) >= maxRenderedMembers:
+			more++
+		default:
+			members = append(members, member{CaseNumber: m.CaseNumber, CaseID: m.CaseID.String(),
+				Alertname: m.Alertname, State: m.State, Labels: m.Labels, AddedAt: timeOrNil(m.AddedAt)})
+		}
+	}
+	b, err := json.Marshal(map[string]any{
+		"incident_number":       i.Number,
+		"incident_id":           i.IncidentID.String(),
+		"state":                 state,
+		"drawn_at":              timeOrNil(i.DrawnAt),
+		"drawn_by":              i.DrawnBy,
+		"member_cases":          members,
+		"member_cases_unlisted": more,
+		"cases_that_left":       left,
+	})
+	if err != nil {
+		b = []byte(`{}`)
+	}
+	return fmt.Sprintf("Investigate Incident #%d as a whole: one story drawn over the Cases below, "+
+		"which is why none of them is investigated on its own. Earlier Findings about its member "+
+		"Cases are what %s reads. This is the Incident as oto recorded it:\n%s", i.Number, ToolMemberFindings, b)
 }
 
 // renderCaseSubject is the user message: the Case as oto recorded it, as JSON, after

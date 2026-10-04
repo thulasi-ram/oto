@@ -73,7 +73,7 @@ type InvestigatorStore interface {
 	// Update writes the mutable half: the kill switch, the budgets and the minimum
 	// interval.
 	Update(ctx context.Context, s db.TenantScope, id uuid.UUID, enabled bool, b domain.Budgets,
-		interval time.Duration, at time.Time) error
+		interval time.Duration, incidents bool, at time.Time) error
 	// AddVersion writes version `number`.
 	AddVersion(ctx context.Context, s db.TenantScope, investigatorID uuid.UUID, number int,
 		spec domain.VersionSpec, model domain.ModelIdentity, at time.Time) (domain.Version, error)
@@ -110,12 +110,48 @@ type InvestigationStore interface {
 	Steps(ctx context.Context, s db.TenantScope, investigationID uuid.UUID) ([]domain.Step, error)
 	// PriorFindings are earlier runs' Findings on the same alert_key, newest first.
 	PriorFindings(ctx context.Context, s db.TenantScope, alertKey string, except uuid.UUID, limit int) ([]domain.PriorFinding, error)
+	// SubjectFindings are earlier runs' Findings on any of the named subjects of one
+	// kind, newest first: an Incident's own, or its member Cases'.
+	SubjectFindings(ctx context.Context, s db.TenantScope, kind domain.SubjectKind, subjectIDs []uuid.UUID,
+		except uuid.UUID, limit int) ([]domain.PriorFinding, error)
 }
 
 // CaseReader reads the Case an Investigation is about, satisfied in `internal/app`
 // over `alerts/service`. A Case this org does not have is KindNotFound.
 type CaseReader interface {
 	InvestigationCase(ctx context.Context, s db.TenantScope, caseID uuid.UUID) (domain.CaseSubject, error)
+}
+
+// IncidentReader reads the Incident an Investigation is about, and the one a Case is
+// in, satisfied in `internal/app` over `incidents/service` (git-bug 74ea849). An
+// Incident this org does not have is KindNotFound.
+//
+// ⛔ `investigator` NEVER IMPORTS `incidents` (CONTEXT.md §4): the Incident arrives as
+// the copy in domain/subject.go, and what an Investigation can see of it is exactly
+// what is spelled there.
+type IncidentReader interface {
+	InvestigationIncident(ctx context.Context, s db.TenantScope, incidentID uuid.UUID) (domain.IncidentSubject, error)
+	// InvestigationIncidentNumbered is the same read addressed by the number a human
+	// quotes, which is how the API names an Incident.
+	InvestigationIncidentNumbered(ctx context.Context, s db.TenantScope, number int64) (domain.IncidentSubject, error)
+	// HoldingIncident is the Incident a Case is a CURRENT member of, or uuid.Nil — at
+	// most one, because a Case is in at most one (ADR 0052 §4).
+	HoldingIncident(ctx context.Context, s db.TenantScope, caseID uuid.UUID) (uuid.UUID, error)
+}
+
+// FindingDeclarer declares an Incident's new Finding outbound as the Incident fact
+// `finding` (ADR 0052 §5: oto sends "drawn, member added or removed, quiet, active
+// again, new Finding"), INSIDE the caller's transaction, so the Finding and its
+// declaration are one fact or neither. Satisfied in `internal/app` by enqueueing
+// `notify.incident`, keyed on the Investigation as its occasion.
+//
+// ⭐ IT IS A FACT, NOT A DECISION ABOUT ANY SIGNAL (ADR 0053 §2). A Finding is never an
+// input to whether a notification about a Case or an Alert is sent, held or
+// suppressed; this declares that the Incident has a new Finding, and whether any
+// policy routes that anywhere is the notification layer's question alone. A Case's
+// Finding is declared nowhere.
+type FindingDeclarer interface {
+	DeclareIncidentFinding(ctx context.Context, s db.TenantScope, incidentID, investigationID uuid.UUID) error
 }
 
 // TimelineReader reads a Case's timeline, oldest first, at most `limit` entries —
@@ -130,9 +166,10 @@ type RuleReader interface {
 }
 
 // FindingPublisher stores a Finding as the Enrichment `investigator.<name>` on its
-// Case, inside the caller's transaction, satisfied in `internal/app` over the
-// enrichment store. ⛔ It enqueues nothing: publishing a Finding is not a reason to
-// evaluate a notification.
+// subject — the Case or the Incident — inside the caller's transaction, satisfied in
+// `internal/app` over the enrichment store. ⛔ It enqueues nothing: publishing a
+// Finding is not a reason to evaluate a notification. (An Incident's Finding is also
+// DECLARED, through FindingDeclarer — a separate port, so the publish stays inert.)
 type FindingPublisher interface {
 	PublishFinding(ctx context.Context, s db.TenantScope, f domain.PublishedFinding) error
 }

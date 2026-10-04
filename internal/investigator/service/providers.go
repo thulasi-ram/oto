@@ -34,6 +34,8 @@ type Service struct {
 	investigators  InvestigatorStore
 	investigations InvestigationStore
 	cases          CaseReader
+	incidents      IncidentReader
+	declarer       FindingDeclarer
 	timeline       TimelineReader
 	rules          RuleReader
 	findings       FindingPublisher
@@ -63,11 +65,15 @@ type Deps struct {
 	Investigators  InvestigatorStore
 	Investigations InvestigationStore
 	Cases          CaseReader
-	Timeline       TimelineReader
-	Rules          RuleReader
-	Findings       FindingPublisher
-	OrgControls    OrgControls
-	Queue          JobQueue
+	// Incidents reads an Incident and the one a Case is in; Declarer declares an
+	// Incident's new Finding outbound (git-bug 74ea849).
+	Incidents   IncidentReader
+	Declarer    FindingDeclarer
+	Timeline    TimelineReader
+	Rules       RuleReader
+	Findings    FindingPublisher
+	OrgControls OrgControls
+	Queue       JobQueue
 	// Limits are the built-in Tools' per-call controls. Zero fields take
 	// DefaultLimits. A ToolServer's Tools run under the ToolServer's own.
 	Limits Limits
@@ -100,6 +106,11 @@ func New(d Deps) (*Service, error) {
 		return nil, errors.New("investigator: an Investigation store is required; a run nobody can read back is not one")
 	case d.Cases == nil || d.Timeline == nil || d.Rules == nil:
 		return nil, errors.New("investigator: the Case, timeline and rule readers are required; they are the built-in Tools")
+	case d.Incidents == nil:
+		return nil, errors.New("investigator: an Incident reader is required; an Incident is investigated as a whole, " +
+			"and a Case in one starts nothing of its own automatically")
+	case d.Declarer == nil:
+		return nil, errors.New("investigator: a Finding declarer is required; an Incident's new Finding goes outbound as a fact")
 	case d.Findings == nil:
 		return nil, errors.New("investigator: a Finding publisher is required")
 	case d.OrgControls == nil:
@@ -118,7 +129,8 @@ func New(d Deps) (*Service, error) {
 		providers: d.Providers, creds: d.Credentials, keys: d.Keys,
 		dial: d.Dialer, tx: d.Tx, clock: d.Clock,
 		investigators: d.Investigators, investigations: d.Investigations,
-		cases: d.Cases, timeline: d.Timeline, rules: d.Rules, findings: d.Findings,
+		cases: d.Cases, incidents: d.Incidents, declarer: d.Declarer,
+		timeline: d.Timeline, rules: d.Rules, findings: d.Findings,
 		orgControls: d.OrgControls, queue: d.Queue, limits: d.Limits.orDefault(),
 		toolServers: d.ToolServers, tokens: d.Tokens, toolDialer: d.ToolDialer, redaction: d.Redaction,
 	}

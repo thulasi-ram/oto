@@ -177,7 +177,7 @@ func TestARunRecordsEveryStepAndPublishesItsFindingAsAnEnrichment(t *testing.T) 
 		t.Fatalf("%d Findings published, want 1", len(r.findings.published))
 	}
 	f := r.findings.published[0]
-	if f.Enricher != "investigator.firstlook" || f.CaseID != c.CaseID || f.Version != 1 ||
+	if f.Enricher != "investigator.firstlook" || f.SubjectKind != domain.SubjectCase || f.SubjectID != c.CaseID || f.Version != 1 ||
 		f.VersionID != inv.Current.ID || f.Partial || f.Summary != got.Finding || f.Spent != got.Spent {
 		t.Fatalf("published %+v", f)
 	}

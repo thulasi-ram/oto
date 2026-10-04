@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -41,6 +42,9 @@ type InvestigatorService interface {
 	RequestCaseInvestigation(ctx context.Context, s db.TenantScope, caseID, investigatorID uuid.UUID,
 		by domain.Requester) (domain.Investigation, error)
 	ListCaseInvestigations(ctx context.Context, s db.TenantScope, caseID uuid.UUID, p db.Keyset) ([]domain.Investigation, db.Cursor, error)
+	RequestIncidentInvestigation(ctx context.Context, s db.TenantScope, number int64, investigatorID uuid.UUID,
+		by domain.Requester) (domain.Investigation, error)
+	ListIncidentInvestigations(ctx context.Context, s db.TenantScope, number int64, p db.Keyset) ([]domain.Investigation, db.Cursor, error)
 	GetInvestigation(ctx context.Context, s db.TenantScope, id uuid.UUID) (service.InvestigationDetail, error)
 }
 
@@ -66,8 +70,11 @@ func NewRouter(svc InvestigatorService, clk clock.Clock) *Router {
 //
 // ⭐ A CASE'S INVESTIGATIONS ARE ADDRESSED BY THE CASE, flat on the parent like
 // `rules/api`'s `/cases/{id}/rule`, because `alerts/api` owns the `/cases/{id}`
-// subrouter and a second one would take the prefix from it. A run itself is addressed
-// by its own id: a Finding cites it, and the citation should not need the Case.
+// subrouter and a second one would take the prefix from it. An INCIDENT'S are addressed
+// by the number a human quotes, flat beside `incidents/api`'s `/incidents` subrouter
+// for the same reason — chi matches the longer parameterised pattern first, whichever
+// is mounted first. A run itself is addressed by its own id: a Finding cites it, and
+// the citation should not need its subject.
 func (rt *Router) Mount(r chi.Router) {
 	r.Route("/model-providers", func(r chi.Router) {
 		r.Get("/", rt.listModelProviders)
@@ -88,6 +95,8 @@ func (rt *Router) Mount(r chi.Router) {
 	})
 	r.Get("/cases/{id}/investigations", rt.listCaseInvestigations)
 	r.Post("/cases/{id}/investigations", rt.requestCaseInvestigation)
+	r.Get("/incidents/{number}/investigations", rt.listIncidentInvestigations)
+	r.Post("/incidents/{number}/investigations", rt.requestIncidentInvestigation)
 	r.Get("/investigations/{id}", rt.getInvestigation)
 }
 
@@ -328,13 +337,18 @@ func (dto CreateInvestigatorRequest) toDomain() (domain.InvestigatorDraft, error
 	if dto.Enabled != nil {
 		enabled = *dto.Enabled
 	}
+	incidents := false
+	if dto.InvestigatesIncidents != nil {
+		incidents = *dto.InvestigatesIncidents
+	}
 	interval := domain.DefaultMinInterval()
 	if dto.MinIntervalSeconds != nil {
 		if interval, err = domain.NewMinInterval(*dto.MinIntervalSeconds); err != nil {
 			return domain.InvestigatorDraft{}, err
 		}
 	}
-	return domain.InvestigatorDraft{Name: name, Enabled: enabled, Budgets: budgets, MinInterval: interval, Spec: spec}, nil
+	return domain.InvestigatorDraft{Name: name, Enabled: enabled, Budgets: budgets, MinInterval: interval,
+		InvestigatesIncidents: incidents, Spec: spec}, nil
 }
 
 // getInvestigator serves GET /api/v1/investigators/{id}.
@@ -384,7 +398,8 @@ func (rt *Router) updateInvestigator(w http.ResponseWriter, r *http.Request) {
 }
 
 func (dto UpdateInvestigatorRequest) toDomain() (domain.InvestigatorChange, error) {
-	change := domain.InvestigatorChange{Enabled: dto.Enabled, ProviderID: dto.ModelProviderID, Prompt: dto.Prompt}
+	change := domain.InvestigatorChange{Enabled: dto.Enabled, InvestigatesIncidents: dto.InvestigatesIncidents,
+		ProviderID: dto.ModelProviderID, Prompt: dto.Prompt}
 	if dto.Budgets != nil {
 		b, err := dto.Budgets.toDomain()
 		if err != nil {
@@ -494,6 +509,86 @@ func (rt *Router) requestCaseInvestigation(w http.ResponseWriter, r *http.Reques
 		Investigation: inv, Steps: []domain.Step{}}), started)
 }
 
+// listIncidentInvestigations serves GET /api/v1/incidents/{number}/investigations,
+// latest first.
+func (rt *Router) listIncidentInvestigations(w http.ResponseWriter, r *http.Request) {
+	started := rt.now()
+	_, scope, err := authn.Scope(r.Context())
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	number, err := pathIncident(r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	p := httpx.NewParams(r, "limit", "cursor")
+	limit := p.Limit()
+	if err := p.Err(); err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	hash := httpx.FilterHash("incident=" + strconv.FormatInt(number, 10))
+	cursor, err := httpx.DecodeCursor(p.Cursor(), hash)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	runs, next, err := rt.svc.ListIncidentInvestigations(r.Context(), scope, number, httpx.Keyset(limit, cursor))
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	out := make([]InvestigationDTO, 0, len(runs))
+	for _, inv := range runs {
+		out = append(out, investigationDTO(inv))
+	}
+	httpx.List(w, r, out, httpx.PageOf(next, limit), started)
+}
+
+// requestIncidentInvestigation serves POST /api/v1/incidents/{number}/investigations:
+// a human asking one Investigator to look at the Incident as a whole. 202, for
+// requestCaseInvestigation's reason, and refused to a system principal for the same.
+func (rt *Router) requestIncidentInvestigation(w http.ResponseWriter, r *http.Request) {
+	started := rt.now()
+	p, scope, err := authn.Scope(r.Context())
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	if err := httpx.NewParams(r).Err(); err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	if kind, err := kernel.NewActorKind(p.ActorKind()); err != nil || !kind.IsHuman() {
+		httpx.WriteProblem(w, r, errs.Forbidden("forbidden", "asking for an Investigation requires a human actor"))
+		return
+	}
+	number, err := pathIncident(r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	dto, err := httpx.Bind[RequestInvestigationRequest](w, r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	by, err := domain.NewRequester(p.UserID, p.ActorLabel())
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	inv, err := rt.svc.RequestIncidentInvestigation(r.Context(), scope, number, dto.InvestigatorID, by)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	httpx.Data(w, r, http.StatusAccepted, investigationDetailDTO(service.InvestigationDetail{
+		Investigation: inv, Steps: []domain.Step{}}), started)
+}
+
 // getInvestigation serves GET /api/v1/investigations/{id}: the run, its Steps and
 // its Finding.
 func (rt *Router) getInvestigation(w http.ResponseWriter, r *http.Request) {
@@ -547,4 +642,14 @@ func pathCase(r *http.Request) (uuid.UUID, error) {
 		return uuid.Nil, errs.NotFound("case_not_found", "no such case")
 	}
 	return id, nil
+}
+
+// pathIncident reads the Incident `{number}`. Anything that is not a positive number
+// names no Incident: 404, `incident_not_found`, the answer another org's Incident gets.
+func pathIncident(r *http.Request) (int64, error) {
+	n, err := strconv.ParseInt(chi.URLParam(r, "number"), 10, 64)
+	if err != nil || n < 1 {
+		return 0, errs.NotFound("incident_not_found", "no such incident")
+	}
+	return n, nil
 }

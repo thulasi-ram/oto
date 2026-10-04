@@ -65,7 +65,17 @@ const (
 	reasonCaseRemoved = "case_removed"
 	reasonQuiet       = "quiet"
 	reasonActiveAgain = "active_again"
+	reasonFinding     = "finding"
 )
+
+// findingEmoji marks an Investigation's Finding. A magnifying glass because it is what
+// somebody LOOKED at and concluded — and, like the jigsaw, not one of §H.2's state
+// emoji, which a reader would take for a signal's state.
+const findingEmoji = ":mag:"
+
+// maxFindingRunes bounds a Finding quoted on a card or in a reply. The whole of it is
+// on the Incident's page, which the card links; the card says what it begins with.
+const maxFindingRunes = 600
 
 // incidentNonce is `renderNonce` for a view with no group: the Incident's identity,
 // the membership shape the card shows, the mode and the claim time. Two renders of
@@ -82,6 +92,12 @@ func incidentNonce(v *domain.NotificationView, o domain.RenderOptions) string {
 	}
 	for _, m := range iv.Members {
 		h.Write([]byte(m.CaseID + m.CaseState))
+		h.Write([]byte{0})
+	}
+	// A card whose Finding moved is a different card. Hashed only when there is one,
+	// so every card without a Finding hashes exactly as it did before there could be.
+	if f := iv.Finding; f != nil {
+		h.Write([]byte("finding:" + f.InvestigationID))
 		h.Write([]byte{0})
 	}
 	return hex.EncodeToString(h.Sum(nil))[:10]
@@ -162,6 +178,10 @@ func (r *Renderer) renderIncidentRoot(v *domain.NotificationView, o domain.Rende
 	if members := incidentMembers(iv, o); members != "" {
 		blocks = append(blocks, sectionBlock(blockID("incidentmembers", nonce),
 			truncateSection(members, iv.Link)))
+	}
+	if iv.Finding != nil {
+		blocks = append(blocks, sectionBlock(blockID("incidentfinding", nonce),
+			truncateSection(incidentFinding(*iv.Finding), iv.Link)))
 	}
 	blocks = append(blocks, contextBlock(blockID("incidentfooter", nonce),
 		Text{Type: TypeMrkdwn, Text: truncateField(incidentFooter(iv, o, now), "")}))
@@ -324,6 +344,15 @@ func (r *Renderer) renderIncidentReply(v *domain.NotificationView, o domain.Rend
 	case reasonActiveAgain:
 		body = CardFiring.Emoji() + " *Active again* — " + plural(open, "case open", "cases open")
 		sentence = incidentName(iv) + " is active again: " + plural(open, "case", "cases") + " open"
+	case reasonFinding:
+		// The Finding as of claim time — the newest, which is the one this fact
+		// announced unless a later run has already overtaken it.
+		body = findingEmoji + " *A new Finding* — " + now
+		sentence = incidentName(iv) + " has a new Finding"
+		if f := iv.Finding; f != nil {
+			body = incidentFinding(*f)
+			sentence += " by " + f.Investigator + " v" + strconv.Itoa(f.Version)
+		}
 	case reasonDrawn:
 		// `incidentModes` never gives `drawn` a reply — the card says it all — so this
 		// arm is for a preview or a future mode, and it still says something true.
@@ -414,4 +443,27 @@ func incidentCaseClause(v *domain.NotificationView) string {
 		return " (case #" + strconv.FormatInt(in.CaseNumber, 10) + " in " + incident + ")"
 	}
 	return " (in " + incident + ")"
+}
+
+// incidentFinding is an Investigation's latest Finding as a card says it (ADR 0053
+// §4): who concluded it and WHEN, then the opening of what it concluded, quoted.
+//
+// ⭐ IT SAYS "AS SEEN AT" EVERY TIME IT SAYS THE FINDING. A model's sentence about a
+// storm reads as present tense unless the card stops it; the instant it was reached
+// is what makes it a snapshot (ADR 0016) rather than a claim about now. A Finding a
+// budget cut short says "partial" before anything else.
+func incidentFinding(f domain.IncidentFindingView) string {
+	head := "Finding"
+	if f.Partial {
+		head = "Partial Finding"
+	}
+	var b strings.Builder
+	b.WriteString(findingEmoji + " *" + head + "* by " + code(f.Investigator+" v"+strconv.Itoa(f.Version)))
+	if !f.ConcludedAt.IsZero() {
+		b.WriteString(", as seen at " + slackDateTime(f.ConcludedAt))
+	}
+	if text := strings.TrimSpace(f.Summary); text != "" {
+		b.WriteString("\n>" + strings.ReplaceAll(escape(truncateRunes(text, maxFindingRunes)), "\n", "\n>"))
+	}
+	return b.String()
 }

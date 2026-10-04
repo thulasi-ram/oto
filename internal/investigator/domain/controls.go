@@ -104,12 +104,32 @@ const (
 	// trigger of its own. A person who presses "ask again" gets a run — bounded by
 	// the kill switch, the daily budget and the concurrency like every other.
 	TriggerHuman Trigger = "human"
+	// TriggerDrawn is "an Incident is drawn" (§4): the first look at a new story. It
+	// happens once per Incident, so it is not held to the interval either — but a
+	// redelivered trigger finds the run the first delivery made and resolves to it,
+	// rather than paying for the same first look twice (git-bug 74ea849).
+	TriggerDrawn Trigger = "drawn"
 	// TriggerMembership is "its membership changes" (§4) — the automatic trigger the
 	// interval exists for (§6: "Membership-change triggers inside the interval
-	// coalesce into one run"). Nothing raises it until a subject has members:
-	// git-bug 74ea849 wires it from the Incident domain.
+	// coalesce into one run"). Raised by the Incident domain when a Case joins or
+	// leaves (git-bug 74ea849). Going quiet is not a membership change and raises
+	// nothing (§4: "Not on quiet").
 	TriggerMembership Trigger = "membership"
 )
+
+// Automatic reports whether the trigger is one oto raised rather than a person.
+func (t Trigger) Automatic() bool { return t != TriggerHuman }
+
+// CoveredByIncident reports whether a trigger on a CASE is answered by the Incident
+// the Case is in rather than by a run of its own (ADR 0053 §4: "A Case already in an
+// Incident gets no Investigation of its own automatically — the Incident's covers
+// it"). `holding` is the Incident the Case is a current member of, or uuid.Nil.
+//
+// ⭐ A HUMAN IS NEVER COVERED. "Automatically" is the ADR's own word: a person who
+// asks about one Case of a storm gets a run about that Case.
+func CoveredByIncident(trigger Trigger, holding uuid.UUID) bool {
+	return trigger.Automatic() && holding != uuid.Nil
+}
 
 // SubjectRuns is what the interval reads about one (Investigator, subject): the run
 // waiting to start, if any, and the latest run that did not skip.
@@ -125,7 +145,8 @@ type SubjectRuns struct {
 // Admission is what a trigger becomes: onto an existing run, or a new one that may
 // start now or not before a time.
 type Admission struct {
-	// Onto is the queued run this trigger coalesced into, or uuid.Nil for a new run.
+	// Onto is the run this trigger resolved to — the queued one it coalesced into, or
+	// for a redelivered draw the one already made — or uuid.Nil for a new run.
 	Onto uuid.UUID
 	// NotBefore is when a new run may start; zero for "now".
 	NotBefore time.Time
@@ -137,6 +158,8 @@ func (a Admission) Coalesced() bool { return a.Onto != uuid.Nil }
 // Admit decides what a trigger becomes under an Investigator's minimum interval.
 //
 //   - A human's request is a new run, now. (See TriggerHuman.)
+//   - A draw resolves to the run already made for this subject — queued or begun —
+//     and is otherwise a new run, now. (See TriggerDrawn.)
 //   - A membership change while a run of the same Investigator on the same subject is
 //     still `queued` coalesces into it: that run has not started, so it will read the
 //     subject as it stands when it does — the change is already in what it will see.
@@ -150,7 +173,18 @@ func (a Admission) Coalesced() bool { return a.Onto != uuid.Nil }
 // waited on the concurrency for five minutes saw the subject as it was five minutes
 // later, and the interval is between the things the runs saw.
 func Admit(trigger Trigger, interval time.Duration, runs SubjectRuns, now time.Time) Admission {
-	if trigger != TriggerMembership {
+	switch trigger {
+	case TriggerMembership:
+	case TriggerDrawn:
+		switch {
+		case runs.Queued != nil:
+			return Admission{Onto: runs.Queued.ID}
+		case runs.Last != nil:
+			return Admission{Onto: runs.Last.ID}
+		default:
+			return Admission{}
+		}
+	default:
 		return Admission{}
 	}
 	if runs.Queued != nil {

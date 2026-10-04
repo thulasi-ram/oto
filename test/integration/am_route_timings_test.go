@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 94 {
-		t.Fatalf("latest migration is %d, want 94 — this test pins the number so that a "+
+	if latest != 95 {
+		t.Fatalf("latest migration is %d, want 95 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1563,11 +1563,12 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 			"`all_resolved` stays because a Case resolving is a fact about the Case", def)
 	}
 	// The ceiling follows the enum, as it has in both directions since 00046. 00069
-	// left it at fifteen; 00084 added the five Incident facts, so the top of the stack
-	// reads twenty, and fifteen is asserted again once 00084's Down has run.
-	if def := policyReasonsCheck(); !strings.Contains(def, "20") {
-		t.Fatalf("policies_reasons_ck does not bound reasons at 20 at the top of the stack: "+
-			"%s — the enum has twenty values now, and twenty-one is a cardinality no row can "+
+	// left it at fifteen; 00084 added the five Incident facts and 00095 `finding`, so
+	// the top of the stack reads twenty-one, twenty is asserted once 00095's Down has
+	// run, and fifteen once 00084's has.
+	if def := policyReasonsCheck(); !strings.Contains(def, "21") {
+		t.Fatalf("policies_reasons_ck does not bound reasons at 21 at the top of the stack: "+
+			"%s — the enum has twenty-one values now, and twenty-two is a cardinality no row can "+
 			"reach. ⛔ The ceiling moving is only half of it: the constraint does NOT test "+
 			"membership, so 00069 also has to strip the two values out of the arrays by hand",
 			def)
@@ -1631,6 +1632,56 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// accepts a kind the release below it cannot interpret. No column reading can
 	// see that, and it is the half most likely to be forgotten because nothing
 	// references it.
+	// ⭐ 00095 INVESTIGATES AN INCIDENT AS A WHOLE (ADR 0053 §4, git-bug 74ea849): three
+	// CHECKs widened by one value each — `investigations_subjkind_ck` and
+	// `enrichments_subjkind_ck` by `incident`, `notifications_reason_ck` by `finding` —
+	// the reasons ceiling raised to 21, and one column. Every CHECK is read for its BODY
+	// on both sides, for 00075's reason: a Down that kept a value admitted leaves a
+	// database that accepts what the release below cannot read back. ⚠️
+	// `enrichments_subjkind_ck` must go back to 00069's Up — `('alert','case')` — and
+	// NOT to the `'group'` its Down spells, which is where the ticket misread it.
+	if def := constraintDef("investigations_subjkind_ck", "investigations"); !strings.Contains(def, "'incident'") {
+		t.Fatalf("investigations_subjkind_ck does not admit an Incident at migration 95: %s", def)
+	}
+	if def := constraintDef("enrichments_subjkind_ck", "enrichments"); !strings.Contains(def, "'incident'") ||
+		strings.Contains(def, "'group'") {
+		t.Fatalf("enrichments_subjkind_ck at migration 95 is %s, want alert, case and incident", def)
+	}
+	if def := constraintDef("notifications_reason_ck", "notifications"); !strings.Contains(def, "'finding'") ||
+		!strings.Contains(def, "'active_again'") {
+		t.Fatalf("notifications_reason_ck does not admit `finding` beside the five at migration 95: %s", def)
+	}
+	if n := countColumns("investigators", "investigates_incidents"); n != 1 {
+		t.Fatalf("investigators.investigates_incidents exists %d time(s) at migration 95", n)
+	}
+	if c := columnComment("notifications", "reason"); !strings.Contains(c, "twenty-one") {
+		t.Fatalf("notifications.reason's comment at migration 95 does not count twenty-one: %s", c)
+	}
+
+	down(95)
+
+	if def := constraintDef("investigations_subjkind_ck", "investigations"); strings.Contains(def, "'incident'") ||
+		!strings.Contains(def, "'case'") {
+		t.Fatalf("00095's Down did not restore 00092's investigations_subjkind_ck: %s", def)
+	}
+	if def := constraintDef("enrichments_subjkind_ck", "enrichments"); strings.Contains(def, "'incident'") ||
+		strings.Contains(def, "'group'") || !strings.Contains(def, "'case'") || !strings.Contains(def, "'alert'") {
+		t.Fatalf("00095's Down did not restore 00069's enrichments_subjkind_ck: %s", def)
+	}
+	if def := constraintDef("notifications_reason_ck", "notifications"); strings.Contains(def, "'finding'") ||
+		!strings.Contains(def, "'active_again'") {
+		t.Fatalf("00095's Down did not restore 00084's notifications_reason_ck: %s", def)
+	}
+	if def := policyReasonsCheck(); !strings.Contains(def, "20") || !strings.Contains(def, "oto_array_is_set") {
+		t.Fatalf("policies_reasons_ck did not go back to a set of 1..20 after 00095's Down: %s", def)
+	}
+	if n := countColumns("investigators", "investigates_incidents"); n != 0 {
+		t.Fatalf("investigators.investigates_incidents survived 00095's Down")
+	}
+	if c := columnComment("notifications", "reason"); !strings.Contains(c, "twenty values") || strings.Contains(c, "finding") {
+		t.Fatalf("00095's Down did not restore 00084's notifications.reason comment: %s", c)
+	}
+
 	// ⭐ 00094 HOLDS AN INVESTIGATION TO THE ORG'S DAY, ITS CONCURRENCY AND AN INVESTIGATOR'S
 	// INTERVAL (ADR 0053 §6, git-bug bf172fe): a column and its CHECK on each of
 	// `investigators` and `investigations`, a reason CHECK widened by `budget`, two partial

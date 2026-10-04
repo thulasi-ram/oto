@@ -239,3 +239,38 @@ func TestTheIncidentCardLinksTheExternalIncident(t *testing.T) {
 		t.Errorf("a card with no external incident grew a link:\n%s", bare.Payload)
 	}
 }
+
+// TestAnIncidentsFindingIsDrawnAsWhatWasSeenAtT — ADR 0053 §4 (git-bug 74ea849): the
+// latest Finding on an Incident is on its card, and the `finding` fact is a reply that
+// carries it. Every time it says the Finding it says WHO concluded it and WHEN, and a
+// budget-cut one says "partial" first. A card with no Finding draws no Finding block.
+func TestAnIncidentsFindingIsDrawnAsWhatWasSeenAtT(t *testing.T) {
+	t.Parallel()
+	if body := string(renderView(t, incidentView(), domain.ModePostRoot).Payload); strings.Contains(body, "oto_incidentfinding_") {
+		t.Fatalf("an Incident with no Finding drew a Finding block:\n%s", body)
+	}
+
+	v := incidentView()
+	v.Incident.Finding = &domain.IncidentFindingView{
+		InvestigationID: "019fe297-d84f-7599-b5b2-1f23174910f1", Investigator: "firstlook", Version: 2,
+		Summary:     "The deploy at 09:00 doubled the error rate.",
+		ConcludedAt: renderedAt.Add(-time.Minute),
+	}
+	root := string(renderView(t, v, domain.ModePostRoot).Payload)
+	for _, want := range []string{"oto_incidentfinding_", "*Finding* by `firstlook v2`", "as seen at", ">The deploy at 09:00 doubled the error rate."} {
+		if !strings.Contains(root, want) {
+			t.Errorf("the card does not carry %q:\n%s", want, root)
+		}
+	}
+
+	v.Reason = "finding"
+	v.Incident.Finding.Partial = true
+	msg := renderView(t, v, domain.ModeThreadReply)
+	reply := string(msg.Payload)
+	if !strings.Contains(reply, "oto_incidentreply_") || !strings.Contains(reply, "*Partial Finding* by `firstlook v2`") {
+		t.Errorf("the finding fact is not a reply carrying the partial Finding:\n%s", reply)
+	}
+	if got := topLevelText(t, msg.Payload); !strings.Contains(got, "has a new Finding by firstlook v2") {
+		t.Errorf("the push text does not say who concluded it: %q", got)
+	}
+}

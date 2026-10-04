@@ -71,6 +71,9 @@ export const REASON_LABEL: Record<NotificationReason, string> = {
   case_removed: "a Case was removed from an Incident",
   quiet: "an Incident went quiet: no member Case is open",
   active_again: "an Incident became active again",
+  // The sixth (ADR 0053 §4): an Investigation of the Incident reached a new
+  // Finding. A fact about the story, never a verdict on whether anyone is told.
+  finding: "an Investigation of an Incident reached a new Finding",
 };
 
 /**

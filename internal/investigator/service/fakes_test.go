@@ -39,7 +39,8 @@ func (m *memInvestigators) Create(_ context.Context, s db.TenantScope, d domain.
 		}
 	}
 	inv := domain.Investigator{ID: uuid.New(), OrgID: s.OrgID(), Name: d.Name, Enabled: d.Enabled,
-		Budgets: d.Budgets, MinInterval: d.MinInterval, CreatedAt: at, UpdatedAt: at}
+		Budgets: d.Budgets, MinInterval: d.MinInterval, InvestigatesIncidents: d.InvestigatesIncidents,
+		CreatedAt: at, UpdatedAt: at}
 	m.rows[inv.ID] = inv
 	m.addVersionLocked(inv.ID, 1, d.Spec, model, at)
 	return m.getLocked(s, inv.ID)
@@ -117,14 +118,16 @@ func (m *memInvestigators) GetVersion(_ context.Context, s db.TenantScope, vid u
 	return domain.Version{}, errs.NotFound("investigator_not_found", "no such version")
 }
 
-func (m *memInvestigators) Update(_ context.Context, s db.TenantScope, id uuid.UUID, enabled bool, b domain.Budgets, interval time.Duration, at time.Time) error {
+func (m *memInvestigators) Update(_ context.Context, s db.TenantScope, id uuid.UUID, enabled bool, b domain.Budgets,
+	interval time.Duration, incidents bool, at time.Time,
+) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	r, ok := m.rows[id]
 	if !ok || r.OrgID != s.OrgID() {
 		return errs.NotFound("investigator_not_found", "no such Investigator")
 	}
-	r.Enabled, r.Budgets, r.MinInterval, r.UpdatedAt = enabled, b, interval, at
+	r.Enabled, r.Budgets, r.MinInterval, r.InvestigatesIncidents, r.UpdatedAt = enabled, b, interval, incidents, at
 	m.rows[id] = r
 	return nil
 }
@@ -315,7 +318,7 @@ func (m *memInvestigations) PriorFindings(_ context.Context, s db.TenantScope, k
 	out := []domain.PriorFinding{}
 	for _, r := range m.rows {
 		if r.OrgID == s.OrgID() && r.AlertKey == key && r.ID != except && r.Finding != "" {
-			out = append(out, domain.PriorFinding{InvestigationID: r.ID, SubjectID: r.SubjectID,
+			out = append(out, domain.PriorFinding{InvestigationID: r.ID, SubjectKind: r.SubjectKind, SubjectID: r.SubjectID,
 				InvestigatorName: r.InvestigatorName, VersionNumber: r.VersionNumber, Status: r.Status,
 				Finding: r.Finding, EndedAt: r.EndedAt})
 		}
@@ -324,6 +327,79 @@ func (m *memInvestigations) PriorFindings(_ context.Context, s db.TenantScope, k
 		out = out[:limit]
 	}
 	return out, nil
+}
+
+func (m *memInvestigations) SubjectFindings(_ context.Context, s db.TenantScope, kind domain.SubjectKind,
+	ids []uuid.UUID, except uuid.UUID, limit int,
+) ([]domain.PriorFinding, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []domain.PriorFinding{}
+	for _, r := range m.rows {
+		if r.OrgID == s.OrgID() && r.SubjectKind == kind && slices.Contains(ids, r.SubjectID) &&
+			r.ID != except && r.Finding != "" {
+			out = append(out, domain.PriorFinding{InvestigationID: r.ID, SubjectKind: r.SubjectKind, SubjectID: r.SubjectID,
+				InvestigatorName: r.InvestigatorName, VersionNumber: r.VersionNumber, Status: r.Status,
+				Finding: r.Finding, EndedAt: r.EndedAt})
+		}
+	}
+	slices.SortFunc(out, func(a, b domain.PriorFinding) int { return b.EndedAt.Compare(a.EndedAt) })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+// memIncidents is the org's Incidents and which Incident each Case is in.
+type memIncidents struct {
+	mu        sync.Mutex
+	incidents map[uuid.UUID]domain.IncidentSubject
+	holding   map[uuid.UUID]uuid.UUID // case → incident
+}
+
+func newMemIncidents() *memIncidents {
+	return &memIncidents{incidents: map[uuid.UUID]domain.IncidentSubject{}, holding: map[uuid.UUID]uuid.UUID{}}
+}
+
+func (m *memIncidents) InvestigationIncident(_ context.Context, _ db.TenantScope, id uuid.UUID) (domain.IncidentSubject, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	i, ok := m.incidents[id]
+	if !ok {
+		return domain.IncidentSubject{}, errs.NotFound("incident_not_found", "no such incident")
+	}
+	return i, nil
+}
+
+func (m *memIncidents) InvestigationIncidentNumbered(_ context.Context, _ db.TenantScope, n int64) (domain.IncidentSubject, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, i := range m.incidents {
+		if i.Number == n {
+			return i, nil
+		}
+	}
+	return domain.IncidentSubject{}, errs.NotFound("incident_not_found", "no such incident")
+}
+
+func (m *memIncidents) HoldingIncident(_ context.Context, _ db.TenantScope, caseID uuid.UUID) (uuid.UUID, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.holding[caseID], nil
+}
+
+// memDeclarer records each Incident Finding declared outbound — the one output a run
+// has beyond its rows and its Enrichment, and only for an Incident.
+type memDeclarer struct {
+	mu       sync.Mutex
+	declared [][2]uuid.UUID // (incident, investigation)
+}
+
+func (m *memDeclarer) DeclareIncidentFinding(_ context.Context, _ db.TenantScope, incidentID, investigationID uuid.UUID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.declared = append(m.declared, [2]uuid.UUID{incidentID, investigationID})
+	return nil
 }
 
 // memHistory is the Case, its timeline and its rule.

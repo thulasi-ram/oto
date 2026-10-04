@@ -297,6 +297,15 @@ func MappingFixtures() []Fixture {
 			}
 		}),
 		fact("active_again", incident("active_again"), nil),
+		// The sixth Incident fact (ADR 0053 §4, git-bug 74ea849): an Investigation of
+		// the Incident reached a new Finding, which the card carries.
+		fact("finding", incident("finding"), func(v *domain.NotificationView) {
+			v.Incident.Finding = &domain.IncidentFindingView{
+				InvestigationID: "0199a1b2-c3d4-7e5f-8a9b-00000000f1d1", Investigator: "firstlook", Version: 2,
+				Summary:     "The checkout deploy doubled the error rate; the crash loop began two minutes later.",
+				ConcludedAt: fixtureClock.Add(25 * time.Minute),
+			}
+		}),
 	}
 
 	hostileCase := hostileView()

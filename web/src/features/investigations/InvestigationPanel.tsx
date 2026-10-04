@@ -1,6 +1,13 @@
 /**
- * A Case's Investigations: the latest Finding, the Steps behind it, the earlier
- * runs, and the one control that asks for another (ADR 0053, git-bug e8e5ca8).
+ * A subject's Investigations — a Case's, or an Incident's as a whole (git-bug
+ * 74ea849): the latest Finding, the Steps behind it, the earlier runs, and the one
+ * control that asks for another (ADR 0053, git-bug e8e5ca8).
+ *
+ * ⭐ ONE PANEL, TWO SUBJECTS, AND ONLY THE NOUNS DIFFER. An Incident's run is the same
+ * record as a Case's — the same statuses, the same Finding captioned with its instant,
+ * the same transcript — so the panel is told WHICH subject and asks the subject's own
+ * list and request; everything below the header is shared. On an Incident it also
+ * says why its member Cases show no runs of their own (ADR 0053 §4).
  *
  * ⭐ A FINDING IS WHAT WAS SEEN AT T, AND THE PANEL SAYS T EVERY TIME IT SAYS THE
  * FINDING. ADR 0016 makes every enrichment a snapshot — "what the cluster looked
@@ -41,7 +48,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/solid-query";
 import {
   getInvestigation,
   listCaseInvestigations,
+  listIncidentInvestigations,
   requestCaseInvestigation,
+  requestIncidentInvestigation,
 } from "~/api/endpoints";
 import { qk } from "~/api/keys";
 import { investigatorsQuery } from "~/api/queries";
@@ -64,18 +73,67 @@ import { IN_PROGRESS, OUTCOME, REASON_SENTENCE, STATUS_LABEL, finishNote } from 
 /** How often a run in progress is re-read. */
 export const POLL_MS = 3_000;
 
-/** How many of a Case's Investigations the history lists. */
+/** How many of a subject's Investigations the history lists. */
 export const HISTORY_LIMIT = 50;
 
+/**
+ * What the panel is about: one Case by its id, or one Incident by the number a
+ * human quotes — the way each is addressed everywhere else.
+ */
+export type InvestigationSubject =
+  | { readonly kind: "case"; readonly id: string }
+  | { readonly kind: "incident"; readonly number: number };
+
 export interface InvestigationPanelProps {
-  readonly caseId: string;
+  readonly subject: InvestigationSubject;
   /** The poll cadence while a run is in progress. A test seam; the app uses `POLL_MS`. */
   readonly pollMs?: number;
+}
+
+/**
+ * What differs between subjects. The key is typed loosely here so either subject's
+ * fits; each branch below still takes it from `qk`.
+ */
+interface SubjectApi {
+  readonly list: Readonly<Record<"queryKey", readonly unknown[]>> & {
+    readonly queryFn: (c: { signal: AbortSignal }) => Promise<ListEnvelope<Investigation>>;
+  };
+  readonly request: (investigatorId: string) => Promise<InvestigationDetail>;
+  readonly noun: string;
+}
+
+/**
+ * A subject's list query — its `qk` key and its read — the request that asks about
+ * it, and the noun the panel calls it. These are the only things that differ.
+ */
+function subjectApi(subject: InvestigationSubject): SubjectApi {
+  if (subject.kind === "incident") {
+    return {
+      list: {
+        queryKey: qk.incidents.investigations(String(subject.number)),
+        queryFn: ({ signal }: { signal: AbortSignal }) =>
+          listIncidentInvestigations(subject.number, { limit: HISTORY_LIMIT }, { signal }),
+      },
+      request: (investigatorId: string) =>
+        requestIncidentInvestigation(subject.number, investigatorId),
+      noun: "this Incident",
+    };
+  }
+  return {
+    list: {
+      queryKey: qk.cases.investigations(subject.id),
+      queryFn: ({ signal }: { signal: AbortSignal }) =>
+        listCaseInvestigations(subject.id, { limit: HISTORY_LIMIT }, { signal }),
+    },
+    request: (investigatorId: string) => requestCaseInvestigation(subject.id, investigatorId),
+    noun: "this firing",
+  };
 }
 
 export const InvestigationPanel: Component<InvestigationPanelProps> = (props) => {
   const client = useQueryClient();
   const poll = (): number => props.pollMs ?? POLL_MS;
+  const api = () => subjectApi(props.subject);
 
   /* ---- who can be asked ------------------------------------------------- */
 
@@ -92,13 +150,9 @@ export const InvestigationPanel: Component<InvestigationPanelProps> = (props) =>
   /* ---- what has been asked ---------------------------------------------- */
 
   const runs = useQuery(() => ({
-    queryKey: qk.cases.investigations(props.caseId),
-    queryFn: ({ signal }: { signal: AbortSignal }) =>
-      listCaseInvestigations(props.caseId, { limit: HISTORY_LIMIT }, { signal }),
+    ...api().list,
     refetchInterval: () => {
-      const page = client.getQueryData<ListEnvelope<Investigation>>(
-        qk.cases.investigations(props.caseId),
-      );
+      const page = client.getQueryData<ListEnvelope<Investigation>>(api().list.queryKey);
       return page?.data.some((r) => IN_PROGRESS[r.status]) === true ? poll() : false;
     },
   }));
@@ -148,14 +202,15 @@ export const InvestigationPanel: Component<InvestigationPanelProps> = (props) =>
    * rather than the previous Finding under a control that was just pressed.
    */
   const ask = useMutation(() => ({
-    mutationFn: (investigatorId: string) => requestCaseInvestigation(props.caseId, investigatorId),
+    mutationFn: (investigatorId: string) => api().request(investigatorId),
     onMutate: () => setRefusal(null),
     onSuccess: (run: InvestigationDetail) => {
       client.setQueryData(qk.cases.investigation(run.id), run);
-      client.setQueryData<ListEnvelope<Investigation>>(qk.cases.investigations(props.caseId), (old) =>
+      const { queryKey } = api().list;
+      client.setQueryData<ListEnvelope<Investigation>>(queryKey, (old) =>
         old === undefined ? old : { ...old, data: [run, ...old.data.filter((r) => r.id !== run.id)] },
       );
-      void client.invalidateQueries({ queryKey: qk.cases.investigations(props.caseId) });
+      void client.invalidateQueries({ queryKey });
       setChosen(null);
       setPicking(false);
     },
@@ -171,6 +226,13 @@ export const InvestigationPanel: Component<InvestigationPanelProps> = (props) =>
             What a model concluded when it looked. It changes what people read, never whether
             anyone is told.
           </p>
+          <Show when={props.subject.kind === "incident"}>
+            <p class="mt-2xs text-meta text-ink-subtle" data-incident-coverage>
+              The Incident is investigated as a whole: drawing it, and Cases joining or leaving
+              it, start runs of the Investigators set to investigate Incidents. Its Cases start
+              none of their own while they are in it — anyone may still ask about one.
+            </p>
+          </Show>
         </div>
         <Show when={investigators.data !== undefined}>
           <Switch>
@@ -183,7 +245,7 @@ export const InvestigationPanel: Component<InvestigationPanelProps> = (props) =>
                   const only = askable()[0];
                   if (only !== undefined) ask.mutate(only.id);
                 }}
-                title={`Ask ${askable()[0]?.name ?? ""} v${askable()[0]?.current_version.version ?? ""} to look at this firing. It runs in the background; nothing waits on it.`}
+                title={`Ask ${askable()[0]?.name ?? ""} v${askable()[0]?.current_version.version ?? ""} to look at ${api().noun}. It runs in the background; nothing waits on it.`}
               >
                 Investigate
               </Button>
@@ -256,7 +318,7 @@ export const InvestigationPanel: Component<InvestigationPanelProps> = (props) =>
         </Match>
         <Match when={rows().length === 0}>
           <p class={cn("text-body text-ink-muted", PANEL_ROW)}>
-            No Investigation of this firing has been asked for.
+            No Investigation of {api().noun} has been asked for.
           </p>
         </Match>
         <Match when={shown()}>
@@ -275,9 +337,9 @@ export const InvestigationPanel: Component<InvestigationPanelProps> = (props) =>
       <Show when={rows().length > 1}>
         <div class="border-t border-line">
           <h3 class={cn(SECTION_LABEL, "px-3 pt-2 text-ink-muted")}>
-            Every Investigation of this firing
+            Every Investigation of {api().noun}
           </h3>
-          <ul class="py-1" aria-label="Every Investigation of this firing, latest first">
+          <ul class="py-1" aria-label={`Every Investigation of ${api().noun}, latest first`}>
             <For each={rows()}>
               {(r, i) => (
                 <li>

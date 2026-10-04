@@ -98,7 +98,7 @@ var mappingFacts = []string{
 	"refired", "acked", "unacked", "snoozed", "unsnoozed",
 	"enriched", "rule_changed", "comment",
 	"digest",
-	"drawn", "case_added", "case_removed", "quiet", "active_again",
+	"drawn", "case_added", "case_removed", "quiet", "active_again", "finding",
 }
 
 // MappingFacts returns every fact a mapping is rendered for, freshly copied.
@@ -107,11 +107,11 @@ func MappingFacts() []string { return slices.Clone(mappingFacts) }
 // IsMappingFact reports whether fact is one an envelope can carry.
 func IsMappingFact(fact string) bool { return slices.Contains(mappingFacts, fact) }
 
-// IncidentFact reports whether fact is one of the five Incident facts, whose
+// IncidentFact reports whether fact is one of the six Incident facts, whose
 // envelope carries `incident` and no `group`.
 func IncidentFact(fact string) bool {
 	switch fact {
-	case "drawn", "case_added", "case_removed", "quiet", "active_again":
+	case "drawn", "case_added", "case_removed", "quiet", "active_again", "finding":
 		return true
 	}
 	return false

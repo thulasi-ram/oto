@@ -130,7 +130,7 @@ const (
 	// about a firing.
 	ReasonDigest Reason = "digest"
 
-	// ⭐⭐ THE FIVE INCIDENT FACTS (ADR 0052 §5, migration 00084). Declaring an
+	// ⭐⭐ THE SIX INCIDENT FACTS (ADR 0052 §5, migrations 00084 and 00095). Declaring an
 	// Incident is a notification, so each thing oto observes about one is a Reason
 	// whose subject is the Incident — `SubjectIncident` below — and "every Incident
 	// goes to incident.io" is one catch-all policy over these five.
@@ -161,6 +161,12 @@ const (
 	// strictly terminal (ADR 0040), so this only ever happens by membership — an
 	// open Case added or moved in — never by a closed member reopening.
 	ReasonActiveAgain Reason = "active_again"
+	// ReasonFinding is an Investigation of the Incident reaching a new Finding (ADR
+	// 0052 §5: oto sends "new Finding"; ADR 0053 §4, migration 00095). The sixth
+	// Incident fact, and a FACT like the other five: the Finding is what the card
+	// carries, never an input to whether anything about any signal is sent (ADR 0053
+	// §2). Its occasion is the Investigation, so one run is declared once.
+	ReasonFinding Reason = "finding"
 )
 
 // ⛔ THERE IS NO `severity_raised`, AND ADDING ONE WOULD BE ADDING AN ENUM VALUE
@@ -197,6 +203,8 @@ var allReasons = []Reason{
 	// `notifications_reason_ck` hold this order, and inserting them anywhere else
 	// re-orders a published enum for nothing.
 	ReasonDrawn, ReasonCaseAdded, ReasonCaseRemoved, ReasonQuiet, ReasonActiveAgain,
+	// `finding` is APPENDED after them, for the same reason (migration 00095).
+	ReasonFinding,
 }
 
 // AllReasons returns the closed Reason set. The slice is freshly built so a
@@ -374,6 +382,9 @@ var reasonSubjects = map[Reason]SubjectKind{
 	ReasonCaseRemoved: SubjectIncident,
 	ReasonQuiet:       SubjectIncident,
 	ReasonActiveAgain: SubjectIncident,
+	// A new Finding is about the Incident it investigated as a whole, not about any
+	// one of its Cases.
+	ReasonFinding: SubjectIncident,
 }
 
 // Subject is what a Notification carrying this Reason is ABOUT — the value its

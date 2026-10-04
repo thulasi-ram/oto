@@ -1301,6 +1301,51 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/incidents/{number}/investigations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * An Incident's Investigations, latest first
+         * @description Every Investigation of this Incident as a whole, latest requested first, without transcripts
+         *     (ADR 0053 §4). The latest one's Finding is the one the Incident shows; it is also published as the
+         *     Enrichment `investigator.<name>` on the Incident, and declared outbound as the Incident fact
+         *     `finding`. An Incident this org does not have — or a `number` that is not one — is a `404`.
+         *
+         *     An Incident starts runs on its own: when it is drawn, one per Investigator that is switched on and
+         *     `investigates_incidents`; when a Case joins or leaves it, one more per such Investigator,
+         *     coalesced under its `min_interval_seconds`. Going quiet starts nothing. While a Case is in an
+         *     Incident, nothing starts a run of that Case on its own — the Incident's covers it — though a human
+         *     may still ask about the Case.
+         */
+        get: operations["listIncidentInvestigations"];
+        put?: never;
+        /**
+         * Ask an Investigator to investigate an Incident as a whole
+         * @description Records one Investigation of this Incident — the story, with every member Case — by the
+         *     Investigator's **current version**, and runs it **asynchronously**, exactly as a Case's request
+         *     does: never on the notification path, `202` with the run as recorded, `skipped` with reason
+         *     `disabled` or `budget` when a kill switch is off or the org's daily budget is spent, waiting under
+         *     the org's concurrency, and not held to `min_interval_seconds`. Any Investigator may be asked,
+         *     whether or not it `investigates_incidents` on its own.
+         *
+         *     The run reads the member Cases' earlier Findings through the built-in Tool `oto_member_findings`
+         *     and the Incident's own through `oto_prior_findings`, when its allowlist names them. Tools that
+         *     read one Case are not offered to it.
+         *
+         *     Needs a human: a system principal is a `403`. An Incident or an Investigator this org does not
+         *     have is a `404`.
+         */
+        post: operations["requestIncidentInvestigation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/investigations/{id}": {
         parameters: {
             query?: never;
@@ -3159,6 +3204,12 @@ export interface components {
          *     `incident` subject of `oto.notification.v1`; a threaded channel records the delivery as skipped,
          *     because an Incident is not yet a conversation on one.
          *
+         *     `finding` is the sixth Incident fact (ADR 0052 §5, ADR 0053 §4): an Investigation of the Incident
+         *     reached a new Finding, which the envelope's `incident.finding` carries — what was concluded, by
+         *     which Investigator version, and when. Like the other five it is a fact, never a command, and a
+         *     Finding never decides whether anything about any signal is sent; whether `finding` itself goes
+         *     anywhere is a policy's word.
+         *
          *     ⛔ **There is no `severity_raised`, and there was.** ADR 0020 proposed it as the purest case for
          *     broadcasting — a card going amber to red under a silent `chat.update` — and a migration was
          *     written for it. The premise does not survive SPEC §C.2: in Prometheus `severity` is an ordinary
@@ -3197,7 +3248,7 @@ export interface components {
          * @example fired
          * @enum {string}
          */
-        NotificationReason: "fired" | "all_resolved" | "repeat" | "suppressed" | "unsuppressed" | "expired" | "refired" | "acked" | "unacked" | "snoozed" | "unsnoozed" | "enriched" | "rule_changed" | "comment" | "digest" | "drawn" | "case_added" | "case_removed" | "quiet" | "active_again";
+        NotificationReason: "fired" | "all_resolved" | "repeat" | "suppressed" | "unsuppressed" | "expired" | "refired" | "acked" | "unacked" | "snoozed" | "unsnoozed" | "enriched" | "rule_changed" | "comment" | "digest" | "drawn" | "case_added" | "case_removed" | "quiet" | "active_again" | "finding";
         /**
          * @example delivered
          * @enum {string}
@@ -7840,6 +7891,13 @@ export interface components {
              * @example 600
              */
             min_interval_seconds: number;
+            /**
+             * @description Whether an Incident starts runs of this Investigator on its own (ADR 0053 §4): one when it is
+             *     drawn, and one more per burst of membership change under `min_interval_seconds`. Going quiet
+             *     starts nothing. Off by default — automatic runs cost tokens, so an operator opts in. A human
+             *     may ask any Investigator about any Incident regardless. Not versioned.
+             */
+            investigates_incidents: boolean;
             current_version: components["schemas"]["InvestigatorVersionDTO"];
             created_at: components["schemas"]["Timestamp"];
             updated_at: components["schemas"]["Timestamp"];
@@ -7861,6 +7919,11 @@ export interface components {
              * @default 600
              */
             min_interval_seconds: number;
+            /**
+             * @description Whether an Incident being drawn, and its membership changing, starts a run of this Investigator on its own.
+             * @default false
+             */
+            investigates_incidents: boolean;
             model_provider_id: components["schemas"]["Uuid"];
             prompt: string;
             /**
@@ -7870,19 +7933,20 @@ export interface components {
             tools: string[];
         };
         /**
-         * @description A partial update. `enabled`, `budgets` and `min_interval_seconds` change in place; a differing
-         *     model, prompt or Tool list writes a new version.
+         * @description A partial update. `enabled`, `budgets`, `min_interval_seconds` and `investigates_incidents` change
+         *     in place; a differing model, prompt or Tool list writes a new version.
          */
         UpdateInvestigatorRequest: {
             enabled?: boolean;
             budgets?: components["schemas"]["InvestigatorBudgetsDTO"];
             /** Format: int32 */
             min_interval_seconds?: number;
+            investigates_incidents?: boolean;
             model_provider_id?: components["schemas"]["Uuid"];
             prompt?: string;
             tools?: string[];
         };
-        /** @description Which Investigator to run against the Case. Its current version is pinned. */
+        /** @description Which Investigator to run against the Case or the Incident. Its current version is pinned. */
         RequestInvestigationRequest: {
             investigator_id: components["schemas"]["Uuid"];
         };
@@ -7908,10 +7972,11 @@ export interface components {
         InvestigationDTO: {
             id: components["schemas"]["Uuid"];
             /**
-             * @description What was investigated. Only a Case today (ADR 0053 §4 names four).
+             * @description What was investigated: one Case, or an Incident as a whole (ADR 0053 §4 names four subjects;
+             *     these two have a run path). `subject_id` is the Case's or the Incident's id.
              * @enum {string}
              */
-            subject_kind: "case";
+            subject_kind: "case" | "incident";
             subject_id: components["schemas"]["Uuid"];
             investigator_id: components["schemas"]["Uuid"];
             investigator_name: string;
@@ -11542,6 +11607,90 @@ export interface operations {
             path: {
                 /** @description Resource identifier (UUIDv7). */
                 id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RequestInvestigationRequest"];
+            };
+        };
+        responses: {
+            /** @description The Investigation as recorded — `queued`, or `skipped` when a kill switch is off or the org's daily token budget is spent. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvestigationResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    listIncidentInvestigations: {
+        parameters: {
+            query?: {
+                /** @description Maximum items to return in one page. */
+                limit?: components["parameters"]["LimitParam"];
+                /**
+                 * @description Opaque keyset cursor, taken verbatim from `page.next_cursor` of the previous response. A cursor
+                 *     minted under a different filter set is rejected with `400 cursor_filter_mismatch` — reset
+                 *     pagination when the user changes a filter.
+                 */
+                cursor?: components["parameters"]["CursorParam"];
+            };
+            header?: never;
+            path: {
+                /**
+                 * @description The Incident's number within the caller's organisation — the name a human quotes, not its id.
+                 *     Per-organisation, so another org's Incident with the same number is simply a different one, and
+                 *     a number naming nothing here is a `404`.
+                 */
+                number: components["parameters"]["IncidentNumberParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One page of the Incident's Investigations. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvestigationListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    requestIncidentInvestigation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description The Incident's number within the caller's organisation — the name a human quotes, not its id.
+                 *     Per-organisation, so another org's Incident with the same number is simply a different one, and
+                 *     a number naming nothing here is a `404`.
+                 */
+                number: components["parameters"]["IncidentNumberParam"];
             };
             cookie?: never;
         };

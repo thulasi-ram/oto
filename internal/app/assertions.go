@@ -67,6 +67,8 @@ var (
 	_ alertsservice.CaseEndings        = (*caseEndings)(nil)
 	_ alertsservice.CaseOpenings       = caseOpenings{}
 	_ incidentsservice.Announcer       = incidentAnnouncer{}
+	_ incidentsservice.Announcer       = incidentInvestigationTriggers{}
+	_ incidentsservice.Announcer       = incidentAnnouncers{}
 	_ incidentsservice.CorrelatorStore = (*incidentsrepo.CorrelatorRepository)(nil)
 	// ADR 0053 §3: the model endpoint's row, its sealed key and the one adapter.
 	_ investigatorservice.ProviderStore    = (*investigatorrepo.ProviderRepository)(nil)
@@ -80,6 +82,8 @@ var (
 	_ investigatorservice.InvestigatorStore  = (*investigatorrepo.InvestigatorRepository)(nil)
 	_ investigatorservice.InvestigationStore = (*investigatorrepo.InvestigationRepository)(nil)
 	_ investigatorservice.CaseReader         = investigationCases{}
+	_ investigatorservice.IncidentReader     = investigationIncidents{}
+	_ investigatorservice.FindingDeclarer    = findingDeclarer{}
 	_ investigatorservice.TimelineReader     = investigationCases{}
 	_ investigatorservice.RuleReader         = investigationRules{}
 	_ investigatorservice.FindingPublisher   = findingPublisher{}

@@ -2991,6 +2991,101 @@ paths:
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
 
+  /api/v1/incidents/{number}/investigations:
+    get:
+      operationId: listIncidentInvestigations
+      summary: An Incident's Investigations, latest first
+      tags: [Investigators]
+      description: |
+        Every Investigation of this Incident as a whole, latest requested first, without transcripts
+        (ADR 0053 §4). The latest one's Finding is the one the Incident shows; it is also published as the
+        Enrichment `investigator.<name>` on the Incident, and declared outbound as the Incident fact
+        `finding`. An Incident this org does not have — or a `number` that is not one — is a `404`.
+
+        An Incident starts runs on its own: when it is drawn, one per Investigator that is switched on and
+        `investigates_incidents`; when a Case joins or leaves it, one more per such Investigator,
+        coalesced under its `min_interval_seconds`. Going quiet starts nothing. While a Case is in an
+        Incident, nothing starts a run of that Case on its own — the Incident's covers it — though a human
+        may still ask about the Case.
+      parameters:
+        - $ref: '#/components/parameters/IncidentNumberParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/CursorParam'
+      responses:
+        '200':
+          description: One page of the Incident's Investigations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvestigationListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    post:
+      operationId: requestIncidentInvestigation
+      summary: Ask an Investigator to investigate an Incident as a whole
+      tags: [Investigators]
+      description: |
+        Records one Investigation of this Incident — the story, with every member Case — by the
+        Investigator's **current version**, and runs it **asynchronously**, exactly as a Case's request
+        does: never on the notification path, `202` with the run as recorded, `skipped` with reason
+        `disabled` or `budget` when a kill switch is off or the org's daily budget is spent, waiting under
+        the org's concurrency, and not held to `min_interval_seconds`. Any Investigator may be asked,
+        whether or not it `investigates_incidents` on its own.
+
+        The run reads the member Cases' earlier Findings through the built-in Tool `oto_member_findings`
+        and the Incident's own through `oto_prior_findings`, when its allowlist names them. Tools that
+        read one Case are not offered to it.
+
+        Needs a human: a system principal is a `403`. An Incident or an Investigator this org does not
+        have is a `404`.
+      parameters:
+        - $ref: '#/components/parameters/IncidentNumberParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RequestInvestigationRequest'
+      responses:
+        '202':
+          description: The Investigation as recorded — `queued`, or `skipped` when a kill switch is off or the org's daily token budget is spent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvestigationResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   /api/v1/investigations/{id}:
     get:
       operationId: getInvestigation
@@ -4808,7 +4903,7 @@ paths:
           description: Comma-separated reasons.
           schema:
             type: array
-            maxItems: 20
+            maxItems: 21
             uniqueItems: true
             items:
               $ref: '#/components/schemas/NotificationReason'
@@ -7153,6 +7248,7 @@ components:
         - case_removed
         - quiet
         - active_again
+        - finding
       description: |
         Why a Notification exists. Distinct from Alertmanager's wire `notification_reason` string, which
         is mapped onto this enum on ingest.
@@ -7182,6 +7278,12 @@ components:
         policy sends nothing about its Incidents. They are delivered over the generic webhook as the
         `incident` subject of `oto.notification.v1`; a threaded channel records the delivery as skipped,
         because an Incident is not yet a conversation on one.
+
+        `finding` is the sixth Incident fact (ADR 0052 §5, ADR 0053 §4): an Investigation of the Incident
+        reached a new Finding, which the envelope's `incident.finding` carries — what was concluded, by
+        which Investigator version, and when. Like the other five it is a fact, never a command, and a
+        Finding never decides whether anything about any signal is sent; whether `finding` itself goes
+        anywhere is a policy's word.
 
         ⛔ **There is no `severity_raised`, and there was.** ADR 0020 proposed it as the purest case for
         broadcasting — a card going amber to red under a silent `chat.update` — and a migration was
@@ -10533,7 +10635,7 @@ components:
         reasons:
           type: array
           minItems: 1
-          maxItems: 20
+          maxItems: 21
           uniqueItems: true
           items:
             $ref: '#/components/schemas/NotificationReason'
@@ -13404,7 +13506,7 @@ components:
         reasons:
           type: array
           minItems: 1
-          maxItems: 20
+          maxItems: 21
           uniqueItems: true
           items:
             $ref: '#/components/schemas/NotificationReason'
@@ -13524,7 +13626,7 @@ components:
         reasons:
           type: array
           minItems: 1
-          maxItems: 20
+          maxItems: 21
           uniqueItems: true
           items:
             $ref: '#/components/schemas/NotificationReason'
@@ -14156,7 +14258,8 @@ components:
 
     InvestigatorDTO:
       type: object
-      required: [id, name, enricher, enabled, budgets, min_interval_seconds, current_version, created_at, updated_at]
+      required: [id, name, enricher, enabled, budgets, min_interval_seconds, investigates_incidents, current_version,
+                 created_at, updated_at]
       properties:
         id:
           $ref: '#/components/schemas/Uuid'
@@ -14184,6 +14287,13 @@ components:
             started. Membership-change triggers inside it coalesce into one run that starts when it is up;
             0 runs on every trigger. A human's request is not held to it. Not versioned.
           examples: [600]
+        investigates_incidents:
+          type: boolean
+          description: |
+            Whether an Incident starts runs of this Investigator on its own (ADR 0053 §4): one when it is
+            drawn, and one more per burst of membership change under `min_interval_seconds`. Going quiet
+            starts nothing. Off by default — automatic runs cost tokens, so an operator opts in. A human
+            may ask any Investigator about any Incident regardless. Not versioned.
         current_version:
           $ref: '#/components/schemas/InvestigatorVersionDTO'
         created_at:
@@ -14228,6 +14338,10 @@ components:
           maximum: 86400
           default: 600
           description: The least time between two runs on one subject; membership-change triggers inside it coalesce.
+        investigates_incidents:
+          type: boolean
+          default: false
+          description: Whether an Incident being drawn, and its membership changing, starts a run of this Investigator on its own.
         model_provider_id:
           $ref: '#/components/schemas/Uuid'
         prompt:
@@ -14260,6 +14374,8 @@ components:
           format: int32
           minimum: 0
           maximum: 86400
+        investigates_incidents:
+          type: boolean
         model_provider_id:
           $ref: '#/components/schemas/Uuid'
         prompt:
@@ -14276,8 +14392,8 @@ components:
             maxLength: 64
             pattern: '^[A-Za-z0-9_-]{1,64}$'
       description: |
-        A partial update. `enabled`, `budgets` and `min_interval_seconds` change in place; a differing
-        model, prompt or Tool list writes a new version.
+        A partial update. `enabled`, `budgets`, `min_interval_seconds` and `investigates_incidents` change
+        in place; a differing model, prompt or Tool list writes a new version.
 
     RequestInvestigationRequest:
       type: object
@@ -14286,7 +14402,7 @@ components:
       properties:
         investigator_id:
           $ref: '#/components/schemas/Uuid'
-      description: Which Investigator to run against the Case. Its current version is pinned.
+      description: Which Investigator to run against the Case or the Incident. Its current version is pinned.
 
     InvestigationStatus:
       type: string
@@ -14319,8 +14435,10 @@ components:
           $ref: '#/components/schemas/Uuid'
         subject_kind:
           type: string
-          enum: [case]
-          description: What was investigated. Only a Case today (ADR 0053 §4 names four).
+          enum: [case, incident]
+          description: |
+            What was investigated: one Case, or an Incident as a whole (ADR 0053 §4 names four subjects;
+            these two have a run path). `subject_id` is the Case's or the Incident's id.
         subject_id:
           $ref: '#/components/schemas/Uuid'
         investigator_id:

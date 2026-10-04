@@ -54,7 +54,7 @@ export const REASON_SENTENCE: Record<InvestigationReason, string> = {
   model_error: "The model endpoint answered with an error.",
   model_changed:
     "The endpoint no longer reports the model this Investigator version pinned, so the run was stopped rather than answered by a different model.",
-  subject_gone: "The Case it was asked about could no longer be read.",
+  subject_gone: "The Case or Incident it was asked about could no longer be read.",
   interrupted:
     "Its worker stopped part-way through. It is not run again on its own, which would spend its tokens twice — ask again if it is still worth asking.",
   internal: "oto failed while running it. This is a fault on oto's side.",

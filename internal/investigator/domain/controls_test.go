@@ -132,3 +132,66 @@ func TestAHumanIsNotHeldToTheInterval(t *testing.T) {
 		t.Fatalf("a human's request = %+v, want a new run now", a)
 	}
 }
+
+// TestADrawResolvesToTheRunAlreadyMade — ADR 0053 §4 (git-bug 74ea849): an Incident is
+// drawn once, so a draw is a new run, now — unless one exists already for this
+// Investigator and subject, queued or begun, which a redelivered trigger resolves to
+// rather than paying for the same first look twice. It is never deferred.
+func TestADrawResolvesToTheRunAlreadyMade(t *testing.T) {
+	if a := domain.Admit(domain.TriggerDrawn, time.Hour, domain.SubjectRuns{}, t0); a.Coalesced() || !a.NotBefore.IsZero() {
+		t.Fatalf("a first draw = %+v, want a new run now", a)
+	}
+	queued := domain.Investigation{ID: uuid.New(), Status: domain.StatusQueued, RequestedAt: t0}
+	if a := domain.Admit(domain.TriggerDrawn, time.Hour, domain.SubjectRuns{Queued: &queued}, t0); a.Onto != queued.ID {
+		t.Fatalf("a redelivered draw while queued = %+v", a)
+	}
+	ran := domain.Investigation{ID: uuid.New(), Status: domain.StatusCompleted, RequestedAt: t0, StartedAt: t0}
+	if a := domain.Admit(domain.TriggerDrawn, time.Hour, domain.SubjectRuns{Last: &ran}, t0.Add(time.Minute)); a.Onto != ran.ID || !a.NotBefore.IsZero() {
+		t.Fatalf("a redelivered draw after the run = %+v, want the run it made", a)
+	}
+}
+
+// TestAnIncidentCoversItsMemberCasesOnlyAutomatically — §4: "A Case already in an
+// Incident gets no Investigation of its own automatically." A human is never covered,
+// and a Case in no Incident never is.
+func TestAnIncidentCoversItsMemberCasesOnlyAutomatically(t *testing.T) {
+	held := uuid.New()
+	for _, tc := range []struct {
+		trigger domain.Trigger
+		holding uuid.UUID
+		want    bool
+	}{
+		{domain.TriggerMembership, held, true},
+		{domain.TriggerDrawn, held, true},
+		{domain.TriggerHuman, held, false},
+		{domain.TriggerMembership, uuid.Nil, false},
+	} {
+		if got := domain.CoveredByIncident(tc.trigger, tc.holding); got != tc.want {
+			t.Errorf("CoveredByIncident(%s, held=%v) = %v, want %v", tc.trigger, tc.holding != uuid.Nil, got, tc.want)
+		}
+	}
+	if domain.TriggerHuman.Automatic() || !domain.TriggerDrawn.Automatic() || !domain.TriggerMembership.Automatic() {
+		t.Fatal("only a human's request is not automatic")
+	}
+}
+
+// TestAnIncidentIsASubjectAndItsCurrentCasesAreItsMembers — `investigations_subjkind_ck`
+// admits `case` and `incident` (00095); an Incident's member Cases are its current
+// spells, not the ones that left.
+func TestAnIncidentIsASubjectAndItsCurrentCasesAreItsMembers(t *testing.T) {
+	for _, k := range []string{"case", "incident"} {
+		if got, err := domain.ParseSubjectKind(k); err != nil || string(got) != k {
+			t.Fatalf("ParseSubjectKind(%q) = %q, %v", k, got, err)
+		}
+	}
+	if _, err := domain.ParseSubjectKind("digest"); !errs.IsKind(err, errs.KindInternal) {
+		t.Fatalf("a subject with no run path parsed: %v", err)
+	}
+	in, left := uuid.New(), uuid.New()
+	i := domain.IncidentSubject{Members: []domain.IncidentMember{
+		{CaseID: in}, {CaseID: left, RemovedAt: t0},
+	}}
+	if got := i.CurrentCases(); len(got) != 1 || got[0] != in {
+		t.Fatalf("CurrentCases = %v, want only the Case still in it", got)
+	}
+}

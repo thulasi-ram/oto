@@ -10,6 +10,12 @@ package app
 // `enriched` amendment. ADR 0053 §2: a Finding changes what people read, never whether
 // they are told, and git-bug 180a525's "never touches the notification path" is held
 // here by there being no call to make.
+//
+// ⚠️ ONE DECLARATION, AND IT IS NOT A DECISION. An INCIDENT's new Finding is declared
+// outbound as the Incident fact `finding` (ADR 0052 §5, git-bug 74ea849) through
+// findingDeclarer below — a separate port, so the publish above stays inert. It says
+// the Incident has a new Finding; it holds, suppresses or adds nothing about any
+// Case's or Alert's own notifications.
 
 import (
 	"context"
@@ -22,8 +28,11 @@ import (
 	enrichdomain "github.com/thulasiram/oto/internal/enrichment/domain"
 	enrichrepo "github.com/thulasiram/oto/internal/enrichment/repository"
 	identityservice "github.com/thulasiram/oto/internal/identity/service"
+	incidentsdomain "github.com/thulasiram/oto/internal/incidents/domain"
+	incidentsservice "github.com/thulasiram/oto/internal/incidents/service"
 	"github.com/thulasiram/oto/internal/ingestion/decode"
 	investigatordomain "github.com/thulasiram/oto/internal/investigator/domain"
+	notifdomain "github.com/thulasiram/oto/internal/notification/domain"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/jobs"
@@ -93,6 +102,90 @@ func (a investigationCases) CaseTimeline(
 	return out, nil
 }
 
+// investigationIncidents is `investigator/service.IncidentReader` over
+// `incidents/service` (git-bug 74ea849): the Incident a run is about, as the copy the
+// investigator module declares, and the Incident a Case is in.
+type investigationIncidents struct {
+	incidents *incidentsservice.Service
+}
+
+func (a investigationIncidents) InvestigationIncident(
+	ctx context.Context, s db.TenantScope, incidentID uuid.UUID,
+) (investigatordomain.IncidentSubject, error) {
+	d, err := a.incidents.GetByID(ctx, s, incidentID)
+	if err != nil {
+		return investigatordomain.IncidentSubject{}, err
+	}
+	return incidentSubject(d), nil
+}
+
+func (a investigationIncidents) InvestigationIncidentNumbered(
+	ctx context.Context, s db.TenantScope, number int64,
+) (investigatordomain.IncidentSubject, error) {
+	d, err := a.incidents.Get(ctx, s, number)
+	if err != nil {
+		return investigatordomain.IncidentSubject{}, err
+	}
+	return incidentSubject(d), nil
+}
+
+func (a investigationIncidents) HoldingIncident(ctx context.Context, s db.TenantScope, caseID uuid.UUID) (uuid.UUID, error) {
+	held, err := a.incidents.HoldingCase(ctx, s, caseID)
+	if err != nil || len(held) == 0 {
+		return uuid.Nil, err
+	}
+	return held[0].ID, nil
+}
+
+// incidentSubject is the struct copy the boundary costs.
+func incidentSubject(d incidentsdomain.Detail) investigatordomain.IncidentSubject {
+	drawnBy := d.DrawnBy.Label()
+	if !d.DrawnBy.IsHuman() {
+		drawnBy = "a Correlator (" + d.DrawnBy.CorrelatorID().String() + ")"
+	}
+	out := investigatordomain.IncidentSubject{
+		IncidentID: d.ID,
+		Number:     d.Number,
+		Active:     d.OpenMemberCount > 0,
+		DrawnAt:    d.DrawnAt,
+		DrawnBy:    drawnBy,
+		Members:    make([]investigatordomain.IncidentMember, 0, len(d.Members)),
+	}
+	for _, m := range d.Members {
+		out.Members = append(out.Members, investigatordomain.IncidentMember{
+			CaseID:     m.CaseID,
+			CaseNumber: m.CaseNumber,
+			Alertname:  m.Alertname,
+			Labels:     m.Labels,
+			State:      m.CaseState.String(),
+			AddedAt:    m.AddedAt,
+			RemovedAt:  m.RemovedAt,
+		})
+	}
+	return out
+}
+
+// findingDeclarer is `investigator/service.FindingDeclarer` over the outbox: an
+// Incident's new Finding is one `notify.incident` job with the Reason `finding`, keyed
+// on the Investigation as its occasion, enqueued in the transaction that recorded the
+// Finding (ADR 0052 §5, git-bug 74ea849). A redelivered run's ending is the same
+// occasion and the same key; a second run is a second Finding and a second fact.
+//
+// ⛔ WHETHER IT GOES ANYWHERE IS A POLICY'S QUESTION. An org with no policy naming
+// `finding` records the intent `no_policy` and sends nothing.
+type findingDeclarer struct {
+	enq db.Enqueuer
+}
+
+func (d findingDeclarer) DeclareIncidentFinding(ctx context.Context, _ db.TenantScope, incidentID, investigationID uuid.UUID) error {
+	_, err := d.enq.Enqueue(ctx, jobs.NotifyIncidentArgs{
+		IncidentID: incidentID,
+		Reason:     string(notifdomain.ReasonFinding),
+		OccasionID: investigationID,
+	})
+	return err
+}
+
 // investigationRules is `investigator/service.RuleReader` over `rules/service`.
 type investigationRules struct {
 	rules *rulesservice.Service
@@ -120,11 +213,12 @@ func (a investigationRules) RuleAtFire(
 }
 
 // findingPublisher is `investigator/service.FindingPublisher`: a Finding is stored as
-// the Enrichment `investigator.<name>` on its Case (ADR 0053 §3), through the same
+// the Enrichment `investigator.<name>` on its subject — the Case, or the Incident
+// (ADR 0053 §3, §4) — through the same
 // repository and the same constructor every enricher's result goes through — so the
 // cards, the API and the stream read it with nothing new.
 //
-// ⭐ ONE CURRENT FINDING PER INVESTIGATOR PER CASE. `enrichments_subject_uniq` is
+// ⭐ ONE CURRENT FINDING PER INVESTIGATOR PER SUBJECT. `enrichments_subject_uniq` is
 // (subject_kind, subject_id, enricher), so a later run's Finding REPLACES the earlier
 // one — "the latest is shown" (§4) — while every run's own Finding stays on its
 // Investigation row. The Enrichment's version is the Investigator version, so it names
@@ -134,6 +228,12 @@ type findingPublisher struct {
 }
 
 func (p findingPublisher) PublishFinding(ctx context.Context, s db.TenantScope, f investigatordomain.PublishedFinding) error {
+	subjectKind := enrichdomain.SubjectCase
+	if f.SubjectKind == investigatordomain.SubjectIncident {
+		// ⭐ ON THE INCIDENT, NOT ON ANY OF ITS CASES (migration 00095): the run looked
+		// at the story, and its Finding is about the story.
+		subjectKind = enrichdomain.SubjectIncident
+	}
 	status := enrichdomain.StatusOK
 	if f.Partial {
 		status = enrichdomain.StatusPartial
@@ -144,8 +244,8 @@ func (p findingPublisher) PublishFinding(ctx context.Context, s db.TenantScope, 
 	}
 	e, err := enrichdomain.NewEnrichment(enrichdomain.EnrichmentParams{
 		OrgID:       s.OrgID().String(),
-		SubjectKind: enrichdomain.SubjectCase,
-		SubjectID:   f.CaseID.String(),
+		SubjectKind: subjectKind,
+		SubjectID:   f.SubjectID.String(),
 		Enricher:    f.Enricher,
 		Version:     f.Version,
 		Phase:       enrichdomain.PhaseAsync,
@@ -247,6 +347,25 @@ func (c *Container) runInvestigation(ctx context.Context, job *jobs.Job[jobs.Inv
 	return jobs.ForTenant(ctx, jobs.KindInvestigationsRun, c.orgs, job.Args.OrgID,
 		func(ctx context.Context, scope db.TenantScope) error {
 			err := c.Investigator.RunInvestigation(ctx, scope, job.Args.InvestigationID)
+			if errs.IsKind(err, errs.KindValidation) {
+				return jobs.Permanent(err)
+			}
+			return err
+		})
+}
+
+// triggerIncidentInvestigations is `investigations.incident` (ADR 0053 §4, git-bug
+// 74ea849): one Incident fact, turned into the runs of the Investigators that
+// investigate Incidents. A trigger this release does not know is a bug in the producer
+// and is not retried; an org that is gone is done, as for every per-tenant job.
+func (c *Container) triggerIncidentInvestigations(ctx context.Context, job *jobs.Job[jobs.InvestigationsIncidentArgs]) error {
+	if c.Investigator == nil {
+		return jobs.ErrNotImplemented(jobs.KindInvestigationsIncident)
+	}
+	return jobs.ForTenant(ctx, jobs.KindInvestigationsIncident, c.orgs, job.Args.OrgID,
+		func(ctx context.Context, scope db.TenantScope) error {
+			_, err := c.Investigator.IncidentChanged(ctx, scope, job.Args.IncidentID,
+				investigatordomain.Trigger(job.Args.Trigger))
 			if errs.IsKind(err, errs.KindValidation) {
 				return jobs.Permanent(err)
 			}

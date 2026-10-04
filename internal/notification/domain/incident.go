@@ -39,6 +39,27 @@ type IncidentFacts struct {
 	// Incident (ADR 0052 §5's outbound mapping, git-bug 506ff21), one per channel,
 	// oldest first. Empty when no receiver echoed anything — the ordinary case.
 	Outbound []IncidentOutbound
+	// Finding is the latest Finding an Investigation of the Incident reached (ADR 0053
+	// §4: "the latest is shown"), or nil when none has. Read at claim time like
+	// everything here, so a `finding` fact whose run a newer one has since overtaken
+	// carries the newer Finding — the card is the Incident as it is now (C11).
+	//
+	// ⛔ READ, NEVER ROUTED ON. Nothing in evaluation consults it: a Finding changes
+	// what a card says, never whether the fact is sent (ADR 0053 §2).
+	Finding *IncidentFinding
+}
+
+// IncidentFinding is an Incident's latest Finding as a card carries it: what was
+// concluded, by which Investigator version, and when — a snapshot, never live state.
+type IncidentFinding struct {
+	InvestigationID uuid.UUID
+	// Investigator is the Investigator's name; Version the version that concluded it.
+	Investigator string
+	Version      int
+	Summary      string
+	// Partial is true when a budget stopped the run before it concluded.
+	Partial     bool
+	ConcludedAt time.Time
 }
 
 // IncidentOutbound is one receipt: the incident a destination's tool opened for

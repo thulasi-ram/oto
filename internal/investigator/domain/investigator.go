@@ -250,6 +250,12 @@ type Investigator struct {
 	// VERSIONED: it decides WHEN a run may start, not what produced a Finding, so it
 	// lives on this mutable half beside the kill switch and the budgets.
 	MinInterval time.Duration
+	// InvestigatesIncidents is whether an Incident being drawn, and its membership
+	// changing, starts a run of this Investigator on it (ADR 0053 §4; migration 00095).
+	// ⭐ AN OPERATOR OPTS IN: automatic runs cost money, and an Investigator written for
+	// "a human asks" must not start paying for every storm because Incidents arrived.
+	// Not versioned, for MinInterval's reason.
+	InvestigatesIncidents bool
 	// Current is the latest version: the one a new Investigation pins.
 	Current   Version
 	CreatedAt time.Time
@@ -261,23 +267,25 @@ func (i Investigator) EnricherName() string { return EnricherPrefix + i.Name }
 
 // InvestigatorDraft is a new Investigator, validated, before it is stored.
 type InvestigatorDraft struct {
-	Name        string
-	Enabled     bool
-	Budgets     Budgets
-	MinInterval time.Duration
-	Spec        VersionSpec
+	Name                  string
+	Enabled               bool
+	Budgets               Budgets
+	MinInterval           time.Duration
+	InvestigatesIncidents bool
+	Spec                  VersionSpec
 }
 
 // InvestigatorChange is a write over an existing Investigator. A nil field is left as
 // it is. The three versioned fields are folded over the current version into a whole
 // VersionSpec (Apply), and the service writes a new version only when that differs.
 type InvestigatorChange struct {
-	Enabled     *bool
-	Budgets     *Budgets
-	MinInterval *time.Duration
-	ProviderID  *uuid.UUID
-	Prompt      *string
-	Tools       *Allowlist
+	Enabled               *bool
+	Budgets               *Budgets
+	MinInterval           *time.Duration
+	InvestigatesIncidents *bool
+	ProviderID            *uuid.UUID
+	Prompt                *string
+	Tools                 *Allowlist
 }
 
 // TouchesVersion reports whether the change names any of the versioned fields.

@@ -20,6 +20,10 @@
  * bound never to re-add a Case a human removed, which only means something while
  * the removal is visible.
  *
+ * ⭐ ITS INVESTIGATIONS ARE ON IT. An Incident is investigated as a whole (ADR 0053
+ * §4): the panel beside its members shows the latest Finding about the story and
+ * asks for another, and its member Cases start none of their own meanwhile.
+ *
  * ⛔ A REFUSAL IS SHOWN IN THE SERVER'S OWN WORDS. Adding a Case that already
  * belongs to another Incident is `409 case_in_incident`, and the problem's
  * `detail` names that Incident and the move that would bring the Case here. That
@@ -45,6 +49,7 @@ import { Chip, PageHeading, Panel, PanelHeader, PanelTitle } from "~/components/
 import { ErrorBanner, ErrorState, Skeleton } from "~/components/ui/states";
 import { TextField, TextFieldInput, TextFieldLabel } from "~/components/ui/TextField";
 import { IncidentStateChip, describeAttribution } from "~/features/incidents/parts";
+import { InvestigationPanel } from "~/features/investigations/InvestigationPanel";
 import { idempotencyKey } from "~/lib/format";
 
 /** A route parameter that names an Incident, or `null` when it cannot. */
@@ -252,24 +257,33 @@ export default function IncidentDetailRoute() {
                   </form>
                 </Panel>
 
-                <Panel>
-                  <PanelHeader>
-                    <PanelTitle>No longer in it</PanelTitle>
-                    <span class="text-meta text-ink-subtle">kept on record, never deleted</span>
-                  </PanelHeader>
-                  <Show
-                    when={removed().length > 0}
-                    fallback={
-                      <p class="px-3 py-2 text-body text-ink-muted">
-                        Nothing has been taken out of this Incident.
-                      </p>
-                    }
-                  >
-                    <ul>
-                      <For each={removed()}>{(m) => <RemovedMember member={m} />}</For>
-                    </ul>
-                  </Show>
-                </Panel>
+                <div class="flex min-w-0 flex-col gap-4">
+                  {/* ⭐ THE INCIDENT IS INVESTIGATED AS A WHOLE (ADR 0053 §4, git-bug
+                      74ea849): its latest Finding, captioned with the instant it was
+                      reached, and every earlier run. Its member Cases start none of
+                      their own while they are in it, so this is where a storm's
+                      Finding is read. */}
+                  <InvestigationPanel subject={{ kind: "incident", number: inc().number }} />
+
+                  <Panel>
+                    <PanelHeader>
+                      <PanelTitle>No longer in it</PanelTitle>
+                      <span class="text-meta text-ink-subtle">kept on record, never deleted</span>
+                    </PanelHeader>
+                    <Show
+                      when={removed().length > 0}
+                      fallback={
+                        <p class="px-3 py-2 text-body text-ink-muted">
+                          Nothing has been taken out of this Incident.
+                        </p>
+                      }
+                    >
+                      <ul>
+                        <For each={removed()}>{(m) => <RemovedMember member={m} />}</For>
+                      </ul>
+                    </Show>
+                  </Panel>
+                </div>
               </div>
             </div>
           );

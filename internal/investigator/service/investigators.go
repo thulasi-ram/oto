@@ -8,8 +8,9 @@ package service
 // names the version that produced it." So a change carrying the versioned half is
 // compared against the current version — the endpoint row, the identity that row reports
 // NOW, the prompt, the allowlist — and only a difference mints version N+1. Re-sending the
-// same prompt is not a new version; flipping the kill switch, a budget or the minimum
-// interval never is — they decide whether and when a run may go, not what it produced.
+// same prompt is not a new version; flipping the kill switch, a budget, the minimum
+// interval or whether Incidents start runs never is — they decide whether and when a
+// run may go, not what it produced.
 //
 // ⛔ A TOOLSERVER TOOL ON THE ALLOWLIST MUST BE ONE A READ TOOLSERVER HAS LISTED (git-bug
 // 2e9a086). `<toolserver>__<tool>` naming a write ToolServer, an unknown one, or a Tool
@@ -71,9 +72,12 @@ func (s *Service) UpdateInvestigator(
 		if err != nil {
 			return err
 		}
-		enabled, budgets, interval := cur.Enabled, cur.Budgets, cur.MinInterval
+		enabled, budgets, interval, incidents := cur.Enabled, cur.Budgets, cur.MinInterval, cur.InvestigatesIncidents
 		if change.Enabled != nil {
 			enabled = *change.Enabled
+		}
+		if change.InvestigatesIncidents != nil {
+			incidents = *change.InvestigatesIncidents
 		}
 		if change.Budgets != nil {
 			budgets = *change.Budgets
@@ -81,8 +85,9 @@ func (s *Service) UpdateInvestigator(
 		if change.MinInterval != nil {
 			interval = *change.MinInterval
 		}
-		if enabled != cur.Enabled || budgets != cur.Budgets || interval != cur.MinInterval {
-			if err := s.investigators.Update(ctx, scope, id, enabled, budgets, interval, at); err != nil {
+		if enabled != cur.Enabled || budgets != cur.Budgets || interval != cur.MinInterval ||
+			incidents != cur.InvestigatesIncidents {
+			if err := s.investigators.Update(ctx, scope, id, enabled, budgets, interval, incidents, at); err != nil {
 				return err
 			}
 		}

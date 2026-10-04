@@ -23,6 +23,7 @@ import IncidentDetailRoute from "./incident-detail";
 import { incidentDetail, incidentMember } from "~/test/fixtures";
 import {
   item,
+  list,
   problem,
   renderScreen,
   stubFetch,
@@ -37,7 +38,15 @@ const CASE = "0f8fad5b-d9cb-469f-a165-70867728950e";
 const OTHER = "9d4c2b1a-8e7f-4a6b-9c5d-3e2f1a0b9c8d";
 
 function mount(detail: IncidentDetail = incidentDetail()): FetchStub {
-  const net = stubFetch({ [`GET ${PATH}`]: () => ({ json: item(detail) }) });
+  const net = stubFetch({
+    [`GET ${PATH}`]: () => ({ json: item(detail) }),
+    // The Incident's Investigations panel (git-bug 74ea849). Its states are
+    // `features/investigations/InvestigationPanel.test.tsx`'s; here it only has to
+    // be on the page and asking about THIS Incident.
+    [`GET ${PATH}/investigations`]: () => ({ json: list([]) }),
+    "GET /api/v1/incidents/7/investigations": () => ({ json: list([]) }),
+    "GET /api/v1/investigators": () => ({ json: list([]) }),
+  });
   renderScreen(() => <IncidentDetailRoute />, {
     path: `/incidents/${NUMBER}`,
     routePath: "/incidents/:number",
@@ -103,6 +112,18 @@ describe("the Incident", () => {
     expect(screen.getByRole("link", { name: "#7" }).getAttribute("href")).toBe("/incidents/7");
     // Tombstones offer no verbs: only the one current member has Remove/Move.
     expect(screen.getAllByRole("button", { name: "Remove" })).toHaveLength(1);
+  });
+
+  it("⭐ shows the Incident's Investigations, asked about by its number", async () => {
+    const net = mount();
+    await ready();
+    await until(() =>
+      expect(document.body.textContent).toContain(
+        "No Investigation of this Incident has been asked for.",
+      ),
+    );
+    expect(net.to(`${PATH}/investigations`).length).toBeGreaterThan(0);
+    expect(document.querySelector("[data-incident-coverage]")).not.toBeNull();
   });
 
   it("⛔ offers no control that sets the Incident's state", async () => {

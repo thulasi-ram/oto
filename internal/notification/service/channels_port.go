@@ -104,6 +104,8 @@ type (
 	IncidentMemberView = chdomain.IncidentMemberView
 	// IncidentExternalView is one external incident a destination echoed back.
 	IncidentExternalView = chdomain.IncidentExternalView
+	// IncidentFindingView is an Incident's latest Finding (ADR 0053 §4).
+	IncidentFindingView = chdomain.IncidentFindingView
 	// InIncidentView names the Incident conversation a Case fact is posted into
 	// (ADR 0052 §6).
 	InIncidentView = chdomain.InIncidentView

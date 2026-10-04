@@ -25,9 +25,10 @@ import (
 // input (labels the whole story shares), and the destinations an Incident can reach
 // today.
 //
-// ⛔ NOTHING HERE SENDS A COMMAND. The five Reasons are facts — drawn, a Case added
-// or removed, quiet, active again — and none of them means resolve or close. An org
-// that wants its incident tool to resolve on `quiet` writes that in the tool.
+// ⛔ NOTHING HERE SENDS A COMMAND. The six Reasons are facts — drawn, a Case added
+// or removed, quiet, active again, a new Finding — and none of them means resolve or
+// close. An org that wants its incident tool to resolve on `quiet` writes that in the
+// tool.
 
 // IncidentReader is the port this module declares to read the Incident a fact is
 // about. `internal/app` satisfies it over `incidents/service`; `notification` never
@@ -517,6 +518,16 @@ func (v *ViewService) incidentCard(
 		iv.External = append(iv.External, IncidentExternalView{
 			Destination: o.ChannelName, URL: o.ExternalURL, ID: o.ExternalID,
 		})
+	}
+	if fd := f.Finding; fd != nil {
+		iv.Finding = &IncidentFindingView{
+			InvestigationID: fd.InvestigationID.String(),
+			Investigator:    fd.Investigator,
+			Version:         fd.Version,
+			Summary:         fd.Summary,
+			Partial:         fd.Partial,
+			ConcludedAt:     fd.ConcludedAt.UTC(),
+		}
 	}
 	return &NotificationView{
 		Reason:     string(n.Reason),

@@ -635,6 +635,9 @@ const REASON_LABEL: Record<NotificationReason, string> = {
   case_removed: "Case removed from an Incident",
   quiet: "Incident went quiet",
   active_again: "Incident active again",
+  // The sixth (ADR 0053 §4, git-bug 74ea849): an Investigation of the Incident
+  // reached a new Finding. A fact to declare, never a decision about delivery.
+  finding: "New Finding on an Incident",
 };
 
 /**

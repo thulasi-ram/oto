@@ -604,7 +604,7 @@ export default function CaseDetailRoute() {
                       (ADR 0016, ADR 0053 §4), and the control that asks for
                       another. Above the enrichment it is also published as,
                       because this is where its Steps and its earlier runs live. */}
-                  <InvestigationPanel caseId={c().id} />
+                  <InvestigationPanel subject={{ kind: "case", id: c().id }} />
 
                   <EnrichmentPanel enrichments={c().enrichments} loading={false} error={null} />
 

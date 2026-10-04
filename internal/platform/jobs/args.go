@@ -809,3 +809,46 @@ func (InvestigationsRunArgs) InsertOpts() river.InsertOpts {
 		MaxAttempts: MaxAttemptsRetryable,
 	}
 }
+
+// InvestigationsIncidentArgs turns one Incident fact into Investigations (ADR 0053 §4,
+// git-bug 74ea849): "an Incident is drawn; its membership changes (with a minimum
+// interval on the Investigator)". The handler starts one run per Investigator that
+// investigates Incidents — a draw resolves to the run a first delivery made, and a
+// membership change coalesces under the Investigator's minimum interval — and
+// enqueues each run's `investigations.run` in its own transaction.
+//
+// Queue: lifecycle · Priority: normal · Retry: retryable (12) · Payload v1
+//
+// ⛔ NOT `investigate`, NOT `notify`, AND NOT THE INCIDENT'S OWN WRITE. The membership
+// change enqueues this and returns: it never waits for an Investigator to be read, a
+// budget to be summed or a run to be recorded, and a failure here retries on its own
+// budget while the Incident and its notifications go on exactly as they would have.
+// `investigate` carries runs and nothing else, so a trigger never waits behind a
+// minutes-long run for a slot.
+//
+// ⛔ GOING QUIET ENQUEUES NOTHING (§4: "Not on quiet"), and neither does `active_again`,
+// which only ever accompanies the `case_added` that caused it.
+//
+// IDEMPOTENCY: by state. A redelivered draw resolves to the run the first delivery
+// recorded; a redelivered membership change coalesces into the run it queued.
+type InvestigationsIncidentArgs struct {
+	Payload
+	// OrgID is the tenant; the Incident is resolved inside it.
+	OrgID uuid.UUID `json:"org_id"`
+	// IncidentID is the subject.
+	IncidentID uuid.UUID `json:"incident_id"`
+	// Trigger is `drawn` or `membership` (`investigator/domain.Trigger`).
+	Trigger string `json:"trigger"`
+}
+
+// Kind implements db.JobArgs and river.JobArgs.
+func (InvestigationsIncidentArgs) Kind() string { return KindInvestigationsIncident }
+
+// InsertOpts pins the queue, priority and retry ceiling of this job type.
+func (InvestigationsIncidentArgs) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue:       QueueLifecycle,
+		Priority:    PriorityNormal,
+		MaxAttempts: MaxAttemptsRetryable,
+	}
+}

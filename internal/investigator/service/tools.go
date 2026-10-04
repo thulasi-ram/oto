@@ -7,7 +7,10 @@ package service
 //
 // ⭐ EVERY ONE IS READ-ONLY AND READS ONLY THE SUBJECT'S OWN HISTORY. A Tool takes the
 // subject from the run, never from the model's arguments, so no argument a model writes
-// can point it at another Case — let alone another org: the scope is the run's.
+// can point it at another Case — let alone another org: the scope is the run's. An
+// Incident's run reads the Incident's own earlier Findings and its member Cases'; a
+// Tool that reads one Case (its timeline, its rule) is not offered to it, and a call
+// to one is refused with that reason (git-bug 74ea849).
 //
 // ⚠️ AN INVESTIGATOR ONLY HOLDS THE ONES ITS ALLOWLIST NAMES. Being built in is not
 // being allowed: a built-in Tool the allowlist omits is never offered, and a call to it
@@ -30,13 +33,38 @@ const (
 	ToolPriorFindings = "oto_prior_findings"
 	ToolCaseTimeline  = "oto_case_timeline"
 	ToolRuleAtFire    = "oto_rule_at_fire"
+	// ToolMemberFindings reads an Incident's member Cases' earlier Findings (ADR 0053
+	// §3, §4; git-bug 74ea849): the Incident is investigated as a whole, and what was
+	// already concluded about its parts is the first thing worth reading.
+	ToolMemberFindings = "oto_member_findings"
 )
 
-// RunSubject is what a Tool is told about the run calling it.
+// RunSubject is what a Tool is told about the run calling it: which kind of subject,
+// and that subject — the Case, or the Incident.
 type RunSubject struct {
 	InvestigationID uuid.UUID
+	Kind            domain.SubjectKind
 	Case            domain.CaseSubject
+	Incident        domain.IncidentSubject
 }
+
+// subjectTool is a built-in Tool that reads one kind of subject only. A Tool that is
+// not one — every ToolServer's — reads the cluster, whatever the run is about.
+type subjectTool interface {
+	reads(kind domain.SubjectKind) bool
+	subjectNoun() string
+}
+
+// caseOnly and incidentOnly are the two answers a built-in Tool gives.
+type caseOnly struct{}
+
+func (caseOnly) reads(kind domain.SubjectKind) bool { return kind == domain.SubjectCase }
+func (caseOnly) subjectNoun() string                { return "Case" }
+
+type incidentOnly struct{}
+
+func (incidentOnly) reads(kind domain.SubjectKind) bool { return kind == domain.SubjectIncident }
+func (incidentOnly) subjectNoun() string                { return "Incident" }
 
 // Tool is one capability a run may call. Call answers with the text the model is
 // given; an error is recorded as a `failed` Step and answered to the model, and the
@@ -46,14 +74,19 @@ type Tool interface {
 	Call(ctx context.Context, scope db.TenantScope, run RunSubject, args json.RawMessage) (string, error)
 }
 
-// builtinTools builds the three, with schemas from domain.NewToolSchema — the one
+// builtinTools builds the four, with schemas from domain.NewToolSchema — the one
 // constructor the port's request validation trusts.
 func builtinTools(s *Service) []Tool {
+	const findingsLimit = `{"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":10,"description":"How many Findings, 1 to 10; default 5."}},"additionalProperties":false}`
 	return []Tool{
 		priorFindingsTool{s: s, schema: mustSchema(ToolPriorFindings,
-			"Earlier Investigations' Findings about the same alert (the same alert_key), newest first. "+
-				"Use it to see what was concluded the last times this alert fired.",
-			`{"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":10,"description":"How many Findings, 1 to 10; default 5."}},"additionalProperties":false}`)},
+			"Earlier Investigations' Findings about the same subject, newest first: for a Case, the same alert "+
+				"(the same alert_key) the last times it fired; for an Incident, the same Incident.",
+			findingsLimit)},
+		memberFindingsTool{s: s, schema: mustSchema(ToolMemberFindings,
+			"Earlier Investigations' Findings about this Incident's member Cases, newest first: what was "+
+				"already concluded about the parts of the story before it was investigated as a whole.",
+			findingsLimit)},
 		caseTimelineTool{s: s, schema: mustSchema(ToolCaseTimeline,
 			"The Case's timeline as oto recorded it: every state change, acknowledgement, comment and enrichment, oldest first.",
 			`{"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":100,"description":"How many of the most recent entries, 1 to 100; default 50."}},"additionalProperties":false}`)},
@@ -121,16 +154,29 @@ func (t priorFindingsTool) Call(ctx context.Context, scope db.TenantScope, run R
 	if err != nil {
 		return "", err
 	}
-	if run.Case.AlertKey == "" {
+	var prior []domain.PriorFinding
+	switch {
+	case run.Kind == domain.SubjectIncident:
+		prior, err = t.s.investigations.SubjectFindings(ctx, scope, domain.SubjectIncident,
+			[]uuid.UUID{run.Incident.IncidentID}, run.InvestigationID, limit)
+	case run.Case.AlertKey == "":
 		return `{"findings":[]}`, nil
+	default:
+		prior, err = t.s.investigations.PriorFindings(ctx, scope, run.Case.AlertKey, run.InvestigationID, limit)
 	}
-	prior, err := t.s.investigations.PriorFindings(ctx, scope, run.Case.AlertKey, run.InvestigationID, limit)
 	if err != nil {
 		return "", err
 	}
+	return findingsJSON(prior)
+}
+
+// findingsJSON renders earlier Findings as a Tool answers them, each naming the subject
+// it was about.
+func findingsJSON(prior []domain.PriorFinding) (string, error) {
 	type finding struct {
 		InvestigationID string `json:"investigation_id"`
-		CaseID          string `json:"case_id"`
+		SubjectKind     string `json:"subject_kind"`
+		SubjectID       string `json:"subject_id"`
 		Investigator    string `json:"investigator"`
 		Version         int    `json:"version"`
 		Status          string `json:"status"`
@@ -141,7 +187,7 @@ func (t priorFindingsTool) Call(ctx context.Context, scope db.TenantScope, run R
 	out := make([]finding, 0, len(prior))
 	for _, p := range prior {
 		out = append(out, finding{
-			InvestigationID: p.InvestigationID.String(), CaseID: p.SubjectID.String(),
+			InvestigationID: p.InvestigationID.String(), SubjectKind: string(p.SubjectKind), SubjectID: p.SubjectID.String(),
 			Investigator: p.InvestigatorName, Version: p.VersionNumber, Status: string(p.Status),
 			Partial: p.Status == domain.StatusExhausted, EndedAt: timeOrNil(p.EndedAt), Finding: p.Finding,
 		})
@@ -149,9 +195,37 @@ func (t priorFindingsTool) Call(ctx context.Context, scope db.TenantScope, run R
 	return asJSON(map[string]any{"findings": out})
 }
 
+// ------------------------------------------------------- member Cases' Findings
+
+// memberFindingsTool reads the earlier Findings about an Incident's CURRENT member
+// Cases. Those Findings exist because a human asked about one Case, or because the Case
+// was investigated before it joined: a member Case starts nothing of its own
+// automatically once it is in (ADR 0053 §4), so this is everything there is.
+type memberFindingsTool struct {
+	incidentOnly
+	s      *Service
+	schema domain.ToolSchema
+}
+
+func (t memberFindingsTool) Schema() domain.ToolSchema { return t.schema }
+
+func (t memberFindingsTool) Call(ctx context.Context, scope db.TenantScope, run RunSubject, args json.RawMessage) (string, error) {
+	limit, err := limitArg(args, 5, 10)
+	if err != nil {
+		return "", err
+	}
+	found, err := t.s.investigations.SubjectFindings(ctx, scope, domain.SubjectCase,
+		run.Incident.CurrentCases(), run.InvestigationID, limit)
+	if err != nil {
+		return "", err
+	}
+	return findingsJSON(found)
+}
+
 // ------------------------------------------------------------- Case timeline
 
 type caseTimelineTool struct {
+	caseOnly
 	s      *Service
 	schema domain.ToolSchema
 }
@@ -183,6 +257,7 @@ func (t caseTimelineTool) Call(ctx context.Context, scope db.TenantScope, run Ru
 // -------------------------------------------------------------- rule at fire
 
 type ruleAtFireTool struct {
+	caseOnly
 	s      *Service
 	schema domain.ToolSchema
 }

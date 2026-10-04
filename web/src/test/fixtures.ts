@@ -565,6 +565,7 @@ export function investigator(patch: Partial<Investigator> = {}): Investigator {
     enabled: true,
     budgets: { max_steps: 20, max_tokens: 200000, max_wall_seconds: 300 },
     min_interval_seconds: 600,
+    investigates_incidents: false,
     current_version: {
       id: "6a1b2c3d-4e5f-4a6b-9c7d-8e9f0a1b2c3d",
       version: 3,

@@ -23,21 +23,30 @@ import (
 )
 
 // SubjectKind is what an Investigation is about. ADR 0053 §4 names four subjects —
-// `case | incident | digest | policy` — and only a Case has a run path today, so the
-// set is closed at one and `investigations_subjkind_ck` admits only it. Adding a kind
-// is a constant here, an arm in ParseSubjectKind, and a widened CHECK.
+// `case | incident | digest | policy` — and a Case and an Incident have run paths, so
+// the set is closed at two and `investigations_subjkind_ck` admits exactly them
+// (00092, widened by 00095). Adding a kind is a constant here, an arm in
+// ParseSubjectKind, a widened CHECK, and a run path that can read the subject.
 type SubjectKind string
 
-// SubjectCase is one firing episode.
-const SubjectCase SubjectKind = "case"
+// The two subjects with a run path.
+const (
+	// SubjectCase is one firing episode.
+	SubjectCase SubjectKind = "case"
+	// SubjectIncident is a set of Cases drawn as one story (ADR 0052): investigated as
+	// a whole, so its member Cases start nothing of their own automatically (§4).
+	SubjectIncident SubjectKind = "incident"
+)
 
 // ParseSubjectKind reads a stored subject kind.
 func ParseSubjectKind(s string) (SubjectKind, error) {
-	if SubjectKind(s) == SubjectCase {
-		return SubjectCase, nil
+	switch k := SubjectKind(s); k {
+	case SubjectCase, SubjectIncident:
+		return k, nil
+	default:
+		return "", errs.Newf(errs.KindInternal, "investigation_subject_kind",
+			"an Investigation's subject is a case or an incident, not %q", s)
 	}
-	return "", errs.Newf(errs.KindInternal, "investigation_subject_kind",
-		"an Investigation's subject is a case, not %q", s)
 }
 
 // Status is where an Investigation is.
@@ -97,7 +106,8 @@ const (
 	// ReasonModelChanged: the endpoint row no longer has the identity the version
 	// pinned, so a Finding could not truthfully name the model that produced it.
 	ReasonModelChanged Reason = "model_changed"
-	// ReasonSubjectGone: the Case no longer exists (a drill disposed of its own).
+	// ReasonSubjectGone: the subject no longer exists — a Case a drill disposed of, or
+	// an Incident its org no longer has.
 	ReasonSubjectGone Reason = "subject_gone"
 	// ReasonInterrupted: the worker running it stopped before it ended. It is not
 	// re-run: a re-run would pay for every turn a second time.
@@ -215,7 +225,8 @@ type Investigation struct {
 	SubjectKind SubjectKind
 	SubjectID   uuid.UUID
 	// AlertKey is the subject Alert's key, copied at request time, so prior Findings
-	// on the same key are one read of this module's own table.
+	// on the same key are one read of this module's own table. "" for an Incident,
+	// which spans Alerts and has no one key.
 	AlertKey string
 
 	InvestigatorID   uuid.UUID

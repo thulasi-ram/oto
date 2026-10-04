@@ -714,6 +714,24 @@ func plan() []probe {
 			method: http.MethodGet, tmpl: "/api/v1/investigations/{id}", url: "/api/v1/investigations/{{stranger}}",
 			want: http.StatusNotFound,
 		},
+		// ADR 0053 §4 (git-bug 74ea849): an Incident investigated as a whole, asked
+		// about by the number the incident probes above captured. Nothing is dialled,
+		// for the Case request's reason: the run is recorded `queued` and its job is
+		// never worked here.
+		{
+			method: http.MethodPost, tmpl: "/api/v1/incidents/{number}/investigations",
+			url:  "/api/v1/incidents/{{incident}}/investigations",
+			body: map[string]any{"investigator_id": "{{investigator}}"},
+			want: http.StatusAccepted,
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/incidents/{number}/investigations",
+			url: "/api/v1/incidents/{{incident}}/investigations", want: http.StatusOK,
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/incidents/{number}/investigations",
+			url: "/api/v1/incidents/999999/investigations", want: http.StatusNotFound,
+		},
 
 		/* -------------------------------------------------------- tool servers */
 		// ADR 0053 §3, 0054 §5 (git-bug 2e9a086): an operator's MCP server, configured,

@@ -229,6 +229,16 @@ func mapIncident(i domain.IncidentView) *Incident {
 		Members: make([]IncidentMember, 0, len(i.Members)),
 		Link:    i.Link,
 	}
+	if f := i.Finding; f != nil {
+		out.Finding = &IncidentFinding{
+			InvestigationID: f.InvestigationID,
+			Investigator:    f.Investigator,
+			Version:         f.Version,
+			Summary:         f.Summary,
+			Partial:         f.Partial,
+			ConcludedAt:     f.ConcludedAt.UTC(),
+		}
+	}
 	for _, m := range i.Members {
 		mm := IncidentMember{
 			CaseID:         m.CaseID,
@@ -293,6 +303,14 @@ func incidentSummary(reason string, i domain.IncidentView) string {
 		what = "is quiet: no member Case is open"
 	case "active_again":
 		what = "is active again"
+	case "finding":
+		what = "has a new Finding"
+		if f := i.Finding; f != nil {
+			what += " by " + f.Investigator + " v" + strconv.Itoa(f.Version)
+			if f.Partial {
+				what += " (partial)"
+			}
+		}
 	default:
 		what = reason
 	}

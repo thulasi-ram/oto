@@ -544,6 +544,35 @@ export function requestCaseInvestigation(
   });
 }
 
+/**
+ * An Incident's Investigations, latest requested first, WITHOUT transcripts — the
+ * runs that looked at the story as a whole (ADR 0053 §4, git-bug 74ea849). Addressed
+ * by the number a human quotes, like the Incident itself.
+ */
+export function listIncidentInvestigations(
+  incidentNumber: number,
+  query: { readonly limit?: number } = {},
+  c: Ctx = {},
+): Promise<ListEnvelope<Investigation>> {
+  return getList<Investigation>(`${V1}/incidents/${incidentNumber}/investigations`, {
+    ...ctx(c),
+    query: query as QueryParams,
+  });
+}
+
+/**
+ * Ask one Investigator to investigate one Incident as a whole. The same `202` and the
+ * same absent idempotency key as `requestCaseInvestigation`, for the same reasons.
+ */
+export function requestIncidentInvestigation(
+  incidentNumber: number,
+  investigatorId: Uuid,
+): Promise<InvestigationDetail> {
+  return postItem<InvestigationDetail>(`${V1}/incidents/${incidentNumber}/investigations`, {
+    investigator_id: investigatorId,
+  });
+}
+
 /** One run with its whole transcript and its Finding. Frozen once it has ended. */
 export function getInvestigation(id: Uuid, c: Ctx = {}): Promise<InvestigationDetail> {
   return getItem<InvestigationDetail>(`${V1}/investigations/${id}`, ctx(c));

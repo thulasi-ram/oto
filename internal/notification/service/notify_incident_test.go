@@ -249,8 +249,10 @@ func TestTheIncidentCardIsBuiltFromTheIncident(t *testing.T) {
 	assert.Equal(t, "https://oto.example/cases/"+r.fx.caseID.String(), m.Link)
 }
 
-// TestTheIncidentFactsAreTheFiveAndNoneIsACommand pins the vocabulary.
-func TestTheIncidentFactsAreTheFiveAndNoneIsACommand(t *testing.T) {
+// TestTheIncidentFactsAreTheSixAndNoneIsACommand pins the vocabulary: the five 00084
+// declared, and `finding` (00095, git-bug 74ea849) — a new Finding is a fact about the
+// Incident, never a command and never a verdict on delivery.
+func TestTheIncidentFactsAreTheSixAndNoneIsACommand(t *testing.T) {
 	t.Parallel()
 	var got []domain.Reason
 	for _, r := range domain.AllReasons() {
@@ -260,7 +262,7 @@ func TestTheIncidentFactsAreTheFiveAndNoneIsACommand(t *testing.T) {
 	}
 	assert.Equal(t, []domain.Reason{
 		domain.ReasonDrawn, domain.ReasonCaseAdded, domain.ReasonCaseRemoved,
-		domain.ReasonQuiet, domain.ReasonActiveAgain,
+		domain.ReasonQuiet, domain.ReasonActiveAgain, domain.ReasonFinding,
 	}, got)
 	for _, r := range got {
 		for _, command := range []string{"resolve", "close", "mitigat", "status"} {

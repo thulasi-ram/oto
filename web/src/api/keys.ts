@@ -159,6 +159,14 @@ export const qk = {
      * `api/live.tsx` already sends that root — refreshes it with the rest.
      */
     holding: (caseId: string) => ["incidents", "holding", caseId] as const,
+    /**
+     * One Incident's Investigations, latest first (ADR 0053 §4, git-bug 74ea849),
+     * keyed by its NUMBER as `detail` is. Under `["incidents"]`, so the frames that
+     * move the Incident's Cases refresh it with the rest; a run in progress is polled
+     * by `InvestigationPanel`, as a Case's is. One run's detail stays
+     * `qk.cases.investigation` — a run is addressed by its own id, whatever it is about.
+     */
+    investigations: (number: string) => ["incidents", "investigations", number] as const,
   },
   labels: {
     names: () => ["labels", "names"] as const,

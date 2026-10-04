@@ -147,7 +147,8 @@ type Handlers struct {
 	StatsRollup      Handler[StatsRollupArgs]
 	CacheExpire      Handler[CacheExpireArgs]
 
-	InvestigationsRun Handler[InvestigationsRunArgs]
+	InvestigationsRun      Handler[InvestigationsRunArgs]
+	InvestigationsIncident Handler[InvestigationsIncidentArgs]
 }
 
 // stub returns the not-implemented handler for a kind.
@@ -283,6 +284,12 @@ func RegisterAll(r *Registry, h Handlers) error {
 			// backstop that frees the worker if the budget's context did not.
 			return Register(r, Spec{Queue: QueueInvestigate, PayloadVersion: 1, Timeout: InvestigationJobTimeout},
 				orStub(h.InvestigationsRun, KindInvestigationsRun))
+		},
+		func() error {
+			// Two minutes, like `incidents.correlate`: it reads the org's Investigators
+			// and records at most one run each. It never calls a model.
+			return Register(r, Spec{Queue: QueueLifecycle, PayloadVersion: 1, Timeout: 2 * time.Minute},
+				orStub(h.InvestigationsIncident, KindInvestigationsIncident))
 		},
 	}
 

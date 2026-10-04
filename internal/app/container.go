@@ -728,8 +728,16 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		// ⭐ EVERY INCIDENT FACT IS DECLARED THROUGH THE OUTBOX (ADR 0052 §5): one
 		// `notify.incident` job per fact, enqueued in the membership change's own
 		// transaction. Routing it anywhere is a notification policy's decision.
-		Announcer: incidentAnnouncer{enq: c.enqueuer},
-		Clock:     clk,
+		//
+		// ⭐ AND A DRAW OR A MEMBERSHIP CHANGE TRIGGERS THE INVESTIGATORS (ADR 0053 §4,
+		// git-bug 74ea849): one `investigations.incident` job on `lifecycle`, in the
+		// same transaction. It decides nothing here and never holds up the write; the
+		// two jobs are independent, so neither waits on the other.
+		Announcer: incidentAnnouncers{
+			incidentAnnouncer{enq: c.enqueuer},
+			incidentInvestigationTriggers{enq: c.enqueuer},
+		},
+		Clock: clk,
 	})
 	if err != nil {
 		return nil, err
@@ -782,11 +790,15 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		Investigators:  investigatorrepo.NewInvestigatorRepository(general),
 		Investigations: investigatorrepo.NewInvestigationRepository(general),
 		Cases:          investigationCases{alerts: c.Alerts},
-		Timeline:       investigationCases{alerts: c.Alerts},
-		Rules:          investigationRules{rules: c.Rules},
-		Findings:       findingPublisher{repo: enrichmentRepo},
-		OrgControls:    investigationControls{identity: c.Identity},
-		Queue:          c.enqueuer,
+		// An Incident is investigated as a whole (git-bug 74ea849): read through
+		// `incidents/service`, and its new Finding declared through the outbox.
+		Incidents:   investigationIncidents{incidents: c.Incidents},
+		Declarer:    findingDeclarer{enq: c.enqueuer},
+		Timeline:    investigationCases{alerts: c.Alerts},
+		Rules:       investigationRules{rules: c.Rules},
+		Findings:    findingPublisher{repo: enrichmentRepo},
+		OrgControls: investigationControls{identity: c.Identity},
+		Queue:       c.enqueuer,
 		// The built-in Tools' per-call controls (ADR 0053 §6), stated where every
 		// other deployment number is chosen. A ToolServer's Tools run under the
 		// limits its operator set on it (migration 00093).
@@ -813,6 +825,9 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The notification layer's Incident reader now reads the Incident's latest Finding
+	// for its card and its `finding` fact (ADR 0053 §4, git-bug 74ea849).
+	c.incidentFacts.investigations = c.Investigator
 
 	// ---- ingestion: THE ONLY MODULE ON THE INGEST POOL -------------------
 	//

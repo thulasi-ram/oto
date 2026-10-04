@@ -289,6 +289,7 @@ No import exists in either direction, and nothing enforces the arrow:
 | `rules/service.RuleLookup` | `sources/service.ResolveRule` | adapters.go |
 | `silences/service.SilenceSource`, `silences/api.SourceBaseURLs` | `sources` | `app/silencesource.go` |
 | `alerts/service.CaseOpenings` | the outbox (`incidents.correlate`) — never `incidents` itself | `app.caseOpenings` (adapters.go) |
+| `incidents/service.Announcer` | the outbox (`notify.incident`, and `investigations.incident` for a draw or a membership change) — never `notification` or `investigator` itself | `app.incidentAnnouncers` (adapters.go) |
 
 **3. River job enqueues — a STRING in `internal/platform/jobs/kinds.go`, not a call.** The
 producer never names the consumer, so there is nothing to enforce at all:
@@ -298,6 +299,8 @@ producer never names the consumer, so there is nothing to enforce at all:
 | `alerts`, `ingestion`, `enrichment` | `notify.evaluate` | `notification` |
 | `alerts`, `enrichment` | `enrich.run` | `enrichment` |
 | `alerts` (through `CaseOpenings`) | `incidents.correlate` — on `lifecycle`, never `notify` | `incidents` (the Correlators) |
+| `incidents` (through `Announcer`) | `investigations.incident` — on `lifecycle`, never `notify` or `investigate`; not on quiet (ADR 0053 §4) | `investigator` |
+| `investigator` (through `FindingDeclarer`) | `notify.incident` with Reason `finding` — an Incident's new Finding, declared, never a decision about delivery | `notification` |
 
 **4. Table names in SQL — no Go edge whatsoever.** `drill` reads five other modules' tables by
 name (see its row above); `notification/repository/snapshot.go` joins `alert_sources` to learn a

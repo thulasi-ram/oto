@@ -214,6 +214,23 @@ type IncidentView struct {
 	// echoed anything. A RECEIPT, NOT STATE: no renderer may read active or quiet,
 	// or anything else, off it.
 	External []IncidentExternalView
+	// Finding is the latest Finding an Investigation of the Incident reached (ADR
+	// 0053 §4: "the latest is shown"), or nil when none has. ⭐ A SNAPSHOT, and a
+	// renderer says when it was concluded every time it says what: a model's
+	// sentence reads as present tense unless the card stops it.
+	Finding *IncidentFindingView
+}
+
+// IncidentFindingView is an Incident's latest Finding: what was concluded, by which
+// Investigator version, whether a budget cut it short, and when.
+type IncidentFindingView struct {
+	InvestigationID string
+	// Investigator is the Investigator's name; Version the version that concluded it.
+	Investigator string
+	Version      int
+	Summary      string
+	Partial      bool
+	ConcludedAt  time.Time
 }
 
 // IncidentExternalView is one external incident: which destination it came back

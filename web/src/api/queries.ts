@@ -429,6 +429,9 @@ export const FRESHNESS: Readonly<Record<string, Freshness>> = {
   "incidents.list": { by: "live" },
   "incidents.detail": { by: "live" },
   "incidents.holding": { by: "live" },
+  // An Incident's Investigations: polled by `InvestigationPanel` while a run is in
+  // progress, exactly as a Case's are, and invalidated by the request it sends.
+  "incidents.investigations": { by: "live" },
 
   // Health arrives as `source.health`; the rejection feed and the failed-batch
   // list hang under the same source prefix and ride the same frame.

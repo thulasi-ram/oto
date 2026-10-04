@@ -20,9 +20,12 @@ import (
 	enrichrepo "github.com/thulasiram/oto/internal/enrichment/repository"
 	enrichservice "github.com/thulasiram/oto/internal/enrichment/service"
 	identityservice "github.com/thulasiram/oto/internal/identity/service"
+	incidentsdomain "github.com/thulasiram/oto/internal/incidents/domain"
 	incidentsservice "github.com/thulasiram/oto/internal/incidents/service"
 	ingestiondomain "github.com/thulasiram/oto/internal/ingestion/domain"
 	ingestionservice "github.com/thulasiram/oto/internal/ingestion/service"
+	investigatordomain "github.com/thulasiram/oto/internal/investigator/domain"
+	investigatorservice "github.com/thulasiram/oto/internal/investigator/service"
 	notifdomain "github.com/thulasiram/oto/internal/notification/domain"
 	notifrepo "github.com/thulasiram/oto/internal/notification/repository"
 	notifservice "github.com/thulasiram/oto/internal/notification/service"
@@ -329,6 +332,64 @@ func (r *timelineRecorder) RecordIncidentFact(
 
 // ---------------------------------------------------------------- incidents
 
+// incidentAnnouncers is `incidents/service.Announcer` as the list of everything an
+// Incident fact is handed to, in order, inside the membership change's transaction:
+// the notification layer's declaration and the Investigator's trigger (git-bug
+// 74ea849). One port on the Incident's side, so `incidents` names neither consumer.
+type incidentAnnouncers []incidentsservice.Announcer
+
+func (as incidentAnnouncers) Announce(
+	ctx context.Context, s db.TenantScope, facts []incidentsservice.Announcement,
+) error {
+	for _, a := range as {
+		if err := a.Announce(ctx, s, facts); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// incidentInvestigationTriggers is `incidents/service.Announcer` for the Investigator
+// (ADR 0053 §4, git-bug 74ea849): an Incident drawn, and a Case joining or leaving it,
+// each become one `investigations.incident` job, enqueued in the transaction that made
+// the fact true.
+//
+// ⛔ IT DECIDES NOTHING AND READS NOTHING. Which Investigators run, under which
+// interval and budget, is the job's question, asked after the commit on `lifecycle` —
+// so an Incident's write never waits on an Investigator, and a trigger that fails
+// retries on its own budget while the Incident and its notifications go on.
+//
+// ⛔ `quiet` AND `active_again` RAISE NOTHING. §4: "Not on quiet"; and `active_again`
+// only ever accompanies the `case_added` that caused it, which already raised one.
+type incidentInvestigationTriggers struct {
+	enq db.Enqueuer
+}
+
+func (a incidentInvestigationTriggers) Announce(
+	ctx context.Context, s db.TenantScope, facts []incidentsservice.Announcement,
+) error {
+	reqs := make([]db.JobRequest, 0, len(facts))
+	for _, f := range facts {
+		var trigger investigatordomain.Trigger
+		switch f.Fact {
+		case incidentsdomain.FactDrawn:
+			trigger = investigatordomain.TriggerDrawn
+		case incidentsdomain.FactCaseAdded, incidentsdomain.FactCaseRemoved:
+			trigger = investigatordomain.TriggerMembership
+		default:
+			continue
+		}
+		reqs = append(reqs, db.JobRequest{Args: jobs.InvestigationsIncidentArgs{
+			OrgID: s.OrgID(), IncidentID: f.IncidentID, Trigger: string(trigger),
+		}})
+	}
+	if len(reqs) == 0 {
+		return nil
+	}
+	_, err := a.enq.EnqueueMany(ctx, reqs)
+	return err
+}
+
 // incidentAnnouncer is `incidents/service.Announcer` over the outbox: each Incident
 // fact becomes one `notify.incident` job, enqueued in the transaction that made it
 // true (ADR 0001, ADR 0052 §5).
@@ -377,6 +438,11 @@ func (a incidentAnnouncer) Announce(
 // positive false statement.
 type incidentFacts struct {
 	svc *incidentsservice.Service
+	// investigations reads the Incident's latest Finding for its card (ADR 0053 §4,
+	// git-bug 74ea849). Late-bound too: investigator is built after incidents. An
+	// unfilled one answers "no Finding" rather than an error, for caseEndings' reason:
+	// before it exists nothing can have investigated anything.
+	investigations *investigatorservice.Service
 }
 
 func (r *incidentFacts) Incident(
@@ -422,6 +488,22 @@ func (r *incidentFacts) Incident(
 			ExternalURL: o.ExternalURL,
 			ExternalID:  o.ExternalID,
 		})
+	}
+	if r.investigations != nil {
+		f, ok, err := r.investigations.LatestIncidentFinding(ctx, s, d.ID)
+		if err != nil {
+			return notifdomain.IncidentFacts{}, err
+		}
+		if ok {
+			out.Finding = &notifdomain.IncidentFinding{
+				InvestigationID: f.InvestigationID,
+				Investigator:    f.InvestigatorName,
+				Version:         f.VersionNumber,
+				Summary:         f.Finding,
+				Partial:         f.Status == investigatordomain.StatusExhausted,
+				ConcludedAt:     f.EndedAt,
+			}
+		}
 	}
 	return out, nil
 }

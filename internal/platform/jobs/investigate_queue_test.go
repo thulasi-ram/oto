@@ -59,3 +59,29 @@ func TestTheInvestigateKindIsRegisteredWithARunsWorthOfTimeout(t *testing.T) {
 	}
 	t.Fatalf("%s is not registered", jobs.KindInvestigationsRun)
 }
+
+// TestAnIncidentTriggerNeverWaitsOnARunOrANotification — git-bug 74ea849. The job a
+// membership change enqueues to start Investigations is lifecycle work: never on
+// `investigate`, where it would wait behind minutes-long runs for a slot, and never on
+// `notify`, where it would sit in front of the facts it was enqueued beside.
+func TestAnIncidentTriggerNeverWaitsOnARunOrANotification(t *testing.T) {
+	t.Parallel()
+
+	q := jobs.InvestigationsIncidentArgs{}.InsertOpts().Queue
+	if q != jobs.QueueLifecycle {
+		t.Fatalf("investigations.incident rides %q, want %q", q, jobs.QueueLifecycle)
+	}
+	r := jobs.NewRegistry(nil)
+	if err := jobs.RegisterAll(r, jobs.Handlers{}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	for _, s := range r.Specs() {
+		if s.Kind == jobs.KindInvestigationsIncident {
+			if s.Queue != jobs.QueueLifecycle {
+				t.Fatalf("%s is registered on %q, want %q", s.Kind, s.Queue, jobs.QueueLifecycle)
+			}
+			return
+		}
+	}
+	t.Fatalf("%s is not registered", jobs.KindInvestigationsIncident)
+}

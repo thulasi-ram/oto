@@ -48,7 +48,7 @@ function mount(world: World = {}): FetchStub {
     "GET /api/v1/investigators": () => ({ json: list(world.investigators ?? [investigator()]) }),
   });
   for (const [id, d] of details) net.on(`GET /api/v1/investigations/${id}`, () => ({ json: item(d) }));
-  renderScreen(() => <InvestigationPanel caseId={CASE} pollMs={20} />);
+  renderScreen(() => <InvestigationPanel subject={{ kind: "case", id: CASE }} pollMs={20} />);
   return net;
 }
 
@@ -408,5 +408,78 @@ describe("earlier Investigations of the same Case", () => {
     expect(caption.querySelector("time")!.getAttribute("datetime")).toBe(earlier.detail.ended_at);
     expect(within(history).getAllByRole("button")[1]!.getAttribute("aria-pressed")).toBe("true");
     expect(shownRun().textContent).toContain("earlier");
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* an Incident as a whole (git-bug 74ea849)                                   */
+/* -------------------------------------------------------------------------- */
+
+describe("an Incident's Investigations", () => {
+  const INCIDENT = 4;
+  const INCIDENT_LIST = `/api/v1/incidents/${INCIDENT}/investigations`;
+
+  function mountIncident(runs: readonly InvestigationDetail[]): FetchStub {
+    const net = stubFetch({
+      [`GET ${INCIDENT_LIST}`]: () => ({
+        json: list(runs.map(({ steps: _s, ...row }) => (void _s, row))),
+      }),
+      "GET /api/v1/investigators": () => ({ json: list([investigator()]) }),
+    });
+    for (const d of runs) net.on(`GET /api/v1/investigations/${d.id}`, () => ({ json: item(d) }));
+    renderScreen(() => <InvestigationPanel subject={{ kind: "incident", number: INCIDENT }} pollMs={20} />);
+    return net;
+  }
+
+  it("⭐ reads the Incident's own runs by its NUMBER, and shows the Finding with its instant", async () => {
+    const whole = investigationDetail({
+      subject_kind: "incident",
+      subject_id: "5a0e9c8e-3c1f-4b8e-9a51-6f0d2c7b1e44",
+      requested_by_label: "oto: Incident #4 was drawn",
+      finding: "One deploy at 09:02 explains every Case in the storm.",
+    });
+    const net = mountIncident([whole]);
+
+    await until(() => expect(finding().textContent).toContain("explains every Case in the storm"));
+    expect(net.calls.some((c) => c.path === INCIDENT_LIST)).toBe(true);
+    expect(net.calls.some((c) => c.path.startsWith("/api/v1/cases/"))).toBe(false);
+    const caption = finding().querySelector("figcaption")!;
+    expect(caption.querySelector("time")!.getAttribute("datetime")).toBe(whole.ended_at);
+    expect(shownRun().textContent).toContain("asked by oto: Incident #4 was drawn");
+    // It says why the member Cases show no runs of their own.
+    expect(document.querySelector("[data-incident-coverage]")?.textContent).toMatch(
+      /Its Cases start none of their own while they are in it/,
+    );
+  });
+
+  it("asks about THIS Incident, by its number, and says so when nothing has been asked", async () => {
+    const net = mountIncident([]);
+    const queued = investigationDetail({
+      subject_kind: "incident",
+      status: "queued",
+      finding: null,
+      started_at: null,
+      ended_at: null,
+      steps: [],
+    });
+    net.on(`POST ${INCIDENT_LIST}`, () => ({ status: 202, json: item(queued) }));
+    net.on(`GET /api/v1/investigations/${queued.id}`, () => ({ json: item(queued) }));
+
+    const investigate = await button("Investigate");
+    expect(screen.getByText("No Investigation of this Incident has been asked for.")).toBeTruthy();
+    fireEvent.click(investigate);
+
+    await until(() => expect(net.calls.filter((c) => c.method === "POST")).toHaveLength(1));
+    const post = net.calls.find((c) => c.method === "POST")!;
+    expect(post.path).toBe(INCIDENT_LIST);
+    expect(post.body).toEqual({ investigator_id: investigator().id });
+  });
+
+  it("is never shown the coverage note on a Case", async () => {
+    mount({ runs: [] });
+    await until(() =>
+      expect(screen.getByText("No Investigation of this firing has been asked for.")).toBeTruthy(),
+    );
+    expect(document.querySelector("[data-incident-coverage]")).toBeNull();
   });
 });

@@ -94,17 +94,21 @@ type InvestigatorDTO struct {
 	Budgets  InvestigatorBudgetsDTO `json:"budgets"`
 	// MinIntervalSeconds is the least time between two runs on one subject (ADR 0053
 	// §6): membership-change triggers inside it coalesce into one run.
-	MinIntervalSeconds int                    `json:"min_interval_seconds"`
-	CurrentVersion     InvestigatorVersionDTO `json:"current_version"`
-	CreatedAt          time.Time              `json:"created_at"`
-	UpdatedAt          time.Time              `json:"updated_at"`
+	MinIntervalSeconds int `json:"min_interval_seconds"`
+	// InvestigatesIncidents is whether an Incident being drawn, and its membership
+	// changing, starts a run of this Investigator on it (ADR 0053 §4).
+	InvestigatesIncidents bool                   `json:"investigates_incidents"`
+	CurrentVersion        InvestigatorVersionDTO `json:"current_version"`
+	CreatedAt             time.Time              `json:"created_at"`
+	UpdatedAt             time.Time              `json:"updated_at"`
 }
 
 func investigatorDTO(i domain.Investigator) InvestigatorDTO {
 	return InvestigatorDTO{ID: i.ID, Name: i.Name, Enricher: i.EnricherName(), Enabled: i.Enabled,
 		Budgets: budgetsDTO(i.Budgets), MinIntervalSeconds: int(i.MinInterval / time.Second),
-		CurrentVersion: versionDTO(i.Current),
-		CreatedAt:      i.CreatedAt, UpdatedAt: i.UpdatedAt}
+		InvestigatesIncidents: i.InvestigatesIncidents,
+		CurrentVersion:        versionDTO(i.Current),
+		CreatedAt:             i.CreatedAt, UpdatedAt: i.UpdatedAt}
 }
 
 // InvestigatorDetailDTO renders `InvestigatorDetailDTO`: the Investigator and every
@@ -130,10 +134,13 @@ type CreateInvestigatorRequest struct {
 	Enabled *bool                   `json:"enabled,omitempty"`
 	Budgets *InvestigatorBudgetsDTO `json:"budgets,omitempty"`
 	// MinIntervalSeconds defaults to 600 (domain.DefaultIntervalSeconds).
-	MinIntervalSeconds *int      `json:"min_interval_seconds,omitempty" validate:"omitempty,min=0,max=86400"`
-	ModelProviderID    uuid.UUID `json:"model_provider_id" validate:"required"`
-	Prompt             string    `json:"prompt"            validate:"required,notblank,min=1,max=32768"`
-	Tools              []string  `json:"tools"             validate:"max=64,dive,min=1,max=64"`
+	MinIntervalSeconds *int `json:"min_interval_seconds,omitempty" validate:"omitempty,min=0,max=86400"`
+	// InvestigatesIncidents defaults to false: an operator opts an Investigator in to
+	// the runs an Incident starts on its own.
+	InvestigatesIncidents *bool     `json:"investigates_incidents,omitempty"`
+	ModelProviderID       uuid.UUID `json:"model_provider_id" validate:"required"`
+	Prompt                string    `json:"prompt"            validate:"required,notblank,min=1,max=32768"`
+	Tools                 []string  `json:"tools"             validate:"max=64,dive,min=1,max=64"`
 }
 
 // UpdateInvestigatorRequest is the body of `PATCH /api/v1/investigators/{id}`.
@@ -141,18 +148,20 @@ type CreateInvestigatorRequest struct {
 // ⭐ A NEW VERSION IS THE SERVER'S CALL, NOT THE CLIENT'S. Any of `model_provider_id`,
 // `prompt` and `tools` is folded over the current version, and only a result that
 // differs from it — a different endpoint or model, prompt or allowlist — writes version
-// N+1 (ADR 0053 §6). `enabled`, `budgets` and `min_interval_seconds` change in place
-// and never version.
+// N+1 (ADR 0053 §6). `enabled`, `budgets`, `min_interval_seconds` and
+// `investigates_incidents` change in place and never version.
 type UpdateInvestigatorRequest struct {
-	Enabled            *bool                   `json:"enabled,omitempty"`
-	Budgets            *InvestigatorBudgetsDTO `json:"budgets,omitempty"`
-	MinIntervalSeconds *int                    `json:"min_interval_seconds,omitempty" validate:"omitempty,min=0,max=86400"`
-	ModelProviderID    *uuid.UUID              `json:"model_provider_id,omitempty"`
-	Prompt             *string                 `json:"prompt,omitempty" validate:"omitempty,notblank,min=1,max=32768"`
-	Tools              *[]string               `json:"tools,omitempty"  validate:"omitempty,max=64,dive,min=1,max=64"`
+	Enabled               *bool                   `json:"enabled,omitempty"`
+	Budgets               *InvestigatorBudgetsDTO `json:"budgets,omitempty"`
+	MinIntervalSeconds    *int                    `json:"min_interval_seconds,omitempty" validate:"omitempty,min=0,max=86400"`
+	InvestigatesIncidents *bool                   `json:"investigates_incidents,omitempty"`
+	ModelProviderID       *uuid.UUID              `json:"model_provider_id,omitempty"`
+	Prompt                *string                 `json:"prompt,omitempty" validate:"omitempty,notblank,min=1,max=32768"`
+	Tools                 *[]string               `json:"tools,omitempty"  validate:"omitempty,max=64,dive,min=1,max=64"`
 }
 
-// RequestInvestigationRequest is the body of `POST /api/v1/cases/{id}/investigations`.
+// RequestInvestigationRequest is the body of `POST /api/v1/cases/{id}/investigations`
+// and `POST /api/v1/incidents/{number}/investigations`.
 type RequestInvestigationRequest struct {
 	InvestigatorID uuid.UUID `json:"investigator_id" validate:"required"`
 }

@@ -9,7 +9,8 @@ package api
 //
 // The properties this file protects:
 //
-//   - every one of the nine operations answers the shape the contract declares;
+//   - every one of the eleven operations answers the shape the contract declares —
+//     the two on an Incident's Investigations included (git-bug 74ea849);
 //   - an API key is write-only: it reaches the service and no response ever carries it;
 //   - asking for an Investigation answers 202, and a kill switch that is off is still
 //     a 202 whose body says `skipped`/`disabled` — recorded, never silent;
@@ -43,6 +44,7 @@ var (
 	fxVersion       = uuid.MustParse("33333333-3333-4333-8333-333333333333")
 	fxCase          = uuid.MustParse("44444444-4444-4444-8444-444444444444")
 	fxInvestigation = uuid.MustParse("55555555-5555-4555-8555-555555555555")
+	fxIncident      = uuid.MustParse("77777777-7777-4777-8777-777777777777")
 	fxEpoch         = time.Date(2026, 10, 2, 9, 0, 0, 0, time.UTC)
 )
 
@@ -202,6 +204,43 @@ func (f *fakeInvestigators) ListCaseInvestigations(
 		db.Cursor{}, nil
 }
 
+// fxIncidentNumber is the one Incident this tenant owns.
+const fxIncidentNumber = 4
+
+func (f *fakeInvestigators) RequestIncidentInvestigation(
+	_ context.Context, s db.TenantScope, number int64, investigatorID uuid.UUID, by domain.Requester,
+) (domain.Investigation, error) {
+	f.record("request incident")
+	if !mine(s) || number != fxIncidentNumber {
+		return domain.Investigation{}, errs.NotFound("incident_not_found", "no such incident")
+	}
+	if investigatorID != fxInvestigator {
+		return domain.Investigation{}, errs.NotFound("investigator_not_found", "no such Investigator")
+	}
+	f.mu.Lock()
+	f.requester = by
+	f.mu.Unlock()
+	return fxIncidentInvestigationValue(domain.StatusQueued), nil
+}
+
+func (f *fakeInvestigators) ListIncidentInvestigations(
+	_ context.Context, s db.TenantScope, number int64, _ db.Keyset,
+) ([]domain.Investigation, db.Cursor, error) {
+	if !mine(s) || number != fxIncidentNumber {
+		return nil, db.Cursor{}, errs.NotFound("incident_not_found", "no such incident")
+	}
+	return []domain.Investigation{fxIncidentInvestigationValue(domain.StatusExhausted)}, db.Cursor{}, nil
+}
+
+// fxIncidentInvestigationValue is a run about the Incident: no alert key, and the
+// requester an automatic trigger freezes on it.
+func fxIncidentInvestigationValue(status domain.Status) domain.Investigation {
+	inv := fxInvestigationValue(status)
+	inv.SubjectKind, inv.SubjectID, inv.AlertKey = domain.SubjectIncident, fxIncident, ""
+	inv.RequestedBy = domain.Requester{Label: "oto: Incident #4 was drawn"}
+	return inv
+}
+
 func (f *fakeInvestigators) GetInvestigation(_ context.Context, s db.TenantScope, id uuid.UUID) (service.InvestigationDetail, error) {
 	if !mine(s) || id != fxInvestigation {
 		return service.InvestigationDetail{}, errs.NotFound("investigation_not_found", "no such Investigation")
@@ -270,6 +309,59 @@ func TestEveryInvestigatorOperationAnswersItsContractShape(t *testing.T) {
 
 	resp = c.GET("/investigations/"+fxInvestigation.String()).MustStatus(t, http.StatusOK)
 	schema.Assert(t, "getInvestigation", http.StatusOK, resp.Body())
+
+	resp = c.POST(t, "/incidents/4/investigations", map[string]any{"investigator_id": invID}).
+		MustStatus(t, http.StatusAccepted)
+	schema.Assert(t, "requestIncidentInvestigation", http.StatusAccepted, resp.Body())
+	if got := resp.JSON(t)["data"].(map[string]any)["subject_kind"]; got != "incident" {
+		t.Fatalf("an Incident's run answered subject_kind %v", got)
+	}
+
+	resp = c.GET("/incidents/4/investigations").MustStatus(t, http.StatusOK)
+	schema.Assert(t, "listIncidentInvestigations", http.StatusOK, resp.Body())
+}
+
+// TestAnIncidentIsAskedAboutByHumansOnlyAndByItsNumber — ADR 0053 §4 (git-bug 74ea849):
+// "a human asks" holds for an Incident as for a Case, and an Incident is addressed by
+// the number a human quotes; anything that is not one is a 404.
+func TestAnIncidentIsAskedAboutByHumansOnlyAndByItsNumber(t *testing.T) {
+	t.Parallel()
+
+	f, c := newClient(t)
+	resp := c.As(apitest.Machine()).POST(t, "/incidents/4/investigations",
+		map[string]any{"investigator_id": fxInvestigator.String()}).MustStatus(t, http.StatusForbidden)
+	schema.AssertProblem(t, "requestIncidentInvestigation", http.StatusForbidden, resp.Body())
+	if f.callCount() != 0 {
+		t.Fatalf("a system principal reached the service %d time(s)", f.callCount())
+	}
+	for _, bad := range []string{"0", "-1", "four", "4.0"} {
+		resp := c.GET("/incidents/"+bad+"/investigations").MustStatus(t, http.StatusNotFound)
+		schema.AssertProblem(t, "listIncidentInvestigations", http.StatusNotFound, resp.Body())
+	}
+}
+
+// TestInvestigatingIncidentsIsAnOptInThatChangesInPlace — which Investigators an
+// Incident starts on its own is the operator's word (git-bug 74ea849): a flag that
+// reaches the service as a change, never a version, and is absent unless sent.
+func TestInvestigatingIncidentsIsAnOptInThatChangesInPlace(t *testing.T) {
+	t.Parallel()
+
+	f, c := newClient(t)
+	c.PATCH(t, "/investigators/"+fxInvestigator.String(), map[string]any{"investigates_incidents": true}).
+		MustStatus(t, http.StatusOK)
+	f.mu.Lock()
+	ch := f.change
+	f.mu.Unlock()
+	if ch.InvestigatesIncidents == nil || !*ch.InvestigatesIncidents || ch.TouchesVersion() {
+		t.Fatalf("the change reached the service as %+v", ch)
+	}
+	c.PATCH(t, "/investigators/"+fxInvestigator.String(), map[string]any{"enabled": true}).MustStatus(t, http.StatusOK)
+	f.mu.Lock()
+	ch = f.change
+	f.mu.Unlock()
+	if ch.InvestigatesIncidents != nil {
+		t.Fatalf("an omitted flag reached the service as %v", *ch.InvestigatesIncidents)
+	}
 }
 
 // TestAnAPIKeyIsWriteOnly — the key reaches the service and no response carries it,
@@ -466,6 +558,9 @@ func routes() []apitest.Route {
 			Body: `{"investigator_id":"` + inv + `"}`},
 		{Op: "listCaseInvestigations", Method: http.MethodGet, Path: "/cases/" + fxCase.String() + "/investigations"},
 		{Op: "getInvestigation", Method: http.MethodGet, Path: "/investigations/" + fxInvestigation.String()},
+		{Op: "requestIncidentInvestigation", Method: http.MethodPost, Path: "/incidents/4/investigations",
+			Body: `{"investigator_id":"` + inv + `"}`},
+		{Op: "listIncidentInvestigations", Method: http.MethodGet, Path: "/incidents/4/investigations"},
 	}
 }
 
@@ -497,11 +592,15 @@ func TestAnotherOrgsResourceIsA404(t *testing.T) {
 			Body: `{"investigator_id":"` + fxInvestigator.String() + `"}`},
 		{Op: "listCaseInvestigations", Method: http.MethodGet, Path: "/cases/" + fxCase.String() + "/investigations"},
 		{Op: "getInvestigation", Method: http.MethodGet, Path: "/investigations/" + fxInvestigation.String()},
+		{Op: "requestIncidentInvestigation", Method: http.MethodPost, Path: "/incidents/4/investigations",
+			Body: `{"investigator_id":"` + fxInvestigator.String() + `"}`},
+		{Op: "listIncidentInvestigations", Method: http.MethodGet, Path: "/incidents/4/investigations"},
 	})
 	apitest.AssertCrossTenant404(t, world, []apitest.Route{
 		{Op: "getInvestigator", Name: "stranger investigator", Method: http.MethodGet, Path: "/investigators/" + stranger},
 		{Op: "getInvestigation", Name: "stranger investigation", Method: http.MethodGet, Path: "/investigations/" + stranger},
 		{Op: "listCaseInvestigations", Name: "stranger case", Method: http.MethodGet, Path: "/cases/" + stranger + "/investigations"},
+		{Op: "listIncidentInvestigations", Name: "stranger incident", Method: http.MethodGet, Path: "/incidents/999999/investigations"},
 		{Op: "getInvestigation", Name: "not a uuid", Method: http.MethodGet, Path: "/investigations/banana"},
 	})
 }
@@ -522,5 +621,8 @@ func TestAnUnknownQueryParameterIsRefused(t *testing.T) {
 			Body: `{"investigator_id":"` + inv + `"}`},
 		{Op: "listCaseInvestigations", Method: http.MethodGet, Path: "/cases/" + fxCase.String() + "/investigations?status=failed"},
 		{Op: "getInvestigation", Method: http.MethodGet, Path: "/investigations/" + fxInvestigation.String() + "?include=key"},
+		{Op: "requestIncidentInvestigation", Method: http.MethodPost, Path: "/incidents/4/investigations?wait=true",
+			Body: `{"investigator_id":"` + inv + `"}`},
+		{Op: "listIncidentInvestigations", Method: http.MethodGet, Path: "/incidents/4/investigations?status=failed"},
 	})
 }
