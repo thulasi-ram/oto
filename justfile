@@ -299,7 +299,11 @@ fire-alert source_id token="dev" status="firing":
       }]
     }
     JSON
-    @echo
+    # A bare `echo`, not `@echo`: this is a shebang recipe, so just hands the body
+    # to bash verbatim and `@` is not a quiet prefix here — bash looked for a
+    # command named `@echo` and failed the recipe with 127 after a good 202. The
+    # newline is for the receipt, which arrives without one.
+    echo
 
 # Watch the SSE stream. Usage: just stream <bearer-token>
 [group('poke')]
