@@ -59,9 +59,10 @@ type AcceptResult struct {
 //	checksum + batch_dedup_key (C.5)
 //	BEGIN
 //	  INSERT ingest_dedup … ON CONFLICT DO NOTHING
-//	    -> lost the race: return 202 with the ORIGINAL batch_id
+//	    -> lost the race: stamp the push, return 202 with the ORIGINAL batch_id
 //	  INSERT ingest_batches (status='pending')
 //	  enqueue ingest.process_batch           <- same tx: the transactional outbox
+//	  UPDATE source_health.last_push_at      <- throttled; a no-op inside PushStampEvery
 //	COMMIT
 //
 // Per-alert bounds B3-B14 are deliberately NOT here. They need the source's
@@ -193,9 +194,11 @@ func (s *Service) commitAccept(
 		if !hit.Inserted {
 			// The batch is already on disk under another id, and its job is already
 			// queued. Answer with the ORIGINAL id and do nothing else — that is the
-			// whole of §C.5's "on conflict, 202 with the original batch_id".
+			// whole of §C.5's "on conflict, 202 with the original batch_id". The one
+			// exception is the push stamp: an HA sibling's copy still proves this
+			// source is reaching oto.
 			out = AcceptResult{BatchID: hit.BatchID, Duplicate: true}
-			return nil
+			return s.stampPush(ctx, scope, params)
 		}
 
 		if _, err := s.batches.Insert(ctx, scope, params); err != nil {
@@ -238,7 +241,7 @@ func (s *Service) commitAccept(
 			TruncatedAlerts: params.TruncatedAlerts,
 			RejectedAlerts:  len(notes),
 		}
-		return nil
+		return s.stampPush(ctx, scope, params)
 	})
 	if err != nil {
 		return AcceptResult{}, asBackpressure(err)
@@ -248,6 +251,27 @@ func (s *Service) commitAccept(
 		s.metrics.countRejections(n.Reason.String())
 	}
 	return out, nil
+}
+
+// stampPush moves `source_health.last_push_at` for a webhook batch, inside the
+// accept transaction.
+//
+// ⭐ IT IS LAST ON PURPOSE. The first stamp past domain.PushStampEvery takes the
+// source's `source_health` row lock, and every statement after it would extend
+// how long a concurrent accept from the same source waits on that lock. Last, the
+// wait is one COMMIT long; every other stamp inside the window matches no row and
+// locks nothing.
+//
+// Only a PUSH stamps it. A delivery drill is oto talking to itself, and a reconcile
+// sweep is oto reaching the source — the opposite direction, recorded in
+// `last_reconcile_at`. A failure here fails the transaction like any other
+// statement in it — Postgres aborts a transaction on any failed statement — and
+// so becomes the same 503 and the same Alertmanager retry.
+func (s *Service) stampPush(ctx context.Context, scope db.TenantScope, params domain.NewBatchParams) error {
+	if params.Mode != domain.ModePush {
+		return nil
+	}
+	return s.pushes.RecordPush(ctx, scope, params.SourceID, params.ReceivedAt)
 }
 
 // RecordBodyTooLarge writes the B1 rejection for a body the transport refused to

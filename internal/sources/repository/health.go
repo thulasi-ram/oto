@@ -236,7 +236,7 @@ INSERT INTO source_health (source_id, org_id, status, last_push_at, last_reconci
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
 ON CONFLICT (source_id) DO UPDATE SET
     status                = EXCLUDED.status,
-    last_push_at          = EXCLUDED.last_push_at,
+    last_push_at          = GREATEST(source_health.last_push_at, EXCLUDED.last_push_at),
     last_reconcile_at     = EXCLUDED.last_reconcile_at,
     last_reconcile_status = EXCLUDED.last_reconcile_status,
     last_error            = EXCLUDED.last_error,
@@ -260,6 +260,13 @@ ON CONFLICT (source_id) DO UPDATE SET
 // `source_health` is a PROJECTION, not an event: it has no history and is the one
 // table in this module that is UPDATEd rather than appended to. The upsert exists
 // because Create seeds a row and a probe may still race it on a fresh source.
+//
+// ⛔ `last_push_at` IS THE ONE COLUMN IT DOES NOT OWN, and the GREATEST is why. Its
+// writer is the webhook path (ingestion/repository.PushRepository), and both
+// callers here are a read, an outbound call that can take seconds, then this
+// write — so a plain overwrite would put back the value read BEFORE the call and
+// erase every push that landed during it. GREATEST also ignores NULL, so a caller
+// that never read the column cannot blank it.
 func (r *SourceRepository) SaveHealth(ctx context.Context, s db.TenantScope, h domain.SourceHealth) error {
 	if err := db.RequireScope(s); err != nil {
 		return err
@@ -342,6 +349,12 @@ ON CONFLICT (source_id) DO UPDATE SET
     updated_at   = EXCLUDED.updated_at`
 
 // TouchPush records that a webhook batch was accepted from this source.
+//
+// ⚠️ IT HAS NO PRODUCTION CALLER, and for a long time nothing else wrote the column
+// either. The webhook path stamps `last_push_at` through
+// ingestion/repository.PushRepository instead: on the ingest pool, inside the
+// accept transaction, as a throttled plain UPDATE rather than an upsert that would
+// lock the row on every push. The rule below holds for both.
 //
 // It deliberately does NOT move `status`. A push proves the source can reach oto;
 // it proves nothing about whether oto can reach the source, which is what the
