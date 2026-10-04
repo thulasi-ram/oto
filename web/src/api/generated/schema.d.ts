@@ -1054,6 +1054,160 @@ export interface paths {
         patch: operations["updateCorrelator"];
         trace?: never;
     };
+    "/api/v1/model-providers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List model endpoints
+         * @description Every model endpoint the org's Investigators may use, by name (ADR 0053 §3): a Chat Completions
+         *     base URL, a model name, and whether a key is stored. **The key itself is never returned** — not
+         *     here, not anywhere. The list is never paged; `page.has_more` is always `false`.
+         */
+        get: operations["listModelProviders"];
+        put?: never;
+        /**
+         * Configure a model endpoint
+         * @description One endpoint that serves the OpenAI-compatible Chat Completions API with tool calling — a hosted
+         *     API, an operator's gateway, or a model server on the cluster network. `api_key` is **write-only**:
+         *     it is sealed before the row is written, and every response says only `has_key`. A key is only
+         *     ever sent over `https`, so a keyed `http` base URL is a `422`. A base URL carrying credentials is
+         *     refused, not stripped.
+         *
+         *     A duplicate name is a `409` naming `model_providers_org_name_uniq`.
+         */
+        post: operations["createModelProvider"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/investigators": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Investigators
+         * @description Every Investigator in the org, by name, each with the version a new Investigation uses. An
+         *     Investigator is a named, versioned configuration of a model-driven investigation (ADR 0053 §1):
+         *     which model, which prompt, which Tools it may call, and its budgets. It changes what people
+         *     **read** about a Case — never **whether** they are told (§2). The list is never paged.
+         */
+        get: operations["listInvestigators"];
+        put?: never;
+        /**
+         * Write an Investigator
+         * @description Writes the Investigator and its **version 1**. `name` is lower-case letters and digits, because
+         *     its Findings are published as the Enrichment `investigator.<name>`; it is never renamed. `tools`
+         *     names Tools **exactly** — there are no wildcards — and a Tool the list omits is refused when
+         *     called, and recorded. oto's own history is offered as three built-in Tools: `oto_prior_findings`,
+         *     `oto_case_timeline` and `oto_rule_at_fire`. Omitted `budgets` are oto's defaults.
+         *
+         *     A duplicate name is a `409` naming `investigators_org_name_uniq`; a `model_provider_id` this org
+         *     does not have is a `404`.
+         */
+        post: operations["createInvestigator"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/investigators/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get one Investigator and its versions
+         * @description The Investigator and every version it has had, newest first. A Finding names the version that
+         *     produced it; this is where that name resolves to a model, a prompt and an allowlist.
+         */
+        get: operations["getInvestigator"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Change an Investigator
+         * @description A partial update. `enabled` — this Investigator's kill switch — and `budgets` change in place.
+         *     Any of `model_provider_id`, `prompt` and `tools` is folded over the current version, and **only
+         *     a result that differs** — another endpoint, a model that endpoint now names differently, another
+         *     prompt, another set of Tools — writes **version N+1** (ADR 0053 §6). Re-sending what is already
+         *     current writes nothing. Investigations already requested keep the version they pinned.
+         */
+        patch: operations["updateInvestigator"];
+        trace?: never;
+    };
+    "/api/v1/cases/{id}/investigations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A Case's Investigations, latest first
+         * @description Every Investigation of this Case, latest requested first, without transcripts. The latest one's
+         *     Finding is the one a Case shows (ADR 0053 §4); it is also published as the Enrichment
+         *     `investigator.<name>`. A Case this org does not have is a `404`.
+         */
+        get: operations["listCaseInvestigations"];
+        put?: never;
+        /**
+         * Ask an Investigator to investigate a Case
+         * @description Records one Investigation of this Case by the Investigator's **current version** and runs it
+         *     **asynchronously** — a job on a queue of its own, never on the notification path: a Finding never
+         *     decides, delays or causes a notification (ADR 0053 §2). Answers `202` with the run as recorded.
+         *     Poll `GET /api/v1/investigations/{id}`.
+         *
+         *     When the org's `investigations_enabled` or the Investigator's `enabled` is off, **nothing
+         *     starts**, and the request is still recorded: the answer is a run with status `skipped` and reason
+         *     `disabled`, never a silent drop.
+         *
+         *     Needs a human: a system principal is a `403`. A Case or an Investigator this org does not have is
+         *     a `404`.
+         */
+        post: operations["requestCaseInvestigation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/investigations/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get one Investigation, its Steps and its Finding
+         * @description One run with its whole transcript, in order: every model turn and every Tool call, including the
+         *     ones refused, timed out or truncated. Steps are append-only and a run is frozen once it ends, so
+         *     "why did it say that?" reads the same a year later. A run that hit a budget is `exhausted`, says
+         *     which in `reason`, and keeps its partial `finding`.
+         */
+        get: operations["getInvestigation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/rule-snapshots": {
         parameters: {
             query?: never;
@@ -5972,6 +6126,15 @@ export interface components {
              */
             event_retention_months: number;
             default_verbosity: components["schemas"]["Verbosity"];
+            /**
+             * @description The org-wide **kill switch** for Investigators (ADR 0053 §6). While `false`, no new
+             *     Investigation starts in this org: one that has not begun is recorded `skipped` with reason
+             *     `disabled` — recorded, never silently dropped. It never changes whether or how anyone is
+             *     notified. An Investigator also needs a model endpoint and its own enabled flag before
+             *     anything runs, so this is the brake, not the opt-in.
+             * @default true
+             */
+            investigations_enabled: boolean;
         };
         /**
          * @description A human principal. Password hashes and token material never appear in any response.
@@ -7449,6 +7612,265 @@ export interface components {
             data: components["schemas"]["CasePolicyDTO"];
             meta: components["schemas"]["Meta"];
         };
+        /**
+         * @description One model endpoint (ADR 0053 §3): a base URL serving the OpenAI-compatible Chat Completions API
+         *     with tool calling, a model name, and a key sealed server-side.
+         */
+        ModelProviderDTO: {
+            id: components["schemas"]["Uuid"];
+            /** @example gateway */
+            name: string;
+            /**
+             * @description Normalised — lower-case scheme and host, no trailing slash. Never carries credentials.
+             * @example https://llm-gateway.internal/v1
+             */
+            base_url: string;
+            /** @example gpt-4.1-mini */
+            model: string;
+            /** @description Whether a key is stored. The key itself is never returned. */
+            has_key: boolean;
+            created_at: components["schemas"]["Timestamp"];
+            updated_at: components["schemas"]["Timestamp"];
+        };
+        /** @description Configure a model endpoint. */
+        CreateModelProviderRequest: {
+            name: string;
+            /** @description `http` or `https`. A key is only sent over `https`; a URL with credentials in it is refused. */
+            base_url: string;
+            model: string;
+            /** @description Sealed before it is stored and never returned. Omit it for an endpoint that takes no key. */
+            api_key?: string;
+        };
+        /** @description Which endpoint and which model — what an Investigator version pins and a Finding names. */
+        ModelIdentityDTO: {
+            /** @description The endpoint's base URL as it stood when the version was written. */
+            endpoint: string;
+            /** @description The model name. */
+            name: string;
+        };
+        /**
+         * @description The per-run budgets (ADR 0053 §6). A run that hits any of them ends `exhausted`, keeps whatever
+         *     Finding it reached — marked partial — and records which budget it was.
+         */
+        InvestigatorBudgetsDTO: {
+            /**
+             * Format: int32
+             * @description The most Tool calls one Investigation may make.
+             * @example 20
+             */
+            max_steps: number;
+            /**
+             * Format: int64
+             * @description The most input + output tokens one Investigation may spend.
+             * @example 200000
+             */
+            max_tokens: number;
+            /**
+             * Format: int32
+             * @description The longest one Investigation may run, from when it starts.
+             * @example 300
+             */
+            max_wall_seconds: number;
+        };
+        /** @description One immutable version — what produced a Finding. Changing the model, prompt or Tools writes the next. */
+        InvestigatorVersionDTO: {
+            id: components["schemas"]["Uuid"];
+            /** Format: int32 */
+            version: number;
+            model_provider_id: components["schemas"]["Uuid"];
+            model: components["schemas"]["ModelIdentityDTO"];
+            prompt: string;
+            /** @description The exact Tools this version may call, sorted. No wildcards. */
+            tools: string[];
+            created_at: components["schemas"]["Timestamp"];
+        };
+        /** @description A named, versioned configuration of a model-driven investigation (ADR 0053 §1). */
+        InvestigatorDTO: {
+            id: components["schemas"]["Uuid"];
+            /** @example firstlook */
+            name: string;
+            /**
+             * @description The Enrichment its Findings are published as, `investigator.<name>`.
+             * @example investigator.firstlook
+             */
+            enricher: string;
+            /** @description This Investigator's kill switch. Off, nothing starts and a request is recorded `skipped`. */
+            enabled: boolean;
+            budgets: components["schemas"]["InvestigatorBudgetsDTO"];
+            current_version: components["schemas"]["InvestigatorVersionDTO"];
+            created_at: components["schemas"]["Timestamp"];
+            updated_at: components["schemas"]["Timestamp"];
+        };
+        InvestigatorDetailDTO: components["schemas"]["InvestigatorDTO"] & {
+            /** @description Every version, newest first. */
+            versions: components["schemas"]["InvestigatorVersionDTO"][];
+        };
+        /** @description Write an Investigator and its version 1. */
+        CreateInvestigatorRequest: {
+            /** @description Lower-case letters and digits, starting with a letter. Never renamed. */
+            name: string;
+            /** @default true */
+            enabled: boolean;
+            budgets?: components["schemas"]["InvestigatorBudgetsDTO"];
+            model_provider_id: components["schemas"]["Uuid"];
+            prompt: string;
+            /**
+             * @description Exact Tool names. No wildcards.
+             * @default []
+             */
+            tools: string[];
+        };
+        /**
+         * @description A partial update. `enabled` and `budgets` change in place; a differing model, prompt or Tool list
+         *     writes a new version.
+         */
+        UpdateInvestigatorRequest: {
+            enabled?: boolean;
+            budgets?: components["schemas"]["InvestigatorBudgetsDTO"];
+            model_provider_id?: components["schemas"]["Uuid"];
+            prompt?: string;
+            tools?: string[];
+        };
+        /** @description Which Investigator to run against the Case. Its current version is pinned. */
+        RequestInvestigationRequest: {
+            investigator_id: components["schemas"]["Uuid"];
+        };
+        /**
+         * @description `queued` → `running` → `completed` (the model answered), `exhausted` (a per-run budget stopped
+         *     it; its Finding is partial), or `failed`. `skipped` never started: a kill switch was off.
+         * @enum {string}
+         */
+        InvestigationStatus: "queued" | "running" | "completed" | "exhausted" | "failed" | "skipped";
+        /**
+         * @description Why a run ended any way but `completed`. `exhausted`: `step_budget`, `token_budget`,
+         *     `wall_time_budget`. `failed`: `usage_missing` (the model reported no token usage, so the run could
+         *     not be budgeted), `model_error`, `model_changed` (the endpoint no longer reports the model the
+         *     version pinned), `subject_gone`, `interrupted` (its worker stopped; it is not re-run, which would
+         *     pay twice), `internal`. `skipped`: `disabled`.
+         * @enum {string}
+         */
+        InvestigationReason: "step_budget" | "token_budget" | "wall_time_budget" | "usage_missing" | "model_error" | "model_changed" | "subject_gone" | "interrupted" | "internal" | "disabled";
+        /** @description One run of one Investigator version against one subject (ADR 0053 §1), frozen once it ends. */
+        InvestigationDTO: {
+            id: components["schemas"]["Uuid"];
+            /**
+             * @description What was investigated. Only a Case today (ADR 0053 §4 names four).
+             * @enum {string}
+             */
+            subject_kind: "case";
+            subject_id: components["schemas"]["Uuid"];
+            investigator_id: components["schemas"]["Uuid"];
+            investigator_name: string;
+            /**
+             * Format: int32
+             * @description The version that ran — the one its Finding names.
+             */
+            investigator_version: number;
+            investigator_version_id: components["schemas"]["Uuid"];
+            model: components["schemas"]["ModelIdentityDTO"];
+            status: components["schemas"]["InvestigationStatus"];
+            /** @description Why it ended, when it ended any way but `completed`. */
+            reason: components["schemas"]["InvestigationReason"] | null;
+            /** @description The same, as a sentence for a human. */
+            reason_detail: string | null;
+            budgets: components["schemas"]["InvestigatorBudgetsDTO"];
+            /**
+             * Format: int64
+             * @description Input tokens spent, as the model reported them.
+             */
+            tokens_in: number;
+            /**
+             * Format: int64
+             * @description Output tokens spent.
+             */
+            tokens_out: number;
+            /**
+             * Format: int32
+             * @description Tool calls made, refused ones included.
+             */
+            tool_calls: number;
+            /**
+             * @description What it concluded — the model's last answer. Partial when `partial` is true. A Finding is a
+             *     snapshot of what was seen, and never an input to whether a notification is sent.
+             */
+            finding: string | null;
+            /** @description Whether a budget stopped the run before it concluded (`status` is `exhausted`). */
+            partial: boolean;
+            /** @description Who asked, frozen when they asked. */
+            requested_by_label: string;
+            requested_at: components["schemas"]["Timestamp"];
+            started_at: components["schemas"]["Timestamp"] | null;
+            ended_at: components["schemas"]["Timestamp"] | null;
+        };
+        /** @description One Tool call a model turn asked for. */
+        StepToolCallDTO: {
+            id: string;
+            name: string;
+            /** @description The raw arguments the model wrote — kept even when they are not valid JSON. */
+            arguments: string;
+        };
+        /** @description One immutable transcript entry — a model turn, or one Tool call and what came of it. */
+        InvestigationStepDTO: {
+            /** Format: int32 */
+            seq: number;
+            /** @enum {string} */
+            kind: "model_turn" | "tool_call";
+            /** @description A model turn's text; `null` on a Tool call. */
+            text: string | null;
+            /** @description The Tool calls a model turn asked for; `null` on a Tool call. */
+            tool_calls: components["schemas"]["StepToolCallDTO"][] | null;
+            /** @description Why the model stopped, as the endpoint said it. */
+            finish_reason: string | null;
+            /** Format: int64 */
+            tokens_in: number | null;
+            /** Format: int64 */
+            tokens_out: number | null;
+            call_id: string | null;
+            tool_name: string | null;
+            arguments: string | null;
+            /**
+             * @description What came of a Tool call. `refused`: outside the allowlist, no such Tool, or past the step
+             *     budget. `timeout` and `truncated` are the per-call controls; the run continued.
+             * @enum {string|null}
+             */
+            outcome: "ok" | "refused" | "timeout" | "truncated" | "failed" | null;
+            /** @description What the model was answered with. */
+            result: string | null;
+            /** Format: int64 */
+            duration_ms: number;
+            recorded_at: components["schemas"]["Timestamp"];
+        };
+        InvestigationDetailDTO: components["schemas"]["InvestigationDTO"] & {
+            /** @description The transcript, in order. Append-only. */
+            steps: components["schemas"]["InvestigationStepDTO"][];
+        };
+        ModelProviderListResponse: {
+            data: components["schemas"]["ModelProviderDTO"][];
+            page: components["schemas"]["PageInfo"];
+            meta: components["schemas"]["Meta"];
+        };
+        ModelProviderResponse: {
+            data: components["schemas"]["ModelProviderDTO"];
+            meta: components["schemas"]["Meta"];
+        };
+        InvestigatorListResponse: {
+            data: components["schemas"]["InvestigatorDTO"][];
+            page: components["schemas"]["PageInfo"];
+            meta: components["schemas"]["Meta"];
+        };
+        InvestigatorResponse: {
+            data: components["schemas"]["InvestigatorDetailDTO"];
+            meta: components["schemas"]["Meta"];
+        };
+        InvestigationListResponse: {
+            data: components["schemas"]["InvestigationDTO"][];
+            page: components["schemas"]["PageInfo"];
+            meta: components["schemas"]["Meta"];
+        };
+        InvestigationResponse: {
+            data: components["schemas"]["InvestigationDetailDTO"];
+            meta: components["schemas"]["Meta"];
+        };
         IncidentListResponse: {
             data: components["schemas"]["IncidentDTO"][];
             page: components["schemas"]["PageInfo"];
@@ -7654,9 +8076,9 @@ export interface components {
             };
             shadowed: components["schemas"]["OrgSettingsPatchDTO"];
             /**
-             * @description Per integer settings key, the range the server will accept. The one key that is not an
-             *     integer, `default_verbosity`, is absent; its legal values are its own
-             *     schema's. The bounds apply to a declarative value too: configuration is authoritative about
+             * @description Per integer settings key, the range the server will accept. The two keys that are not
+             *     integers, `default_verbosity` and `investigations_enabled`, are absent; their legal values are
+             *     their own schemas'. The bounds apply to a declarative value too: configuration is authoritative about
              *     *which* value is in force, not about which values are legal.
              */
             bounds: {
@@ -7689,6 +8111,7 @@ export interface components {
             /** Format: int32 */
             event_retention_months?: number;
             default_verbosity?: components["schemas"]["Verbosity"];
+            investigations_enabled?: boolean;
         };
         OrgSettingsViewResponse: {
             data: components["schemas"]["OrgSettingsViewDTO"];
@@ -7713,6 +8136,8 @@ export interface components {
             /** Format: int32 */
             event_retention_months?: number;
             default_verbosity?: components["schemas"]["Verbosity"];
+            /** @description `false` pulls the org's Investigation kill switch (ADR 0053 §6); `true` releases it. */
+            investigations_enabled?: boolean;
             /**
              * @description Settings keys to return to oto's shipped default. After a reset the key's origin reports
              *     `default` again. An unknown key is rejected with 422, never ignored.
@@ -10446,6 +10871,301 @@ export interface operations {
             413: components["responses"]["PayloadTooLarge"];
             415: components["responses"]["UnsupportedMediaType"];
             422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    listModelProviders: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every model endpoint, by name. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelProviderListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    createModelProvider: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateModelProviderRequest"];
+            };
+        };
+        responses: {
+            /** @description The endpoint, without its key. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelProviderResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    listInvestigators: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every Investigator, by name. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvestigatorListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    createInvestigator: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateInvestigatorRequest"];
+            };
+        };
+        responses: {
+            /** @description The Investigator and its one version. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvestigatorResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    getInvestigator: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The Investigator. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvestigatorResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    updateInvestigator: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateInvestigatorRequest"];
+            };
+        };
+        responses: {
+            /** @description The Investigator as it now stands, with every version. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvestigatorResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    listCaseInvestigations: {
+        parameters: {
+            query?: {
+                /** @description Maximum items to return in one page. */
+                limit?: components["parameters"]["LimitParam"];
+                /**
+                 * @description Opaque keyset cursor, taken verbatim from `page.next_cursor` of the previous response. A cursor
+                 *     minted under a different filter set is rejected with `400 cursor_filter_mismatch` — reset
+                 *     pagination when the user changes a filter.
+                 */
+                cursor?: components["parameters"]["CursorParam"];
+            };
+            header?: never;
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One page of the Case's Investigations. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvestigationListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    requestCaseInvestigation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RequestInvestigationRequest"];
+            };
+        };
+        responses: {
+            /** @description The Investigation as recorded — `queued`, or `skipped` when a kill switch is off. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvestigationResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    getInvestigation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The Investigation. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvestigationResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
             429: components["responses"]["RateLimited"];
             500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];

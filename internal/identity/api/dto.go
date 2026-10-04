@@ -72,6 +72,11 @@ type OrgSettingsDTO struct {
 	// DefaultVerbosity is the fallback for a Channel that names no verbosity.
 	DefaultVerbosity string `json:"default_verbosity"`
 
+	// InvestigationsEnabled is the org's Investigation kill switch (ADR 0053 §6):
+	// while false, no new Investigation starts and each one asked for is recorded
+	// `skipped` with reason `disabled`. It never changes a notification.
+	InvestigationsEnabled bool `json:"investigations_enabled"`
+
 	// ⛔⛔ `refire_grace_s` AND `group_close_delay_s` WERE HERE AND BOTH ARE DELETED
 	// (git-bug 7287b28), off the wire as well as out of the struct: both are gone
 	// from this schema's `required` list in `openapi.yaml`, so a client still

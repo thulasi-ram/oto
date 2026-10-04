@@ -49,3 +49,89 @@ type ModelDialer interface {
 type TxRunner interface {
 	InTx(ctx context.Context, fn func(ctx context.Context) error) error
 }
+
+// ---------------------------------------------------------------- Investigations
+//
+// The ports below carry git-bug 180a525: Investigators, their runs, and the oto
+// history a run may read. ⛔ NONE OF THEM REACHES THE NOTIFICATION PATH. There is no
+// port here onto `notification` or `channels`, and depguard's
+// `investigator-never-reaches-the-notification-path` forbids the import: a Finding
+// changes what people READ, never WHETHER they are told (ADR 0053 §2).
+
+// InvestigatorStore is where Investigators and their versions are kept, satisfied by
+// `investigator/repository.InvestigatorRepository`.
+type InvestigatorStore interface {
+	// Create writes an Investigator and its version 1 (the caller's transaction).
+	Create(ctx context.Context, s db.TenantScope, d domain.InvestigatorDraft, model domain.ModelIdentity, at time.Time) (domain.Investigator, error)
+	Get(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Investigator, error)
+	// Lock reads an Investigator FOR UPDATE, so two writers cannot both mint version N+1.
+	Lock(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Investigator, error)
+	List(ctx context.Context, s db.TenantScope) ([]domain.Investigator, error)
+	// Versions lists an Investigator's versions, newest first.
+	Versions(ctx context.Context, s db.TenantScope, id uuid.UUID) ([]domain.Version, error)
+	GetVersion(ctx context.Context, s db.TenantScope, versionID uuid.UUID) (domain.Version, error)
+	// Update writes the mutable half: the kill switch and the budgets.
+	Update(ctx context.Context, s db.TenantScope, id uuid.UUID, enabled bool, b domain.Budgets, at time.Time) error
+	// AddVersion writes version `number`.
+	AddVersion(ctx context.Context, s db.TenantScope, investigatorID uuid.UUID, number int,
+		spec domain.VersionSpec, model domain.ModelIdentity, at time.Time) (domain.Version, error)
+}
+
+// InvestigationStore is where runs and their transcripts are kept, satisfied by
+// `investigator/repository.InvestigationRepository`.
+type InvestigationStore interface {
+	// Insert writes a new run, `queued` or — when its switch was off — `skipped`.
+	Insert(ctx context.Context, s db.TenantScope, inv domain.Investigation) (domain.Investigation, error)
+	Get(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Investigation, error)
+	// ListBySubject is one subject's runs, latest first.
+	ListBySubject(ctx context.Context, s db.TenantScope, kind domain.SubjectKind, subjectID uuid.UUID,
+		p db.Keyset) ([]domain.Investigation, db.Cursor, error)
+	// Start moves a `queued` run to `running`, and reports false when it was not
+	// queued — another worker took it, or it already ended.
+	Start(ctx context.Context, s db.TenantScope, id uuid.UUID, at time.Time) (bool, error)
+	// Finish ends a run that has not ended. The row is frozen from then on.
+	Finish(ctx context.Context, s db.TenantScope, id uuid.UUID, end domain.Ending, spent domain.Usage,
+		toolCalls int, finding string, at time.Time) error
+	// AppendStep writes one transcript entry. There is no method that changes one.
+	AppendStep(ctx context.Context, s db.TenantScope, investigationID uuid.UUID, step domain.Step) error
+	Steps(ctx context.Context, s db.TenantScope, investigationID uuid.UUID) ([]domain.Step, error)
+	// PriorFindings are earlier runs' Findings on the same alert_key, newest first.
+	PriorFindings(ctx context.Context, s db.TenantScope, alertKey string, except uuid.UUID, limit int) ([]domain.PriorFinding, error)
+}
+
+// CaseReader reads the Case an Investigation is about, satisfied in `internal/app`
+// over `alerts/service`. A Case this org does not have is KindNotFound.
+type CaseReader interface {
+	InvestigationCase(ctx context.Context, s db.TenantScope, caseID uuid.UUID) (domain.CaseSubject, error)
+}
+
+// TimelineReader reads a Case's timeline, oldest first, at most `limit` entries —
+// the most recent ones when there are more.
+type TimelineReader interface {
+	CaseTimeline(ctx context.Context, s db.TenantScope, caseID uuid.UUID, limit int) ([]domain.TimelineEntry, error)
+}
+
+// RuleReader reads a rule snapshot, satisfied in `internal/app` over `rules/service`.
+type RuleReader interface {
+	RuleAtFire(ctx context.Context, s db.TenantScope, snapshotID uuid.UUID) (domain.RuleAtFire, error)
+}
+
+// FindingPublisher stores a Finding as the Enrichment `investigator.<name>` on its
+// Case, inside the caller's transaction, satisfied in `internal/app` over the
+// enrichment store. ⛔ It enqueues nothing: publishing a Finding is not a reason to
+// evaluate a notification.
+type FindingPublisher interface {
+	PublishFinding(ctx context.Context, s db.TenantScope, f domain.PublishedFinding) error
+}
+
+// OrgSwitch reads the org's Investigation kill switch (`investigations_enabled`,
+// ADR 0053 §6), satisfied in `internal/app` over `identity/service`.
+type OrgSwitch interface {
+	InvestigationsEnabled(ctx context.Context, s db.TenantScope) (bool, error)
+}
+
+// JobQueue enqueues `investigations.run` inside the caller's transaction, so a run
+// row and the job that runs it commit together. `db.Enqueuer` satisfies it.
+type JobQueue interface {
+	Enqueue(ctx context.Context, args db.JobArgs, opts ...db.JobOption) (db.EnqueueResult, error)
+}

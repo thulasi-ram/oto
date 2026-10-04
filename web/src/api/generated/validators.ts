@@ -2100,6 +2100,7 @@ export const OrgSettingsDTOSchema = v.looseObject({
     v.maxValue(120),
   ),
   "default_verbosity": VerbositySchema,
+  "investigations_enabled": v.boolean(),
 });
 
 export const OrgDTOSchema = v.looseObject({
@@ -3320,6 +3321,322 @@ export const CasePolicyResponseSchema = v.looseObject({
   "meta": MetaSchema,
 });
 
+export const ModelProviderDTOSchema = v.looseObject({
+  "id": UuidSchema,
+  "name": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(120),
+  ),
+  "base_url": v.pipe(
+    v.string(),
+    v.maxLength(2048),
+  ),
+  "model": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(200),
+  ),
+  "has_key": v.boolean(),
+  "created_at": TimestampSchema,
+  "updated_at": TimestampSchema,
+});
+
+export const CreateModelProviderRequestSchema = v.strictObject({
+  "name": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(120),
+  ),
+  "base_url": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(2048),
+  ),
+  "model": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(200),
+  ),
+  "api_key": v.exactOptional(v.pipe(
+    v.string(),
+    v.maxLength(4096),
+  )),
+});
+
+export const ModelIdentityDTOSchema = v.looseObject({
+  "endpoint": v.pipe(
+    v.string(),
+    v.maxLength(2048),
+  ),
+  "name": v.pipe(
+    v.string(),
+    v.maxLength(200),
+  ),
+});
+
+export const InvestigatorBudgetsDTOSchema = v.looseObject({
+  "max_steps": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+    v.maxValue(100),
+  ),
+  "max_tokens": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1000),
+    v.maxValue(2000000),
+  ),
+  "max_wall_seconds": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(10),
+    v.maxValue(1800),
+  ),
+});
+
+export const InvestigatorVersionDTOSchema = v.looseObject({
+  "id": UuidSchema,
+  "version": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+  ),
+  "model_provider_id": UuidSchema,
+  "model": ModelIdentityDTOSchema,
+  "prompt": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(32768),
+  ),
+  "tools": v.pipe(
+    v.array(v.pipe(
+      v.string(),
+      v.maxLength(64),
+    )),
+    v.maxLength(64),
+  ),
+  "created_at": TimestampSchema,
+});
+
+export const InvestigatorDTOSchema = v.looseObject({
+  "id": UuidSchema,
+  "name": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(63),
+  ),
+  "enricher": v.string(),
+  "enabled": v.boolean(),
+  "budgets": InvestigatorBudgetsDTOSchema,
+  "current_version": InvestigatorVersionDTOSchema,
+  "created_at": TimestampSchema,
+  "updated_at": TimestampSchema,
+});
+
+export const InvestigatorDetailDTOSchema = v.intersect([
+  InvestigatorDTOSchema,
+  v.looseObject({
+    "versions": v.pipe(
+      v.array(InvestigatorVersionDTOSchema),
+      v.maxLength(100),
+    ),
+  }),
+]);
+
+export const CreateInvestigatorRequestSchema = v.strictObject({
+  "name": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(63),
+    v.regex(/^[a-z][a-z0-9]{0,62}$/),
+  ),
+  "enabled": v.exactOptional(v.boolean(), true),
+  "budgets": v.exactOptional(InvestigatorBudgetsDTOSchema),
+  "model_provider_id": UuidSchema,
+  "prompt": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(32768),
+  ),
+  "tools": v.exactOptional(v.pipe(
+    v.array(v.pipe(
+      v.string(),
+      v.minLength(1),
+      v.maxLength(64),
+      v.regex(/^[A-Za-z0-9_-]{1,64}$/),
+    )),
+    v.maxLength(64),
+    v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
+  ), () => ([])),
+});
+
+export const UpdateInvestigatorRequestSchema = v.strictObject({
+  "enabled": v.exactOptional(v.boolean()),
+  "budgets": v.exactOptional(InvestigatorBudgetsDTOSchema),
+  "model_provider_id": v.exactOptional(UuidSchema),
+  "prompt": v.exactOptional(v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(32768),
+  )),
+  "tools": v.exactOptional(v.pipe(
+    v.array(v.pipe(
+      v.string(),
+      v.minLength(1),
+      v.maxLength(64),
+      v.regex(/^[A-Za-z0-9_-]{1,64}$/),
+    )),
+    v.maxLength(64),
+    v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
+  )),
+});
+
+export const RequestInvestigationRequestSchema = v.strictObject({
+  "investigator_id": UuidSchema,
+});
+
+export const InvestigationStatusSchema = v.picklist(["queued", "running", "completed", "exhausted", "failed", "skipped"]);
+
+export const InvestigationReasonSchema = v.picklist(["step_budget", "token_budget", "wall_time_budget", "usage_missing", "model_error", "model_changed", "subject_gone", "interrupted", "internal", "disabled"]);
+
+export const InvestigationDTOSchema = v.looseObject({
+  "id": UuidSchema,
+  "subject_kind": v.picklist(["case"]),
+  "subject_id": UuidSchema,
+  "investigator_id": UuidSchema,
+  "investigator_name": v.pipe(
+    v.string(),
+    v.maxLength(63),
+  ),
+  "investigator_version": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+  ),
+  "investigator_version_id": UuidSchema,
+  "model": ModelIdentityDTOSchema,
+  "status": InvestigationStatusSchema,
+  "reason": v.nullable(InvestigationReasonSchema),
+  "reason_detail": v.nullable(v.pipe(
+    v.string(),
+    v.maxLength(2000),
+  )),
+  "budgets": InvestigatorBudgetsDTOSchema,
+  "tokens_in": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+  ),
+  "tokens_out": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+  ),
+  "tool_calls": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+  ),
+  "finding": v.nullable(v.pipe(
+    v.string(),
+    v.maxLength(16384),
+  )),
+  "partial": v.boolean(),
+  "requested_by_label": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(200),
+  ),
+  "requested_at": TimestampSchema,
+  "started_at": v.nullable(TimestampSchema),
+  "ended_at": v.nullable(TimestampSchema),
+});
+
+export const StepToolCallDTOSchema = v.looseObject({
+  "id": v.string(),
+  "name": v.string(),
+  "arguments": v.string(),
+});
+
+export const InvestigationStepDTOSchema = v.looseObject({
+  "seq": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+  ),
+  "kind": v.picklist(["model_turn", "tool_call"]),
+  "text": v.nullable(v.string()),
+  "tool_calls": v.nullable(v.pipe(
+    v.array(StepToolCallDTOSchema),
+    v.maxLength(1000),
+  )),
+  "finish_reason": v.nullable(v.string()),
+  "tokens_in": v.nullable(v.pipe(
+    v.number(),
+    v.integer(),
+  )),
+  "tokens_out": v.nullable(v.pipe(
+    v.number(),
+    v.integer(),
+  )),
+  "call_id": v.nullable(v.string()),
+  "tool_name": v.nullable(v.string()),
+  "arguments": v.nullable(v.string()),
+  "outcome": v.nullable(v.picklist(["ok", "refused", "timeout", "truncated", "failed"])),
+  "result": v.nullable(v.string()),
+  "duration_ms": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+  ),
+  "recorded_at": TimestampSchema,
+});
+
+export const InvestigationDetailDTOSchema = v.intersect([
+  InvestigationDTOSchema,
+  v.looseObject({
+    "steps": v.pipe(
+      v.array(InvestigationStepDTOSchema),
+      v.maxLength(1000),
+    ),
+  }),
+]);
+
+export const ModelProviderListResponseSchema = v.looseObject({
+  "data": v.array(ModelProviderDTOSchema),
+  "page": PageInfoSchema,
+  "meta": MetaSchema,
+});
+
+export const ModelProviderResponseSchema = v.looseObject({
+  "data": ModelProviderDTOSchema,
+  "meta": MetaSchema,
+});
+
+export const InvestigatorListResponseSchema = v.looseObject({
+  "data": v.array(InvestigatorDTOSchema),
+  "page": PageInfoSchema,
+  "meta": MetaSchema,
+});
+
+export const InvestigatorResponseSchema = v.looseObject({
+  "data": InvestigatorDetailDTOSchema,
+  "meta": MetaSchema,
+});
+
+export const InvestigationListResponseSchema = v.looseObject({
+  "data": v.array(InvestigationDTOSchema),
+  "page": PageInfoSchema,
+  "meta": MetaSchema,
+});
+
+export const InvestigationResponseSchema = v.looseObject({
+  "data": InvestigationDetailDTOSchema,
+  "meta": MetaSchema,
+});
+
 export const IncidentListResponseSchema = v.looseObject({
   "data": v.array(IncidentDTOSchema),
   "page": PageInfoSchema,
@@ -3531,6 +3848,7 @@ export const OrgSettingsPatchDTOSchema = v.looseObject({
     v.integer(),
   )),
   "default_verbosity": v.exactOptional(VerbositySchema),
+  "investigations_enabled": v.exactOptional(v.boolean()),
 });
 
 export const OrgSettingsViewDTOSchema = v.looseObject({
@@ -3587,6 +3905,7 @@ export const UpdateOrgSettingsRequestSchema = v.strictObject({
     v.maxValue(120),
   )),
   "default_verbosity": v.exactOptional(VerbositySchema),
+  "investigations_enabled": v.exactOptional(v.boolean()),
   "reset": v.exactOptional(v.pipe(
     v.array(v.pipe(
       v.string(),

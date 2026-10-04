@@ -45,6 +45,10 @@ func DefaultQueueWorkers() map[string]int {
 		QueueReconcile:      8,
 		QueueLifecycle:      4,
 		QueueMaintenance:    1,
+		// ADR 0053 §3: Investigations, off every other queue. Two because a run is a
+		// chain of paid model calls of up to MaxWallSeconds; the org-level
+		// concurrency control (§6) narrows it per tenant, this bounds the deployment.
+		QueueInvestigate: 2,
 	}
 }
 

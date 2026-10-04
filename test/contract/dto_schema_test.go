@@ -26,6 +26,7 @@ import (
 	incidentsapi "github.com/thulasiram/oto/internal/incidents/api"
 	incidentsdomain "github.com/thulasiram/oto/internal/incidents/domain"
 	ingestionapi "github.com/thulasiram/oto/internal/ingestion/api"
+	investigatorapi "github.com/thulasiram/oto/internal/investigator/api"
 	notificationapi "github.com/thulasiram/oto/internal/notification/api"
 	notificationdomain "github.com/thulasiram/oto/internal/notification/domain"
 	rulesapi "github.com/thulasiram/oto/internal/rules/api"
@@ -141,6 +142,25 @@ var bindings = []binding{
 	{"incidents", "CorrelatorDTO", incidentsapi.CorrelatorDTO{}},
 	{"incidents", "CreateCorrelatorRequest", incidentsapi.CreateCorrelatorRequest{}},
 	{"incidents", "UpdateCorrelatorRequest", incidentsapi.UpdateCorrelatorRequest{}},
+
+	// --------------------------------------------------------- investigator
+	// ADR 0053, git-bug 180a525. `InvestigatorDetailDTO` and `InvestigationDetailDTO`
+	// embed their summaries exactly as the contract's `allOf` composes them.
+	// `CreateModelProviderRequest.api_key` is write-only and appears in no response.
+	{"investigator", "ModelProviderDTO", investigatorapi.ModelProviderDTO{}},
+	{"investigator", "CreateModelProviderRequest", investigatorapi.CreateModelProviderRequest{}},
+	{"investigator", "ModelIdentityDTO", investigatorapi.ModelIdentityDTO{}},
+	{"investigator", "InvestigatorBudgetsDTO", investigatorapi.InvestigatorBudgetsDTO{}},
+	{"investigator", "InvestigatorVersionDTO", investigatorapi.InvestigatorVersionDTO{}},
+	{"investigator", "InvestigatorDTO", investigatorapi.InvestigatorDTO{}},
+	{"investigator", "InvestigatorDetailDTO", investigatorapi.InvestigatorDetailDTO{}},
+	{"investigator", "CreateInvestigatorRequest", investigatorapi.CreateInvestigatorRequest{}},
+	{"investigator", "UpdateInvestigatorRequest", investigatorapi.UpdateInvestigatorRequest{}},
+	{"investigator", "RequestInvestigationRequest", investigatorapi.RequestInvestigationRequest{}},
+	{"investigator", "InvestigationDTO", investigatorapi.InvestigationDTO{}},
+	{"investigator", "StepToolCallDTO", investigatorapi.StepToolCallDTO{}},
+	{"investigator", "InvestigationStepDTO", investigatorapi.InvestigationStepDTO{}},
+	{"investigator", "InvestigationDetailDTO", investigatorapi.InvestigationDetailDTO{}},
 
 	// ------------------------------------------------------------ sources
 	{"sources", "ClusterDTO", sourcesapi.ClusterDTO{}},

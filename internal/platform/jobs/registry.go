@@ -146,6 +146,8 @@ type Handlers struct {
 	RetentionPrune   Handler[RetentionPruneArgs]
 	StatsRollup      Handler[StatsRollupArgs]
 	CacheExpire      Handler[CacheExpireArgs]
+
+	InvestigationsRun Handler[InvestigationsRunArgs]
 }
 
 // stub returns the not-implemented handler for a kind.
@@ -274,6 +276,13 @@ func RegisterAll(r *Registry, h Handlers) error {
 		func() error {
 			return Register(r, Spec{Queue: QueueMaintenance, PayloadVersion: 1, Timeout: 5 * time.Minute},
 				orStub(h.CacheExpire, KindCacheExpire))
+		},
+		func() error {
+			// The longest wall-time budget an Investigator may set, plus room to
+			// record the ending. The run's own budget is what stops it; this is the
+			// backstop that frees the worker if the budget's context did not.
+			return Register(r, Spec{Queue: QueueInvestigate, PayloadVersion: 1, Timeout: InvestigationJobTimeout},
+				orStub(h.InvestigationsRun, KindInvestigationsRun))
 		},
 	}
 

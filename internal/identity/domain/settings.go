@@ -47,6 +47,15 @@ const (
 	KeyEventRetention     SettingKey = "event_retention_months"
 	KeyDefaultVerbosity   SettingKey = "default_verbosity"
 
+	// KeyInvestigationsEnabled is ADR 0053 §6's org-level "Enabled" control: the
+	// KILL SWITCH for every Investigator in the org. While it is false no new
+	// Investigation starts — one that has not begun is recorded `skipped` with
+	// reason `disabled`, never silently dropped — and it never changes whether or
+	// how anyone is notified (ADR 0053 §2). Shipped default: true. An Investigator
+	// still needs its own model endpoint and its own enabled flag before anything
+	// runs, so the org switch is the brake, not the opt-in.
+	KeyInvestigationsEnabled SettingKey = "investigations_enabled"
+
 	// ⛔⛔ `refire_grace_s` AND `group_close_delay_s` WERE HERE AND BOTH ARE DELETED
 	// (git-bug 7287b28, migration 00071). They were org-facing, bounds-validated,
 	// patchable, origin-reporting settings that DECIDED NOTHING:
@@ -78,7 +87,8 @@ const (
 	// thread-broadcast was removed outright: with no `reply_broadcast` call left in
 	// the notifier there is no broadcast for an org to opt into. A boolean that
 	// cannot change an outcome is not a safe default, it is a lie in the settings
-	// screen. `default_verbosity` is now the ONLY non-integer setting key.
+	// screen. ⚠️ IT WAS THE ONLY BOOLEAN UNTIL `investigations_enabled` (ADR 0053
+	// §6) — a boolean that DOES change an outcome: whether an Investigation starts.
 	//
 	// ⛔ FIVE KEYS WERE HERE AND ARE DELETED (git-bug bd0fb1d, migration 00068):
 	// `unacked_reminder_after_s` and the three `unacked_reminder_mention*` keys.
@@ -294,6 +304,9 @@ type SettingsPatch struct {
 	EventRetentionMonth *int
 	// DefaultVerbosity is the org's fallback for a Channel that names no verbosity.
 	DefaultVerbosity *string
+	// InvestigationsEnabled is the org's Investigation kill switch (ADR 0053 §6).
+	// nil means the org never wrote it and the shipped default (true) is in force.
+	InvestigationsEnabled *bool
 
 	// ⛔⛔ `RefireGraceS` AND `GroupCloseDelayS` WERE HERE AND BOTH ARE DELETED
 	// (git-bug 7287b28). See the key block above for why neither decided anything.
@@ -326,7 +339,7 @@ func (p *SettingsPatch) intPtr(k SettingKey) **int {
 		return &p.RawRetentionDays
 	case KeyEventRetention:
 		return &p.EventRetentionMonth
-	case KeyDefaultVerbosity:
+	case KeyDefaultVerbosity, KeyInvestigationsEnabled:
 		return nil
 	default:
 		return nil
@@ -391,6 +404,10 @@ func (p SettingsPatch) Merge(next SettingsPatch) SettingsPatch {
 		v := *next.DefaultVerbosity
 		out.DefaultVerbosity = &v
 	}
+	if next.InvestigationsEnabled != nil {
+		v := *next.InvestigationsEnabled
+		out.InvestigationsEnabled = &v
+	}
 	return out
 }
 
@@ -406,6 +423,8 @@ func (p SettingsPatch) Clear(keys ...SettingKey) SettingsPatch {
 		switch k {
 		case KeyDefaultVerbosity:
 			out.DefaultVerbosity = nil
+		case KeyInvestigationsEnabled:
+			out.InvestigationsEnabled = nil
 		}
 	}
 	return out
@@ -423,6 +442,10 @@ func (p SettingsPatch) Origin(k SettingKey) Origin {
 	switch k {
 	case KeyDefaultVerbosity:
 		if p.DefaultVerbosity != nil {
+			return OriginOrg
+		}
+	case KeyInvestigationsEnabled:
+		if p.InvestigationsEnabled != nil {
 			return OriginOrg
 		}
 	}
@@ -444,13 +467,15 @@ func (p SettingsPatch) only(k SettingKey) SettingsPatch {
 	switch k {
 	case KeyDefaultVerbosity:
 		out.DefaultVerbosity = p.DefaultVerbosity
+	case KeyInvestigationsEnabled:
+		out.InvestigationsEnabled = p.InvestigationsEnabled
 	}
 	return out
 }
 
 // Overridden returns the keys this org has written, in a stable order.
 func (p SettingsPatch) Overridden() []SettingKey {
-	out := make([]SettingKey, 0, len(settingBounds)+1)
+	out := make([]SettingKey, 0, len(settingBounds)+2)
 	for _, k := range AllSettingKeys() {
 		if p.Origin(k) == OriginOrg {
 			out = append(out, k)
@@ -462,7 +487,7 @@ func (p SettingsPatch) Overridden() []SettingKey {
 // AllSettingKeys is the closed key set in a stable order.
 func AllSettingKeys() []SettingKey {
 	out := IntKeys()
-	return append(out, KeyDefaultVerbosity)
+	return append(out, KeyDefaultVerbosity, KeyInvestigationsEnabled)
 }
 
 // Settings folds the org's overrides onto oto's defaults and CLAMPS the result.
@@ -495,6 +520,13 @@ func (p SettingsPatch) Settings() Settings {
 	s.DefaultVerbosity = DefaultChannelVerbosity
 	if p.DefaultVerbosity != nil && channelVerbosities[*p.DefaultVerbosity] {
 		s.DefaultVerbosity = *p.DefaultVerbosity
+	}
+
+	// A boolean needs no clamp — it cannot be out of range — so the org's own
+	// write simply wins over the shipped default.
+	s.InvestigationsEnabled = d.InvestigationsEnabled
+	if p.InvestigationsEnabled != nil {
+		s.InvestigationsEnabled = *p.InvestigationsEnabled
 	}
 
 	return s

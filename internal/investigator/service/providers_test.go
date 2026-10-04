@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -73,44 +74,79 @@ func (m *memTx) InTx(ctx context.Context, fn func(ctx context.Context) error) er
 	return fn(ctx)
 }
 
+// recordingDialer hands back a scripted model for every Dial, and keeps the last one
+// so a test can read what the run asked it.
 type recordingDialer struct {
+	mu     sync.Mutex
 	gotKey string
 	skew   bool
+	script []modelfake.Step
+	last   *modelfake.Provider
 }
 
 func (d *recordingDialer) Dial(cfg domain.ProviderConfig, key string) (domain.ModelProvider, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	d.gotKey = key
 	id := cfg.Identity()
 	if d.skew {
 		id.Endpoint += "/"
 	}
-	return modelfake.NewWithIdentity(id), nil
+	d.last = modelfake.NewWithIdentity(id, d.script...)
+	return d.last, nil
+}
+
+func (d *recordingDialer) model() *modelfake.Provider {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.last
 }
 
 type rig struct {
-	svc   *Service
-	store *memStore
-	creds *memCreds
-	tx    *memTx
-	dial  *recordingDialer
-	scope db.TenantScope
+	svc            *Service
+	store          *memStore
+	creds          *memCreds
+	tx             *memTx
+	dial           *recordingDialer
+	scope          db.TenantScope
+	clock          *clock.Fake
+	investigators  *memInvestigators
+	investigations *memInvestigations
+	history        *memHistory
+	findings       *memFindings
+	orgSwitch      *memSwitch
+	queue          *memQueue
+}
+
+func (r *rig) deps() Deps {
+	return Deps{Providers: r.store, Credentials: r.creds, Keys: r.creds, Dialer: r.dial, Tx: r.tx, Clock: r.clock,
+		Investigators: r.investigators, Investigations: r.investigations,
+		Cases: r.history, Timeline: r.history, Rules: r.history, Findings: r.findings,
+		OrgSwitch: r.orgSwitch, Queue: r.queue,
+		Limits: Limits{ToolTimeout: 50 * time.Millisecond, MaxToolResult: 4096}}
 }
 
 func newRig(t *testing.T) *rig {
 	t.Helper()
 	r := &rig{
-		store: &memStore{rows: map[uuid.UUID]domain.ProviderConfig{}},
-		creds: &memCreds{sealed: map[uuid.UUID]map[string]string{}, kinds: map[uuid.UUID]string{}},
-		tx:    &memTx{},
-		dial:  &recordingDialer{},
+		store:          &memStore{rows: map[uuid.UUID]domain.ProviderConfig{}},
+		creds:          &memCreds{sealed: map[uuid.UUID]map[string]string{}, kinds: map[uuid.UUID]string{}},
+		tx:             &memTx{},
+		dial:           &recordingDialer{},
+		clock:          clock.NewFake(time.Date(2026, 10, 2, 9, 0, 0, 0, time.UTC)),
+		investigators:  newMemInvestigators(),
+		investigations: newMemInvestigations(),
+		history:        &memHistory{cases: map[uuid.UUID]domain.CaseSubject{}},
+		findings:       &memFindings{},
+		orgSwitch:      &memSwitch{on: true},
+		queue:          &memQueue{},
 	}
 	scope, err := db.NewTenantScope(uuid.New())
 	if err != nil {
 		t.Fatal(err)
 	}
 	r.scope = scope
-	svc, err := New(Deps{Providers: r.store, Credentials: r.creds, Keys: r.creds, Dialer: r.dial, Tx: r.tx,
-		Clock: clock.NewFake(time.Date(2026, 10, 2, 9, 0, 0, 0, time.UTC))})
+	svc, err := New(r.deps())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,20 +241,28 @@ func TestOpenUnsealsStraightIntoTheAdapterAndPinsTheStoredIdentity(t *testing.T)
 
 func TestNewRequiresEveryPort(t *testing.T) {
 	r := newRig(t)
-	full := Deps{Providers: r.store, Credentials: r.creds, Keys: r.creds, Dialer: r.dial, Tx: r.tx}
-	for name, d := range map[string]Deps{
-		"providers": {Credentials: full.Credentials, Keys: full.Keys, Dialer: full.Dialer, Tx: full.Tx},
-		"creds":     {Providers: full.Providers, Keys: full.Keys, Dialer: full.Dialer, Tx: full.Tx},
-		"keys":      {Providers: full.Providers, Credentials: full.Credentials, Dialer: full.Dialer, Tx: full.Tx},
-		"dialer":    {Providers: full.Providers, Credentials: full.Credentials, Keys: full.Keys, Tx: full.Tx},
-		"tx":        {Providers: full.Providers, Credentials: full.Credentials, Keys: full.Keys, Dialer: full.Dialer},
+	for name, drop := range map[string]func(*Deps){
+		"providers":      func(d *Deps) { d.Providers = nil },
+		"creds":          func(d *Deps) { d.Credentials = nil },
+		"keys":           func(d *Deps) { d.Keys = nil },
+		"dialer":         func(d *Deps) { d.Dialer = nil },
+		"tx":             func(d *Deps) { d.Tx = nil },
+		"investigators":  func(d *Deps) { d.Investigators = nil },
+		"investigations": func(d *Deps) { d.Investigations = nil },
+		"cases":          func(d *Deps) { d.Cases = nil },
+		"timeline":       func(d *Deps) { d.Timeline = nil },
+		"rules":          func(d *Deps) { d.Rules = nil },
+		"findings":       func(d *Deps) { d.Findings = nil },
+		"org switch":     func(d *Deps) { d.OrgSwitch = nil },
+		"queue":          func(d *Deps) { d.Queue = nil },
 	} {
+		d := r.deps()
+		drop(&d)
 		if _, err := New(d); err == nil {
 			t.Fatalf("missing %s accepted", name)
 		}
 	}
-	if _, err := New(full); err != nil {
+	if _, err := New(r.deps()); err != nil {
 		t.Fatal(err)
 	}
-
 }

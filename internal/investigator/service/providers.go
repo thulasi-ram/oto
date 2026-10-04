@@ -5,9 +5,8 @@ package service
 // transaction; Get and List return the row and never the key; Open is the one path on
 // which a key is unsealed, and it is unsealed straight into an adapter.
 //
-// ⚠️ THERE IS NO HTTP SURFACE YET. The settings API and its page are a follow-up (they
-// belong with the Investigator settings in git-bug 180a525's area); this is the service
-// they will call, and the shape a DTO must keep — a `has_key` boolean, never the key.
+// ⭐ THE HTTP SURFACE IS `investigator/api` (git-bug 180a525): a create and a list, and
+// the DTO keeps the shape this service promises — a `has_key` boolean, never the key.
 
 import (
 	"context"
@@ -22,8 +21,8 @@ import (
 	"github.com/thulasiram/oto/internal/platform/errs"
 )
 
-// Service is the investigator module's service. Today it holds model endpoints; the
-// Investigation loop (git-bug 180a525) joins it.
+// Service is the investigator module's service: model endpoints, Investigators, and
+// the Investigations that run them (git-bug 180a525).
 type Service struct {
 	providers ProviderStore
 	creds     CredentialWriter
@@ -31,11 +30,23 @@ type Service struct {
 	dial      ModelDialer
 	tx        TxRunner
 	clock     clock.Clock
+
+	investigators  InvestigatorStore
+	investigations InvestigationStore
+	cases          CaseReader
+	timeline       TimelineReader
+	rules          RuleReader
+	findings       FindingPublisher
+	orgSwitch      OrgSwitch
+	queue          JobQueue
+	limits         Limits
+	tools          []Tool
 }
 
-// Deps are the Service's collaborators. Every one but Clock is required: an endpoint
-// stored with no unit of work can leave a sealed key nothing points at, and one with no
-// way to unseal its key is an endpoint every Investigation fails against.
+// Deps are the Service's collaborators. Every one but Clock and Limits is required:
+// an endpoint stored with no unit of work can leave a sealed key nothing points at,
+// one with no way to unseal its key is an endpoint every Investigation fails against,
+// and a run with no way to record its Steps is a run nobody can read back.
 type Deps struct {
 	Providers   ProviderStore
 	Credentials CredentialWriter
@@ -43,6 +54,17 @@ type Deps struct {
 	Dialer      ModelDialer
 	Tx          TxRunner
 	Clock       clock.Clock
+
+	Investigators  InvestigatorStore
+	Investigations InvestigationStore
+	Cases          CaseReader
+	Timeline       TimelineReader
+	Rules          RuleReader
+	Findings       FindingPublisher
+	OrgSwitch      OrgSwitch
+	Queue          JobQueue
+	// Limits are the per-Tool-call controls. Zero fields take DefaultLimits.
+	Limits Limits
 }
 
 // New builds the Service.
@@ -58,14 +80,31 @@ func New(d Deps) (*Service, error) {
 		return nil, errors.New("investigator: a model dialer is required")
 	case d.Tx == nil:
 		return nil, errors.New("investigator: a unit of work is required; an endpoint and its key commit together")
+	case d.Investigators == nil:
+		return nil, errors.New("investigator: an Investigator store is required")
+	case d.Investigations == nil:
+		return nil, errors.New("investigator: an Investigation store is required; a run nobody can read back is not one")
+	case d.Cases == nil || d.Timeline == nil || d.Rules == nil:
+		return nil, errors.New("investigator: the Case, timeline and rule readers are required; they are the built-in Tools")
+	case d.Findings == nil:
+		return nil, errors.New("investigator: a Finding publisher is required")
+	case d.OrgSwitch == nil:
+		return nil, errors.New("investigator: the org kill switch is required; a run must be stoppable")
+	case d.Queue == nil:
+		return nil, errors.New("investigator: a job queue is required; an Investigation runs asynchronously")
 	}
 	if d.Clock == nil {
 		d.Clock = clock.New()
 	}
-	return &Service{
+	s := &Service{
 		providers: d.Providers, creds: d.Credentials, keys: d.Keys,
 		dial: d.Dialer, tx: d.Tx, clock: d.Clock,
-	}, nil
+		investigators: d.Investigators, investigations: d.Investigations,
+		cases: d.Cases, timeline: d.Timeline, rules: d.Rules, findings: d.Findings,
+		orgSwitch: d.OrgSwitch, queue: d.Queue, limits: d.Limits.orDefault(),
+	}
+	s.tools = builtinTools(s)
+	return s, nil
 }
 
 func (s *Service) now() time.Time { return s.clock.Now().UTC() }

@@ -177,7 +177,8 @@ is told.
 **Zero means unset, not "no workers".** Each width is applied only when it is greater than zero, so
 leaving all four alone is what lets `jobs.DefaultQueueWorkers()` — the SPEC §G.3 table — be the
 default: `ingest` 16, `enrich` 8, `notify` 8, `deliver_slack` 4, `deliver_webhook` 8, `reconcile` 8,
-`lifecycle` 4, `maintenance` 1. Setting one departs from the published number, and the deployment
+`lifecycle` 4, `maintenance` 1 — and `investigate` 2, the queue ADR 0053 §3 added so an Investigation
+never holds a worker an enrichment or a notification waits for; no knob widens it yet. Setting one departs from the published number, and the deployment
 answers for its own width.
 
 `reconcile` is the one to think about before the others: its 8 is a **supported tenant count**

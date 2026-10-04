@@ -145,6 +145,12 @@ func (d *Declarative) set(key SettingKey, e DeclaredEntry) error {
 			return err
 		}
 		d.patch.DefaultVerbosity = &s
+	case KeyInvestigationsEnabled:
+		b, err := asBool(e.Value)
+		if err != nil {
+			return err
+		}
+		d.patch.InvestigationsEnabled = &b
 	default:
 		return fmt.Errorf("%s cannot be set declaratively", key)
 	}
@@ -221,7 +227,7 @@ func rekeyViolations(err error, configKeys map[SettingKey]string) error {
 // ------------------------------------------------------------------- coercion
 //
 // Environment variables are strings and YAML is typed, so the same key arrives as
-// `"600"` from one provider and `600` from the other. These four accept both and
+// `"600"` from one provider and `600` from the other. These three accept both and
 // refuse everything else BY NAME — a values file that says `resolve_grace_s: "ten
 // minutes"` must fail the rollout, not boot with a default and a shrug.
 
@@ -255,17 +261,32 @@ func asStr(v any) (string, error) {
 	return strings.TrimSpace(s), nil
 }
 
-// ⛔ `asBool` WAS HERE AND IS DELETED (git-bug 7570090). It accepted a real YAML
-// boolean and the string an environment variable can only ever be, so
-// `OTO_TUNING_BROADCAST_ON_RESOLVED=true` and `tuning.broadcast_on_resolved: true`
-// both parsed. `broadcast_on_resolved` was the only boolean-valued setting, and it
-// went with the broadcast.
+// asBool accepts a real YAML boolean and the string an environment variable can
+// only ever be, so `OTO_TUNING_INVESTIGATIONS_ENABLED=false` and
+// `tuning.investigations_enabled: false` both parse. Anything else is refused by
+// name: `"off"` or `"no"` is a guess this layer will not make about a kill switch.
 //
-// ⚠️ IF A BOOLEAN SETTING COMES BACK, SO DOES THIS: the `case string` arm is the
-// one a plain `v.(bool)` misses, and it is the environment-variable case — every
-// value that arrives through the env is a string, so a bare cast would reject the
-// only form an operator can type there.
-//
+// ⭐ IT CAME BACK WITH `investigations_enabled` (ADR 0053 §6), as its tombstone
+// said it would. It was deleted with `broadcast_on_resolved` (git-bug 7570090), and
+// the `case string` arm is still the one a plain `v.(bool)` misses — every value
+// that arrives through the environment is a string.
+func asBool(v any) (bool, error) {
+	switch t := v.(type) {
+	case bool:
+		return t, nil
+	case string:
+		switch strings.ToLower(strings.TrimSpace(t)) {
+		case "true":
+			return true, nil
+		case "false":
+			return false, nil
+		}
+		return false, fmt.Errorf("%q is not true or false", t)
+	default:
+		return false, fmt.Errorf("%v is not true or false", v)
+	}
+}
+
 // ⛔ `asList` WAS HERE AND IS DELETED (git-bug bd0fb1d). It accepted the three
 // shapes a list-valued setting could arrive in — a YAML sequence, the []string a
 // comma-separated environment value becomes, and a single bare string with no

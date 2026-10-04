@@ -263,9 +263,16 @@ export type KnobKind =
   | "count"
   | "days"
   | "months"
-  | "verbosity";
+  | "verbosity"
+  | "onoff";
 
-/* ⛔ `boolean` WAS A KIND HERE AND IS DELETED (git-bug 7570090). It existed for
+/* ⭐ `onoff` IS A BOOLEAN KNOB, and the warning below was honoured rather than
+   worked around: `investigations_enabled` (ADR 0053 §6) is a two-position
+   SELECT whose labels are written for that one setting, not a generic checkbox
+   reinstated with the old broadcast copy. It renders through the same
+   `KnobSelect` as the verbosity, with options of its own (`onOffOptions`).
+
+   ⛔ `boolean` WAS A KIND HERE AND IS DELETED (git-bug 7570090). It existed for
    exactly one knob, `broadcast_on_resolved`, and Slack thread-broadcast is gone —
    there is no broadcast for an org to opt into, so the knob went and the kind went
    with it. `verbosity` is now the only non-numeric kind, which is why
@@ -536,6 +543,27 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
      documents nothing that removes a channel reference once made. ADR 0020 holds
      that reasoning; it is not restated as UI copy for a control nobody can see. */
 
+  /* ---- investigations ---------------------------------------------------- */
+
+  investigations_enabled: {
+    key: "investigations_enabled",
+    kind: "onoff",
+    label: "Investigations",
+    what: "The org-wide kill switch for Investigators. While it is off, no new Investigation starts in this org: each one asked for is recorded as skipped, with the reason disabled, rather than dropped silently. A run already under way finishes under its own budgets.",
+    risks: [
+      {
+        label: "If it is off",
+        text: "Nothing new is investigated, whoever asks and whatever fires — and each refusal is recorded, so an empty Finding can always say why. Notifications are unaffected: an Investigation never decides whether or how anyone is told.",
+      },
+      {
+        label: "If it is on",
+        text: "Investigators that are themselves enabled, and have a model endpoint, may run against Cases and spend tokens within their own budgets. Turning this on starts nothing by itself: an org with no enabled Investigator runs nothing.",
+      },
+    ],
+    amRule:
+      "Nothing in alertmanager.yml bears on this, and it never changes a notification. Each Investigator also carries its own enabled flag; this switch is the brake for all of them at once.",
+  },
+
   /* ---- retention --------------------------------------------------------- */
 
   raw_retention_days: {
@@ -608,6 +636,13 @@ export const KNOB_GROUPS: readonly KnobGroup[] = [
       "The only settings here that delete something. Neither changes what oto says or when — they decide how far back you can still look, and lowering either one drops whole partitions permanently. There is no export and no undo. Read what each one destroys before you lower it.",
     keys: ["raw_retention_days", "event_retention_months"],
   },
+  {
+    id: "investigations",
+    title: "Investigations",
+    blurb:
+      "Whether an Investigator may start a new Investigation in this org at all. An Investigation reads oto's own history and writes a Finding beside the Case; it never decides whether anyone is notified. Off is recorded, never silent: a run that was asked for and did not start says so.",
+    keys: ["investigations_enabled"],
+  },
 ];
 
 /* -------------------------------------------------------------------------- */
@@ -640,6 +675,16 @@ const VERBOSITY_LABEL: Record<Verbosity, string> = {
 };
 
 export const VERBOSITY_OPTIONS = labelled<Verbosity>(VerbositySchema.options, VERBOSITY_LABEL);
+
+/**
+ * The two positions of an `onoff` knob, as the string the select hands back.
+ * The labels are `investigations_enabled`'s own, because it is the only `onoff`
+ * knob: a second one gets its own labels rather than borrowing these.
+ */
+export const ON_OFF_OPTIONS: readonly { readonly value: "true" | "false"; readonly label: string }[] = [
+  { value: "true", label: "On — enabled Investigators may start new Investigations" },
+  { value: "false", label: "Off — nothing new starts; each is recorded skipped (disabled)" },
+];
 
 /* ⛔ THE MENTION VOCABULARY WAS HERE AND IS DELETED (git-bug bd0fb1d):
    MENTION_MODE_LABEL, MENTION_MODE_OPTIONS, MENTION_TOKEN_HINT, SEVERITY_LABEL,

@@ -1009,6 +1009,24 @@ linters:
             - pkg: github.com/openai/openai-go
               desc: "the model SDK is confined to investigator/models/openaicompat (ADR 0053 §3); speak investigator/domain.ModelProvider"
 
+        # ADR 0053 §2 — an Investigator NEVER decides whether anyone is told, and git-bug
+        # 180a525's "never touches the notification path" is made structural here: no
+        # investigator package may import the module that decides a notification or the
+        # one that delivers it. The run is a job on its own queue; the Finding goes into
+        # the enrichment store through a port `internal/app` satisfies, and nothing is
+        # enqueued after it. A Finding changes what people read, never whether they are told.
+        investigator-never-reaches-the-notification-path:
+          list-mode: lax
+          files:
+            - "**/internal/investigator/**"
+          deny:
+            - pkg: github.com/thulasiram/oto/internal/notification
+              desc: "the investigator MUST NOT reach the notification path (ADR 0053 §2); a Finding is published as an Enrichment, never as a notification"
+            - pkg: github.com/thulasiram/oto/internal/channels
+              desc: "the investigator MUST NOT reach a channel (ADR 0053 §2); a model key is sealed through the CredentialWriter port, not by importing channels"
+            - pkg: github.com/thulasiram/oto/internal/platform/jobs/ordering
+              desc: "the investigator MUST NOT touch the delivery ordering gate (ADR 0053 §2)"
+
         # Global state, weak randomness and print debugging do not survive review.
         banned-packages:
           list-mode: lax

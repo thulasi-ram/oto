@@ -766,3 +766,46 @@ func periodicOpts(queue string, priority int, period time.Duration) river.Insert
 		},
 	}
 }
+
+// ------------------------------------------------------------- investigator
+
+// InvestigationJobTimeout bounds one `investigations.run` execution: the largest
+// wall-time budget an Investigator may set (`investigators_wall_ck`, 1800 s) plus two
+// minutes to record how it ended. ⚠️ It is a copy of that bound — platform may not
+// import the investigator domain — and `investigator/service` asserts the two agree.
+const InvestigationJobTimeout = 32 * time.Minute
+
+// InvestigationsRunArgs runs one Investigation (ADR 0053 §3, git-bug 180a525): one
+// Investigator version against one subject, with its Steps recorded as they happen and
+// its Finding published as the Enrichment `investigator.<name>`.
+//
+// Queue: investigate · Priority: normal · Retry: retryable (12) · Payload v1
+//
+// ⛔ NOT `enrich` AND NOT `notify`. A run can take minutes, and the queue a Case's
+// first notification is released from must never be the queue it is waiting on. A
+// Finding never decides whether anyone is told (ADR 0053 §2), and this job neither
+// enqueues nor reads anything on the notification path.
+//
+// IDEMPOTENCY: by state. The handler starts a run only from `queued`, in one UPDATE;
+// a redelivery finds it `running` — the previous attempt died mid-run — and ends it
+// `interrupted` rather than paying for every turn again, or finds it ended and does
+// nothing. A retry therefore re-runs only work that never called a model.
+type InvestigationsRunArgs struct {
+	Payload
+	// OrgID is the tenant; the run is resolved inside it.
+	OrgID uuid.UUID `json:"org_id"`
+	// InvestigationID is the run.
+	InvestigationID uuid.UUID `json:"investigation_id"`
+}
+
+// Kind implements db.JobArgs and river.JobArgs.
+func (InvestigationsRunArgs) Kind() string { return KindInvestigationsRun }
+
+// InsertOpts pins the queue, priority and retry ceiling of this job type.
+func (InvestigationsRunArgs) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue:       QueueInvestigate,
+		Priority:    PriorityNormal,
+		MaxAttempts: MaxAttemptsRetryable,
+	}
+}

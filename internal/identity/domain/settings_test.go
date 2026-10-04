@@ -13,8 +13,9 @@ import (
 func intp(v int) *int       { return &v }
 func strp(v string) *string { return &v }
 
-// ⛔ `boolp` WAS HERE AND IS DELETED WITH ITS ONLY CALLER (git-bug 7570090).
-// `broadcast_on_resolved` was the only boolean field on `SettingsPatch`.
+// ⛔ `boolp` WAS HERE AND WAS DELETED WITH ITS ONLY CALLER (git-bug 7570090).
+// `broadcast_on_resolved` was the only boolean field on `SettingsPatch`; it is
+// back in investigations_switch_test.go for `investigations_enabled`.
 
 // TestBoundsAreEnforcedServerSide is the property the settings UI must not be
 // trusted with. The request that sets `resolve_grace_s` to 0 arrives from `curl`

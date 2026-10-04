@@ -49,6 +49,11 @@ type settingsJSON struct {
 	// stores `{}` and still reports every value as a DEFAULT.
 	DefaultVerbosity *string `json:"default_verbosity,omitempty"`
 
+	// InvestigationsEnabled is the org's Investigation kill switch (ADR 0053 §6).
+	// A POINTER, like every key here: an absent key is "never written" and reads as
+	// the shipped default (true), while a stored `false` is the switch pulled.
+	InvestigationsEnabled *bool `json:"investigations_enabled,omitempty"`
+
 	// ⛔ `broadcast_on_resolved` FOLLOWED `default_verbosity` AND IS DELETED
 	// (git-bug 7570090). It was the last non-integer key besides the verbosity, and
 	// the only boolean this blob ever held.
@@ -58,8 +63,8 @@ type settingsJSON struct {
 	//
 	// ⛔⛔ AND `refire_grace_s` AND `group_close_delay_s` LED THE INTEGER BLOCK
 	// ABOVE — the first and third fields — AND BOTH ARE DELETED (git-bug 7287b28,
-	// migration 00071). The struct closes here; the seven keys above are the whole
-	// of `orgs.settings`.
+	// migration 00071). The struct closes here; the eight keys above are the whole
+	// of `orgs.settings` (`investigations_enabled`, ADR 0053 §6, made it eight).
 	//
 	// ⚠️ NOTHING HERE DELETES A STORED KEY. `orgs.settings` is one JSONB document,
 	// so a row written before this commit still HOLDS `broadcast_on_resolved`,
@@ -84,6 +89,8 @@ func (s settingsJSON) toPatch() domain.SettingsPatch {
 		RawRetentionDays:    s.RawRetentionDays,
 		EventRetentionMonth: s.EventRetentionMonth,
 		DefaultVerbosity:    s.DefaultVerbosity,
+
+		InvestigationsEnabled: s.InvestigationsEnabled,
 	}
 }
 
@@ -97,6 +104,8 @@ func fromPatch(p domain.SettingsPatch) settingsJSON {
 		RawRetentionDays:    p.RawRetentionDays,
 		EventRetentionMonth: p.EventRetentionMonth,
 		DefaultVerbosity:    p.DefaultVerbosity,
+
+		InvestigationsEnabled: p.InvestigationsEnabled,
 	}
 }
 

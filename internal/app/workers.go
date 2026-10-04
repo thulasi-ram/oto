@@ -133,6 +133,11 @@ func (c *Container) handlers() jobs.Handlers {
 		// stats.rollup (ADR 0014) — what keeps the hygiene report off a scan of
 		// the event stream, and therefore what makes Postgres-only viable.
 		StatsRollup: statsworker.StatsRollup(c.Stats, c.orgs, c.enqueuer, c.Clock, c.Logger),
+
+		// ⭐ investigations.run (ADR 0053 §3, git-bug 180a525) — one Investigation,
+		// on the `investigate` queue, never `enrich` or `notify`: a run can take
+		// minutes, and it must not hold a slot a Case's notification waits on.
+		InvestigationsRun: c.runInvestigation,
 	}
 
 	// notification fills its own four fields (notify.evaluate, deliver.dispatch,

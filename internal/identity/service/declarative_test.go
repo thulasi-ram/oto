@@ -215,6 +215,8 @@ func TestAllKeysCanBeSetDeclaratively(t *testing.T) {
 		domain.KeyRawRetention:       14,
 		domain.KeyEventRetention:     13,
 		domain.KeyDefaultVerbosity:   "firing_only",
+		// ADR 0053 §6: the org's Investigation kill switch, as an env var spells it.
+		domain.KeyInvestigationsEnabled: "false",
 	}
 
 	entries := make([]domain.DeclaredEntry, 0, len(values))

@@ -63,6 +63,9 @@ func TestTheSpecQueueWidthsAreTheNumbersSpecPublishes(t *testing.T) {
 		jobs.QueueReconcile:      8,
 		jobs.QueueLifecycle:      4,
 		jobs.QueueMaintenance:    1,
+		// Not a SPEC §G.3 row: ADR 0053 §3 added the queue, and this pins it the same
+		// way so a widening is a visible change here too.
+		jobs.QueueInvestigate: 2,
 	}
 	got := jobs.DefaultQueueWorkers()
 

@@ -40,6 +40,7 @@ import (
 	incidentsservice "github.com/thulasiram/oto/internal/incidents/service"
 	"github.com/thulasiram/oto/internal/ingestion"
 	ingestionservice "github.com/thulasiram/oto/internal/ingestion/service"
+	investigatorapi "github.com/thulasiram/oto/internal/investigator/api"
 	"github.com/thulasiram/oto/internal/investigator/models/openaicompat"
 	investigatorrepo "github.com/thulasiram/oto/internal/investigator/repository"
 	investigatorservice "github.com/thulasiram/oto/internal/investigator/service"
@@ -173,7 +174,8 @@ type Container struct {
 	// operator's CRUD over them, and the evaluator `incidents.correlate` runs.
 	Correlators *incidentsservice.Correlators
 	// Investigator holds the model endpoints an org's Investigators use (ADR 0053 §3,
-	// git-bug 8f1f071). The Investigation loop (git-bug 180a525) is its first reader.
+	// git-bug 8f1f071), the Investigators, and the Investigations that run them
+	// (git-bug 180a525): read by `investigations.run` and by the investigator API.
 	Investigator *investigatorservice.Service
 	Ingestion    *ingestion.Module
 	// Drills runs delivery drills: one synthetic alert pushed through the REAL
@@ -244,10 +246,13 @@ type routerSet struct {
 	stats       *statsapi.Router
 	incidents   *incidentsapi.Router
 	correlators *incidentsapi.CorrelatorRouter
-	drills      *drillapi.Router
-	enrichers   *enrichapi.Router
-	streaming   *streamingapi.Router
-	ingestion   *ingestion.Module
+	// investigators serves model endpoints, Investigators and Investigations
+	// (ADR 0053, git-bug 180a525).
+	investigators *investigatorapi.Router
+	drills        *drillapi.Router
+	enrichers     *enrichapi.Router
+	streaming     *streamingapi.Router
+	ingestion     *ingestion.Module
 }
 
 // Options are what a process hands the composition root.
@@ -765,6 +770,24 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		},
 		Tx:    investigatorrepo.NewTxRunner(general),
 		Clock: clk,
+
+		// ---- Investigations (git-bug 180a525) ------------------------------
+		//
+		// ⛔ NOTHING BELOW IS A DOOR ONTO THE NOTIFICATION PATH. The run is
+		// `investigations.run` on its own queue; the Finding goes into the
+		// enrichment store through the same repository every enricher uses, and
+		// nothing is enqueued after it (investigator.go).
+		Investigators:  investigatorrepo.NewInvestigatorRepository(general),
+		Investigations: investigatorrepo.NewInvestigationRepository(general),
+		Cases:          investigationCases{alerts: c.Alerts},
+		Timeline:       investigationCases{alerts: c.Alerts},
+		Rules:          investigationRules{rules: c.Rules},
+		Findings:       findingPublisher{repo: enrichmentRepo},
+		OrgSwitch:      investigationSwitch{identity: c.Identity},
+		Queue:          c.enqueuer,
+		// The per-call controls (ADR 0053 §6), stated where every other deployment
+		// number is chosen; per-Tool limits arrive with ToolServers.
+		Limits: investigatorservice.DefaultLimits(),
 	})
 	if err != nil {
 		return nil, err
@@ -1221,12 +1244,13 @@ func (c *Container) buildRouters(
 			Clock:         clk,
 			BaseURL:       c.Config.HTTP.BaseURL,
 		}),
-		silences:    silencesapi.NewRouter(c.Silences, silenceBaseURLs{svc: c.Sources}, clk),
-		stats:       statsapi.NewRouter(c.Stats, clk),
-		incidents:   incidentsapi.NewRouter(c.Incidents, clk),
-		correlators: incidentsapi.NewCorrelatorRouter(c.Correlators, clk),
-		drills:      drillRouter(c.Drills, clk),
-		enrichers:   enrichapi.NewRouter(enricherRegistry, clk),
+		silences:      silencesapi.NewRouter(c.Silences, silenceBaseURLs{svc: c.Sources}, clk),
+		stats:         statsapi.NewRouter(c.Stats, clk),
+		incidents:     incidentsapi.NewRouter(c.Incidents, clk),
+		correlators:   incidentsapi.NewCorrelatorRouter(c.Correlators, clk),
+		investigators: investigatorapi.NewRouter(c.Investigator, clk),
+		drills:        drillRouter(c.Drills, clk),
+		enrichers:     enrichapi.NewRouter(enricherRegistry, clk),
 		streaming: streamingapi.NewRouter(c.Streaming, c.StreamHub,
 			streamingapi.ScopeResolverFunc(func(ctx context.Context) (db.TenantScope, error) {
 				_, s, err := authn.Scope(ctx)

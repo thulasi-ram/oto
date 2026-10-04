@@ -33,6 +33,15 @@ const (
 	// QueueMaintenance carries partition management, retention and rollups. One
 	// worker: these are DDL-adjacent and must not race themselves.
 	QueueMaintenance = "maintenance"
+	// QueueInvestigate carries `investigations.run` and nothing else (ADR 0053 §3,
+	// git-bug 180a525). ⛔ IT IS NOT `enrich`, though a Finding is published as an
+	// Enrichment: one run may hold its worker for up to its wall-time budget —
+	// minutes, against an enrichment's two seconds — and the inline enrichment pass
+	// is what releases a Case's FIRST notification early. Sharing `enrich` would let
+	// a few slow Investigations sit in the very slots that pass waits for. On a queue
+	// of its own a run competes only with other runs, and its width is the
+	// deployment's ceiling on concurrent model calls.
+	QueueInvestigate = "investigate"
 )
 
 // AllQueues is every queue oto declares, in the order they appear in SPEC §G.3.
@@ -41,6 +50,7 @@ func AllQueues() []string {
 		QueueIngest, QueueEnrich, QueueNotify,
 		QueueDeliverSlack, QueueDeliverWebhook,
 		QueueReconcile, QueueLifecycle, QueueMaintenance,
+		QueueInvestigate,
 	}
 }
 
@@ -128,6 +138,10 @@ const (
 	KindRetentionPrune        = "retention.prune"
 	KindStatsRollup           = "stats.rollup"
 	KindCacheExpire           = "cache.expire"
+	// KindInvestigationsRun runs one Investigation (ADR 0053 §3, git-bug 180a525). It
+	// is enqueued by `investigator` in the transaction that recorded the request, and
+	// nothing on the notification path enqueues it or waits for it.
+	KindInvestigationsRun = "investigations.run"
 )
 
 // Priority levels. River orders 1 (highest) before 4 (lowest) within a queue.

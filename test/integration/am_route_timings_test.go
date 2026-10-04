@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 91 {
-		t.Fatalf("latest migration is %d, want 91 — this test pins the number so that a "+
+	if latest != 92 {
+		t.Fatalf("latest migration is %d, want 92 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1631,6 +1631,57 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// accepts a kind the release below it cannot interpret. No column reading can
 	// see that, and it is the half most likely to be forgotten because nothing
 	// references it.
+	// ⭐ 00092 RUNS AN INVESTIGATION AGAINST A CASE (ADR 0053, git-bug 180a525): four
+	// tables, the two trigger functions that make a Step append-only and an ended run
+	// frozen, and a new statement of the `orgs.settings` key set. The triggers are read
+	// on both sides because a Down that dropped the tables and forgot a function leaves
+	// a function nothing calls — harmless, until the next Up's CREATE FUNCTION fails on
+	// it. The comment is read because it is the one output of this migration on a table
+	// it did not create, which is the half a Down forgets.
+	investigatorTriggers := func() int {
+		t.Helper()
+		var n int
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT count(*) FROM pg_proc WHERE proname IN
+			   ('investigation_steps_refuse_change','investigations_refuse_change_once_ended')`).Scan(&n); err != nil {
+			t.Fatalf("introspect 00092's functions: %v", err)
+		}
+		return n
+	}
+	if n := countTables("investigators", "investigator_versions", "investigations", "investigation_steps"); n != 4 {
+		t.Fatalf("%d of 00092's four tables exist at migration 92", n)
+	}
+	if n := investigatorTriggers(); n != 2 {
+		t.Fatalf("%d of 00092's two trigger functions exist at migration 92", n)
+	}
+	if n := countConstraints("investigators_name_ck", "investigator_versions_tools_ck", "investigations_subjkind_ck",
+		"investigations_reason_ck", "investigations_started_ck", "investigation_steps_call_ck"); n != 6 {
+		t.Fatalf("%d of the six named 00092 CHECKs read here exist at migration 92", n)
+	}
+	if def := constraintDef("investigations_subjkind_ck", "investigations"); !strings.Contains(def, "'case'") {
+		t.Fatalf("investigations_subjkind_ck does not admit a case: %s", def)
+	}
+	if n := countIndexes("investigators_org_name_uniq", "investigator_versions_number_uniq",
+		"investigations_subject_idx", "investigations_alert_key_idx", "investigation_steps_seq_uniq"); n != 5 {
+		t.Fatalf("%d of 00092's five indexes exist at migration 92", n)
+	}
+	if c := columnComment("orgs", "settings"); !strings.Contains(c, "investigations_enabled") {
+		t.Fatalf("orgs.settings' comment at migration 92 does not name investigations_enabled: %s", c)
+	}
+
+	down(92)
+
+	if n := countTables("investigators", "investigator_versions", "investigations", "investigation_steps"); n != 0 {
+		t.Fatalf("%d of 00092's tables survived its Down", n)
+	}
+	if n := investigatorTriggers(); n != 0 {
+		t.Fatalf("%d of 00092's trigger functions survived its Down", n)
+	}
+	if c := columnComment("orgs", "settings"); strings.Contains(c, "investigations_enabled") ||
+		!strings.Contains(c, "The seven keys are") {
+		t.Fatalf("00092's Down did not restore 00071's orgs.settings comment: %s", c)
+	}
+
 	// ⭐ 00091 CONFIGURES A MODEL ENDPOINT WITH A SEALED KEY (ADR 0053 §3, git-bug 8f1f071):
 	// one table with its five CHECKs and its per-org name index, and a widened
 	// `channel_credentials_kind_ck` admitting `model_api_key`. The kind CHECK is read on

@@ -113,6 +113,7 @@ import {
   KNOBS,
   RECEIVER_BASIS_COPY,
   KNOB_GROUPS,
+  ON_OFF_OPTIONS,
   VERBOSITY_OPTIONS,
   isNumeric,
   readValue,
@@ -361,8 +362,10 @@ export const TuningSection: Component = () => {
       return Number.parseInt(trimmed, 10);
     }
     // ⛔ `if (knob.kind === "boolean") return raw === "true";` WAS HERE (git-bug
-    // 7570090). With no boolean knob left, the only non-numeric knob is the
-    // verbosity, whose control already hands back the enum value verbatim.
+    // 7570090). It is back under the `onoff` kind, for `investigations_enabled`
+    // (ADR 0053 §6): its select hands back "true"/"false", and the PATCH wants a
+    // JSON boolean. The verbosity's control already hands back the enum verbatim.
+    if (knob.kind === "onoff") return raw === "true";
     return raw;
   };
 
@@ -1339,11 +1342,13 @@ const Note: Component<{ readonly kind: "warn" | "quiet"; readonly children: JSX.
  */
 function shadowedText(knob: KnobCopy, raw: unknown): string {
   if (typeof raw === "number") return readValue(knob.kind, raw);
-  // ⛔ A `boolean` ARM ("on"/"off") AND AN `Array.isArray` ARM WERE HERE AND BOTH
-  // ARE UNREACHABLE. `OrgSettingsPatchDTO` publishes eight integers and
-  // `default_verbosity` and nothing else: the boolean was `broadcast_on_resolved`
-  // (git-bug 7570090) and the array was `unacked_reminder_mention_list` (git-bug
-  // bd0fb1d). `String(raw)` is the honest funnel for what is left.
+  // `investigations_enabled` is the one boolean (ADR 0053 §6).
+  if (typeof raw === "boolean") return raw ? "on" : "off";
+  // ⛔ AN `Array.isArray` ARM WAS HERE AND IS UNREACHABLE: the array was
+  // `unacked_reminder_mention_list` (git-bug bd0fb1d). The boolean arm above was
+  // deleted with `broadcast_on_resolved` (git-bug 7570090) and came back for
+  // `investigations_enabled`. `OrgSettingsPatchDTO` publishes six integers,
+  // `default_verbosity` and that one boolean; `String(raw)` funnels the verbosity.
   return String(raw);
 }
 
@@ -1507,6 +1512,17 @@ const KnobRow: Component<{ readonly knob: KnobCopy; readonly ctl: Ctl }> = (prop
               <KnobSelect
                 id={id()}
                 options={VERBOSITY_OPTIONS}
+                value={ctl().text(key())}
+                disabled={ctl().resetQueued(key()) || ctl().managed(key())}
+                error={error()}
+                onChange={(next) => ctl().setText(key(), next)}
+              />
+            </Match>
+
+            <Match when={props.knob.kind === "onoff"}>
+              <KnobSelect
+                id={id()}
+                options={ON_OFF_OPTIONS}
                 value={ctl().text(key())}
                 disabled={ctl().resetQueued(key()) || ctl().managed(key())}
                 error={error()}

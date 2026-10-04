@@ -149,6 +149,9 @@ func (c *Container) mountDomains(g chi.Router) {
 	if c.routers.correlators != nil {
 		c.routers.correlators.Mount(g)
 	}
+	if c.routers.investigators != nil {
+		c.routers.investigators.Mount(g)
+	}
 	if c.routers.drills != nil {
 		c.routers.drills.Mount(g)
 	}

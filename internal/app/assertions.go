@@ -74,14 +74,24 @@ var (
 	_ investigatorservice.ModelDialer      = openaicompat.Dialer{}
 	_ investigatorservice.TxRunner         = (*investigatorrepo.TxRunner)(nil)
 	_ investigatorrepo.Unsealer            = (*secrets.Keyring)(nil)
-	_ notifservice.IncidentReader          = (*incidentFacts)(nil)
-	_ alertsservice.SourceHealth           = sourceHealth{}
-	_ alertsservice.SettingsReader         = orgSettings{}
-	_ notifservice.SettingsReader          = orgSettings{}
-	_ rulesservice.RuleLookup              = ruleLookup{}
-	_ enrichservice.SubjectLoader          = subjectLoader{}
-	_ enrichworker.ScopeResolver           = caseScopes{}
-	_ ingestservice.AlertObserver          = alertObserver{}
+	// git-bug 180a525: the Investigation stores, oto's history as built-in Tools, the
+	// Finding's way into the enrichment store, the org kill switch and the outbox.
+	_ investigatorservice.InvestigatorStore  = (*investigatorrepo.InvestigatorRepository)(nil)
+	_ investigatorservice.InvestigationStore = (*investigatorrepo.InvestigationRepository)(nil)
+	_ investigatorservice.CaseReader         = investigationCases{}
+	_ investigatorservice.TimelineReader     = investigationCases{}
+	_ investigatorservice.RuleReader         = investigationRules{}
+	_ investigatorservice.FindingPublisher   = findingPublisher{}
+	_ investigatorservice.OrgSwitch          = investigationSwitch{}
+	_ investigatorservice.JobQueue           = (*lateEnqueuer)(nil)
+	_ notifservice.IncidentReader            = (*incidentFacts)(nil)
+	_ alertsservice.SourceHealth             = sourceHealth{}
+	_ alertsservice.SettingsReader           = orgSettings{}
+	_ notifservice.SettingsReader            = orgSettings{}
+	_ rulesservice.RuleLookup                = ruleLookup{}
+	_ enrichservice.SubjectLoader            = subjectLoader{}
+	_ enrichworker.ScopeResolver             = caseScopes{}
+	_ ingestservice.AlertObserver            = alertObserver{}
 	// The ingest-token mint moved INTO identity (relocation, not a merge with the
 	// PAT mint): the identity service satisfies the sources-side port directly,
 	// and this line is what breaks if either side of that seam drifts.

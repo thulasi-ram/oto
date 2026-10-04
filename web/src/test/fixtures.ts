@@ -454,6 +454,7 @@ export function orgSettings(
     raw_retention_days: 30,
     event_retention_months: 13,
     default_verbosity: "status_changes",
+    investigations_enabled: true,
     // ⛔ `refire_grace_s` AND `group_close_delay_s` LED THIS BAG AND BOTH ARE
     // DELETED (git-bug 7287b28) — off the wire, not merely off the screen.
     //
