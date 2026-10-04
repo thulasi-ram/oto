@@ -160,7 +160,12 @@ func TestTheRunningServerMatchesTheContract(t *testing.T) {
 //
 // ⬆️ 89 → 93 (ADR 0052 §2, git-bug 61eeddf). Four Correlator operations — list,
 // create, patch, delete — each with a probe that answers 2xx.
-const minimumSuccessfulOperations = 93
+//
+// ⬆️ 93 → 102 (ADR 0053, git-bug 8f1f071 and 180a525). Nine Investigator
+// operations — model endpoints list and create, Investigators list, create, get
+// and patch, a Case's Investigations list and request, one Investigation's read —
+// each with a probe that answers 2xx.
+const minimumSuccessfulOperations = 102
 
 /* -------------------------------------------------------------------------- */
 /* The three assertions                                                       */

@@ -633,6 +633,88 @@ func plan() []probe {
 			want: http.StatusOK,
 		},
 
+		/* ------------------------------------------------------- investigators */
+		// ADR 0053 (git-bug 8f1f071, 180a525): a model endpoint, an Investigator that
+		// dials it, and one Investigation requested against the fixture Case. The
+		// order is the dependency order — the Investigator names the endpoint, the
+		// request names the Investigator, the run read names the request's answer.
+		//
+		// ⭐ THE ENDPOINT CARRIES NO KEY, AND THAT IS THE CONTAINER'S SHAPE, NOT A
+		// SHORTCUT. This world boots without `security.secret_key`, so there is no
+		// keyring to seal one with; a keyless endpoint is legal (a self-hosted model on
+		// the cluster network), and `has_key: false` is the half of the response a
+		// keyed one would not show.
+		//
+		// ⭐ NOTHING IS DIALLED. Creating an endpoint stores a row, and the request
+		// answers 202 with the run `queued`: this container enqueues jobs but works
+		// none, so no model is reached and the `.invalid` host is never resolved.
+		{method: http.MethodGet, tmpl: "/api/v1/model-providers", want: http.StatusOK},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/model-providers",
+			body: map[string]any{
+				"name":     "gate-g2-endpoint",
+				"base_url": "https://model.invalid/v1",
+				"model":    "gate-g2-model",
+			},
+			want:    http.StatusCreated,
+			capture: map[string][]string{"modelprovider": {"data", "id"}},
+		},
+		{method: http.MethodGet, tmpl: "/api/v1/investigators", want: http.StatusOK},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/investigators",
+			body: map[string]any{
+				"name":              "gateg2",
+				"model_provider_id": "{{modelprovider}}",
+				"prompt":            "Read the Case.",
+				"tools":             []any{"oto_case_timeline"},
+			},
+			want:    http.StatusCreated,
+			capture: map[string][]string{"investigator": {"data", "id"}},
+		},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/investigators",
+			body: map[string]any{
+				"name":              "gateg2wild",
+				"model_provider_id": "{{modelprovider}}",
+				"prompt":            "Read the Case.",
+				"tools":             []any{"oto_*"},
+			},
+			want: http.StatusUnprocessableEntity,
+			why:  "an allowlist names Tools exactly; a wildcard is refused, and its violations[] points at `tools`",
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/investigators/{id}", url: "/api/v1/investigators/{{investigator}}",
+			want: http.StatusOK,
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/investigators/{id}", url: "/api/v1/investigators/{{stranger}}",
+			want: http.StatusNotFound,
+		},
+		{
+			method: http.MethodPatch, tmpl: "/api/v1/investigators/{id}", url: "/api/v1/investigators/{{investigator}}",
+			body: map[string]any{"prompt": "Read the Case, then its rule."},
+			want: http.StatusOK,
+			why:  "a changed prompt writes version 2, so the response's versions[] carries two entries to validate",
+		},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/cases/{id}/investigations", url: "/api/v1/cases/{{case}}/investigations",
+			body:    map[string]any{"investigator_id": "{{investigator}}"},
+			want:    http.StatusAccepted,
+			capture: map[string][]string{"investigation": {"data", "id"}},
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/cases/{id}/investigations", url: "/api/v1/cases/{{case}}/investigations",
+			want: http.StatusOK,
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/investigations/{id}", url: "/api/v1/investigations/{{investigation}}",
+			want: http.StatusOK,
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/investigations/{id}", url: "/api/v1/investigations/{{stranger}}",
+			want: http.StatusNotFound,
+		},
+
 		/* ------------------------------------------------------- case policies */
 		// The case RETENTION WINDOW W, per (namespace, alertname). The shape is
 		// `/api/v1/clusters`'s and so is the probe order: list, create by the
