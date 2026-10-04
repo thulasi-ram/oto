@@ -174,7 +174,7 @@ am-wire:
 # Stop the containers, keeping the data volume.
 [group('run')]
 down:
-    docker compose down
+    docker compose --profile vm down
 
 # Run the API and worker in one process (the default mode).
 [group('run')]
@@ -242,7 +242,7 @@ new-migration name:
 # Destroy the data volume and rebuild from empty. Irreversible.
 [group('db')]
 reset:
-    docker compose down -v
+    docker compose --profile vm down -v
     @just infra
     @just migrate
 
