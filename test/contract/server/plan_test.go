@@ -715,6 +715,48 @@ func plan() []probe {
 			want: http.StatusNotFound,
 		},
 
+		/* -------------------------------------------------------- tool servers */
+		// ADR 0053 §3, 0054 §5 (git-bug 2e9a086): an operator's MCP server, configured,
+		// read back, and asked for its Tools. In dependency order — every later probe
+		// names the ToolServer the create captured.
+		//
+		// ⭐ IT CARRIES NO TOKEN, for the model endpoint's reason above: this world has
+		// no keyring to seal one with, and a ToolServer that takes no token is legal.
+		//
+		// ⚠️ DISCOVERY IS DRIVEN TO ITS 502, AND THAT IS THE ONLY HONEST ANSWER HERE.
+		// This world runs no MCP server, so asking `.invalid` for its Tools fails the
+		// way an unreachable ToolServer does — recorded on the row as
+		// `discovery_error`, answered as the contract's BadGateway Problem. The Tool
+		// list read after it is the last GOOD list, which is empty and still a 200.
+		{method: http.MethodGet, tmpl: "/api/v1/tool-servers", want: http.StatusOK},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/tool-servers",
+			body: map[string]any{
+				"name":   "gate-g2-tools",
+				"url":    "https://toolserver.invalid/mcp",
+				"access": "read",
+			},
+			want:    http.StatusCreated,
+			capture: map[string][]string{"toolserver": {"data", "id"}},
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/tool-servers/{id}", url: "/api/v1/tool-servers/{{toolserver}}",
+			want: http.StatusOK,
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/tool-servers/{id}", url: "/api/v1/tool-servers/{{stranger}}",
+			want: http.StatusNotFound,
+		},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/tool-servers/{id}/discover", url: "/api/v1/tool-servers/{{toolserver}}/discover",
+			want: http.StatusBadGateway,
+			why:  "this world runs no MCP server; an unreachable ToolServer is a 502, and the failure is recorded on it",
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/tool-servers/{id}/tools", url: "/api/v1/tool-servers/{{toolserver}}/tools",
+			want: http.StatusOK,
+		},
+
 		/* ------------------------------------------------------- case policies */
 		// The case RETENTION WINDOW W, per (namespace, alertname). The shape is
 		// `/api/v1/clusters`'s and so is the probe order: list, create by the

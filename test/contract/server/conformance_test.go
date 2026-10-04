@@ -165,7 +165,12 @@ func TestTheRunningServerMatchesTheContract(t *testing.T) {
 // operations — model endpoints list and create, Investigators list, create, get
 // and patch, a Case's Investigations list and request, one Investigation's read —
 // each with a probe that answers 2xx.
-const minimumSuccessfulOperations = 102
+//
+// ⬆️ 102 → 106 (ADR 0053 §3, 0054 §5, git-bug 2e9a086). Five ToolServer operations
+// landed and FOUR of them answer 2xx — list, create, get, and the Tool list. The
+// fifth, discover, is driven to its 502: this world runs no MCP server, so it is
+// driven but not credited, which is why the floor rises by four and not five.
+const minimumSuccessfulOperations = 106
 
 /* -------------------------------------------------------------------------- */
 /* The three assertions                                                       */
