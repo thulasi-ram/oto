@@ -10993,6 +10993,15 @@ components:
             (`policies_digest_pair_ck`): a threshold over an unbounded span is not something anything
             can evaluate.
           examples: [5]
+        digest_investigator_id:
+          allOf:
+            - $ref: '#/components/schemas/Uuid'
+          description: |
+            The **Investigator** this policy asked to summarise its digest windows (ADR 0053 §4). Absent is
+            none — the built-in digest body. Its run for a window starts ahead of the window's close; if it
+            has ended with a Finding when the window closes, the digest carries that Finding as its body,
+            and otherwise the digest is sent on time with the built-in body. **A digest never waits for an
+            Investigation**, is never re-sent with a later Finding, and is sent or not on its floor alone.
         created_at:
           $ref: '#/components/schemas/Timestamp'
         updated_at:
@@ -13788,6 +13797,13 @@ components:
           description: |
             Send the digest only if at least this many Cases opened inside the window. Requires
             `digest_window_seconds`; omitting it means no floor.
+        digest_investigator_id:
+          allOf:
+            - $ref: '#/components/schemas/Uuid'
+          description: |
+            Ask this org's Investigator to summarise each digest window: its Finding becomes the digest's
+            body when it is ready as the window closes, and the digest never waits for it. Requires
+            `digest_window_seconds` (a `422` with code `incomplete` otherwise).
       description: Create a routing policy. Use the preview endpoint to see what it would do before saving.
 
     UpdatePolicyRequest:
@@ -13853,6 +13869,13 @@ components:
           description: |
             An explicit `null` removes the floor — send whenever the window was not empty — which is a
             different request from omitting the field.
+        digest_investigator_id:
+          description: |
+            Nullable. An explicit `null` **clears** it and puts the policy's digest back on the built-in
+            body; omitting the key leaves it alone.
+          oneOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: "null"
         subject_kinds:
           type: array
           maxItems: 4
@@ -14623,10 +14646,12 @@ components:
           $ref: '#/components/schemas/Uuid'
         subject_kind:
           type: string
-          enum: [case, incident]
+          enum: [case, incident, digest]
           description: |
-            What was investigated: one Case, or an Incident as a whole (ADR 0053 §4 names four subjects;
-            these two have a run path). `subject_id` is the Case's or the Incident's id.
+            What was investigated: one Case, an Incident as a whole, or one window of a notification
+            policy's digest (ADR 0053 §4 names four subjects; these three have a run path). `subject_id`
+            is the Case's, the Incident's or — for a digest — the policy's id; a digest's window is
+            `digest_window_start`/`digest_window_end`.
         subject_id:
           $ref: '#/components/schemas/Uuid'
         investigator_id:
@@ -14715,6 +14740,17 @@ components:
           oneOf:
             - $ref: '#/components/schemas/Timestamp'
             - type: 'null'
+        digest_window_start:
+          allOf:
+            - $ref: '#/components/schemas/Timestamp'
+          description: |
+            For a `digest` subject only: the INCLUSIVE start of the window it summarises. Absent for every
+            other subject. One run per policy per window, armed ahead of the window's close; its Finding is
+            the digest's body only if it had ended with one when the window closed — the digest never waits.
+        digest_window_end:
+          allOf:
+            - $ref: '#/components/schemas/Timestamp'
+          description: For a `digest` subject only, the EXCLUSIVE end of its window — when the digest is sent.
       description: One run of one Investigator version against one subject (ADR 0053 §1), frozen once it ends.
 
     StepToolCallDTO:

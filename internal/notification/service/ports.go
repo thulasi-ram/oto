@@ -105,6 +105,19 @@ type DigestStore interface {
 	PruneMarks(ctx context.Context, s db.TenantScope, before time.Time) (int64, error)
 }
 
+// DigestFindings reads the Finding a digest may carry for one window, satisfied in
+// `internal/app` over `investigator/service.DigestFinding` (ADR 0053 §4, git-bug
+// 3e96f5a). False is the built-in body: no run was armed, or it is queued, running,
+// failed or skipped.
+//
+// ⛔⛔ IT IS ASKED ONCE, AT THE SEND, AND ITS ANSWER NEVER DECIDES WHETHER THE DIGEST IS
+// SENT (ADR 0053 §2). The tick does not wait, retry or come back for a better answer,
+// and an error is the built-in body too: a summary that cannot be read must not cost the
+// window its digest.
+type DigestFindings interface {
+	DigestFinding(ctx context.Context, s db.TenantScope, policyID uuid.UUID, start, end time.Time) (domain.DigestFinding, bool, error)
+}
+
 // NotificationStore persists intents.
 type NotificationStore interface {
 	Insert(ctx context.Context, s db.TenantScope, n domain.Notification) (domain.Notification, bool, error)

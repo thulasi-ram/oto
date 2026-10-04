@@ -87,6 +87,9 @@ type PolicyDraft struct {
 	// (digest.go's binding block); it has no timezone and never will.
 	DigestWindow *time.Duration
 	DigestFloor  *int
+	// DigestInvestigatorID is `digest_investigator_id` (migration 00098): the
+	// Investigator the policy asks to summarise its digest windows. Nil is none.
+	DigestInvestigatorID *uuid.UUID
 }
 
 // PolicyPatch is the partial update.
@@ -109,6 +112,10 @@ type PolicyPatch struct {
 	// which is how an operator turns the summary — or just its floor — off.
 	DigestWindow **time.Duration
 	DigestFloor  **int
+	// DigestInvestigatorID is a double pointer for the reason the digest's two halves
+	// are: a pointer to nil CLEARS it, which puts the policy's digest back on the
+	// built-in body.
+	DigestInvestigatorID **uuid.UUID
 
 	// Subjects is a SINGLE pointer where its neighbours are double, and the
 	// asymmetry is the column's rather than an oversight. `subject_kinds` is
@@ -142,7 +149,7 @@ func (p PolicyPatch) IsEmpty() bool {
 	return p.Name == nil && p.Priority == nil && p.Enabled == nil &&
 		p.Matchers == nil && p.Reasons == nil && p.ChannelIDs == nil &&
 		p.Throttle == nil &&
-		p.DigestWindow == nil && p.DigestFloor == nil &&
+		p.DigestWindow == nil && p.DigestFloor == nil && p.DigestInvestigatorID == nil &&
 		p.Subjects == nil && p.CountMin == nil && p.CountWindow == nil &&
 		p.TemplateID == nil
 }
@@ -208,6 +215,13 @@ func (p PolicyPatch) ValidateAgainst(existing Policy) error {
 			merged.Digest.Floor = *v
 		} else {
 			merged.Digest.Floor = 0
+		}
+	}
+	if p.DigestInvestigatorID != nil {
+		if v := *p.DigestInvestigatorID; v != nil {
+			merged.Digest.InvestigatorID = *v
+		} else {
+			merged.Digest.InvestigatorID = uuid.Nil
 		}
 	}
 	// ⭐ AND THE SUBJECT BINDING IS THE STRONGEST CASE YET FOR MERGING RATHER THAN

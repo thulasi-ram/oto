@@ -193,6 +193,13 @@ type Digest struct {
 	// later edit to the policy's window, and it is usually LONGER than that window
 	// because of the straggler lookback above.
 	SpanSeconds *float64 `json:"span_seconds,omitempty"`
+	// Finding is the Investigator's Finding this digest carries as its body (ADR 0053 §4,
+	// git-bug 3e96f5a), ABSENT for the built-in body. It is the one the window's run had
+	// reached when the window closed, copied then; a digest never waits for one and is
+	// never re-sent with a later one. ⛔ ADDITIVE, for the Incident's `finding`'s reason:
+	// a new `omitempty` key adds a promise and alters none. It carries no verdict on
+	// delivery — a receiver that pages on it is paging on a model's judgement.
+	Finding *IncidentFinding `json:"finding,omitempty"`
 }
 
 // Incident is one Incident as a consumer sees it: a set of Cases drawn as one story.

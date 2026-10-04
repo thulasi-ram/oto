@@ -1637,6 +1637,7 @@ export const PolicyDTOSchema = v.looseObject({
     v.minValue(1),
     v.maxValue(10000),
   ))),
+  "digest_investigator_id": v.exactOptional(UuidSchema),
   "created_at": TimestampSchema,
   "updated_at": TimestampSchema,
 });
@@ -3076,6 +3077,7 @@ export const CreatePolicyRequestSchema = v.strictObject({
     v.minValue(1),
     v.maxValue(10000),
   )),
+  "digest_investigator_id": v.exactOptional(UuidSchema),
 });
 
 export const UpdatePolicyRequestSchema = v.pipe(
@@ -3122,6 +3124,7 @@ export const UpdatePolicyRequestSchema = v.pipe(
       v.minValue(1),
       v.maxValue(10000),
     ))),
+    "digest_investigator_id": v.exactOptional(v.nullable(UuidSchema)),
     "subject_kinds": v.exactOptional(v.pipe(
       v.array(v.picklist(["alert", "case", "digest", "incident"])),
       v.maxLength(4),
@@ -3536,7 +3539,7 @@ export const InvestigationReasonSchema = v.picklist(["step_budget", "token_budge
 
 export const InvestigationDTOSchema = v.looseObject({
   "id": UuidSchema,
-  "subject_kind": v.picklist(["case", "incident"]),
+  "subject_kind": v.picklist(["case", "incident", "digest"]),
   "subject_id": UuidSchema,
   "investigator_id": UuidSchema,
   "investigator_name": v.pipe(
@@ -3591,6 +3594,8 @@ export const InvestigationDTOSchema = v.looseObject({
   "not_before": v.nullable(TimestampSchema),
   "started_at": v.nullable(TimestampSchema),
   "ended_at": v.nullable(TimestampSchema),
+  "digest_window_start": v.exactOptional(TimestampSchema),
+  "digest_window_end": v.exactOptional(TimestampSchema),
 });
 
 export const StepToolCallDTOSchema = v.looseObject({

@@ -121,6 +121,7 @@ type rig struct {
 	investigations *memInvestigations
 	history        *memHistory
 	incidents      *memIncidents
+	digests        *memDigests
 	declarer       *memDeclarer
 	findings       *memFindings
 	orgControls    *memControls
@@ -137,7 +138,7 @@ type rig struct {
 func (r *rig) deps() Deps {
 	return Deps{Providers: r.store, Credentials: r.creds, Keys: r.creds, Dialer: r.dial, Tx: r.tx, Clock: r.clock,
 		Investigators: r.investigators, Investigations: r.investigations,
-		Cases: r.history, Incidents: r.incidents, Declarer: r.declarer,
+		Cases: r.history, Incidents: r.incidents, Digests: r.digests, Declarer: r.declarer,
 		Timeline: r.history, Rules: r.history, Findings: r.findings,
 		OrgControls: r.orgControls, Classes: r.classes, Queue: r.queue,
 		Limits:      Limits{ToolTimeout: 50 * time.Millisecond, MaxToolResult: 4096},
@@ -157,6 +158,7 @@ func newRig(t *testing.T) *rig {
 		investigations: newMemInvestigations(),
 		history:        &memHistory{cases: map[uuid.UUID]domain.CaseSubject{}},
 		incidents:      newMemIncidents(),
+		digests:        &memDigests{cases: map[uuid.UUID][]domain.DigestCase{}},
 		declarer:       &memDeclarer{},
 		findings:       &memFindings{},
 		orgControls:    &memControls{on: true, dailyTokens: 2_000_000, concurrency: 2},
@@ -278,6 +280,7 @@ func TestNewRequiresEveryPort(t *testing.T) {
 		"investigators":  func(d *Deps) { d.Investigators = nil },
 		"investigations": func(d *Deps) { d.Investigations = nil },
 		"cases":          func(d *Deps) { d.Cases = nil },
+		"digests":        func(d *Deps) { d.Digests = nil },
 		"timeline":       func(d *Deps) { d.Timeline = nil },
 		"rules":          func(d *Deps) { d.Rules = nil },
 		"findings":       func(d *Deps) { d.Findings = nil },

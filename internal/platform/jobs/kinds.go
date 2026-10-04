@@ -147,6 +147,11 @@ const (
 	// 0053 §4, git-bug 74ea849). It is enqueued by the Incident's own membership
 	// change, in its transaction, and decides and records runs; it runs none.
 	KindInvestigationsIncident = "investigations.incident"
+	// KindInvestigationsDigest arms the run for every digest window a policy asked to
+	// have summarised, ahead of the window's close (ADR 0053 §4, git-bug 3e96f5a). A
+	// per-tenant periodic that records runs and calls no model; nothing on the digest
+	// path enqueues it, waits for it, or reads it.
+	KindInvestigationsDigest = "investigations.digest"
 )
 
 // Priority levels. River orders 1 (highest) before 4 (lowest) within a queue.

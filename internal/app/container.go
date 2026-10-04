@@ -205,6 +205,9 @@ type Container struct {
 	NotifyWorkers   *notifworker.Workers
 	NotifyScopes    *notifrepo.ScopeResolver
 	notifConfigRepo *notifrepo.ConfigRepository
+	// digestFindings is the late-bound reader the digest tick asks for a window's
+	// Finding (git-bug 3e96f5a).
+	digestFindings *digestFindings
 	// incidentFacts is the notification layer's late-bound Incident reader, held
 	// here because it is built in buildNotification and filled after incidents.
 	incidentFacts *incidentFacts
@@ -792,7 +795,13 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		Cases:          investigationCases{alerts: c.Alerts},
 		// An Incident is investigated as a whole (git-bug 74ea849): read through
 		// `incidents/service`, and its new Finding declared through the outbox.
-		Incidents:   investigationIncidents{incidents: c.Incidents},
+		Incidents: investigationIncidents{incidents: c.Incidents},
+		// A digest window a policy asked to have summarised (git-bug 3e96f5a): read
+		// through notification's own policies and digest store, never written.
+		Digests: investigationDigests{
+			policies: notifrepo.NewPolicyRepository(general),
+			cases:    notifrepo.NewDigestRepository(general),
+		},
 		Declarer:    findingDeclarer{enq: c.enqueuer},
 		Timeline:    investigationCases{alerts: c.Alerts},
 		Rules:       investigationRules{rules: c.Rules},
@@ -842,6 +851,8 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	// The notification layer's Incident reader now reads the Incident's latest Finding
 	// for its card and its `finding` fact (ADR 0053 §4, git-bug 74ea849).
 	c.incidentFacts.investigations = c.Investigator
+	// The digest tick reads a window's Finding at the send, once (git-bug 3e96f5a).
+	c.digestFindings.investigations = c.Investigator
 
 	// ---- ingestion: THE ONLY MODULE ON THE INGEST POOL -------------------
 	//
@@ -1105,10 +1116,16 @@ func (c *Container) buildNotification(
 	// DigestService.emit. It takes no settings reader, deliberately: there is no
 	// org-level digest default and there must not be one, because a window is a
 	// per-policy subscription rather than a volume dial.
+	// ⚠️ LATE-BOUND, like `incidentFacts`: the investigator is built after this, and
+	// until then every digest carries the built-in body.
+	c.digestFindings = &digestFindings{}
 	if c.Digests, err = notifservice.NewDigestService(notifservice.DigestConfig{
 		Policies: policyRepo,
 		Digests:  digestRepo,
 		Notifier: c.Notify,
+		// The Finding a window's digest may carry (ADR 0053 §4, git-bug 3e96f5a), read
+		// ONCE at the send; the digest never waits for one.
+		Findings: c.digestFindings,
 		Clock:    clk,
 		Logger:   logger,
 	}); err != nil {

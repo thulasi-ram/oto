@@ -53,6 +53,9 @@ func materialise(scope db.TenantScope, d domain.PolicyDraft) domain.Policy {
 	if d.DigestFloor != nil {
 		p.Digest.Floor = *d.DigestFloor
 	}
+	if d.DigestInvestigatorID != nil {
+		p.Digest.InvestigatorID = *d.DigestInvestigatorID
+	}
 	// The count condition's four rules — the two ranges, the symmetric pair rule and
 	// the unit rule that ties it to a one-element binding — are all
 	// `Policy.Validate`'s, so materialising the two halves is the whole of this

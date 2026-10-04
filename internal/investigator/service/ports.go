@@ -115,6 +115,9 @@ type InvestigationStore interface {
 	// kind, newest first: an Incident's own, or its member Cases'.
 	SubjectFindings(ctx context.Context, s db.TenantScope, kind domain.SubjectKind, subjectIDs []uuid.UUID,
 		except uuid.UUID, limit int) ([]domain.PriorFinding, error)
+	// DigestRun is the run armed for one digest window — a policy and a window — or nil
+	// (git-bug 3e96f5a). There is at most one.
+	DigestRun(ctx context.Context, s db.TenantScope, policyID uuid.UUID, window domain.DigestWindow) (*domain.Investigation, error)
 }
 
 // ClassStore is where the org's Classification set is kept (ADR 0053 §5, git-bug
@@ -220,6 +223,25 @@ type IncidentReader interface {
 // Finding is declared nowhere.
 type FindingDeclarer interface {
 	DeclareIncidentFinding(ctx context.Context, s db.TenantScope, incidentID, investigationID uuid.UUID) error
+}
+
+// DigestReader reads the digest windows an Investigation summarises, satisfied in
+// `internal/app` over `notification`'s policies and its digest store (git-bug 3e96f5a).
+//
+// ⛔ IT READS, AND IT IS THE WHOLE OF WHAT THIS MODULE KNOWS ABOUT A DIGEST. `investigator`
+// never imports `notification` (depguard `investigator-never-reaches-the-notification-
+// path`): the window arrives as domain.DigestWindow, computed by the policy's own window
+// arithmetic, and the Cases as the copies in domain/digest.go. Nothing here can send,
+// hold or amend a digest — the digest tick reads a Finding off this module through
+// DigestFinding, at the send, and never waits for one.
+type DigestReader interface {
+	// SummarisedDigests lists the org's live digest policies that name an Investigator,
+	// each with its window open at `now`.
+	SummarisedDigests(ctx context.Context, s db.TenantScope, now time.Time) ([]domain.SummarisedDigest, error)
+	// InvestigationDigest reads one window's Cases as the policy's matchers select them,
+	// so far. A policy this org no longer has, or that no longer sends a digest, is
+	// KindNotFound.
+	InvestigationDigest(ctx context.Context, s db.TenantScope, policyID uuid.UUID, window domain.DigestWindow) (domain.DigestSubject, error)
 }
 
 // TimelineReader reads a Case's timeline, oldest first, at most `limit` entries —

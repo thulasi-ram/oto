@@ -126,6 +126,7 @@ type DigestService struct {
 	policies PolicyStore
 	digests  DigestStore
 	notifier *NotificationService
+	findings DigestFindings
 	limit    int
 	clk      clock.Clock
 	log      *slog.Logger
@@ -140,6 +141,10 @@ type DigestConfig struct {
 	// `alert_key` and a digest names no alert) and not throttled by a group cap
 	// (it lands on no group's thread). See sweepPolicy.
 	Notifier *NotificationService
+	// Findings reads the Investigator's Finding a window's digest may carry (ADR 0053
+	// §4, git-bug 3e96f5a). Optional: nil sends every digest with its built-in body,
+	// which is exactly what a digest whose policy asked for no summary says.
+	Findings DigestFindings
 	Clock    clock.Clock
 	Logger   *slog.Logger
 }
@@ -151,7 +156,7 @@ func NewDigestService(cfg DigestConfig) (*DigestService, error) {
 			"the digest service needs a policy store, a digest store and the notification service")
 	}
 	s := &DigestService{
-		policies: cfg.Policies, digests: cfg.Digests, notifier: cfg.Notifier,
+		policies: cfg.Policies, digests: cfg.Digests, notifier: cfg.Notifier, findings: cfg.Findings,
 		limit: digestBucketLimit, clk: cfg.Clock, log: cfg.Logger,
 	}
 	if s.clk == nil {
@@ -606,6 +611,7 @@ func (s *DigestService) emit(
 
 	count := len(cases)
 	coveredFrom, coveredTo := coveredSpanOf(p.Digest, start, floor, cases)
+	finding := s.findingFor(ctx, scope, p, start)
 	policyID := p.ID
 	windowStart := start
 	n := domain.Notification{
@@ -655,7 +661,10 @@ func (s *DigestService) emit(
 		// boundary per digest.
 		DigestCoveredFrom: &coveredFrom,
 		DigestCoveredTo:   &coveredTo,
-		CreatedAt:         s.clk.Now().UTC(),
+		// The Finding the window's run had reached BY NOW, copied — or nil, the built-in
+		// body. Read once, above, and never again for this window. See findingFor.
+		DigestFinding: finding,
+		CreatedAt:     s.clk.Now().UTC(),
 	}
 	n.UpdatedAt = n.CreatedAt
 	// ⭐ NO OCCASION, AND THAT IS THE POINT OF THE WINDOW ORDINAL ABOVE. The occasion
@@ -758,6 +767,40 @@ func (s *DigestService) emit(
 	// this same tick — which is `Insert`'s idempotency working. It is covered, not
 	// sent.
 	return digestCovered, nil
+}
+
+// findingFor is the Finding this window's digest carries: whatever usable Finding the
+// run the policy asked for has reached AT THIS MOMENT, or nil for the built-in body
+// (ADR 0053 §4, git-bug 3e96f5a).
+//
+// ⛔⛔ THE DIGEST NEVER WAITS, AND THIS IS THE WHOLE OF ITS CONTACT WITH AN INVESTIGATION.
+// One read, no retry, no hold: a run still queued or running when the window closes is
+// the built-in body, and its Finding — when it comes — is kept on the run and posted
+// nowhere. The answer changes what the digest SAYS and never WHETHER it is sent (ADR 0053
+// §2): `sweepPolicy` decided that from the floor before this was asked.
+//
+// ⚠️ AN ERROR IS THE BUILT-IN BODY TOO, AND IT IS LOGGED RATHER THAN RETURNED. Returning
+// it would leave the window owed and retry the whole digest on the next tick — a digest
+// late because a summary could not be read, which is the waiting this rule forbids.
+func (s *DigestService) findingFor(
+	ctx context.Context, scope db.TenantScope, p domain.Policy, start time.Time,
+) *domain.DigestFinding {
+	if s.findings == nil || p.Digest.InvestigatorID == uuid.Nil {
+		return nil
+	}
+	f, ok, err := s.findings.DigestFinding(ctx, scope, p.ID, start, p.Digest.WindowEnd(start))
+	if err != nil {
+		s.log.WarnContext(ctx, "notification: could not read a digest window's Finding; sending the built-in body",
+			slog.String("org_id", scope.OrgID().String()),
+			slog.String("policy_id", p.ID.String()),
+			slog.String("window_start", start.Format(time.RFC3339)),
+			slog.String("error", err.Error()))
+		return nil
+	}
+	if !ok {
+		return nil
+	}
+	return &f
 }
 
 // sortChannels keeps a fan-out comparable between two runs of the same tick. It does

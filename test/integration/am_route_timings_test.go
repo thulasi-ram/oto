@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 97 {
-		t.Fatalf("latest migration is %d, want 97 — this test pins the number so that a "+
+	if latest != 98 {
+		t.Fatalf("latest migration is %d, want 98 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1632,6 +1632,56 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// accepts a kind the release below it cannot interpret. No column reading can
 	// see that, and it is the half most likely to be forgotten because nothing
 	// references it.
+	// ⭐ 00098 LETS A DIGEST CARRY A FINDING THAT WAS READY WHEN ITS WINDOW CLOSED (ADR
+	// 0053 §4, git-bug 3e96f5a): `investigations_subjkind_ck` widened by `digest`, the
+	// window pair on `investigations` with its CHECK and its one-run-per-window index, the
+	// policy's `digest_investigator_id` with its composite FK (over a new unique index on
+	// `investigators`) and its CHECK, and the copy `notifications.digest_finding` with its
+	// CHECK. The subject CHECK is read for its BODY on both sides, for 00075's reason. ⛔
+	// `enrichments_subjkind_ck` is NOT touched by 00098 and is asserted unchanged: a digest
+	// Finding is not an Enrichment (the migration's header says why).
+	if def := constraintDef("investigations_subjkind_ck", "investigations"); !strings.Contains(def, "'digest'") ||
+		!strings.Contains(def, "'incident'") {
+		t.Fatalf("investigations_subjkind_ck does not admit a digest at migration 98: %s", def)
+	}
+	if def := constraintDef("enrichments_subjkind_ck", "enrichments"); strings.Contains(def, "'digest'") {
+		t.Fatalf("enrichments_subjkind_ck admits a digest at migration 98, and 00098 refused to: %s", def)
+	}
+	if n := countColumns("investigations", "digest_window_start", "digest_window_end") +
+		countColumns("notification_policies", "digest_investigator_id") +
+		countColumns("notifications", "digest_finding"); n != 4 {
+		t.Fatalf("%d of 00098's four columns exist at migration 98", n)
+	}
+	if n := countConstraints("investigations_digest_window_ck", "policies_digest_investigator_fk",
+		"policies_digest_investigator_ck", "notifications_digest_finding_ck"); n != 4 {
+		t.Fatalf("%d of 00098's four constraints exist at migration 98", n)
+	}
+	if n := countIndexes("investigations_digest_window_uniq", "investigators_org_id_uniq"); n != 2 {
+		t.Fatalf("%d of 00098's two indexes exist at migration 98", n)
+	}
+	if c := columnComment("notifications", "digest_finding"); !strings.Contains(c, "never waits") {
+		t.Fatalf("notifications.digest_finding's comment does not say a digest never waits: %s", c)
+	}
+
+	down(98)
+
+	if def := constraintDef("investigations_subjkind_ck", "investigations"); strings.Contains(def, "'digest'") ||
+		!strings.Contains(def, "'incident'") || !strings.Contains(def, "'case'") {
+		t.Fatalf("00098's Down did not restore 00095's investigations_subjkind_ck: %s", def)
+	}
+	if n := countColumns("investigations", "digest_window_start", "digest_window_end") +
+		countColumns("notification_policies", "digest_investigator_id") +
+		countColumns("notifications", "digest_finding"); n != 0 {
+		t.Fatalf("%d of 00098's four columns survived its Down", n)
+	}
+	if n := countConstraints("investigations_digest_window_ck", "policies_digest_investigator_fk",
+		"policies_digest_investigator_ck", "notifications_digest_finding_ck"); n != 0 {
+		t.Fatalf("%d of 00098's four constraints survived its Down", n)
+	}
+	if n := countIndexes("investigations_digest_window_uniq", "investigators_org_id_uniq"); n != 0 {
+		t.Fatalf("%d of 00098's two indexes survived its Down", n)
+	}
+
 	// ⭐ 00097 LETS A FINDING SUGGEST, AND A HUMAN APPLY IT OR IT LAPSES (ADR 0053 §2,
 	// git-bug 8327c00): one table with its nine named CHECKs, its run index, a comment on
 	// `lapses_at`, and the trigger that applies a Suggestion once and never rewrites a

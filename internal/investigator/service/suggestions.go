@@ -192,6 +192,9 @@ func unknownPolicy(name string, policies []domain.PolicyTarget) string {
 // ---------------------------------------------------------------- membership
 
 type membershipSuggestionTool struct {
+	// A membership is between a Case and an Incident, and one side is always the run's
+	// own subject — so a digest window's run is not offered it (git-bug 3e96f5a).
+	caseOrIncident
 	s      *Service
 	schema domain.ToolSchema
 }

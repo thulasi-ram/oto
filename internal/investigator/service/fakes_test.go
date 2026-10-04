@@ -618,3 +618,44 @@ func (m *memMemberships) ApplySuggestedMembership(_ context.Context, _ db.Tenant
 	m.edits = append(m.edits, a)
 	return nil
 }
+
+// DigestRun is the window's run, or nil.
+func (m *memInvestigations) DigestRun(_ context.Context, s db.TenantScope, policyID uuid.UUID, w domain.DigestWindow) (*domain.Investigation, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, r := range m.rows {
+		if r.OrgID == s.OrgID() && r.SubjectKind == domain.SubjectDigest && r.SubjectID == policyID &&
+			r.DigestWindow == w {
+			out := r
+			return &out, nil
+		}
+	}
+	return nil, nil
+}
+
+// memDigests is the DigestReader: the summarised policies and each window's Cases.
+type memDigests struct {
+	mu       sync.Mutex
+	policies []domain.SummarisedDigest
+	cases    map[uuid.UUID][]domain.DigestCase
+	reads    int
+}
+
+func (m *memDigests) SummarisedDigests(context.Context, db.TenantScope, time.Time) ([]domain.SummarisedDigest, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return slices.Clone(m.policies), nil
+}
+
+func (m *memDigests) InvestigationDigest(_ context.Context, _ db.TenantScope, policyID uuid.UUID, w domain.DigestWindow) (domain.DigestSubject, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.reads++
+	for _, p := range m.policies {
+		if p.PolicyID == policyID {
+			return domain.DigestSubject{PolicyID: policyID, PolicyName: p.PolicyName, Window: w,
+				Cases: slices.Clone(m.cases[policyID])}, nil
+		}
+	}
+	return domain.DigestSubject{}, errs.NotFound("policy_not_found", "no such policy")
+}

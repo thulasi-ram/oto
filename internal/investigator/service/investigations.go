@@ -205,6 +205,9 @@ type subjectRef struct {
 	id   uuid.UUID
 	// alertKey is a Case's Alert's key; "" for an Incident.
 	alertKey string
+	// window is a digest subject's window — the other half of its identity, `id` being
+	// the policy — and zero for every other subject.
+	window domain.DigestWindow
 }
 
 func incidentRef(i domain.IncidentSubject) subjectRef {
@@ -212,8 +215,10 @@ func incidentRef(i domain.IncidentSubject) subjectRef {
 }
 
 // request records one trigger's run against one subject. A human's is always a new
-// run; an automatic trigger is admitted under the Investigator's minimum interval and
-// may resolve to a run already made (domain.Admit).
+// run; a draw or a membership change is admitted under the Investigator's minimum
+// interval and may resolve to a run already made (domain.Admit); a digest window is one
+// run per window, which `investigations_digest_window_uniq` holds (domain.Trigger.
+// Coalesces).
 func (s *Service) request(
 	ctx context.Context, scope db.TenantScope, subj subjectRef, investigatorID uuid.UUID, by domain.Requester, trigger domain.Trigger,
 ) (domain.Investigation, error) {
@@ -232,6 +237,7 @@ func (s *Service) request(
 		SubjectKind:      subj.kind,
 		SubjectID:        subj.id,
 		AlertKey:         subj.alertKey,
+		DigestWindow:     subj.window,
 		InvestigatorID:   investigator.ID,
 		InvestigatorName: investigator.Name,
 		VersionID:        investigator.Current.ID,
@@ -251,7 +257,7 @@ func (s *Service) request(
 
 	var out domain.Investigation
 	err = s.tx.InTx(ctx, func(ctx context.Context) error {
-		if inv.Status == domain.StatusQueued && trigger.Automatic() {
+		if inv.Status == domain.StatusQueued && trigger.Coalesces() {
 			// Under the (Investigator, subject) lock, so two changes at once cannot
 			// both find nothing queued and both insert.
 			runs, err := s.investigations.LockSubjectRuns(ctx, scope, investigator.ID, inv.SubjectKind, inv.SubjectID)
@@ -547,6 +553,12 @@ func (s *Service) readSubject(
 ) (run RunSubject, message, gone string, err error) {
 	run = RunSubject{InvestigationID: inv.ID, Kind: inv.SubjectKind}
 	switch inv.SubjectKind {
+	case domain.SubjectDigest:
+		run.Digest, err = s.digests.InvestigationDigest(ctx, scope, inv.SubjectID, inv.DigestWindow)
+		if errs.IsKind(err, errs.KindNotFound) {
+			return run, "", "the notification policy no longer exists, or no longer sends a digest", nil
+		}
+		return run, renderDigestSubject(run.Digest), "", err
 	case domain.SubjectIncident:
 		run.Incident, err = s.incidents.InvestigationIncident(ctx, scope, inv.SubjectID)
 		if errs.IsKind(err, errs.KindNotFound) {
@@ -583,10 +595,14 @@ func (s *Service) offeredTools(allow domain.Allowlist, kind domain.SubjectKind) 
 
 // subjectNoun is a subject kind with its article, for a sentence.
 func subjectNoun(kind domain.SubjectKind) string {
-	if kind == domain.SubjectIncident {
+	switch kind {
+	case domain.SubjectIncident:
 		return "an Incident"
+	case domain.SubjectDigest:
+		return "a digest window"
+	default:
+		return "a Case"
 	}
-	return "a Case"
 }
 
 // finish ends a run and — when it reached a Finding — publishes it, in one
@@ -616,6 +632,15 @@ func (s *Service) finish(ctx context.Context, scope db.TenantScope, inv domain.I
 				at, at.Add(domain.SuggestionLapse)); err != nil {
 				return err
 			}
+		}
+		if inv.SubjectKind == domain.SubjectDigest {
+			// ⛔ A DIGEST WINDOW'S FINDING IS NOT PUBLISHED AS AN ENRICHMENT, AND IT IS NOT
+			// DECLARED (git-bug 3e96f5a, migration 00098). An Enrichment is keyed by its
+			// subject alone and replaced by the next run, so it could not name the window;
+			// and nothing is sent because of it. It stays on this row, and the digest tick
+			// copies it onto the digest IF it is here when the window closes — the run
+			// never reaches the digest, the digest reads the run.
+			return nil
 		}
 		started := inv.StartedAt
 		if started.IsZero() {

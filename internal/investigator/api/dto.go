@@ -191,10 +191,15 @@ type InvestigationDTO struct {
 	NotBefore             *time.Time             `json:"not_before"`
 	StartedAt             *time.Time             `json:"started_at"`
 	EndedAt               *time.Time             `json:"ended_at"`
+	// DigestWindowStart and DigestWindowEnd are a digest subject's window, `[start,
+	// end)` — `subject_id` being the policy — and absent for every other subject
+	// (git-bug 3e96f5a).
+	DigestWindowStart *time.Time `json:"digest_window_start,omitempty"`
+	DigestWindowEnd   *time.Time `json:"digest_window_end,omitempty"`
 }
 
 func investigationDTO(i domain.Investigation) InvestigationDTO {
-	return InvestigationDTO{
+	out := InvestigationDTO{
 		ID: i.ID, SubjectKind: string(i.SubjectKind), SubjectID: i.SubjectID,
 		InvestigatorID: i.InvestigatorID, InvestigatorName: i.InvestigatorName,
 		InvestigatorVersion: i.VersionNumber, InvestigatorVersionID: i.VersionID,
@@ -206,6 +211,10 @@ func investigationDTO(i domain.Investigation) InvestigationDTO {
 		RequestedByLabel: i.RequestedBy.Label, RequestedAt: i.RequestedAt, NotBefore: optTime(i.NotBefore),
 		StartedAt: optTime(i.StartedAt), EndedAt: optTime(i.EndedAt),
 	}
+	if !i.DigestWindow.IsZero() {
+		out.DigestWindowStart, out.DigestWindowEnd = optTime(i.DigestWindow.Start), optTime(i.DigestWindow.End)
+	}
+	return out
 }
 
 // StepToolCallDTO renders `StepToolCallDTO`: one Tool call a model turn asked for.

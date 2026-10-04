@@ -115,10 +115,22 @@ const (
 	// leaves (git-bug 74ea849). Going quiet is not a membership change and raises
 	// nothing (§4: "Not on quiet").
 	TriggerMembership Trigger = "membership"
+	// TriggerDigestWindow is "a digest window is about to close" (§4, git-bug 3e96f5a):
+	// the `investigations.digest` tick arming the run for a window a policy asked to have
+	// summarised. ⭐ IT DOES NOT COALESCE: a digest run's subject is the policy AND the
+	// window, so the interval's (Investigator, subject) reading would find the previous
+	// window's run and fold this one into it. One run per window is held by
+	// `investigations_digest_window_uniq` instead.
+	TriggerDigestWindow Trigger = "digest_window"
 )
 
 // Automatic reports whether the trigger is one oto raised rather than a person.
 func (t Trigger) Automatic() bool { return t != TriggerHuman }
+
+// Coalesces reports whether the trigger is admitted under the Investigator's minimum
+// interval (Admit): a draw and a membership change. A human is not held to it, and a
+// digest window has its own one-run-per-window rule.
+func (t Trigger) Coalesces() bool { return t == TriggerDrawn || t == TriggerMembership }
 
 // CoveredByIncident reports whether a trigger on a CASE is answered by the Incident
 // the Case is in rather than by a run of its own (ADR 0053 §4: "A Case already in an

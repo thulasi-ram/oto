@@ -76,6 +76,9 @@ func policyDTO(p domain.Policy) PolicyDTO {
 		v := int32(p.Digest.Floor) //nolint:gosec // bounded by policies_digest_floor_ck
 		out.DigestFloor = &v
 	}
+	if id := p.Digest.InvestigatorID; id != uuid.Nil {
+		out.DigestInvestigatorID = &id
+	}
 	// The count condition, on the same rule: the zero value means "no condition" in
 	// the domain and `null` on the wire, and the seconds ⇄ Duration conversion
 	// happens here and nowhere else. Both halves are emitted independently even
@@ -253,6 +256,7 @@ func (r CreatePolicyRequest) toDraft() (domain.PolicyDraft, error) {
 		v := int(*r.DigestFloor)
 		d.DigestFloor = &v
 	}
+	d.DigestInvestigatorID = r.DigestInvestigatorID
 	// An absent `subject_kinds` and an empty one are the same instruction — claim
 	// every altitude — so there is no `!= nil` guard here and none is wanted: an
 	// empty slice through `toSubjectKinds` produces an empty binding, which is what
@@ -327,6 +331,10 @@ func (r UpdatePolicyRequest) toPatch() (domain.PolicyPatch, error) {
 			n = &v
 		}
 		p.DigestFloor = &n
+	}
+	if r.DigestInvestigatorID != nil {
+		v := r.DigestInvestigatorID.Value
+		p.DigestInvestigatorID = &v
 	}
 	// One level of pointer, not two, because the column is NOT NULL: presence means
 	// "this is the new binding" and an empty array is how an operator removes one.

@@ -149,6 +149,7 @@ type Handlers struct {
 
 	InvestigationsRun      Handler[InvestigationsRunArgs]
 	InvestigationsIncident Handler[InvestigationsIncidentArgs]
+	InvestigationsDigest   Handler[InvestigationsDigestArgs]
 }
 
 // stub returns the not-implemented handler for a kind.
@@ -291,6 +292,12 @@ func RegisterAll(r *Registry, h Handlers) error {
 			return Register(r, Spec{Queue: QueueLifecycle, PayloadVersion: 1, Timeout: 2 * time.Minute},
 				orStub(h.InvestigationsIncident, KindInvestigationsIncident))
 		},
+		func() error {
+			// Two minutes, like `investigations.incident`: one tenant's digest policies,
+			// at most one recorded run each. It never calls a model.
+			return Register(r, Spec{Queue: QueueLifecycle, PayloadVersion: 1, Timeout: 2 * time.Minute},
+				orStub(h.InvestigationsDigest, KindInvestigationsDigest))
+		},
 	}
 
 	for _, reg := range regs {
@@ -362,6 +369,12 @@ func AddDefaultPeriodic(r *Registry, clk clock.Clock) {
 	// out, and waiting an hour to answer that is an hour of not knowing.
 	add(time.Hour, KindNotifyDigestReconcile, func() (river.JobArgs, *river.InsertOpts) {
 		return NotifyDigestReconcileArgs{}, nil
+	})
+	// The digest-summary arming tick (git-bug 3e96f5a), on the digest tick's minute
+	// because a window's lead is measured in minutes. It only arms runs; the digest is
+	// sent by `notify.digest` whatever this does.
+	add(time.Minute, KindInvestigationsDigest, func() (river.JobArgs, *river.InsertOpts) {
+		return InvestigationsDigestArgs{}, nil
 	})
 	add(time.Hour, KindPartitionsManage, func() (river.JobArgs, *river.InsertOpts) {
 		return PartitionsManageArgs{}, nil

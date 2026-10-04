@@ -23,29 +23,35 @@ import (
 )
 
 // SubjectKind is what an Investigation is about. ADR 0053 §4 names four subjects —
-// `case | incident | digest | policy` — and a Case and an Incident have run paths, so
-// the set is closed at two and `investigations_subjkind_ck` admits exactly them
-// (00092, widened by 00095). Adding a kind is a constant here, an arm in
-// ParseSubjectKind, a widened CHECK, and a run path that can read the subject.
+// `case | incident | digest | policy` — and a Case, an Incident and a digest window have
+// run paths, so the set is closed at three and `investigations_subjkind_ck` admits
+// exactly them (00092, widened by 00095 and 00098). Adding a kind is a constant here, an
+// arm in ParseSubjectKind, a widened CHECK, and a run path that can read the subject.
 type SubjectKind string
 
-// The two subjects with a run path.
+// The three subjects with a run path.
 const (
 	// SubjectCase is one firing episode.
 	SubjectCase SubjectKind = "case"
 	// SubjectIncident is a set of Cases drawn as one story (ADR 0052): investigated as
 	// a whole, so its member Cases start nothing of their own automatically (§4).
 	SubjectIncident SubjectKind = "incident"
+	// SubjectDigest is ONE WINDOW of one notification policy's digest (ADR 0053 §4,
+	// git-bug 3e96f5a): `SubjectID` is the policy and `DigestWindow` the window, the
+	// same pair the digest's own notification is keyed by. Its Finding becomes the
+	// digest's body if it is ready when the window closes — and is used by nothing if
+	// it is not (see DigestWindow).
+	SubjectDigest SubjectKind = "digest"
 )
 
 // ParseSubjectKind reads a stored subject kind.
 func ParseSubjectKind(s string) (SubjectKind, error) {
 	switch k := SubjectKind(s); k {
-	case SubjectCase, SubjectIncident:
+	case SubjectCase, SubjectIncident, SubjectDigest:
 		return k, nil
 	default:
 		return "", errs.Newf(errs.KindInternal, "investigation_subject_kind",
-			"an Investigation's subject is a case or an incident, not %q", s)
+			"an Investigation's subject is a case, an incident or a digest window, not %q", s)
 	}
 }
 
@@ -228,6 +234,10 @@ type Investigation struct {
 	// on the same key are one read of this module's own table. "" for an Incident,
 	// which spans Alerts and has no one key.
 	AlertKey string
+	// DigestWindow is the window a digest subject summarises — the WINDOW half of its
+	// identity, `SubjectID` being the policy — and zero for every other subject
+	// (`investigations_digest_window_ck`).
+	DigestWindow DigestWindow
 
 	InvestigatorID   uuid.UUID
 	InvestigatorName string

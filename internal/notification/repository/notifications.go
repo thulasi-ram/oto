@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -48,8 +49,11 @@ type notificationRow struct {
 	// which is the inference these two columns exist to retire.
 	digestCoveredFrom *time.Time
 	digestCoveredTo   *time.Time
-	createdAt         time.Time
-	updatedAt         time.Time
+	// digestFinding is the COPY a digest carried (migration 00098), NULL for the
+	// built-in body.
+	digestFinding []byte
+	createdAt     time.Time
+	updatedAt     time.Time
 }
 
 // scanInto is the ONE argument list for `notificationColumns`. Five queries across
@@ -65,7 +69,49 @@ func (r *notificationRow) scanInto() []any {
 		&r.stateVersion, &r.idempotencyKey, &r.status, &r.suppressedReason,
 		&r.digestWindowStart, &r.digestCount,
 		&r.digestCoveredFrom, &r.digestCoveredTo,
+		&r.digestFinding,
 		&r.createdAt, &r.updatedAt,
+	}
+}
+
+// digestFindingJSON is `notifications.digest_finding` as stored (migration 00098).
+type digestFindingJSON struct {
+	InvestigationID uuid.UUID `json:"investigation_id"`
+	Investigator    string    `json:"investigator"`
+	Version         int       `json:"version"`
+	Summary         string    `json:"summary"`
+	Classification  string    `json:"classification,omitempty"`
+	Partial         bool      `json:"partial"`
+	ConcludedAt     time.Time `json:"concluded_at"`
+}
+
+func encodeDigestFinding(f *domain.DigestFinding) ([]byte, error) {
+	if f == nil {
+		return nil, nil
+	}
+	return json.Marshal(digestFindingJSON{
+		InvestigationID: f.InvestigationID, Investigator: f.Investigator, Version: f.Version,
+		Summary: f.Summary, Classification: f.Classification, Partial: f.Partial,
+		ConcludedAt: f.ConcludedAt.UTC(),
+	})
+}
+
+// decodeDigestFinding reads the copy back. ⚠️ A ROW THAT CANNOT BE DECODED IS READ AS
+// THE BUILT-IN BODY rather than failing the read: `notifications_digest_finding_ck`
+// admits only an object, so this is unreachable short of a hand edit, and a delivery
+// that dead-letters over the summary it was decorating would cost the digest itself.
+func decodeDigestFinding(b []byte) *domain.DigestFinding {
+	if len(b) == 0 {
+		return nil
+	}
+	var j digestFindingJSON
+	if err := json.Unmarshal(b, &j); err != nil {
+		return nil
+	}
+	return &domain.DigestFinding{
+		InvestigationID: j.InvestigationID, Investigator: j.Investigator, Version: j.Version,
+		Summary: j.Summary, Classification: j.Classification, Partial: j.Partial,
+		ConcludedAt: j.ConcludedAt.UTC(),
 	}
 }
 
@@ -88,6 +134,7 @@ func (r notificationRow) toDomain() domain.Notification {
 		DigestCount:       r.digestCount,
 		DigestCoveredFrom: r.digestCoveredFrom,
 		DigestCoveredTo:   r.digestCoveredTo,
+		DigestFinding:     decodeDigestFinding(r.digestFinding),
 		CreatedAt:         r.createdAt,
 		UpdatedAt:         r.updatedAt,
 	}
@@ -130,6 +177,7 @@ const notificationColumns = `
   alert_id, case_id,
   reason, policy_id, state_version, idempotency_key, status, suppressed_reason,
   digest_window_start, digest_count, digest_covered_from, digest_covered_to,
+  digest_finding,
   created_at, updated_at`
 
 // ⚠️ THE ARBITER STAYS `(org_id, idempotency_key)` EVEN THOUGH A DIGEST HAS A
@@ -149,8 +197,9 @@ INSERT INTO notifications (
   alert_id, case_id,
   reason, policy_id, state_version, idempotency_key, status, suppressed_reason,
   digest_window_start, digest_count, digest_covered_from, digest_covered_to,
+  digest_finding,
   created_at, updated_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$19)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$20,$19,$19)
 ON CONFLICT (org_id, idempotency_key) DO NOTHING
 RETURNING` + notificationColumns
 
@@ -183,14 +232,20 @@ func (r *NotificationRepository) Insert(
 		suppressed = &v
 	}
 
+	finding, err := encodeDigestFinding(n.DigestFinding)
+	if err != nil {
+		return domain.Notification{}, false, mapErr(err, "notification_not_found", "encode a digest's Finding")
+	}
+
 	var row notificationRow
-	err := r.db(ctx).QueryRow(ctx, insertNotificationSQL,
+	err = r.db(ctx).QueryRow(ctx, insertNotificationSQL,
 		n.ID, s.OrgID(), string(n.SubjectKind), n.SubjectID,
 		string(n.ConversationKind), n.ConversationID,
 		n.AlertID, n.CaseID, string(n.Reason), n.PolicyID, n.StateVersion,
 		n.IdempotencyKey, string(n.Status), suppressed,
 		n.DigestWindowStart, n.DigestCount,
 		n.DigestCoveredFrom, n.DigestCoveredTo, n.CreatedAt,
+		finding,
 	).Scan(row.scanInto()...)
 	switch {
 	case err == nil:

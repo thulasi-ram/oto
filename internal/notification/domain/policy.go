@@ -933,5 +933,14 @@ func (p Policy) validateDigest() []errs.Violation {
 		})
 	}
 
+	// `policies_digest_investigator_ck` (00098): an Investigator asked to summarise a
+	// digest that is never sent is a knob nothing reads.
+	if p.Digest.InvestigatorID != uuid.Nil && p.Digest.Window == 0 {
+		v = append(v, errs.Violation{
+			Field: "digest_investigator_id", Code: "incomplete",
+			Message: "an Investigator summarises a digest's windows, so naming one needs a digest window",
+		})
+	}
+
 	return v
 }

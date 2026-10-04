@@ -183,7 +183,18 @@ type DigestView struct {
 	// retroactively change the span every card oto has ever drawn claims to cover. A
 	// card that does not know its span says so.
 	CoveredFrom, CoveredTo time.Time
+	// Finding is the Investigator's Finding this digest carries as its body (ADR 0053
+	// §4, git-bug 3e96f5a), or nil for the built-in body. It was COPIED onto the digest
+	// when the window closed, from whatever the window's run had reached by then, so it
+	// is the same on every delivery and every retry, and a Finding that ended later is
+	// never here. ⭐ A SNAPSHOT: a renderer says when it was concluded every time it says
+	// what, and says "partial" when a budget cut it short.
+	Finding *FindingView
 }
+
+// FindingView is a Finding as a card carries it — an Incident's latest, or the one a
+// digest carried. One shape, so one renderer says both the same way.
+type FindingView = IncidentFindingView
 
 // IncidentView is what an Incident fact carries INSTEAD OF a GroupView: the
 // Incident as it stands at claim time (C11), and every Case that has been in it.

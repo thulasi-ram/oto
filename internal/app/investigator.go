@@ -32,7 +32,9 @@ import (
 	incidentsservice "github.com/thulasiram/oto/internal/incidents/service"
 	"github.com/thulasiram/oto/internal/ingestion/decode"
 	investigatordomain "github.com/thulasiram/oto/internal/investigator/domain"
+	investigatorservice "github.com/thulasiram/oto/internal/investigator/service"
 	notifdomain "github.com/thulasiram/oto/internal/notification/domain"
+	notifrepo "github.com/thulasiram/oto/internal/notification/repository"
 	notifservice "github.com/thulasiram/oto/internal/notification/service"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
@@ -496,3 +498,144 @@ func (a suggestedMemberships) ApplySuggestedMembership(
 
 // Compile-time proof that the PATCH's service satisfies the edit port the adapter holds.
 var _ policyEdits = (*notifservice.PolicyWriter)(nil)
+
+// ---------------------------------------------------------------- digest windows
+//
+// git-bug 3e96f5a: a digest carries a Finding that was ready when its window closed, and
+// never waits for one that was not (ADR 0053 §4). Two adapters, one each way, and neither
+// lets one module wait on the other.
+
+// digestPolicies is the half of the notification policy store the digest adapters read,
+// satisfied by `*notification/repository.PolicyRepository`.
+type digestPolicies interface {
+	ListWithDigest(ctx context.Context, s db.TenantScope) ([]notifdomain.Policy, error)
+	Get(ctx context.Context, s db.TenantScope, id uuid.UUID) (notifdomain.Policy, error)
+}
+
+// digestCases is the digest store's span read, satisfied by
+// `*notification/repository.DigestRepository`.
+type digestCases interface {
+	Cases(ctx context.Context, s db.TenantScope, from, to time.Time, limit int) ([]notifrepo.DigestCase, error)
+}
+
+// digestCaseReadLimit bounds one window's read, as the digest tick bounds its own.
+const digestCaseReadLimit = 5000
+
+// investigationDigests is `investigator/service.DigestReader` over notification's
+// policies and its digest store.
+//
+// ⭐ THE WINDOW IS THE POLICY'S OWN ARITHMETIC (`notification/domain.Digest.WindowStart`)
+// and THE SELECTION IS THE POLICY'S OWN MATCHERS (`Policy.Matches`) — the very two the
+// digest tick uses — so the run summarises the set the digest counts, not a lookalike.
+// ⛔ IT READS AND NOTHING ELSE: there is no method here that sends, holds or marks.
+type investigationDigests struct {
+	policies digestPolicies
+	cases    digestCases
+}
+
+func (a investigationDigests) SummarisedDigests(
+	ctx context.Context, s db.TenantScope, now time.Time,
+) ([]investigatordomain.SummarisedDigest, error) {
+	policies, err := a.policies.ListWithDigest(ctx, s)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]investigatordomain.SummarisedDigest, 0, len(policies))
+	for _, p := range policies {
+		if !p.Digests() || p.Digest.InvestigatorID == uuid.Nil {
+			continue
+		}
+		start := p.Digest.WindowStart(now)
+		w, err := investigatordomain.NewDigestWindow(start, p.Digest.WindowEnd(start))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, investigatordomain.SummarisedDigest{
+			PolicyID: p.ID, PolicyName: p.Name, InvestigatorID: p.Digest.InvestigatorID, Window: w,
+		})
+	}
+	return out, nil
+}
+
+func (a investigationDigests) InvestigationDigest(
+	ctx context.Context, s db.TenantScope, policyID uuid.UUID, window investigatordomain.DigestWindow,
+) (investigatordomain.DigestSubject, error) {
+	p, err := a.policies.Get(ctx, s, policyID)
+	if err != nil {
+		return investigatordomain.DigestSubject{}, err
+	}
+	if !p.Live() || !p.Digests() {
+		return investigatordomain.DigestSubject{}, errs.NotFound("policy_not_found",
+			"the notification policy no longer sends a digest")
+	}
+	rows, err := a.cases.Cases(ctx, s, window.Start, window.End, digestCaseReadLimit)
+	if err != nil {
+		return investigatordomain.DigestSubject{}, err
+	}
+	out := investigatordomain.DigestSubject{PolicyID: p.ID, PolicyName: p.Name, Window: window}
+	for _, c := range rows {
+		// A matcher that cannot be evaluated selects nothing, as in the digest's own fold.
+		if ok, err := p.Matches(c.Labels); err != nil || !ok {
+			continue
+		}
+		if len(out.Cases) >= investigatordomain.MaxDigestCases {
+			out.Unlisted++
+			continue
+		}
+		out.Cases = append(out.Cases, investigatordomain.DigestCase{
+			CaseID: c.ID, Alertname: c.Labels["alertname"], Labels: c.Labels, StartedAt: c.StartedAt,
+		})
+	}
+	return out, nil
+}
+
+// digestFindings is `notification/service.DigestFindings` over `investigator/service`:
+// the Finding a digest sent now may carry for one window.
+//
+// ⚠️ LATE-BOUND, like `incidentFacts`: notification is built before investigator. An
+// unfilled holder answers "no Finding" — the built-in body — rather than an error,
+// because before the investigator exists nothing can have summarised anything, and a
+// digest must never be held for a summary.
+type digestFindings struct {
+	investigations *investigatorservice.Service
+}
+
+func (r *digestFindings) DigestFinding(
+	ctx context.Context, s db.TenantScope, policyID uuid.UUID, start, end time.Time,
+) (notifdomain.DigestFinding, bool, error) {
+	if r.investigations == nil {
+		return notifdomain.DigestFinding{}, false, nil
+	}
+	w, err := investigatordomain.NewDigestWindow(start, end)
+	if err != nil {
+		return notifdomain.DigestFinding{}, false, err
+	}
+	run, ok, err := r.investigations.DigestFinding(ctx, s, policyID, w)
+	if err != nil || !ok {
+		return notifdomain.DigestFinding{}, false, err
+	}
+	return notifdomain.DigestFinding{
+		InvestigationID: run.ID,
+		Investigator:    run.InvestigatorName,
+		Version:         run.VersionNumber,
+		Summary:         run.Finding,
+		Classification:  run.Classification,
+		Partial:         run.Partial(),
+		ConcludedAt:     run.EndedAt,
+	}, true, nil
+}
+
+// armDigestInvestigations is `investigations.digest` (git-bug 3e96f5a): the per-tenant
+// tick that arms the run for every summarised digest window whose lead has begun. It
+// records runs and calls no model, and the digest tick never waits for it.
+func (c *Container) armDigestInvestigations(ctx context.Context, job *jobs.Job[jobs.InvestigationsDigestArgs]) error {
+	if c.Investigator == nil {
+		return jobs.ErrNotImplemented(jobs.KindInvestigationsDigest)
+	}
+	return c.perTenantSweep(ctx, jobs.KindInvestigationsDigest, job.Args.TenantFanOut,
+		func(f jobs.TenantFanOut) db.JobArgs { return jobs.InvestigationsDigestArgs{TenantFanOut: f} },
+		func(ctx context.Context, scope db.TenantScope) error {
+			_, err := c.Investigator.ArmDigestInvestigations(ctx, scope)
+			return err
+		})
+}

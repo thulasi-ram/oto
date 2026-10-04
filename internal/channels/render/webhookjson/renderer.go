@@ -342,6 +342,17 @@ func plural(n int, one, many string) string {
 // be mistaken for a span in the year 1.
 func mapDigest(d domain.DigestView) *Digest {
 	out := &Digest{Count: d.Count}
+	if f := d.Finding; f != nil {
+		out.Finding = &IncidentFinding{
+			InvestigationID: f.InvestigationID,
+			Investigator:    f.Investigator,
+			Version:         f.Version,
+			Summary:         f.Summary,
+			Classification:  f.Classification,
+			Partial:         f.Partial,
+			ConcludedAt:     f.ConcludedAt.UTC(),
+		}
+	}
 	if d.CoveredFrom.IsZero() || d.CoveredTo.IsZero() {
 		// Both or neither: half a span is not a narrower answer than none, it is an
 		// unbounded one, and a consumer given only `covered_from` would read it as

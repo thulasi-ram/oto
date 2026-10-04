@@ -37,15 +37,20 @@ const (
 	// §3, §4; git-bug 74ea849): the Incident is investigated as a whole, and what was
 	// already concluded about its parts is the first thing worth reading.
 	ToolMemberFindings = "oto_member_findings"
+	// ToolDigestCases reads a digest window's Cases AGAIN, as they stand at the call
+	// (git-bug 3e96f5a): the run is armed before the window closes, so Cases may open in
+	// it after the subject message was written.
+	ToolDigestCases = "oto_digest_cases"
 )
 
 // RunSubject is what a Tool is told about the run calling it: which kind of subject,
-// and that subject — the Case, or the Incident.
+// and that subject — the Case, the Incident, or the digest window.
 type RunSubject struct {
 	InvestigationID uuid.UUID
 	Kind            domain.SubjectKind
 	Case            domain.CaseSubject
 	Incident        domain.IncidentSubject
+	Digest          domain.DigestSubject
 }
 
 // subjectTool is a built-in Tool that reads one kind of subject only. A Tool that is
@@ -66,6 +71,20 @@ type incidentOnly struct{}
 func (incidentOnly) reads(kind domain.SubjectKind) bool { return kind == domain.SubjectIncident }
 func (incidentOnly) subjectNoun() string                { return "Incident" }
 
+// digestOnly reads a digest window (git-bug 3e96f5a).
+type digestOnly struct{}
+
+func (digestOnly) reads(kind domain.SubjectKind) bool { return kind == domain.SubjectDigest }
+func (digestOnly) subjectNoun() string                { return "digest window" }
+
+// caseOrIncident reads a Case or an Incident — the two subjects a membership is about.
+type caseOrIncident struct{}
+
+func (caseOrIncident) reads(kind domain.SubjectKind) bool {
+	return kind == domain.SubjectCase || kind == domain.SubjectIncident
+}
+func (caseOrIncident) subjectNoun() string { return "Case or an Incident" }
+
 // Tool is one capability a run may call. Call answers with the text the model is
 // given; an error is recorded as a `failed` Step and answered to the model, and the
 // run continues.
@@ -74,15 +93,20 @@ type Tool interface {
 	Call(ctx context.Context, scope db.TenantScope, run RunSubject, args json.RawMessage) (string, error)
 }
 
-// builtinTools builds the four, with schemas from domain.NewToolSchema — the one
+// builtinTools builds the five, with schemas from domain.NewToolSchema — the one
 // constructor the port's request validation trusts.
 func builtinTools(s *Service) []Tool {
 	const findingsLimit = `{"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":10,"description":"How many Findings, 1 to 10; default 5."}},"additionalProperties":false}`
 	return []Tool{
 		priorFindingsTool{s: s, schema: mustSchema(ToolPriorFindings,
 			"Earlier Investigations' Findings about the same subject, newest first: for a Case, the same alert "+
-				"(the same alert_key) the last times it fired; for an Incident, the same Incident.",
+				"(the same alert_key) the last times it fired; for an Incident, the same Incident; for a digest "+
+				"window, the same policy's earlier windows.",
 			findingsLimit)},
+		digestCasesTool{s: s, schema: mustSchema(ToolDigestCases,
+			"The Cases this digest window's policy selected that opened inside the window, read again now: the "+
+				"window may still be open, so this can list Cases the first message did not.",
+			"")},
 		memberFindingsTool{s: s, schema: mustSchema(ToolMemberFindings,
 			"Earlier Investigations' Findings about this Incident's member Cases, newest first: what was "+
 				"already concluded about the parts of the story before it was investigated as a whole.",
@@ -159,6 +183,11 @@ func (t priorFindingsTool) Call(ctx context.Context, scope db.TenantScope, run R
 	case run.Kind == domain.SubjectIncident:
 		prior, err = t.s.investigations.SubjectFindings(ctx, scope, domain.SubjectIncident,
 			[]uuid.UUID{run.Incident.IncidentID}, run.InvestigationID, limit)
+	case run.Kind == domain.SubjectDigest:
+		// The policy is the subject id, so these are its EARLIER WINDOWS' summaries —
+		// "each seeing the last one's Finding" (§4).
+		prior, err = t.s.investigations.SubjectFindings(ctx, scope, domain.SubjectDigest,
+			[]uuid.UUID{run.Digest.PolicyID}, run.InvestigationID, limit)
 	case run.Case.AlertKey == "":
 		return `{"findings":[]}`, nil
 	default:
@@ -295,4 +324,24 @@ func (t ruleAtFireTool) Call(ctx context.Context, scope db.TenantScope, run RunS
 		"origin":      r.Origin,
 		"confidence":  r.Confidence,
 	})
+}
+
+// ------------------------------------------------------------ digest Cases
+
+// digestCasesTool reads a digest window's Cases again, as they stand now (git-bug
+// 3e96f5a). Read-only, and the window is the run's: no argument can point it at another.
+type digestCasesTool struct {
+	digestOnly
+	s      *Service
+	schema domain.ToolSchema
+}
+
+func (t digestCasesTool) Schema() domain.ToolSchema { return t.schema }
+
+func (t digestCasesTool) Call(ctx context.Context, scope db.TenantScope, run RunSubject, _ json.RawMessage) (string, error) {
+	d, err := t.s.digests.InvestigationDigest(ctx, scope, run.Digest.PolicyID, run.Digest.Window)
+	if err != nil {
+		return "", err
+	}
+	return asJSON(digestJSON(d))
 }

@@ -274,9 +274,34 @@ type Notification struct {
 	// as "never digested", which covers one window rather than replaying a history.
 	DigestCoveredFrom *time.Time
 	DigestCoveredTo   *time.Time
+	// DigestFinding is the Investigator's Finding this digest carried as its body
+	// (migration 00098, ADR 0053 §4), COPIED when the digest was sent — nil for the
+	// built-in body. It is set once, by the tick that mints the row, from whatever usable
+	// Finding the window's run had at that moment, and never afterwards: a digest never
+	// waits for a Finding and is never amended with a later one. A COPY, so a retried
+	// delivery renders the same body and the card is drawn without a read (ViewService.
+	// digest).
+	DigestFinding *DigestFinding
 
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+// DigestFinding is a Finding as a digest carries it: what was concluded, by which
+// Investigator version, whether a budget cut it short, and when — the shape an
+// Incident's card carries (IncidentFinding), copied onto the digest's row.
+type DigestFinding struct {
+	InvestigationID uuid.UUID
+	// Investigator is the Investigator's name; Version the version that concluded it.
+	Investigator string
+	Version      int
+	Summary      string
+	// Classification is the class the Finding was given, "" when the org wrote none
+	// (ADR 0053 §5). A model's judgement: carried, never routed on.
+	Classification string
+	// Partial is true when a budget stopped the run before it concluded.
+	Partial     bool
+	ConcludedAt time.Time
 }
 
 // Digest reports whether this Notification is about a window rather than about an

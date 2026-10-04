@@ -438,8 +438,59 @@ func TestAnIncidentIsInvestigatedAsAWholeAtTheRow(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, none, "another org reads none of them")
 
-	// ⛔ `investigations_subjkind_ck` admits exactly `case` and `incident`.
+	// ⛔ `investigations_subjkind_ck` admits `case`, `incident` and (00098) `digest` —
+	// and not `policy`, which has no run path.
 	waiting := w.queued(t, "k", at)
-	_, err = w.h.Pool.Exec(w.h.Ctx, `UPDATE investigations SET subject_kind = 'digest' WHERE id = $1`, waiting.ID)
+	_, err = w.h.Pool.Exec(w.h.Ctx, `UPDATE investigations SET subject_kind = 'policy' WHERE id = $1`, waiting.ID)
 	require.Error(t, err)
+}
+
+// TestADigestWindowIsOneRunAndItsWindowRoundTrips — git-bug 3e96f5a, migration 00098: a
+// digest run names its policy AND its window; the window round-trips; DigestRun finds it
+// by both halves and never another org's or another window's; the database holds one run
+// per policy per window; and a digest without a window, or a Case with one, is refused.
+func TestADigestWindowIsOneRunAndItsWindowRoundTrips(t *testing.T) {
+	t.Parallel()
+	w := newWorld(t)
+	at := w.h.Now()
+	start := at.UTC().Truncate(time.Hour)
+	window, err := domain.NewDigestWindow(start, start.Add(time.Hour))
+	require.NoError(t, err)
+	policy := uuid.New()
+	digest := func() (domain.Investigation, error) {
+		return w.runs.Insert(w.h.Ctx, w.scope, domain.Investigation{
+			SubjectKind: domain.SubjectDigest, SubjectID: policy, DigestWindow: window,
+			InvestigatorID: w.inv.ID, VersionID: w.inv.Current.ID, Status: domain.StatusQueued, Budgets: w.inv.Budgets,
+			RequestedBy: domain.Requester{Label: "oto: the digest window closes"}, RequestedAt: at,
+		})
+	}
+	run, err := digest()
+	require.NoError(t, err)
+	require.Equal(t, domain.SubjectDigest, run.SubjectKind)
+	require.Equal(t, window, run.DigestWindow, "the window round-trips")
+
+	found, err := w.runs.DigestRun(w.h.Ctx, w.scope, policy, window)
+	require.NoError(t, err)
+	require.NotNil(t, found)
+	require.Equal(t, run.ID, found.ID)
+
+	next, err := domain.NewDigestWindow(window.End, window.End.Add(time.Hour))
+	require.NoError(t, err)
+	none, err := w.runs.DigestRun(w.h.Ctx, w.scope, policy, next)
+	require.NoError(t, err)
+	require.Nil(t, none, "another window has no run")
+	none, err = w.runs.DigestRun(w.h.Ctx, w.h.Org().Scope, policy, window)
+	require.NoError(t, err)
+	require.Nil(t, none, "another org reads none")
+
+	_, err = digest()
+	require.Error(t, err, "investigations_digest_window_uniq: one run per policy per window")
+
+	_, err = w.h.Pool.Exec(w.h.Ctx, `UPDATE investigations SET digest_window_start = NULL WHERE id = $1`, run.ID)
+	require.Error(t, err, "a digest run names its window")
+	waiting := w.queued(t, "k", at)
+	_, err = w.h.Pool.Exec(w.h.Ctx,
+		`UPDATE investigations SET digest_window_start = $2, digest_window_end = $3 WHERE id = $1`,
+		waiting.ID, window.Start, window.End)
+	require.Error(t, err, "a Case's run names no window")
 }

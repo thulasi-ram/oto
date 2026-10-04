@@ -35,6 +35,7 @@ type Service struct {
 	investigations InvestigationStore
 	cases          CaseReader
 	incidents      IncidentReader
+	digests        DigestReader
 	declarer       FindingDeclarer
 	timeline       TimelineReader
 	rules          RuleReader
@@ -72,8 +73,11 @@ type Deps struct {
 	Cases          CaseReader
 	// Incidents reads an Incident and the one a Case is in; Declarer declares an
 	// Incident's new Finding outbound (git-bug 74ea849).
-	Incidents   IncidentReader
-	Declarer    FindingDeclarer
+	Incidents IncidentReader
+	Declarer  FindingDeclarer
+	// Digests reads the digest windows a policy asked to have summarised, and their
+	// Cases (git-bug 3e96f5a).
+	Digests     DigestReader
 	Timeline    TimelineReader
 	Rules       RuleReader
 	Findings    FindingPublisher
@@ -123,6 +127,9 @@ func New(d Deps) (*Service, error) {
 	case d.Incidents == nil:
 		return nil, errors.New("investigator: an Incident reader is required; an Incident is investigated as a whole, " +
 			"and a Case in one starts nothing of its own automatically")
+	case d.Digests == nil:
+		return nil, errors.New("investigator: a digest reader is required; a digest window a policy asked to have " +
+			"summarised is read through it")
 	case d.Declarer == nil:
 		return nil, errors.New("investigator: a Finding declarer is required; an Incident's new Finding goes outbound as a fact")
 	case d.Findings == nil:
@@ -148,7 +155,7 @@ func New(d Deps) (*Service, error) {
 		providers: d.Providers, creds: d.Credentials, keys: d.Keys,
 		dial: d.Dialer, tx: d.Tx, clock: d.Clock,
 		investigators: d.Investigators, investigations: d.Investigations,
-		cases: d.Cases, incidents: d.Incidents, declarer: d.Declarer,
+		cases: d.Cases, incidents: d.Incidents, digests: d.Digests, declarer: d.Declarer,
 		timeline: d.Timeline, rules: d.Rules, findings: d.Findings,
 		orgControls: d.OrgControls, classes: d.Classes, queue: d.Queue, limits: d.Limits.orDefault(),
 		toolServers: d.ToolServers, tokens: d.Tokens, toolDialer: d.ToolDialer, redaction: d.Redaction,

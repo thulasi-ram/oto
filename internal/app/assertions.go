@@ -90,6 +90,12 @@ var (
 	_ investigatorservice.OrgControls        = investigationControls{}
 	_ investigatorservice.JobQueue           = (*lateEnqueuer)(nil)
 
+	// Digest windows (git-bug 3e96f5a): read one way, a Finding read back the other.
+	_ investigatorservice.DigestReader = investigationDigests{}
+	_ notifservice.DigestFindings      = (*digestFindings)(nil)
+	_ digestPolicies                   = (*notifrepo.PolicyRepository)(nil)
+	_ digestCases                      = (*notifrepo.DigestRepository)(nil)
+
 	// ToolServers (git-bug 2e9a086).
 	_ investigatorservice.ToolServerStore  = (*investigatorrepo.ToolServerRepository)(nil)
 	_ investigatorservice.TokenResolver    = (*investigatorrepo.KeyStore)(nil)

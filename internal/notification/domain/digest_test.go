@@ -713,3 +713,23 @@ func assertOrdinals(t *testing.T, d domain.Digest, w time.Duration, starts []tim
 		}
 	}
 }
+
+// TestAnInvestigatorSummarisesOnlyADigestThatIsSent — migration 00098's
+// `policies_digest_investigator_ck`, said as a field the settings form can point at: a
+// policy may name an Investigator for its digest only while it has a window, and a PATCH
+// that clears the window without clearing the Investigator is refused against the merge.
+func TestAnInvestigatorSummarisesOnlyADigestThatIsSent(t *testing.T) {
+	p := digestPolicy(10*time.Minute, 0)
+	p.Digest.InvestigatorID = uuid.New()
+	require.NoError(t, p.Validate(), "a digest policy may ask an Investigator to summarise it")
+
+	var noWindow *time.Duration
+	err := domain.PolicyPatch{DigestWindow: &noWindow}.ValidateAgainst(p)
+	require.Error(t, err, "clearing the window left an Investigator summarising nothing")
+	assert.Contains(t, err.Error(), "policy")
+
+	var none *uuid.UUID
+	require.NoError(t, domain.PolicyPatch{DigestWindow: &noWindow, DigestInvestigatorID: &none}.ValidateAgainst(p),
+		"clearing both is turning the summarised digest off")
+	assert.False(t, domain.PolicyPatch{DigestInvestigatorID: &none}.IsEmpty())
+}

@@ -5876,6 +5876,14 @@ export interface components {
              * @example 5
              */
             digest_floor?: number | null;
+            /**
+             * @description The **Investigator** this policy asked to summarise its digest windows (ADR 0053 §4). Absent is
+             *     none — the built-in digest body. Its run for a window starts ahead of the window's close; if it
+             *     has ended with a Finding when the window closes, the digest carries that Finding as its body,
+             *     and otherwise the digest is sent on time with the built-in body. **A digest never waits for an
+             *     Investigation**, is never re-sent with a later Finding, and is sent or not on its floor alone.
+             */
+            digest_investigator_id?: components["schemas"]["Uuid"];
             created_at: components["schemas"]["Timestamp"];
             updated_at: components["schemas"]["Timestamp"];
         };
@@ -7668,6 +7676,12 @@ export interface components {
              *     `digest_window_seconds`; omitting it means no floor.
              */
             digest_floor?: number;
+            /**
+             * @description Ask this org's Investigator to summarise each digest window: its Finding becomes the digest's
+             *     body when it is ready as the window closes, and the digest never waits for it. Requires
+             *     `digest_window_seconds` (a `422` with code `incomplete` otherwise).
+             */
+            digest_investigator_id?: components["schemas"]["Uuid"];
         };
         /** @description Partial update; every field is optional and only the supplied ones change. */
         UpdatePolicyRequest: {
@@ -7697,6 +7711,11 @@ export interface components {
              *     different request from omitting the field.
              */
             digest_floor?: number | null;
+            /**
+             * @description Nullable. An explicit `null` **clears** it and puts the policy's digest back on the built-in
+             *     body; omitting the key leaves it alone.
+             */
+            digest_investigator_id?: components["schemas"]["Uuid"] | null;
             /**
              * @description THE ONE FIELD ON THIS REQUEST THAT IS NOT NULLABLE, and the asymmetry is the column's:
              *     `subject_kinds` is `NOT NULL DEFAULT '{}'`, so there is no `null` to set. **An empty array is
@@ -8084,11 +8103,13 @@ export interface components {
         InvestigationDTO: {
             id: components["schemas"]["Uuid"];
             /**
-             * @description What was investigated: one Case, or an Incident as a whole (ADR 0053 §4 names four subjects;
-             *     these two have a run path). `subject_id` is the Case's or the Incident's id.
+             * @description What was investigated: one Case, an Incident as a whole, or one window of a notification
+             *     policy's digest (ADR 0053 §4 names four subjects; these three have a run path). `subject_id`
+             *     is the Case's, the Incident's or — for a digest — the policy's id; a digest's window is
+             *     `digest_window_start`/`digest_window_end`.
              * @enum {string}
              */
-            subject_kind: "case" | "incident";
+            subject_kind: "case" | "incident" | "digest";
             subject_id: components["schemas"]["Uuid"];
             investigator_id: components["schemas"]["Uuid"];
             investigator_name: string;
@@ -8147,6 +8168,14 @@ export interface components {
             not_before: components["schemas"]["Timestamp"] | null;
             started_at: components["schemas"]["Timestamp"] | null;
             ended_at: components["schemas"]["Timestamp"] | null;
+            /**
+             * @description For a `digest` subject only: the INCLUSIVE start of the window it summarises. Absent for every
+             *     other subject. One run per policy per window, armed ahead of the window's close; its Finding is
+             *     the digest's body only if it had ended with one when the window closed — the digest never waits.
+             */
+            digest_window_start?: components["schemas"]["Timestamp"];
+            /** @description For a `digest` subject only, the EXCLUSIVE end of its window — when the digest is sent. */
+            digest_window_end?: components["schemas"]["Timestamp"];
         };
         /** @description One Tool call a model turn asked for. */
         StepToolCallDTO: {

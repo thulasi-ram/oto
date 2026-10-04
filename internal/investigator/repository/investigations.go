@@ -57,7 +57,8 @@ SELECT n.id, n.org_id, n.subject_kind, n.subject_id, coalesce(n.alert_key, ''),
        n.status, coalesce(n.reason, ''), coalesce(n.reason_detail, ''),
        n.max_steps, n.max_tokens, n.max_wall_s, n.tokens_in, n.tokens_out, n.tool_calls,
        coalesce(n.finding, ''), coalesce(n.classification, ''), n.requested_by, n.requested_by_label,
-       n.requested_at, n.not_before, n.started_at, n.ended_at
+       n.requested_at, n.not_before, n.started_at, n.ended_at,
+       n.digest_window_start, n.digest_window_end
   FROM investigations n
   JOIN investigators i         ON i.id = n.investigator_id
   JOIN investigator_versions v ON v.id = n.investigator_version_id`
@@ -66,8 +67,9 @@ const insertInvestigationSQL = `
 INSERT INTO investigations (id, org_id, subject_kind, subject_id, alert_key, investigator_id,
                             investigator_version_id, status, reason, reason_detail,
                             max_steps, max_tokens, max_wall_s, tokens_in, tokens_out, tool_calls,
-                            requested_by, requested_by_label, requested_at, not_before, ended_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 0, 0, 0, $14, $15, $16, $17, $18)`
+                            requested_by, requested_by_label, requested_at, not_before, ended_at,
+                            digest_window_start, digest_window_end)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 0, 0, 0, $14, $15, $16, $17, $18, $19, $20)`
 
 // Insert writes a new run: `queued`, or `skipped` with its Ending and EndedAt set.
 func (r *InvestigationRepository) Insert(ctx context.Context, s db.TenantScope, inv domain.Investigation) (domain.Investigation, error) {
@@ -76,7 +78,11 @@ func (r *InvestigationRepository) Insert(ctx context.Context, s db.TenantScope, 
 	}
 	nid := id.New()
 	var reason, detail *string
-	var ended, notBefore *time.Time
+	var ended, notBefore, windowStart, windowEnd *time.Time
+	if !inv.DigestWindow.IsZero() {
+		ws, we := inv.DigestWindow.Start.UTC(), inv.DigestWindow.End.UTC()
+		windowStart, windowEnd = &ws, &we
+	}
 	if !inv.NotBefore.IsZero() {
 		nb := inv.NotBefore.UTC()
 		notBefore = &nb
@@ -90,7 +96,8 @@ func (r *InvestigationRepository) Insert(ctx context.Context, s db.TenantScope, 
 		nid, s.OrgID(), string(inv.SubjectKind), inv.SubjectID, nullable(inv.AlertKey), inv.InvestigatorID,
 		inv.VersionID, string(inv.Status), reason, detail,
 		inv.Budgets.MaxSteps, inv.Budgets.MaxTokens, inv.Budgets.WallSeconds(),
-		nullableID(inv.RequestedBy.UserID), inv.RequestedBy.Label, inv.RequestedAt.UTC(), notBefore, ended); err != nil {
+		nullableID(inv.RequestedBy.UserID), inv.RequestedBy.Label, inv.RequestedAt.UTC(), notBefore, ended,
+		windowStart, windowEnd); err != nil {
 		return domain.Investigation{}, mapInvestigationErr(err, "record an Investigation")
 	}
 	return r.Get(ctx, s, nid)
@@ -273,6 +280,24 @@ func (r *InvestigationRepository) oneOrNone(ctx context.Context, sql string, arg
 		return nil, mapInvestigationErr(err, "read a subject's Investigations")
 	}
 	return &inv, nil
+}
+
+// DigestRun reads the run armed for one digest window — the policy and the window — or
+// nil when none was (git-bug 3e96f5a). There is at most one, by
+// `investigations_digest_window_uniq`, which also serves this read.
+//
+// ⭐ IT IS BOTH SIDES' ONE QUESTION: the arming tick asks it to arm a window once, and
+// the digest tick asks it at the send and takes whatever the run is at that moment.
+func (r *InvestigationRepository) DigestRun(
+	ctx context.Context, s db.TenantScope, policyID uuid.UUID, window domain.DigestWindow,
+) (*domain.Investigation, error) {
+	if err := db.RequireScope(s); err != nil {
+		return nil, err
+	}
+	return r.oneOrNone(ctx, investigationSelect+`
+ WHERE n.org_id = $1 AND n.subject_kind = 'digest' AND n.subject_id = $2
+   AND n.digest_window_start = $3 AND n.digest_window_end = $4`,
+		s.OrgID(), policyID, window.Start.UTC(), window.End.UTC())
 }
 
 // orgRunsKey is the advisory key Start serialises an org's starts on.
@@ -497,6 +522,7 @@ func scanInvestigation(row pgx.Row) (domain.Investigation, error) {
 		maxTokens                 int64
 		requestedBy               *uuid.UUID
 		notBefore, started, ended *time.Time
+		windowStart, windowEnd    *time.Time
 	)
 	if err := row.Scan(&out.ID, &out.OrgID, &kind, &out.SubjectID, &out.AlertKey,
 		&out.InvestigatorID, &out.InvestigatorName, &out.VersionID, &out.VersionNumber,
@@ -504,7 +530,7 @@ func scanInvestigation(row pgx.Row) (domain.Investigation, error) {
 		&status, &reason, &det, &maxSteps, &maxTokens, &maxWall,
 		&out.Spent.InputTokens, &out.Spent.OutputTokens, &out.ToolCalls,
 		&out.Finding, &out.Classification, &requestedBy, &out.RequestedBy.Label,
-		&out.RequestedAt, &notBefore, &started, &ended); err != nil {
+		&out.RequestedAt, &notBefore, &started, &ended, &windowStart, &windowEnd); err != nil {
 		return domain.Investigation{}, err
 	}
 	sk, err := domain.ParseSubjectKind(kind)
@@ -542,6 +568,13 @@ func scanInvestigation(row pgx.Row) (domain.Investigation, error) {
 	}
 	if ended != nil {
 		out.EndedAt = ended.UTC()
+	}
+	if windowStart != nil && windowEnd != nil {
+		w, err := domain.NewDigestWindow(*windowStart, *windowEnd)
+		if err != nil {
+			return domain.Investigation{}, err
+		}
+		out.DigestWindow = w
 	}
 	return out, nil
 }

@@ -144,6 +144,10 @@ func (c *Container) handlers() jobs.Handlers {
 		// investigate Incidents. On `lifecycle`, enqueued by the membership change and
 		// never awaited by it; it records runs and calls no model.
 		InvestigationsIncident: c.triggerIncidentInvestigations,
+
+		// ⭐ investigations.digest (ADR 0053 §4, git-bug 3e96f5a) — arms a summarised
+		// digest window's run ahead of its close. The digest tick never waits for it.
+		InvestigationsDigest: c.armDigestInvestigations,
 	}
 
 	// notification fills its own four fields (notify.evaluate, deliver.dispatch,

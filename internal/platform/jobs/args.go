@@ -852,3 +852,34 @@ func (InvestigationsIncidentArgs) InsertOpts() river.InsertOpts {
 		MaxAttempts: MaxAttemptsRetryable,
 	}
 }
+
+// InvestigationsDigestArgs arms a digest window's Investigation ahead of the window's
+// close (ADR 0053 §4, git-bug 3e96f5a): once a minute, per tenant, every live digest
+// policy that names an Investigator gets ONE run for the window open now, recorded and
+// enqueued as `investigations.run` once the window's lead has begun
+// (`investigator/domain.DigestLead`: the Investigator's wall-time budget plus two
+// minutes, at most half the window). Periodic, 60 s, zero payload.
+//
+// Queue: lifecycle · Priority: BACKGROUND · Retry: periodic (3) · Payload v1
+//
+// ⛔ IT IS NOT ON THE DIGEST PATH AND THE DIGEST NEVER WAITS FOR IT. `notify.digest`
+// sends a closed window on its own minute whether or not this ran, armed anything, or
+// the run finished; it reads the run once, at the send, and carries its Finding only if
+// it has one by then. A priority below the digest tick's, so on a busy install the four
+// lifecycle workers send the windows people are waiting for before they arm summaries.
+//
+// IDEMPOTENCY: by state. `investigations_digest_window_uniq` holds one run per policy per
+// window, and a tick that finds the window armed does nothing. Tick uniqueness is by
+// kind, ARGS and period, per tenant through `TenantFanOut`, like the digest tick's.
+type InvestigationsDigestArgs struct {
+	Payload
+	TenantFanOut
+}
+
+// Kind implements db.JobArgs and river.JobArgs.
+func (InvestigationsDigestArgs) Kind() string { return KindInvestigationsDigest }
+
+// InsertOpts pins the queue, priority, retry ceiling and tick uniqueness.
+func (InvestigationsDigestArgs) InsertOpts() river.InsertOpts {
+	return periodicOpts(QueueLifecycle, PriorityBackground, time.Minute)
+}
