@@ -101,6 +101,14 @@ func (r *Renderer) renderReply(v *domain.NotificationView, o domain.RenderOption
 	// code.
 	sentence := replyText(v)
 
+	// ⭐ THE TEMPLATE'S REPLY BODY FIRST, OTO'S OWN REPLY WHEN IT HAS NONE OR WHEN IT
+	// RENDERED NOTHING FOR THIS REASON — the same unconditional fall-through the
+	// root card has. oto's colour and sentence are handed in as the defaults a
+	// `card` or `text` reply keeps and a `raw` one may replace.
+	if p, text, ok := r.replyTemplatePayload(v, o, nonce, colour, sentence); ok {
+		return p, text, text
+	}
+
 	return Payload{
 		Text:        sentence,
 		UnfurlLinks: false,

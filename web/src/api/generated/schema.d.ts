@@ -6208,12 +6208,26 @@ export interface components {
              *
              *     Every interpolated value is markdown-escaped unconditionally in `card` format, with no
              *     opt-out. An alert label is attacker-influenced, and a value that cannot produce syntax
-             *     cannot produce structure, a link, a mention, or a forged handle.
+             *     cannot produce structure, a link, a mention, or a forged handle. In `raw` format every
+             *     value is escaped for Slack and for a JSON string instead, so it can neither ping a
+             *     channel nor break the document.
+             *
+             *     In `raw` the body may be the whole message — `{"text", "color", "blocks"}` — and a
+             *     `{"type": "oto_actions"}` block places oto's buttons (ADR 0051).
              */
             source: string;
             /**
+             * @description The body **thread replies** are rendered from, in this template's `format` (ADR 0051).
+             *     `null` means oto's own replies.
+             *
+             *     It is rendered for every reply with `reason` bound, so the usual body is one
+             *     `{% if reason == 'all_resolved' %}` branch per reason it restyles. A reason the body
+             *     renders nothing for keeps oto's own reply.
+             */
+            reply_source: string | null;
+            /**
              * Format: int32
-             * @description Increments only when `source` or `format` changes.
+             * @description Increments only when `source`, `reply_source` or `format` changes.
              *
              *     It is the provenance half of the delivery row: a card that read strangely last Tuesday can
              *     be attributed to a revision even after somebody has edited it since. A rename produced no
@@ -6240,7 +6254,7 @@ export interface components {
              * @enum {string}
              */
             kind: "unknown_field" | "parse" | "render" | "empty" | "too_long" | "unsupported" | "warning";
-            /** @description The request field this is about. Always `source` today. */
+            /** @description The request field this is about — `source` (the root card) or `reply_source` (the thread replies). */
             field?: string;
             /** @description One sentence, in words meant for the person who typed it. */
             message: string;
@@ -6297,6 +6311,12 @@ export interface components {
             problems: components["schemas"]["TemplateProblemDTO"][];
             /** @description Empty when the template does not compile; `problems` says why. */
             renderings: components["schemas"]["TemplateRenderingDTO"][];
+            /**
+             * @description The reply body against one example per reason, each fixture named for its reason. A
+             *     spelling with neither `text` nor `error` means the body says nothing for that reason, so
+             *     oto's own reply is sent. Empty when no `reply_source` was sent.
+             */
+            reply_renderings: components["schemas"]["TemplateRenderingDTO"][];
         };
         CreateNotificationTemplateRequest: {
             name: string;
@@ -6304,6 +6324,8 @@ export interface components {
             provider: string;
             format: components["schemas"]["NotificationTemplateFormat"];
             source: string;
+            /** @description The thread-reply body. Absent or empty means oto's own replies. */
+            reply_source?: string;
             /**
              * @description Defaults to `true`. A template somebody just wrote and saved is one they meant to use, and
              *     a picker full of disabled entries teaches nothing.
@@ -6316,11 +6338,15 @@ export interface components {
             provider?: string;
             format?: components["schemas"]["NotificationTemplateFormat"];
             source?: string;
+            /** @description The thread-reply body. `""` clears it, back to oto's own replies. */
+            reply_source?: string;
             enabled?: boolean;
         };
         PreviewNotificationTemplateRequest: {
             format: components["schemas"]["NotificationTemplateFormat"];
             source: string;
+            /** @description When present, previewed against one example per reply reason. */
+            reply_source?: string;
         };
         /** @description Create a routing policy. Use the preview endpoint to see what it would do before saving. */
         CreatePolicyRequest: {

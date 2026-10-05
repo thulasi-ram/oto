@@ -21,6 +21,7 @@ type templateRow struct {
 	provider  string
 	format    string
 	source    string
+	reply     *string
 	version   int32
 	enabled   bool
 	createdAt time.Time
@@ -31,14 +32,18 @@ type templateRow struct {
 func (r *templateRow) scanDest() []any {
 	return []any{
 		&r.id, &r.orgID, &r.name, &r.provider, &r.format, &r.source,
-		&r.version, &r.enabled, &r.createdAt, &r.updatedAt, &r.deletedAt,
+		&r.version, &r.enabled, &r.createdAt, &r.updatedAt, &r.deletedAt, &r.reply,
 	}
 }
 
 func (r templateRow) toDomain() (domain.NotificationTemplate, error) {
+	reply := ""
+	if r.reply != nil {
+		reply = *r.reply
+	}
 	return domain.NotificationTemplate{
 		ID: r.id, OrgID: r.orgID, Name: r.name,
-		Provider: r.provider, Format: r.format, Source: r.source,
+		Provider: r.provider, Format: r.format, Source: r.source, ReplySource: reply,
 		Version: int(r.version), Enabled: r.enabled,
 		CreatedAt: r.createdAt.UTC(), UpdatedAt: r.updatedAt.UTC(),
 		DeletedAt: r.deletedAt,
@@ -46,7 +51,7 @@ func (r templateRow) toDomain() (domain.NotificationTemplate, error) {
 }
 
 const templateColumns = ` t.id, t.org_id, t.name, t.provider, t.format, t.source,
-       t.version, t.enabled, t.created_at, t.updated_at, t.deleted_at`
+       t.version, t.enabled, t.created_at, t.updated_at, t.deleted_at, t.reply_source`
 
 const templateFrom = ` FROM notification_templates t`
 
@@ -195,8 +200,8 @@ func (r *TemplateRepository) List(
 
 const createTemplateSQL = `
 INSERT INTO notification_templates AS t
-  (id, org_id, name, provider, format, source, version, enabled, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, 1, $7, $8, $8)
+  (id, org_id, name, provider, format, source, version, enabled, created_at, updated_at, reply_source)
+VALUES ($1, $2, $3, $4, $5, $6, 1, $7, $8, $8, NULLIF($9::text, ''))
 RETURNING ` + templateColumns
 
 // Create writes a new template at version 1.
@@ -209,7 +214,7 @@ func (r *TemplateRepository) Create(
 	now := r.clock.Now().UTC()
 	var row templateRow
 	err := r.db(ctx).QueryRow(ctx, createTemplateSQL,
-		n.ID, s.OrgID(), n.Name, n.Provider, n.Format, n.Source, n.Enabled, now,
+		n.ID, s.OrgID(), n.Name, n.Provider, n.Format, n.Source, n.Enabled, now, n.ReplySource,
 	).Scan(row.scanDest()...)
 	if err != nil {
 		return domain.NotificationTemplate{}, mapErr(err, "template_not_created", "create a template")
@@ -224,6 +229,9 @@ UPDATE notification_templates t SET
   format   = COALESCE($5, t.format),
   source   = COALESCE($6, t.source),
   enabled  = COALESCE($7, t.enabled),
+  -- An absent $9 leaves the reply body alone; an empty one clears it to NULL,
+  -- which is "oto's own replies" — the column's floor refuses '' as a body.
+  reply_source = CASE WHEN $9::text IS NULL THEN t.reply_source ELSE NULLIF($9::text, '') END,
   -- ⭐ THE VERSION BUMPS ONLY WHEN WHAT IT ATTRIBUTES CHANGES. A delivery row
   -- records (template_id, version) so a card can be traced to a revision. Renaming
   -- a template or disabling it does not change a single byte any past card
@@ -231,6 +239,7 @@ UPDATE notification_templates t SET
   -- direction: two versions that produced identical output.
   version = t.version + CASE
     WHEN ($6 IS NOT NULL AND $6 <> t.source) OR ($5 IS NOT NULL AND $5 <> t.format)
+      OR ($9::text IS NOT NULL AND NULLIF($9::text, '') IS DISTINCT FROM t.reply_source)
     THEN 1 ELSE 0 END,
   updated_at = GREATEST(t.updated_at, $8)
 WHERE t.org_id = $1 AND t.id = $2 AND t.deleted_at IS NULL
@@ -250,7 +259,7 @@ func (r *TemplateRepository) Update(
 	var row templateRow
 	err := r.db(ctx).QueryRow(ctx, updateTemplateSQL,
 		s.OrgID(), templateID, p.Name, p.Provider, p.Format, p.Source, p.Enabled,
-		r.clock.Now().UTC(),
+		r.clock.Now().UTC(), p.ReplySource,
 	).Scan(row.scanDest()...)
 	if err != nil {
 		if isNoRows(err) {

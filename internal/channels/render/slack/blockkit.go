@@ -91,7 +91,8 @@ type Metadata struct {
 
 // Attachment carries the state colour and wraps the whole card.
 type Attachment struct {
-	// Color encodes STATE, never severity (S4). Severity is the leading emoji.
+	// Color encodes STATE, never severity (S4), on every message oto writes.
+	// Severity is the leading emoji. A `raw` template may choose its own (ADR 0051).
 	Color string `json:"color"`
 	// Fallback is the legacy plain-text summary of the attachment.
 	Fallback string  `json:"fallback"`

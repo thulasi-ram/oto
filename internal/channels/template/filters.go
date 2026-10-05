@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/osteele/liquid"
@@ -86,8 +87,8 @@ func registerFilters(e *liquid.Engine) {
 		return v
 	})
 
-	e.RegisterFilter("upper", func(v any) any { return strings.ToUpper(str(v)) })
-	e.RegisterFilter("lower", func(v any) any { return strings.ToLower(str(v)) })
+	e.RegisterFilter("upper", func(v any) any { return caseMapped(str(v), unicode.ToUpper) })
+	e.RegisterFilter("lower", func(v any) any { return caseMapped(str(v), unicode.ToLower) })
 	e.RegisterFilter("capitalise", func(v any) any {
 		s := str(v)
 		if s == "" {
@@ -220,4 +221,49 @@ func toInt(v any) int {
 		return n
 	}
 	return 0
+}
+
+// caseMapped is strings.ToUpper / ToLower that steps around the escapes the binder
+// wrote, so changing a value's case never changes what it MEANS.
+//
+// ⛔ A `raw` VALUE ARRIVES ESCAPED FOR JSON AND FOR SLACK (see newBinder), and a
+// plain case map corrupts both: `\n` becomes `\N`, which is not a JSON escape and
+// costs the author their whole card, and `&lt;` becomes `&LT;`, which Slack prints
+// as written. A backslash and the rune after it, and the three Slack entities, are
+// copied through untouched; a card value's markdown backslashes (`\*`) take the same
+// path harmlessly.
+func caseMapped(s string, mapRune func(rune) rune) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		if s[i] == '\\' && i+1 < len(s) {
+			n := 2
+			if s[i+1] == 'u' && i+6 <= len(s) {
+				n = 6
+			}
+			b.WriteString(s[i : i+n])
+			i += n
+			continue
+		}
+		if s[i] == '&' {
+			if ent := slackEntityAt(s[i:]); ent != "" {
+				b.WriteString(ent)
+				i += len(ent)
+				continue
+			}
+		}
+		r, w := utf8.DecodeRuneInString(s[i:])
+		b.WriteRune(mapRune(r))
+		i += w
+	}
+	return b.String()
+}
+
+func slackEntityAt(s string) string {
+	for _, ent := range []string{"&amp;", "&lt;", "&gt;"} {
+		if strings.HasPrefix(s, ent) {
+			return ent
+		}
+	}
+	return ""
 }

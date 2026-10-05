@@ -17,12 +17,21 @@
  * ⭐ THREE: A REFUSAL IS THE SERVER'S SENTENCE, NEVER THIS SCREEN'S. A table is
  * refused with a reason and a suggested fix, and a screen that re-worded it to
  * "invalid template" would throw away the one explanation the feature promised.
+ *
+ * ⭐ FOUR: A REASON THE REPLY BODY SKIPS IS OTO'S OWN REPLY, NOT AN EMPTY ONE. The
+ * contract spells that as a spelling with neither text nor error, and a pane that
+ * drew it as a blank box would tell the author their thread goes silent.
  */
 import { fireEvent, screen } from "@solidjs/testing-library";
+import * as v from "valibot";
 import { describe, expect, it } from "vitest";
 
 import { TemplatesSection } from "./TemplatesSection";
-import { TemplateSpellingDTOSchema } from "~/api/generated/validators";
+import {
+  CreateNotificationTemplateRequestSchema,
+  TemplateSpellingDTOSchema,
+  UpdateNotificationTemplateRequestSchema,
+} from "~/api/generated/validators";
 import type { NotificationTemplate, TemplatePreview, TemplateRendering } from "~/api/types";
 import { requestOptions } from "~/test/contract";
 import {
@@ -52,6 +61,9 @@ const T0 = "2026-08-01T09:00:00Z";
 
 const SOURCE = "# {{ alert.name }}\n\n{{ alert.severity | bold }}\n\n{{ actions }}";
 
+/** A reply body that handles one reason and lets every other fall through. */
+const REPLY_SOURCE = `{% if reason == 'all_resolved' %}{ "text": "all clear" }{% endif %}`;
+
 function template(patch: Partial<NotificationTemplate> = {}): NotificationTemplate {
   return {
     id: "1a2b3c4d-5e6f-4a1b-8c2d-3e4f50617283",
@@ -59,6 +71,7 @@ function template(patch: Partial<NotificationTemplate> = {}): NotificationTempla
     provider: "slack",
     format: "card",
     source: SOURCE,
+    reply_source: null,
     version: 1,
     enabled: true,
     created_at: T0,
@@ -88,7 +101,39 @@ function rendering(patch: Partial<TemplateRendering> = {}): TemplateRendering {
 }
 
 function preview(patch: Partial<TemplatePreview> = {}): TemplatePreview {
-  return { format: "card", source: SOURCE, problems: [], renderings: [rendering()], ...patch };
+  return {
+    format: "card",
+    source: SOURCE,
+    problems: [],
+    renderings: [rendering()],
+    reply_renderings: [],
+    ...patch,
+  };
+}
+
+/**
+ * What the server answers for {@link REPLY_SOURCE}: the reason it handles, and
+ * one it does not — spelled with neither text nor error, which is the contract's
+ * way of saying "oto's own reply goes out".
+ */
+function replyRenderings(): TemplateRendering[] {
+  return [
+    rendering({
+      fixture: "all_resolved",
+      spellings: [
+        { dialect: "slack", text: '{ "text": "all clear" }' },
+        { dialect: "plain", text: "all clear" },
+      ],
+    }),
+    rendering({
+      fixture: "acked",
+      representative: false,
+      spellings: [
+        { dialect: "slack", text: "" },
+        { dialect: "plain", text: "" },
+      ],
+    }),
+  ];
 }
 
 /** The server's own sentence for the missing action row. */
@@ -113,7 +158,14 @@ function mount(rows: readonly NotificationTemplate[] = [template()]): World {
     // whatever was asked would make both the warning test and the refusal test
     // prove nothing about the screen's handling of either.
     [`POST ${PREVIEW}`]: (call: RecordedCall) => {
-      const body = call.body as { format: string; source: string };
+      const body = call.body as { format: string; source: string; reply_source?: string };
+      // ⛔ `reply_renderings` only when a reply body was SENT, as the contract
+      // says — so a screen that forgot to send it cannot draw the reasons.
+      if (body.reply_source !== undefined) {
+        return {
+          json: item(preview({ source: body.source, reply_renderings: replyRenderings() })),
+        };
+      }
       if (body.source.includes("|---|")) {
         return {
           json: item(
@@ -139,6 +191,7 @@ function mount(rows: readonly NotificationTemplate[] = [template()]): World {
       return { json: item(preview({ source: body.source })) };
     },
     [`POST ${TEMPLATES}`]: { status: 201, json: item(template()) },
+    [`PATCH ${TEMPLATES}/${template().id}`]: { json: item(template()) },
   });
   renderScreen(() => <TemplatesSection />);
   return { net };
@@ -156,6 +209,12 @@ function sourceBox(): HTMLTextAreaElement {
 
 function retype(text: string): void {
   fireEvent.input(sourceBox(), { target: { value: text } });
+}
+
+async function openReplies(): Promise<HTMLTextAreaElement> {
+  fireEvent.click(screen.getByRole("tab", { name: /thread replies/i }));
+  await until(() => screen.getByLabelText(/the reply/i));
+  return screen.getByLabelText(/the reply/i) as HTMLTextAreaElement;
 }
 
 describe("TemplatesSection", () => {
@@ -234,5 +293,79 @@ describe("TemplatesSection", () => {
           .length,
       ).toBeGreaterThan(1),
     );
+  });
+
+  it("⭐ previews a reply body per reason, and names the reasons it skips as oto's own", async () => {
+    mount();
+    await openEditor();
+    const replyBox = await openReplies();
+    // The root card's box is behind the other tab, not beside this one.
+    expect(screen.queryByLabelText(/the message/i)).toBeNull();
+    await until(() => screen.getByText(/every reply is oto's own/i));
+
+    fireEvent.input(replyBox, { target: { value: REPLY_SOURCE } });
+
+    await until(() => screen.getByText("all_resolved"));
+    screen.getByText("acked");
+    expect(screen.getByText("all clear")).toBeTruthy();
+    // One muted line per Dialect of the skipped reason, never a blank box.
+    expect(screen.getAllByText("oto's own reply")).toHaveLength(DIALECTS.length);
+    // The card-only chips mean nothing on a reply.
+    expect(screen.queryByText("ordinary card")).toBeNull();
+    expect(screen.getByRole("tab", { name: /thread replies/i }).textContent).toContain(
+      "(custom)",
+    );
+  });
+
+  it("sends a typed reply body on create, in a shape the generated schema accepts", async () => {
+    const world = mount([]);
+    await until(() => screen.getByRole("button", { name: /write a template/i }));
+    fireEvent.click(screen.getByRole("button", { name: /write a template/i }));
+
+    await until(() => screen.getByLabelText(/^name$/i));
+    fireEvent.input(screen.getByLabelText(/^name$/i), { target: { value: "house voice" } });
+    fireEvent.input(await openReplies(), { target: { value: REPLY_SOURCE } });
+    fireEvent.click(screen.getByRole("button", { name: /create/i }));
+
+    const posted = () =>
+      world.net.calls.find((c) => c.method === "POST" && c.url.endsWith("/notification-templates"));
+    await until(() => expect(posted()).toBeDefined());
+    const body = posted()!.body as Record<string, unknown>;
+    expect(body.reply_source).toBe(REPLY_SOURCE);
+    expect(v.safeParse(CreateNotificationTemplateRequestSchema, body).success).toBe(true);
+  });
+
+  it("leaves reply_source out of a create nobody wrote replies for", async () => {
+    const world = mount([]);
+    await until(() => screen.getByRole("button", { name: /write a template/i }));
+    fireEvent.click(screen.getByRole("button", { name: /write a template/i }));
+
+    await until(() => screen.getByLabelText(/^name$/i));
+    fireEvent.input(screen.getByLabelText(/^name$/i), { target: { value: "house voice" } });
+    fireEvent.click(screen.getByRole("button", { name: /create/i }));
+
+    const posted = () =>
+      world.net.calls.find((c) => c.method === "POST" && c.url.endsWith("/notification-templates"));
+    await until(() => expect(posted()).toBeDefined());
+    const body = posted()!.body as Record<string, unknown>;
+    expect("reply_source" in body).toBe(false);
+    expect(v.safeParse(CreateNotificationTemplateRequestSchema, body).success).toBe(true);
+  });
+
+  it("⛔ clears a reply body with an explicit empty string, never by leaving it out", async () => {
+    const world = mount([template({ reply_source: REPLY_SOURCE })]);
+    await openEditor();
+    const replyBox = await openReplies();
+    expect(replyBox.value).toBe(REPLY_SOURCE);
+
+    fireEvent.input(replyBox, { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: /save/i }));
+
+    const patched = () => world.net.calls.find((c) => c.method === "PATCH");
+    await until(() => expect(patched()).toBeDefined());
+    const body = patched()!.body as Record<string, unknown>;
+    // Absent would mean "unchanged" on a PATCH, and the old replies would stay.
+    expect(body.reply_source).toBe("");
+    expect(v.safeParse(UpdateNotificationTemplateRequestSchema, body).success).toBe(true);
   });
 });

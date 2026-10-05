@@ -228,7 +228,10 @@ type NotificationTemplateDTO struct {
 	Provider string `json:"provider"`
 	Format   string `json:"format"`
 	Source   string `json:"source"`
-	// Version increments only when `source` or `format` changes, because it exists
+	// ReplySource is the body thread replies are rendered from, in `format`. null
+	// means oto's own replies (ADR 0051).
+	ReplySource *string `json:"reply_source"`
+	// Version increments only when `source`, `reply_source` or `format` changes, because it exists
 	// to attribute a rendered card to a revision — and a rename produced no
 	// different bytes.
 	Version int  `json:"version"`
@@ -291,6 +294,10 @@ type TemplatePreviewDTO struct {
 	Problems []TemplateProblemDTO `json:"problems"`
 	// Renderings is empty when the template does not compile; `problems` says why.
 	Renderings []TemplateRenderingDTO `json:"renderings"`
+	// ReplyRenderings is the reply body against one example per reason, each
+	// fixture named for its reason. A spelling with no text and no error is "this
+	// body says nothing here, so oto's own reply". Empty when no reply body was sent.
+	ReplyRenderings []TemplateRenderingDTO `json:"reply_renderings"`
 }
 
 // CreateNotificationTemplateRequest creates one template.
@@ -299,7 +306,9 @@ type CreateNotificationTemplateRequest struct {
 	Provider string `json:"provider" validate:"required,max=32"`
 	Format   string `json:"format"   validate:"required,oneof=card text raw"`
 	Source   string `json:"source"   validate:"required,max=16384"`
-	Enabled  *bool  `json:"enabled,omitempty"`
+	// ReplySource is optional; absent or "" means oto's own replies.
+	ReplySource *string `json:"reply_source,omitempty" validate:"omitempty,max=16384"`
+	Enabled     *bool   `json:"enabled,omitempty"`
 }
 
 // UpdateNotificationTemplateRequest patches one template. A nil field is untouched.
@@ -308,14 +317,16 @@ type UpdateNotificationTemplateRequest struct {
 	Provider *string `json:"provider,omitempty" validate:"omitempty,max=32"`
 	Format   *string `json:"format,omitempty"   validate:"omitempty,oneof=card text raw"`
 	Source   *string `json:"source,omitempty"   validate:"omitempty,max=16384"`
-	Enabled  *bool   `json:"enabled,omitempty"`
+	// ReplySource set to "" clears the reply body, back to oto's own replies.
+	ReplySource *string `json:"reply_source,omitempty" validate:"omitempty,max=16384"`
+	Enabled     *bool   `json:"enabled,omitempty"`
 }
 
 // IsEmpty reports the "you asked for nothing" case, which the schema enforces as
 // body `minProperties: 1`.
 func (r UpdateNotificationTemplateRequest) IsEmpty() bool {
 	return r.Name == nil && r.Provider == nil && r.Format == nil &&
-		r.Source == nil && r.Enabled == nil
+		r.Source == nil && r.ReplySource == nil && r.Enabled == nil
 }
 
 // PreviewNotificationTemplateRequest asks what a template would say, without
@@ -323,4 +334,6 @@ func (r UpdateNotificationTemplateRequest) IsEmpty() bool {
 type PreviewNotificationTemplateRequest struct {
 	Format string `json:"format" validate:"required,oneof=card text raw"`
 	Source string `json:"source" validate:"required,max=16384"`
+	// ReplySource, when present, is previewed against one example per reason.
+	ReplySource *string `json:"reply_source,omitempty" validate:"omitempty,max=16384"`
 }

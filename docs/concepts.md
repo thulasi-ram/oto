@@ -193,15 +193,18 @@ migrations 00078, 00079).
 |---|---|---|
 | `card` | Markdown plus `:::fields` and `{{ actions }}`, parsed to oto's document IR, compiled per provider | yes |
 | `text` | one flat string | yes |
-| `raw` | literal Slack Block Kit JSON | no — Slack only |
+| `raw` | literal Slack Block Kit JSON — may be the whole message, `{"text", "color", "blocks"}` | no — Slack only |
 
 It carries **no `when` clause**: the policy naming it already has the matchers, so a condition here
 would be a second router. Two properties are load-bearing. Every interpolated value in `card` is
 markdown-escaped unconditionally, with no opt-out, so a label cannot become syntax; and every
 failure path in the renderer returns "no" and nothing else, so the caller builds oto's built-in card
 and the alert goes out anyway. **A template cannot kill a delivery.**
-*Commonly wrong:* expecting to override the colour. Colour encodes state and is never the author's; a
-template that could paint a firing card green could lie about the one fact the eye reads first.
+A template may also carry a `reply_source`: the body thread replies are rendered from, branching on
+`reason`; a reason it renders nothing for keeps oto's own reply (ADR 0051, migration 00082).
+*Commonly wrong:* expecting to override the colour from `card` or `text`. There, colour encodes state
+and is oto's. Only `raw` — Block Kit typed by hand — owns the colour, the top-level text and where
+the buttons go (`{"type": "oto_actions"}`); `block_id`s and button identity stay oto's (ADR 0051).
 
 **Conversation** — what a thread is *about*, as the pair `(conversation_kind, conversation_id)`. Two
 kinds: `case` (id = an `alert_cases.id`) and `digest` (id = a `notification_policies.id`).

@@ -40,7 +40,10 @@ type NotificationTemplate struct {
 	Format string
 	// Source is the template body.
 	Source string
-	// Version increments on every edit that changes Source or Format.
+	// ReplySource is the body a thread reply is rendered from, in Format. Empty
+	// means oto's own replies (ADR 0051).
+	ReplySource string
+	// Version increments on every edit that changes Source, ReplySource or Format.
 	//
 	// ⭐ IT IS THE PROVENANCE HALF OF THE DELIVERY ROW. A delivery records the
 	// template id AND this number, so a card that read strangely last Tuesday can
@@ -65,7 +68,9 @@ type NewNotificationTemplate struct {
 	Provider string
 	Format   string
 	Source   string
-	Enabled  bool
+	// ReplySource is optional; empty means oto's own replies.
+	ReplySource string
+	Enabled     bool
 }
 
 // NotificationTemplatePatch is the partial update. A nil field is untouched.
@@ -74,13 +79,15 @@ type NotificationTemplatePatch struct {
 	Provider *string
 	Format   *string
 	Source   *string
-	Enabled  *bool
+	// ReplySource set to "" clears the reply body, back to oto's own replies.
+	ReplySource *string
+	Enabled     *bool
 }
 
 // Empty reports whether this patch asks for nothing.
 func (p NotificationTemplatePatch) Empty() bool {
 	return p.Name == nil && p.Provider == nil && p.Format == nil &&
-		p.Source == nil && p.Enabled == nil
+		p.Source == nil && p.ReplySource == nil && p.Enabled == nil
 }
 
 // The bounds a template is held to. They are here rather than in the template
@@ -136,4 +143,14 @@ func validTemplateFormat(f string) bool {
 		}
 	}
 	return false
+}
+
+// ValidateReplySource holds the engine-free rule for a reply body: absent is
+// allowed and means oto's own replies, and a present one has the source's ceiling.
+func ValidateReplySource(reply string) error {
+	if len(reply) > MaxTemplateSourceBytes {
+		return fmt.Errorf("a reply body may be %d bytes and this is %d",
+			MaxTemplateSourceBytes, len(reply))
+	}
+	return nil
 }

@@ -24,8 +24,9 @@ type Fixture struct {
 	// is expected and is handled at delivery by falling back to oto's own card.
 	//
 	// ⚠️ THE DIGEST IS NOT REPRESENTATIVE, THOUGH IT IS AN ORDINARY MESSAGE. A
-	// template reaches the ROOT card: a digest and a thread reply are built by
-	// their own renderers and take no template in this version. The digest view
+	// template's `source` reaches the ROOT card and its `reply_source` the thread
+	// replies (ReplyFixtures); a digest is built by its own renderer and takes no
+	// template in this version. The digest view
 	// stays in the corpus as a ROBUSTNESS fixture, because a view with almost
 	// every field absent is exactly what shakes out a template that assumed one.
 	Representative bool
@@ -54,6 +55,44 @@ func Fixtures() []Fixture {
 		{Name: "oversized-annotation", view: oversizedView(), at: fixtureClock},
 		{Name: "hostile-text", view: hostileView(), at: fixtureClock},
 		{Name: "zero-value", view: &domain.NotificationView{}, at: time.Time{}},
+	}
+}
+
+// ReplyFixtures is the corpus a template's REPLY body is previewed against: one
+// fixture per reason a thread can be told about, each named for its reason.
+//
+// ⭐ NAMED FOR THE REASON BECAUSE THAT IS THE AUTHOR'S QUESTION. A reply body is
+// one branch per reason, and "what does my body say for `acked`?" is answered by a
+// row titled `acked` — including "nothing, so oto's own reply", which is the
+// ordinary answer for every reason the body does not handle.
+func ReplyFixtures() []Fixture {
+	at := fixtureClock.Add(30 * time.Minute)
+	snoozeUntil := fixtureClock.Add(4 * time.Hour)
+	actor := &domain.ActorView{Label: "ram@example.com", Kind: "user"}
+
+	reply := func(reason string, base func() *domain.NotificationView, edit func(*domain.NotificationView)) Fixture {
+		v := base()
+		v.Reason = reason
+		if edit != nil {
+			edit(v)
+		}
+		return Fixture{Name: reason, Representative: true, view: v, at: at}
+	}
+	return []Fixture{
+		reply("all_resolved", resolvedView, nil),
+		reply("acked", firingView, func(v *domain.NotificationView) { v.Actor = actor }),
+		reply("unacked", firingView, func(v *domain.NotificationView) { v.Actor = actor }),
+		reply("comment", firingView, func(v *domain.NotificationView) {
+			v.Actor, v.Comment = actor, "rolling back the 14:02 deploy"
+		}),
+		reply("suppressed", firingView, nil),
+		reply("unsuppressed", firingView, nil),
+		reply("expired", resolvedView, nil),
+		reply("snoozed", firingView, func(v *domain.NotificationView) {
+			v.Actor, v.SnoozedUntil = actor, &snoozeUntil
+		}),
+		reply("unsnoozed", firingView, nil),
+		reply("rule_changed", firingView, nil),
 	}
 }
 

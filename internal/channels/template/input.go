@@ -1,6 +1,7 @@
 package template
 
 import (
+	"encoding/json"
 	"sort"
 	"strconv"
 	"strings"
@@ -286,16 +287,47 @@ type binder struct {
 // forged handle. That single rule is why the card format needs no raw-output
 // mechanism and no taint tracking.
 //
-// ⚠️ text AND raw DO NOT MARKDOWN-ESCAPE, because neither is parsed as Markdown.
-// A `text` template's output meets Spell, which escapes for the PROVIDER; a
-// `raw` template's output is JSON, where markdown backslashes would be corruption
-// and `| json` is the author's tool. Both are still sanitised.
+// ⚠️ text DOES NOT MARKDOWN-ESCAPE, because it is not parsed as Markdown: its
+// output meets Spell, which escapes for the PROVIDER.
+//
+// ⛔ raw ESCAPES EVERY VALUE TWICE OVER, FOR SLACK AND THEN FOR JSON, AND THE
+// AUTHOR'S OWN TEXT NOT AT ALL. A raw template is Slack Block Kit typed by hand, so
+// nothing downstream can tell the author's `<https://grafana|Grafana>` from a label
+// that says `<!channel>` — the value has to be defused here, where it is still a
+// value. And it is almost always interpolated INSIDE a JSON string, so a summary
+// with a quote or a newline in it used to break the document and silently cost the
+// author their whole card. The old error message promised a `| json` filter for
+// that; it never existed, and an escape nobody can forget is better than a filter
+// they must remember.
 func newBinder(f Format) *binder {
 	esc := func(s string) string { return s }
-	if f == FormatCard {
+	switch f {
+	case FormatCard:
 		esc = escapeMarkdown
+	case FormatRaw:
+		esc = func(s string) string { return jsonStringContent(SlackDialect{}.EscapeText(s)) }
+	case FormatText:
 	}
 	return &binder{esc: esc, links: map[string]string{}}
+}
+
+// jsonStringContent is s as it must appear BETWEEN the quotes of a JSON string.
+//
+// ⚠️ HTML ESCAPING IS OFF, so `&lt;` stays `&lt;` rather than becoming `\u0026lt;`:
+// the Slack entities are what the reader is meant to see decoded, and a `\u` run
+// is one more escape for `| upper` to have to step around (see caseMapped).
+func jsonStringContent(s string) string {
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(s); err != nil {
+		return ""
+	}
+	quoted := strings.TrimSuffix(b.String(), "\n")
+	if len(quoted) < 2 {
+		return ""
+	}
+	return quoted[1 : len(quoted)-1]
 }
 
 func (b *binder) text(s string) string { return b.esc(sanitise(s)) }

@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/thulasiram/oto/internal/channels/service"
 	"github.com/thulasiram/oto/internal/channels/template"
@@ -105,7 +106,7 @@ func (rt *Router) createTemplate(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
-	if err := refuseTemplate(service.ValidateTemplate(dto.Name, dto.Provider, dto.Format, dto.Source)); err != nil {
+	if err := refuseTemplate(service.ValidateTemplate(dto.Name, dto.Provider, dto.Format, dto.Source, derefOr(dto.ReplySource))); err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
@@ -182,7 +183,7 @@ func (rt *Router) updateTemplate(w http.ResponseWriter, r *http.Request) {
 
 	merged := patchedTemplate(existing, dto)
 	if err := refuseTemplate(service.ValidateTemplate(
-		merged.Name, merged.Provider, merged.Format, merged.Source,
+		merged.Name, merged.Provider, merged.Format, merged.Source, merged.ReplySource,
 	)); err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
@@ -241,31 +242,47 @@ func (rt *Router) previewTemplate(w http.ResponseWriter, r *http.Request) {
 
 	format := template.Format(dto.Format)
 	problems := template.Validate(format, dto.Source)
+	reply := strings.TrimSpace(derefOr(dto.ReplySource)) != ""
+	var replyProblems []template.Problem
+	if reply {
+		replyProblems = template.ValidateReply(format, *dto.ReplySource)
+	}
 
 	// ⛔ THE ONE PROBLEM THAT IS A `422` RATHER THAN A RESULT. A source over the
 	// ceiling is not a template that renders badly, it is a body this endpoint
 	// declines to read — and rendering sixteen kilobytes of it back seven times
 	// over would answer a mistake with a wall.
-	for _, p := range problems {
-		if p.Kind == template.ProblemTooLong {
-			httpx.WriteProblem(w, r, errs.Validation("validation_failed", "1 field failed validation.",
-				errs.Violation{Field: "source", Code: string(p.Kind), Message: p.Message}))
-			return
+	for _, body := range []struct {
+		field string
+		ps    []template.Problem
+	}{{"source", problems}, {"reply_source", replyProblems}} {
+		for _, p := range body.ps {
+			if p.Kind == template.ProblemTooLong {
+				httpx.WriteProblem(w, r, errs.Validation("validation_failed", "1 field failed validation.",
+					errs.Violation{Field: body.field, Code: string(p.Kind), Message: p.Message}))
+				return
+			}
 		}
 	}
 
 	out := TemplatePreviewDTO{
-		Format:     dto.Format,
-		Source:     dto.Source,
-		Problems:   templateProblems(problems),
-		Renderings: []TemplateRenderingDTO{},
+		Format:          dto.Format,
+		Source:          dto.Source,
+		Problems:        append(templateProblems("source", problems), templateProblems("reply_source", replyProblems)...),
+		Renderings:      []TemplateRenderingDTO{},
+		ReplyRenderings: []TemplateRenderingDTO{},
 	}
 	// A template that does not compile has nothing to show, and `problems` already
 	// says why. Compile's refusals are a subset of Validate's, so this branch can
 	// never be silent.
 	if compiled, err := template.Compile(format, dto.Source); err == nil {
 		out.Source = compiled.Source
-		out.Renderings = renderFixtures(compiled, format)
+		out.Renderings = renderFixtures(compiled, format, template.Fixtures(), false)
+	}
+	if reply {
+		if compiled, err := template.Compile(format, *dto.ReplySource); err == nil {
+			out.ReplyRenderings = renderFixtures(compiled, format, template.ReplyFixtures(), true)
+		}
 	}
 	httpx.Data(w, r, http.StatusOK, out, started)
 }
@@ -279,8 +296,13 @@ func (rt *Router) previewTemplate(w http.ResponseWriter, r *http.Request) {
 // falls back to oto's own card rather than killing the message, so a preview that
 // stopped at the first bad fixture would describe a behaviour oto does not have —
 // and would hide the six fixtures that worked.
-func renderFixtures(compiled *template.Template, format template.Format) []TemplateRenderingDTO {
-	fixtures := template.Fixtures()
+//
+// reply renders a REPLY body, for which saying nothing is an answer: a fixture the
+// body renders empty for gets spellings with neither text nor error, which the
+// editor shows as "oto's own reply".
+func renderFixtures(
+	compiled *template.Template, format template.Format, fixtures []template.Fixture, reply bool,
+) []TemplateRenderingDTO {
 	out := make([]TemplateRenderingDTO, 0, len(fixtures))
 	for _, f := range fixtures {
 		in, links := f.Bind(format)
@@ -288,6 +310,16 @@ func renderFixtures(compiled *template.Template, format template.Format) []Templ
 			Fixture:        f.Name,
 			Representative: f.Representative,
 			Spellings:      make([]TemplateSpellingDTO, 0, len(previewDialects)),
+		}
+		if reply && compiled.RendersNothing(in) {
+			for _, d := range previewDialects {
+				if _, isSlack := d.(template.SlackDialect); format == template.FormatRaw && !isSlack {
+					continue
+				}
+				row.Spellings = append(row.Spellings, TemplateSpellingDTO{Dialect: d.Name()})
+			}
+			out = append(out, row)
+			continue
 		}
 
 		var doc *template.Document
@@ -320,7 +352,12 @@ func renderFixtures(compiled *template.Template, format template.Format) []Templ
 				if _, isSlack := d.(template.SlackDialect); !isSlack {
 					continue
 				}
+				// Spelled as a delivery spells it, so the preview shows oto's link,
+				// a <!date> token and Slack's bold rather than private-use marks.
 				raw, err := compiled.RenderRaw(in)
+				if err == nil {
+					raw, err = template.SpellRawJSON(raw, links)
+				}
 				s.Text = string(raw)
 				if err != nil {
 					s.Error = err.Error()
@@ -334,11 +371,11 @@ func renderFixtures(compiled *template.Template, format template.Format) []Templ
 }
 
 // templateProblems maps the save-time gate's verdict onto the wire.
-func templateProblems(ps []template.Problem) []TemplateProblemDTO {
+func templateProblems(field string, ps []template.Problem) []TemplateProblemDTO {
 	out := make([]TemplateProblemDTO, 0, len(ps))
 	for _, p := range ps {
 		out = append(out, TemplateProblemDTO{
-			Kind: string(p.Kind), Field: "source", Message: p.Message, Fixture: p.Fixture,
+			Kind: string(p.Kind), Field: field, Message: p.Message, Fixture: p.Fixture,
 		})
 	}
 	return out

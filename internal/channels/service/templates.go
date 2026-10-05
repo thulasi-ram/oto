@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -52,6 +53,9 @@ func (t *Templates) For(ctx context.Context, s db.TenantScope, policyID uuid.UUI
 		Version: row.Version,
 		Format:  row.Format,
 		Source:  row.Source,
+		// ReplySource rides the same row and the same version: a reply and the
+		// card it answers are attributed to one revision.
+		ReplySource: row.ReplySource,
 	}
 }
 
@@ -67,13 +71,27 @@ func (t *Templates) For(ctx context.Context, s db.TenantScope, policyID uuid.UUI
 // `template.Blocking` is that test. The one warning today is a card with no
 // `{{ actions }}`: the operator is allowed to ship a card with no Acknowledge
 // button, and oto's job is to make sure they know they did.
-func ValidateTemplate(name, provider, format, source string) []errs.Violation {
-	var out []errs.Violation
+//
+// The reply body is judged by its own rule (template.ValidateReply) and reported
+// against its own field, so an author is told WHICH of the two bodies is wrong.
+func ValidateTemplate(name, provider, format, source, replySource string) []errs.Violation {
 	if err := domain.ValidateNotificationTemplate(name, provider, format, source); err != nil {
 		return []errs.Violation{{Field: "source", Code: "invalid", Message: err.Error()}}
 	}
-	for _, p := range template.Validate(template.Format(format), source) {
-		v := errs.Violation{Field: "source", Code: string(p.Kind), Message: p.Message}
+	if err := domain.ValidateReplySource(replySource); err != nil {
+		return []errs.Violation{{Field: "reply_source", Code: "invalid", Message: err.Error()}}
+	}
+	out := violations("source", template.Validate(template.Format(format), source))
+	if strings.TrimSpace(replySource) != "" {
+		out = append(out, violations("reply_source", template.ValidateReply(template.Format(format), replySource))...)
+	}
+	return out
+}
+
+func violations(field string, ps []template.Problem) []errs.Violation {
+	out := make([]errs.Violation, 0, len(ps))
+	for _, p := range ps {
+		v := errs.Violation{Field: field, Code: string(p.Kind), Message: p.Message}
 		if p.Fixture != "" {
 			v.Message = p.Message + " (on the " + p.Fixture + " example)"
 		}

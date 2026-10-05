@@ -185,7 +185,7 @@ export const qk = {
    *
    * ⛔ THE TWO ENTRIES UNDER IT MUST NOT REACH EACH OTHER, WHICH IS WHY THERE IS
    * NO `all()` HERE. `list` is settings and is invalidated by the writes on the
-   * screen that edits it; `preview` is a pure question about two strings and is
+   * screen that edits it; `preview` is a pure question about three strings and is
    * exempt from invalidation entirely (`FRESHNESS`). An `all()` — or invalidating
    * `["templates"]` instead of `["templates","list"]` — would drag every cached
    * preview into the refetch of a save, which is a POST per keystroke the author
@@ -201,14 +201,14 @@ export const qk = {
     /**
      * One candidate template's rendering against the whole fixture corpus.
      *
-     * Both arguments are in the key because both are the question: the answer is
-     * a pure function of the format and the source, so two drafts are two settled
+     * Every argument is in the key because every one is the question: the answer
+     * is a pure function of the format and the two bodies, so two drafts are two settled
      * answers rather than one entry that keeps being overwritten. That is what
      * lets an author undo a keystroke and get the previous rendering back without
      * another round trip.
      */
-    preview: (format: string, source: string) =>
-      ["templates", "preview", format, source] as const,
+    preview: (format: string, source: string, replySource: string) =>
+      ["templates", "preview", format, source, replySource] as const,
   },
   stats: {
     /**
