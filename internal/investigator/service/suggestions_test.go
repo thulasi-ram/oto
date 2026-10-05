@@ -333,3 +333,31 @@ func TestAMembershipProposalForACaseAlreadyInTheIncidentIsRefused(t *testing.T) 
 		t.Fatal("a no-op membership was kept")
 	}
 }
+
+// TestAStaleCountSuggestionIsRefusedAndWritesNothing — review B3: a hand edit since the
+// proposal makes "from X to Y" a lie, and applying it would overwrite that edit; it is
+// refused as stale, the policy is not touched, and the Suggestion stays unapplied.
+func TestAStaleCountSuggestionIsRefusedAndWritesNothing(t *testing.T) {
+	r := newRig(t)
+	s := r.proposeCount(t)
+	by := r.applier(t)
+	// Someone edits the policy by hand after the proposal.
+	if err := r.policies.ApplyCountCondition(context.Background(), r.scope, crashPolicy.ID, 5, 30*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	edits := len(r.policies.edits)
+
+	_, err := r.svc.ApplySuggestion(context.Background(), r.scope, s.ID, by, 0)
+	if errs.CodeOf(err) != "suggestion_stale" || !errs.IsKind(err, errs.KindConflict) {
+		t.Fatalf("apply = %v, want suggestion_stale", err)
+	}
+	if e, _ := errs.As(err); e == nil || !strings.Contains(e.Message, "5 in 30m0s") {
+		t.Fatalf("the refusal does not say what the policy says now: %v", err)
+	}
+	if len(r.policies.edits) != edits {
+		t.Fatal("a stale Suggestion edited the policy")
+	}
+	if list := r.shown(t, s.InvestigationID); len(list) != 1 || list[0].StateAt(r.clock.Now()) == domain.SuggestionApplied {
+		t.Fatalf("the stale Suggestion was marked applied: %+v", list)
+	}
+}

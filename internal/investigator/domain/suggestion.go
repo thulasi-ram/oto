@@ -309,6 +309,25 @@ func SuggestionTargetGone(what string) error {
 		"this Suggestion cannot be applied: %s no longer exists", what))
 }
 
+// SuggestionStale refuses applying a count-condition Suggestion whose policy's condition
+// has changed since it was proposed (review B3). The Suggestion said "from X to Y"; a
+// hand edit since then made it "from Z", and applying would silently overwrite that edit
+// with a change nobody proposed against it. Nothing is written; the human edits the
+// policy by hand, against what it says now.
+func SuggestionStale(policyName string, nowMin int, nowWindow time.Duration, wasMin int, wasWindow time.Duration) error {
+	return errs.Conflict("suggestion_stale", fmt.Sprintf(
+		"the policy %s's count condition is now %s; it was %s when this was proposed — edit the policy by hand",
+		policyName, countCondition(nowMin, nowWindow), countCondition(wasMin, wasWindow)))
+}
+
+// countCondition is a count condition as a sentence says it: "none", or "3 in 10m0s".
+func countCondition(minCount int, window time.Duration) string {
+	if minCount == 0 {
+		return "none"
+	}
+	return fmt.Sprintf("%d in %s", minCount, window)
+}
+
 // SuggestionMovesCase refuses applying a membership Suggestion that would MOVE its Case
 // when the request did not say it knew: the move is said before it is applied, and an
 // apply that did not confirm the Incident it moves from is answered with the sentence it

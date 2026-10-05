@@ -397,13 +397,19 @@ func (s *Service) ApplySuggestion(
 // `suggestion_target_gone`, read before the edit and again from it.
 func (s *Service) applyCount(ctx context.Context, scope db.TenantScope, c domain.CountChange) error {
 	gone := func() error { return domain.SuggestionTargetGone("the notification policy " + c.PolicyName) }
-	if _, err := s.policies.SuggestionPolicy(ctx, scope, c.PolicyID); err != nil {
+	target, err := s.policies.SuggestionPolicy(ctx, scope, c.PolicyID)
+	if err != nil {
 		if errs.IsKind(err, errs.KindNotFound) {
 			return gone()
 		}
 		return err
 	}
-	err := s.policies.ApplyCountCondition(ctx, scope, c.PolicyID, c.CountMin, c.CountWindow)
+	if target.CountMin != c.WasMin || target.CountWindow != c.WasWindow {
+		// ⛔ STALE: the policy changed since the proposal, so applying would overwrite a
+		// later hand edit with a change nobody proposed against it (review B3).
+		return domain.SuggestionStale(target.Name, target.CountMin, target.CountWindow, c.WasMin, c.WasWindow)
+	}
+	err = s.policies.ApplyCountCondition(ctx, scope, c.PolicyID, c.CountMin, c.CountWindow)
 	if errs.IsKind(err, errs.KindNotFound) {
 		return gone()
 	}
