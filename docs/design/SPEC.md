@@ -231,7 +231,7 @@ they are edges, not columns.
 | T3 | `firing` | `suppressed` | Reconciler observes `status.state == "suppressed"` | Reconciler | Set `suppression_reason` from `silencedBy`/`inhibitedBy`/`mutedBy`; emit `case.suppressed`; enqueue `notify.evaluate(reason=suppressed)` |
 | T4 | `suppressed` | `firing` | **(a)** Reconciler observes `status.state == "active"`, **OR** **(b)** ANY ingest observation with `status == "firing"` arrives for this case | **Reconciler AND Ingest** | Clear `suppression_reason` and `suppressed_by`; emit `case.unsuppressed` with `detected_by ∈ {reconciler, webhook}`; enqueue `notify.evaluate(reason=unsuppressed)` |
 | T5 | `firing`\|`suppressed` | `resolved` | Per-alert `status == "resolved"` | Ingest | Set `ended_at = max(occurred_at, started_at)` **(clamped — see B.3.2)**, `resolve_reason='upstream'`; emit `case.resolved`; enqueue `notify.evaluate(reason=all_resolved\|some_resolved)` |
-| T6 | `firing`\|`suppressed` | `expired` | **`timeout`:** `now > source_ends_at + resolve_grace` AND `source_health.status = 'healthy'`. **`silent`** (ADR 0056 §3): `now > last_observed_at + max_silence_s` of the cluster's one live source AND it is `healthy`. **`source_removed`** (ADR 0056 §2): the case's cluster has no live source and had one soft-deleted | Reaper | Set `ended_at = now`, `resolve_reason` to the expiry that was proven; emit `case.expired` (payload `resolve_reason`); enqueue `notify.evaluate(reason=expired)` |
+| T6 | `firing`\|`suppressed` | `expired` | **`timeout`:** `now > source_ends_at + resolve_grace` AND the case's cluster has ≥ 1 live source AND **every** live source's `source_health.status = 'healthy'` (§B.4). **`silent`** (ADR 0056 §3, Amendment 1): the same all-healthy condition AND `now > last_observed_at + T`, where `T` is the cluster's effective max silence — the longest `max_silence_s` among its live sources, and off when any of them is NULL. **`source_removed`** (ADR 0056 §2, Amendment 1): the case's cluster has no live source, had one soft-deleted, and the newest deletion is a `resolve_grace` old. `silent` and `source_removed` run only while `jobs.expire_silent_and_removed` is on (default off) | Reaper | Set `ended_at = now`, `resolve_reason` to the expiry that was proven; emit `case.expired` (payload `resolve_reason`); enqueue `notify.evaluate(reason=expired)` |
 | T7 | `resolved`\|`expired` | *(new case `firing`)* | Same `alert_key` fires again — **always, whatever the clock says** | Ingest | The closed case is left exactly as it is; new case `seq+1`, **`unacked`** → **a new Case is a new conversation, so a new Slack root message, always** (git-bug `7570090`); emit `case.opened`; `alerts.total_cases += 1` |
 | T9 | any | `ack_state = acked` | Human via `POST /cases/{id}/ack`, or Slack `oto.ack` button (the `/alert-groups/{id}/ack` fan-out is deleted with the entity — git-bug `7570090`) | Human | Set `acked_by`, `acked_at`, `ack_note`; emit `case.acknowledged`; enqueue `notify.evaluate(reason=acked)` |
 | T10 | `acked` | `unacked` | Human unack via `POST /cases/{id}/unack` (the `/alert-groups/{id}/unack` fan-out is deleted with the entity), **or** a new case opens (T7) | Human, Ingest | Emit `case.unacknowledged` with `reason ∈ {manual, new_case}`; enqueue `notify.evaluate(reason=unacked)` |
@@ -345,9 +345,11 @@ surfaced, never rejected** (C12). The same clamp applies to T6 (`expired`).
 
 > **Losing sight of an alert is NOT the same as the alert resolving.**
 
-`case.reap` MUST, for each candidate case, load `source_health` for the owning AlertSource. If `status != 'healthy'`, the case is **held in its current state** and a single `source.unreachable` banner is raised for the source. It MUST NOT be expired. A `source_degraded_holds` counter is exported.
+`case.reap` MUST, for each candidate case, load `source_health` for **every live AlertSource on the case's cluster**. If the cluster has no live source, or **any** live source's `status != 'healthy'` (or its health cannot be read), the case is **held in its current state** and a single `source.unreachable` banner is raised for each source that is not healthy. It MUST NOT be expired as `timeout` or `silent`. A `source_degraded_holds` counter is exported.
 
-The guard applies to `timeout` **and** to `silent` (ADR 0056 §3): under an unhealthy source oto cannot tell "upstream stopped speaking about it" from "Alertmanager is down", so silence proves nothing. It does **not** apply to `source_removed` (ADR 0056 §2), and that is the guard's own reasoning rather than an exception to it: the guard protects a source oto cannot see, and a case whose cluster has **no live source** has none — the one thing that could have said it ended is gone. The test is the CLUSTER, not the deleted source, so deleting one Alertmanager HA replica while another live source feeds the cluster expires nothing; and a cluster no source was ever removed from is not one whose source was removed. The `source_removed` pass runs first in each tick and is re-proved inside the expiring transaction, so a source registered between the scan and the write stands it down.
+**An HA cluster expires only on all of its sources** (ADR 0056 Amendment 1, ruling R1). An Alertmanager HA pair is two witnesses to the same alerts, and the replica oto cannot see might be the one still carrying this one, so one unhealthy replica holds every open case on the cluster. A held case names only the sources the guard could not vouch for, never a healthy sibling; a source's `held_case_count` is all of its open cases while it is not healthy and none while it is. The live set is re-read inside the expiring transaction, and the expiry stands down unless it equals the set the guard proved.
+
+The guard applies to `timeout` **and** to `silent` (ADR 0056 §3): under an unhealthy source oto cannot tell "upstream stopped speaking about it" from "Alertmanager is down", so silence proves nothing. It does **not** apply to `source_removed` (ADR 0056 §2), and that is the guard's own reasoning rather than an exception to it: the guard protects a source oto cannot see, and a case whose cluster has **no live source** has none — the one thing that could have said it ended is gone. The test is the CLUSTER, not the deleted source, so deleting one Alertmanager HA replica while another live source feeds the cluster expires nothing; and a cluster no source was ever removed from is not one whose source was removed. The `source_removed` pass runs first in each tick, waits a `resolve_grace` past the cluster's newest deletion, and is re-proved inside the expiring transaction, so a source registered inside that grace, or between the scan and the write, stands it down.
 
 ### B.5 Re-fire policy (stated plainly)
 
@@ -535,8 +537,8 @@ stateDiagram-v2
     suppressed --> firing : T4 reconciler sees active OR any webhook arrival
     firing --> resolved : T5 status=resolved
     suppressed --> resolved : T5 status=resolved
-    firing --> expired : T6 reaper (source healthy)
-    suppressed --> expired : T6 reaper (source healthy)
+    firing --> expired : T6 reaper (every live source healthy)
+    suppressed --> expired : T6 reaper (every live source healthy)
 
     resolved --> [*] : T7 refire -> NEW case, seq+1, unacked
     expired --> [*] : T7 refire -> NEW case, seq+1, unacked
@@ -1488,8 +1490,11 @@ CREATE TABLE alert_sources (
   -- interval below is the whole of the reconciliation tuning surface.
   reconcile_interval_s INT       NOT NULL DEFAULT 30 CHECK (reconcile_interval_s >= 10),
   -- ADR 0056 §3 (00094): how long this source may say nothing about an open case before the reaper
-  -- expires it as `silent`. NULL turns it off; asked only while the source is healthy (§B.4). Must
-  -- exceed the Alertmanager's repeat_interval, or long-firing cases expire while still firing.
+  -- expires it as `silent`. NULL turns it off — for its whole cluster; otherwise the cluster uses the
+  -- longest among its live sources. Added bare, so sources that existed before 00094 read NULL;
+  -- the default of a day applies to sources registered after (ADR 0056 Amendment 1). Asked only
+  -- while every live source on the cluster is healthy (§B.4). Must exceed the Alertmanager's
+  -- repeat_interval, or long-firing cases expire while still firing.
   max_silence_s      INT         DEFAULT 86400,
   -- no DEFAULT now() (§D conventions); `SourceRepository.Create`/`Update`/`SoftDelete` stamp them.
   created_at         TIMESTAMPTZ NOT NULL,
