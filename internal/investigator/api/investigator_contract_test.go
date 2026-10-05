@@ -562,6 +562,7 @@ func routes() []apitest.Route {
 		{Op: "requestIncidentInvestigation", Method: http.MethodPost, Path: "/incidents/4/investigations",
 			Body: `{"investigator_id":"` + inv + `"}`},
 		{Op: "listIncidentInvestigations", Method: http.MethodGet, Path: "/incidents/4/investigations"},
+		{Op: "listPolicyDigestInvestigations", Method: http.MethodGet, Path: "/notification-policies/" + fxPolicy.String() + "/investigations"},
 	}
 }
 
@@ -596,12 +597,14 @@ func TestAnotherOrgsResourceIsA404(t *testing.T) {
 		{Op: "requestIncidentInvestigation", Method: http.MethodPost, Path: "/incidents/4/investigations",
 			Body: `{"investigator_id":"` + fxInvestigator.String() + `"}`},
 		{Op: "listIncidentInvestigations", Method: http.MethodGet, Path: "/incidents/4/investigations"},
+		{Op: "listPolicyDigestInvestigations", Method: http.MethodGet, Path: "/notification-policies/" + fxPolicy.String() + "/investigations"},
 	})
 	apitest.AssertCrossTenant404(t, world, []apitest.Route{
 		{Op: "getInvestigator", Name: "stranger investigator", Method: http.MethodGet, Path: "/investigators/" + stranger},
 		{Op: "getInvestigation", Name: "stranger investigation", Method: http.MethodGet, Path: "/investigations/" + stranger},
 		{Op: "listCaseInvestigations", Name: "stranger case", Method: http.MethodGet, Path: "/cases/" + stranger + "/investigations"},
 		{Op: "listIncidentInvestigations", Name: "stranger incident", Method: http.MethodGet, Path: "/incidents/999999/investigations"},
+		{Op: "listPolicyDigestInvestigations", Name: "stranger policy", Method: http.MethodGet, Path: "/notification-policies/" + stranger + "/investigations"},
 		{Op: "getInvestigation", Name: "not a uuid", Method: http.MethodGet, Path: "/investigations/banana"},
 	})
 }
@@ -625,5 +628,6 @@ func TestAnUnknownQueryParameterIsRefused(t *testing.T) {
 		{Op: "requestIncidentInvestigation", Method: http.MethodPost, Path: "/incidents/4/investigations?wait=true",
 			Body: `{"investigator_id":"` + inv + `"}`},
 		{Op: "listIncidentInvestigations", Method: http.MethodGet, Path: "/incidents/4/investigations?status=failed"},
+		{Op: "listPolicyDigestInvestigations", Method: http.MethodGet, Path: "/notification-policies/" + fxPolicy.String() + "/investigations?status=skipped"},
 	})
 }

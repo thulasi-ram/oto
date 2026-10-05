@@ -1462,7 +1462,10 @@ export interface paths {
          *
          *     Refusals, each typed: `404 suggestion_not_found`; `409 suggestion_already_applied`;
          *     `409 suggestion_lapsed`; `409 suggestion_target_gone` when the policy, Incident or Case was
-         *     deleted since it was proposed. The edit's own refusals come back as the hand edit would answer
+         *     deleted since it was proposed; `409 suggestion_stale` when a count Suggestion's policy no longer
+         *     has the count condition it had when the Suggestion was proposed — someone edited it since, and
+         *     applying would silently overwrite that edit, so nothing is written and the sentence says to edit
+         *     the policy by hand. The edit's own refusals come back as the hand edit would answer
          *     them. Needs a human: a system principal is a `403`.
          */
         post: operations["applySuggestion"];
@@ -2454,6 +2457,31 @@ export interface paths {
         head?: never;
         /** Update a notification policy */
         patch: operations["updateNotificationPolicy"];
+        trace?: never;
+    };
+    "/api/v1/notification-policies/{id}/investigations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A notification policy's digest Investigations, latest first
+         * @description Every Investigation this policy's digest windows asked for (`subject_kind` `digest`), latest
+         *     requested first, without transcripts — including the ones that never ran: `skipped` with reason
+         *     `budget`, `disabled` or `window_closed`, and the `failed` and `exhausted` ones. A digest window's
+         *     run has no page of its own, so this is where its record is read (ADR 0053 §6: recorded, never
+         *     silent). Its Finding is not an Enrichment: it stays on the run and is copied onto the digest it
+         *     was ready for. A policy this org does not have, or a deleted one, is a `404`.
+         */
+        get: operations["listPolicyDigestInvestigations"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/notifications": {
@@ -6591,8 +6619,9 @@ export interface components {
             /**
              * Format: int32
              * @description The most Investigations `running` at once in this org (ADR 0053 §6). One past it **waits** —
-             *     it stays `queued` and is never dropped. Each oto process works at most two at once (the
-             *     `investigate` queue's width), so a number above the workers you run never binds.
+             *     it stays `queued` and is never dropped. Each oto process works at most eight at once by
+             *     default (the `investigate` queue's width, `jobs.queue_investigate`), so a number above the
+             *     workers you run never binds.
              * @default 2
              */
             investigation_concurrency: number;
@@ -7878,7 +7907,10 @@ export interface components {
             digest_floor?: number | null;
             /**
              * @description Nullable. An explicit `null` **clears** it and puts the policy's digest back on the built-in
-             *     body; omitting the key leaves it alone.
+             *     body; omitting the key leaves it alone — except that a patch clearing `digest_window_seconds`
+             *     (an explicit `null`) without naming this field clears it too, since an Investigator summarises
+             *     a digest's windows and there are none left. Clearing the window while naming an Investigator
+             *     is a `422`.
              */
             digest_investigator_id?: components["schemas"]["Uuid"] | null;
             /**
@@ -8248,8 +8280,9 @@ export interface components {
         };
         /**
          * @description `queued` → `running` → `completed` (the model answered), `exhausted` (a per-run budget stopped
-         *     it; its Finding is partial), or `failed`. `skipped` never started: a kill switch was off, or the
-         *     org's daily token budget was spent. A `queued` run may be waiting — for a slot under the org's
+         *     it; its Finding is partial), or `failed`. `skipped` never started: a kill switch was off, the
+         *     org's daily token budget was spent, or a digest window's run was still queued when its window
+         *     closed. A `queued` run may be waiting — for a slot under the org's
          *     concurrency, or for `not_before`.
          * @enum {string}
          */
@@ -8259,11 +8292,13 @@ export interface components {
          *     `wall_time_budget`. `failed`: `usage_missing` (the model reported no token usage, so the run could
          *     not be budgeted), `model_error`, `model_changed` (the endpoint no longer reports the model the
          *     version pinned), `subject_gone`, `interrupted` (its worker stopped; it is not re-run, which would
-         *     pay twice), `internal`. `skipped`: `disabled` (a kill switch was off) or `budget` (the org had
-         *     spent its `investigation_daily_tokens` since 00:00 UTC; it resets at UTC midnight).
+         *     pay twice), `internal`. `skipped`: `disabled` (a kill switch was off), `budget` (the org had
+         *     spent its `investigation_daily_tokens` since 00:00 UTC; it resets at UTC midnight), or
+         *     `window_closed` (a digest window's run was still `queued` when its window closed, so the digest
+         *     had already gone out without it and a Finding would be read by nothing; no model was called).
          * @enum {string}
          */
-        InvestigationReason: "step_budget" | "token_budget" | "wall_time_budget" | "usage_missing" | "model_error" | "model_changed" | "subject_gone" | "interrupted" | "internal" | "disabled" | "budget";
+        InvestigationReason: "step_budget" | "token_budget" | "wall_time_budget" | "usage_missing" | "model_error" | "model_changed" | "subject_gone" | "interrupted" | "internal" | "disabled" | "budget" | "window_closed";
         /** @description One run of one Investigator version against one subject (ADR 0053 §1), frozen once it ends. */
         InvestigationDTO: {
             id: components["schemas"]["Uuid"];
@@ -15001,6 +15036,45 @@ export interface operations {
             413: components["responses"]["PayloadTooLarge"];
             415: components["responses"]["UnsupportedMediaType"];
             422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    listPolicyDigestInvestigations: {
+        parameters: {
+            query?: {
+                /** @description Maximum items to return in one page. */
+                limit?: components["parameters"]["LimitParam"];
+                /**
+                 * @description Opaque keyset cursor, taken verbatim from `page.next_cursor` of the previous response. A cursor
+                 *     minted under a different filter set is rejected with `400 cursor_filter_mismatch` — reset
+                 *     pagination when the user changes a filter.
+                 */
+                cursor?: components["parameters"]["CursorParam"];
+            };
+            header?: never;
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One page of the policy's digest Investigations. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvestigationListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
             429: components["responses"]["RateLimited"];
             500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];

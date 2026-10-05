@@ -3541,7 +3541,7 @@ export const RequestInvestigationRequestSchema = v.strictObject({
 
 export const InvestigationStatusSchema = v.picklist(["queued", "running", "completed", "exhausted", "failed", "skipped"]);
 
-export const InvestigationReasonSchema = v.picklist(["step_budget", "token_budget", "wall_time_budget", "usage_missing", "model_error", "model_changed", "subject_gone", "interrupted", "internal", "disabled", "budget"]);
+export const InvestigationReasonSchema = v.picklist(["step_budget", "token_budget", "wall_time_budget", "usage_missing", "model_error", "model_changed", "subject_gone", "interrupted", "internal", "disabled", "budget", "window_closed"]);
 
 export const InvestigationDTOSchema = v.looseObject({
   "id": UuidSchema,

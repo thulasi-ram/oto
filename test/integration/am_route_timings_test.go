@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 100 {
-		t.Fatalf("latest migration is %d, want 100 — this test pins the number so that a "+
+	if latest != 102 {
+		t.Fatalf("latest migration is %d, want 102 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1633,6 +1633,56 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// accepts a kind the release below it cannot interpret. No column reading can
 	// see that, and it is the half most likely to be forgotten because nothing
 	// references it.
+	// ⭐ 00102 ENDS A DIGEST WINDOW'S RUN THAT WAS STILL QUEUED WHEN ITS WINDOW CLOSED AS
+	// `skipped`/`window_closed` (owner ruling O4): one reason added to one arm of
+	// `investigations_reason_ck`, and the table comment restated. The CHECK is read for its
+	// BODY on both sides, for 00075's reason — a Down that dropped and re-added the same
+	// widened CHECK exits 0 — and the comment because the Down restores 00094's exactly.
+	if def := constraintDef("investigations_reason_ck", "investigations"); !strings.Contains(def, "'window_closed'") ||
+		!strings.Contains(def, "'budget'") {
+		t.Fatalf("investigations_reason_ck does not admit skipped/window_closed at migration 102: %s", def)
+	}
+	if c := tableComment("investigations"); !strings.Contains(c, "window closed") {
+		t.Fatalf("investigations's comment at migration 102 does not name the closed window: %s", c)
+	}
+
+	down(102)
+
+	if def := constraintDef("investigations_reason_ck", "investigations"); strings.Contains(def, "'window_closed'") ||
+		!strings.Contains(def, "'budget'") {
+		t.Fatalf("00102's Down did not restore 00094's investigations_reason_ck: %s", def)
+	}
+	if c := tableComment("investigations"); strings.Contains(c, "window closed") ||
+		!strings.Contains(c, "daily token budget") {
+		t.Fatalf("00102's Down did not restore 00094's investigations comment: %s", c)
+	}
+
+	// ⭐ 00101 LETS A FROZEN INVESTIGATION, OR AN APPLIED SUGGESTION, LOSE ITS ACTOR WHEN THE
+	// USER GOES (review B5): two trigger function BODIES replaced, nothing else. There is no
+	// catalog object to count, so the body is read — `pg_trigger_depth` is the clause the Up
+	// adds and the Down must take away. A Down that forgot one function leaves a freeze with
+	// a hole no other assertion here can see.
+	frozenBodies := func() int {
+		t.Helper()
+		var n int
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT count(*) FROM pg_proc
+			  WHERE proname IN ('investigations_refuse_change_once_ended','investigation_suggestions_refuse_rewrite')
+			    AND prosrc LIKE '%pg_trigger_depth%'`).Scan(&n); err != nil {
+			t.Fatalf("introspect the frozen-row trigger functions: %v", err)
+		}
+		return n
+	}
+	if n := frozenBodies(); n != 2 {
+		t.Fatalf("%d of 00101's two frozen-row functions let the actor's SET NULL through at migration 101", n)
+	}
+
+	down(101)
+
+	if n := frozenBodies(); n != 0 {
+		t.Fatalf("%d of 00101's two frozen-row functions kept the actor clause after its Down", n)
+	}
+
 	// ⭐ 00100 LETS AN INVESTIGATOR PROPOSE A REMEDY THAT TWO DIFFERENT APPROVERS MUST SAY YES
 	// TO (ADR 0054, git-bug 4148256): three tables, two trigger functions, the six Remedy
 	// facts on `notifications_reason_ck` with the snapshot column and its CHECK, the reasons

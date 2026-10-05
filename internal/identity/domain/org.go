@@ -298,8 +298,9 @@ const DefaultInvestigationsEnabled = true
 // ⭐ TWO MILLION TOKENS IS TEN RUNS AT THE DEFAULT PER-RUN BUDGET (200 000), which is
 // a storm's worth of curiosity and not an afternoon of it: an org that wants more
 // raises a number it can read back, and an org that set nothing cannot be surprised
-// by its bill. TWO AT ONCE is the `investigate` queue's own width in one process, so
-// the default never queues behind a limit the workers would not have reached anyway.
+// by its bill. TWO AT ONCE is a per-org share, not the `investigate` queue's width (eight
+// workers per process by default, `jobs.queue_investigate`): one org's two runs of up to
+// half an hour no longer hold the whole deployment (review A10).
 const (
 	DefaultInvestigationDailyTokens = 2_000_000
 	DefaultInvestigationConcurrency = 2

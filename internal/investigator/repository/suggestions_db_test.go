@@ -109,6 +109,65 @@ VALUES ($1, $2, $3, 'policy_count_condition', $4, 'p', 3, 600, $5, 9, 'x', $6, $
 	require.Error(t, err)
 }
 
+// TestAUserWhoAskedOrAppliedCanBeDeleted — review B5, migration 00101. `requested_by` and
+// `applied_by` are `ON DELETE SET NULL`, and that SET NULL is an UPDATE of a frozen row. The
+// freeze lets exactly that through — nested in the foreign key's own trigger, the actor
+// going NULL and nothing else — so deleting the user succeeds, the labels stay, and a
+// direct UPDATE of the same rows is still refused.
+func TestAUserWhoAskedOrAppliedCanBeDeleted(t *testing.T) {
+	t.Parallel()
+	w := newWorld(t)
+	repo := repository.NewSuggestionRepository(w.h.Pool)
+	at := w.h.Now()
+	user := uuid.New()
+	w.h.Exec(`INSERT INTO users (id, org_id, email, display_name, created_at, updated_at)
+	          VALUES ($1, $2, $3, 'Grace Hopper', $4, $4)`, user, w.scope.OrgID(), user.String()+"@example.test", at)
+	by := domain.Requester{UserID: user, Label: "Grace Hopper"}
+
+	run, err := w.runs.Insert(w.h.Ctx, w.scope, domain.Investigation{
+		SubjectKind: domain.SubjectCase, SubjectID: uuid.New(), AlertKey: "k",
+		InvestigatorID: w.inv.ID, VersionID: w.inv.Current.ID, Status: domain.StatusQueued,
+		Budgets: w.inv.Budgets, RequestedBy: by, RequestedAt: at,
+	})
+	require.NoError(t, err)
+	w.start(t, run.ID, at, 2)
+	require.NoError(t, w.runs.Finish(w.h.Ctx, w.scope, run.ID, domain.Completed(), domain.Usage{InputTokens: 10, OutputTokens: 1}, 0,
+		"A deploy.", "", at.Add(time.Minute)))
+	require.NoError(t, repo.InsertSuggestions(w.h.Ctx, w.scope, run.ID, []domain.SuggestionDraft{
+		{Kind: domain.SuggestCountCondition, Why: "It flaps.", Count: domain.CountChange{
+			PolicyID: uuid.New(), PolicyName: "crashloops", CountMin: 3, CountWindow: 10 * time.Minute}},
+	}, at, at.Add(domain.SuggestionLapse)))
+	shown, err := repo.ListSuggestions(w.h.Ctx, w.scope, run.ID, at)
+	require.NoError(t, err)
+	require.NoError(t, repo.MarkApplied(w.h.Ctx, w.scope, shown[0].ID, by, at.Add(2*time.Minute)))
+
+	// ⛔ A hand cannot null the actor of a frozen row: only the foreign key's action can.
+	_, err = w.h.Pool.Exec(w.h.Ctx, `UPDATE investigations SET requested_by = NULL WHERE id = $1`, run.ID)
+	require.Error(t, err)
+	_, err = w.h.Pool.Exec(w.h.Ctx, `UPDATE investigation_suggestions SET applied_by = NULL WHERE id = $1`, shown[0].ID)
+	require.Error(t, err)
+
+	_, err = w.h.Pool.Exec(w.h.Ctx, `DELETE FROM users WHERE id = $1`, user)
+	require.NoError(t, err, "deleting a user who asked for a run and applied a Suggestion was refused by the freeze")
+
+	var requestedBy, appliedBy *uuid.UUID
+	var requestedLabel, appliedLabel string
+	require.NoError(t, w.h.Pool.QueryRow(w.h.Ctx,
+		`SELECT requested_by, requested_by_label FROM investigations WHERE id = $1`, run.ID).Scan(&requestedBy, &requestedLabel))
+	require.NoError(t, w.h.Pool.QueryRow(w.h.Ctx,
+		`SELECT applied_by, applied_by_label FROM investigation_suggestions WHERE id = $1`, shown[0].ID).Scan(&appliedBy, &appliedLabel))
+	require.Nil(t, requestedBy)
+	require.Nil(t, appliedBy)
+	require.Equal(t, "Grace Hopper", requestedLabel, "the label is the record and stays")
+	require.Equal(t, "Grace Hopper", appliedLabel, "the label is the record and stays")
+
+	// ⛔ And the rows are as frozen as they were.
+	_, err = w.h.Pool.Exec(w.h.Ctx, `UPDATE investigations SET finding = 'better' WHERE id = $1`, run.ID)
+	require.Error(t, err)
+	_, err = w.h.Pool.Exec(w.h.Ctx, `UPDATE investigation_suggestions SET why = 'better' WHERE id = $1`, shown[0].ID)
+	require.Error(t, err)
+}
+
 // mapPG is the repository's own translation of a raw statement's error, so a CHECK's name
 // is read as the code oto would report.
 func mapPG(err error) error {

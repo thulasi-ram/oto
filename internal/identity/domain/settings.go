@@ -284,15 +284,16 @@ var settingBounds = map[SettingKey]Bound{
 	// operator can read back. It fits the contract's int32.
 	KeyInvestigationDailyTokens: {Min: 1000, Max: 1_000_000_000,
 		Why: "input + output tokens per UTC day, 1000..1000000000: once the day's recorded spend reaches it, a new Investigation is recorded skipped with reason budget and never queued, until 00:00 UTC. Below 1000 not even one run's smallest budget fits; there is no unlimited, because a ceiling nobody can read back is not a control. A run already going is bounded by its own token budget, so the day can overrun by at most what the runs in flight still had left"},
-	// The ceiling is a sanity bound, not a capacity: the `investigate` queue is two
-	// workers wide per process, so this many runs at once needs that many workers.
+	// The ceiling is a sanity bound, not a capacity: the `investigate` queue is eight
+	// workers wide per process by default (`jobs.queue_investigate` moves it), so this
+	// many runs at once needs that many workers.
 	// ⭐ THE REMEDY WINDOW (ADR 0054 §2). A minute is the floor — two people cannot read an
 	// exact command and approve it faster — and a day the ceiling: a change approved
 	// yesterday is not a change about today's cluster.
 	KeyRemedyApprovalWindow: {Min: 60, Max: 86400,
 		Why: "seconds, 60..86400: a proposed Remedy that has not had its required approvals within this long after it was proposed, or an approved one not executed within this long after its approval, is recorded expired and can no longer be approved or executed. Below a minute two people cannot read the exact command and approve it; above a day the cluster it was proposed for is not the cluster it would change"},
 	KeyInvestigationConcurrency: {Min: 1, Max: 32,
-		Why: "running Investigations, 1..32: one past it waits queued and is never dropped. Zero would be a kill switch that queues forever, and that is investigations_enabled's job, said by name. Each oto process works at most two at once (the investigate queue's width), so a number above the workers you run never binds"},
+		Why: "running Investigations, 1..32: one past it waits queued and is never dropped. Zero would be a kill switch that queues forever, and that is investigations_enabled's job, said by name. Each oto process works at most eight at once by default (the investigate queue's width, jobs.queue_investigate), so a number above the workers you run never binds"},
 }
 
 // Bounds returns the bound for an integer key.

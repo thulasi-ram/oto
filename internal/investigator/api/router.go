@@ -48,6 +48,7 @@ type InvestigatorService interface {
 	RequestIncidentInvestigation(ctx context.Context, s db.TenantScope, number int64, investigatorID uuid.UUID,
 		by domain.Requester) (domain.Investigation, error)
 	ListIncidentInvestigations(ctx context.Context, s db.TenantScope, number int64, p db.Keyset) ([]domain.Investigation, db.Cursor, error)
+	ListPolicyDigestInvestigations(ctx context.Context, s db.TenantScope, policyID uuid.UUID, p db.Keyset) ([]domain.Investigation, db.Cursor, error)
 	GetInvestigation(ctx context.Context, s db.TenantScope, id uuid.UUID) (service.InvestigationDetail, error)
 
 	ListSuggestions(ctx context.Context, s db.TenantScope, investigationID uuid.UUID) ([]domain.Suggestion, error)
@@ -118,6 +119,7 @@ func (rt *Router) Mount(r chi.Router) {
 	r.Post("/cases/{id}/investigations", rt.requestCaseInvestigation)
 	r.Get("/incidents/{number}/investigations", rt.listIncidentInvestigations)
 	r.Post("/incidents/{number}/investigations", rt.requestIncidentInvestigation)
+	r.Get("/notification-policies/{id}/investigations", rt.listPolicyDigestInvestigations)
 	r.Get("/investigations/{id}", rt.getInvestigation)
 	// ⛔ ONE VERB ON A SUGGESTION, AND IT IS APPLY (ADR 0053 §2, git-bug 8327c00). An
 	// unapplied one lapses on its own; no route declines one, because a Suggestion that

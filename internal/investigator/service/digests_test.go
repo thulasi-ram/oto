@@ -17,6 +17,8 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/thulasiram/oto/internal/investigator/domain"
+	"github.com/thulasiram/oto/internal/platform/db"
+	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/jobs"
 	"github.com/thulasiram/oto/test/modelfake"
 )
@@ -323,3 +325,35 @@ func TestADigestRunStillQueuedWhenItsWindowClosedIsSkipped(t *testing.T) {
 	}
 }
 
+// TestAPolicysDigestRunsAreListedAndAStrangerPolicyIsA404 — review D4: the run a window
+// asked for, and the one its closed window skipped, are both read by the policy that named
+// the Investigator; a policy the org does not have is a 404 before any run is read.
+func TestAPolicysDigestRunsAreListedAndAStrangerPolicyIsA404(t *testing.T) {
+	r := newRig(t)
+	inv := r.digestInvestigator(t, "digest", true, digestBudgets(t, 10, 100_000, 300), ToolDigestCases)
+	d := r.summarise(t, inv)
+	r.policies.policies = append(r.policies.policies, domain.PolicyTarget{ID: d.PolicyID, Name: d.PolicyName})
+	r.clock.Set(d.Window.End.Add(-7 * time.Minute))
+	if n := r.arm(t); n != 1 {
+		t.Fatalf("armed %d", n)
+	}
+	run, err := r.investigations.DigestRun(context.Background(), r.scope, d.PolicyID, d.Window)
+	if err != nil || run == nil {
+		t.Fatal("no run armed", err)
+	}
+	r.clock.Set(d.Window.End.Add(time.Second))
+	r.run(t, run.ID)
+
+	runs, _, err := r.svc.ListPolicyDigestInvestigations(context.Background(), r.scope, d.PolicyID, db.Keyset{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 || runs[0].ID != run.ID || runs[0].Ending.Reason != domain.ReasonWindowClosed {
+		t.Fatalf("listed %+v, want the one skipped/window_closed run", runs)
+	}
+
+	_, _, err = r.svc.ListPolicyDigestInvestigations(context.Background(), r.scope, uuid.New(), db.Keyset{Limit: 10})
+	if !errs.IsKind(err, errs.KindNotFound) {
+		t.Fatalf("a stranger policy answered %v, want a 404", err)
+	}
+}

@@ -51,10 +51,12 @@ export const REASON_SENTENCE: Record<InvestigationReason, string> = {
     "It ran for as long as its wall-time budget allows, and stopped before concluding. What it had reached is kept, marked partial.",
   usage_missing:
     "The model reported no token usage, so the run could not be budgeted and was stopped rather than run unmetered.",
-  model_error: "The model endpoint answered with an error.",
+  model_error:
+    "The model endpoint answered with an error, or the model ended without an answer, refused to answer, or was cut off at oto's per-turn output cap before it finished.",
   model_changed:
     "The endpoint no longer reports the model this Investigator version pinned, so the run was stopped rather than answered by a different model.",
-  subject_gone: "The Case or Incident it was asked about could no longer be read.",
+  subject_gone:
+    "The Case or Incident it was asked about, or the notification policy whose digest it summarised, could no longer be read.",
   interrupted:
     "Its worker stopped part-way through. It is not run again on its own, which would spend its tokens twice — ask again if it is still worth asking.",
   internal: "oto failed while running it. This is a fault on oto's side.",
@@ -62,6 +64,8 @@ export const REASON_SENTENCE: Record<InvestigationReason, string> = {
     "Investigations are switched off — for this organisation, or for this Investigator — so nothing ran. The request is still recorded.",
   budget:
     "This organisation had already spent its daily Investigation token budget, so nothing ran. The request is still recorded; the budget resets at midnight UTC.",
+  window_closed:
+    "Its digest window closed while it was still waiting to start, so the digest had already gone out without it. Nothing ran: a Finding now would be read by nothing.",
 };
 
 /** What came of one Tool call: the word, and what it meant for the run. */
@@ -69,7 +73,7 @@ export const OUTCOME: Record<StepOutcome, { readonly label: string; readonly not
   ok: { label: "answered", note: "The Tool answered and the model was given its result." },
   refused: {
     label: "refused",
-    note: "Not called: the Tool is outside this Investigator's allowlist, does not exist, or the step budget was spent. The model was told so.",
+    note: "Not called: the Tool is outside this Investigator's allowlist, does not exist, or the step budget was spent — or the call named a classification outside the set, proposed an invalid Suggestion, or came past the cap on answer-shaping calls one run may make. The model was told so.",
   },
   timeout: {
     label: "timed out",

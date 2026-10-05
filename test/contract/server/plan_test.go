@@ -363,6 +363,17 @@ func plan() []probe {
 			body: map[string]any{"priority": 200},
 			want: http.StatusOK,
 		},
+		// Review D4: a policy's digest-window runs. This world asks for none, so the page
+		// is empty — what is driven is the route, its 200 shape, and the 404 a stranger
+		// policy gets through the same read a Suggestion's apply makes.
+		{
+			method: http.MethodGet, tmpl: "/api/v1/notification-policies/{id}/investigations",
+			url: "/api/v1/notification-policies/{{policy}}/investigations", want: http.StatusOK,
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/notification-policies/{id}/investigations",
+			url: "/api/v1/notification-policies/{{stranger}}/investigations", want: http.StatusNotFound,
+		},
 
 		/* -------------------------------------------------------------- alerts */
 		{method: http.MethodGet, tmpl: "/api/v1/alerts", want: http.StatusOK},

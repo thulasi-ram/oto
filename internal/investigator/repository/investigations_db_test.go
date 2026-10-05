@@ -171,6 +171,26 @@ func TestAnEndedRunIsFrozenAndItsReasonBelongsToItsStatus(t *testing.T) {
 	require.Contains(t, err.Error(), "frozen")
 }
 
+// TestADigestRunItsWindowOutlivedIsSkippedOnTheRecord — owner ruling O4, migration 00102:
+// `investigations_reason_ck` admits `skipped`/`window_closed`, and only on `skipped`.
+func TestADigestRunItsWindowOutlivedIsSkippedOnTheRecord(t *testing.T) {
+	t.Parallel()
+	w := newWorld(t)
+	run := w.queued(t, "k", w.h.Now())
+	require.NoError(t, w.runs.Finish(w.h.Ctx, w.scope, run.ID, domain.EndedBy(domain.ReasonWindowClosed,
+		"the digest window closed before this run could start"), domain.Usage{}, 0, "", "", w.h.Now()))
+	got, err := w.runs.Get(w.h.Ctx, w.scope, run.ID)
+	require.NoError(t, err)
+	require.Equal(t, domain.StatusSkipped, got.Status)
+	require.Equal(t, domain.ReasonWindowClosed, got.Ending.Reason)
+
+	// ⛔ window_closed belongs to skipped and nothing else.
+	other := w.queued(t, "k2", w.h.Now())
+	err = w.runs.Finish(w.h.Ctx, w.scope, other.ID, domain.Ending{Status: domain.StatusFailed, Reason: domain.ReasonWindowClosed, Detail: "x"},
+		domain.Usage{}, 0, "", "", w.h.Now())
+	require.Error(t, err)
+}
+
 func TestASkippedRunNeverStarted(t *testing.T) {
 	t.Parallel()
 	w := newWorld(t)
