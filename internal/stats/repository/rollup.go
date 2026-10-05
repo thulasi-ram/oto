@@ -86,7 +86,10 @@ WITH bounds AS (
          -- and no join to alerts: an open episode has a NULL reason and falls out
          -- of both, exactly as it fell out of both state literals.
          count(*) FILTER (WHERE o.resolve_reason = 'upstream')  AS auto_resolved,
-         count(*) FILTER (WHERE o.resolve_reason = 'timeout')   AS expired,
+         -- ADR 0056 §4: every reason but upstream is an expiry (timeout, silent,
+         -- source_removed). NULL <> 'upstream' is NULL, so an open episode still
+         -- falls out.
+         count(*) FILTER (WHERE o.resolve_reason <> 'upstream') AS expired,
          COALESCE(SUM(GREATEST(0, EXTRACT(EPOCH FROM
              (COALESCE(o.ended_at, b.as_of) - o.started_at))))::bigint, 0)
                                                                AS total_firing_seconds

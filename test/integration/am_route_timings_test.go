@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 93 {
-		t.Fatalf("latest migration is %d, want 93 — this test pins the number so that a "+
+	if latest != 94 {
+		t.Fatalf("latest migration is %d, want 94 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1631,6 +1631,91 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// accepts a kind the release below it cannot interpret. No column reading can
 	// see that, and it is the half most likely to be forgotten because nothing
 	// references it.
+	// ⭐ 00094 LETS A CASE THE UPSTREAM STOPPED SPEAKING ABOUT EXPIRE (ADR 0056): it
+	// widens `case_resreason_ck` to admit `silent` and `source_removed`, adds
+	// `alert_sources.max_silence_s` with its CHECK and a day's default, and adds
+	// `case_silence_idx`.
+	//
+	// ⚠️ ITS DOWN NARROWS AN ENUM, so it is 00031's shape: rows written under the
+	// wider CHECK must be rewritten before the narrower one goes back, or the
+	// rollback aborts. A real `silent` Case is written here and read back after the
+	// Down as `timeout` — still expired, which is the one fact the release below can
+	// spell. A Down that DELETED the row instead would pass every schema reading.
+	silentScope, _, silentHealth := seedSource(t, env)
+	var silentCluster uuid.UUID
+	if err := env.pool.QueryRow(env.ctx,
+		`SELECT cluster_id FROM alert_sources WHERE id = $1`, silentHealth.SourceID).
+		Scan(&silentCluster); err != nil {
+		t.Fatalf("read the seeded source's cluster: %v", err)
+	}
+	var silenceDefault string
+	if err := env.pool.QueryRow(env.ctx,
+		`SELECT coalesce(max(column_default), '') FROM information_schema.columns
+		  WHERE table_name::text = 'alert_sources' AND column_name::text = 'max_silence_s'`).
+		Scan(&silenceDefault); err != nil {
+		t.Fatalf("introspect alert_sources.max_silence_s default: %v", err)
+	}
+	if def := silenceDefault; !strings.Contains(def, "86400") {
+		t.Fatalf("alert_sources.max_silence_s defaults to %q at migration 94, want 86400 — a "+
+			"day is ADR 0056's default, and every existing source takes it", def)
+	}
+	if def := constraintDef("alert_sources_silence_ck", "alert_sources"); !strings.Contains(def, "3600") ||
+		!strings.Contains(def, "2592000") {
+		t.Fatalf("alert_sources_silence_ck is %q — it must bound max_silence_s to an hour..thirty days", def)
+	}
+	if def := constraintDef("case_resreason_ck", "alert_cases"); !strings.Contains(def, "silent") ||
+		!strings.Contains(def, "source_removed") {
+		t.Fatalf("case_resreason_ck does not admit the two ADR 0056 expiries at migration 94: %s", def)
+	}
+	if n := countIndexes("case_silence_idx"); n != 1 {
+		t.Fatalf("case_silence_idx is absent at migration 94 (found %d)", n)
+	}
+	silentAlert, silentCase := id.New(), id.New()
+	if _, err := env.pool.Exec(env.ctx,
+		`INSERT INTO alerts (id, org_id, cluster_id, alert_key, source_fingerprint, alertname,
+		                     cluster_key, labels, state, first_seen_at, last_seen_at,
+		                     last_state_change_at)
+		 VALUES ($1, $2, $3, $4, $5, 'RollbackSilent', 'prod',
+		         '{"alertname":"RollbackSilent"}'::jsonb, 'expired', now(), now(), now())`,
+		silentAlert, silentScope.OrgID(), silentCluster,
+		"ak_"+strings.Repeat("s", 26), strings.Repeat("cd", 8)); err != nil {
+		t.Fatalf("seed the alert behind the silent case: %v", err)
+	}
+	if _, err := env.pool.Exec(env.ctx,
+		`INSERT INTO alert_cases (id, org_id, alert_id, seq, number, state, resolve_reason,
+		                          started_at, ended_at, last_observed_at, source_starts_at)
+		 VALUES ($1, $2, $3, 1, 1, 'closed', 'silent', now() - interval '2 days', now(),
+		         now() - interval '2 days', now() - interval '2 days')`,
+		silentCase, silentScope.OrgID(), silentAlert); err != nil {
+		t.Fatalf("seed a case expired as silent at migration 94: %v", err)
+	}
+
+	down(94)
+
+	if n := countColumns("alert_sources", "max_silence_s"); n != 0 {
+		t.Fatalf("alert_sources.max_silence_s survived 00094's Down (found %d)", n)
+	}
+	if n := countConstraints("alert_sources_silence_ck"); n != 0 {
+		t.Fatalf("alert_sources_silence_ck survived 00094's Down")
+	}
+	if n := countIndexes("case_silence_idx"); n != 0 {
+		t.Fatalf("case_silence_idx survived 00094's Down (found %d)", n)
+	}
+	if def := constraintDef("case_resreason_ck", "alert_cases"); strings.Contains(def, "silent") ||
+		!strings.Contains(def, "timeout") {
+		t.Fatalf("00094's Down did not restore the two-valued case_resreason_ck: %s", def)
+	}
+	var rewritten string
+	if err := env.pool.QueryRow(env.ctx,
+		`SELECT resolve_reason FROM alert_cases WHERE id = $1`, silentCase).Scan(&rewritten); err != nil {
+		t.Fatalf("the silent case did not survive 00094's Down: %v — the Down must rewrite "+
+			"the reason, never delete the row", err)
+	}
+	if rewritten != "timeout" {
+		t.Fatalf("00094's Down left resolve_reason %q; an expired case must read as the one "+
+			"expiry the release below can spell, `timeout`", rewritten)
+	}
+
 	// ⭐ 00093 NUMBERS AN INCIDENT'S FACTS (ADR 0052 §5, owner ruling 2026-10-04): a
 	// defaulted counter on `incidents` and a nullable column on `notifications`, each with
 	// its CHECK. The notifications CHECK is read for its subject arm, because a sequence on

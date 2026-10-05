@@ -1255,9 +1255,11 @@ func TestDefaultSummariesAreWithinTheEventBound(t *testing.T) {
 		TransitionT5, TransitionT6, TransitionT7,
 		TransitionT9, TransitionT10,
 	} {
-		s := defaultSummary(id, StateFiring, StateResolved)
-		assert.NotEmpty(t, strings.TrimSpace(s))
-		assert.LessOrEqual(t, len(s), MaxEventSummaryBytes)
+		for _, reason := range []ResolveReason{{}, ResolveTimeout, ResolveSilent, ResolveSourceRemoved} {
+			s := defaultSummary(id, StateFiring, StateResolved, reason)
+			assert.NotEmpty(t, strings.TrimSpace(s))
+			assert.LessOrEqual(t, len(s), MaxEventSummaryBytes)
+		}
 	}
 }
 

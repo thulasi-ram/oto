@@ -1116,6 +1116,171 @@ func (r *CaseRepository) ReapCandidates(
 	return collectCases(rows, n)
 }
 
+// ------------------------------------------- the two ADR 0056 expiries (00094)
+
+// silentCandidatesSQL feeds `silent`: open episodes whose cluster has exactly ONE
+// live source, that source sets a `max_silence_s`, and nothing has been heard
+// about the episode for longer than it.
+//
+// ⭐ EXACTLY ONE LIVE SOURCE, FOR `caseSourcesSQL`'S REASON. The §B.4 guard is
+// asked of "the" source, and a cluster fed by two has no single answer; picking
+// either would let one replica's health and one replica's threshold end an
+// episode the other may still be carrying. Those episodes are held, as their
+// `timeout` candidates already are.
+//
+// ⭐ THE `- interval '1 hour'` IS `alert_sources_silence_ck`'S FLOOR, restated so
+// the scan can stop reading `case_silence_idx` at the youngest episode any source
+// could possibly expire. It is a pre-filter, never the verdict: the per-source
+// comparison below is, and `expire` re-asks it of the fresh row.
+var silentCandidatesSQL = `
+SELECT ` + caseColumns + `
+  FROM alert_cases o
+ WHERE o.org_id = $1
+   AND o.ended_at IS NULL
+   AND o.resolve_pending_at IS NULL
+   AND o.last_observed_at < $2::timestamptz - interval '1 hour'
+   AND EXISTS (
+         SELECT 1
+           FROM alerts al
+           JOIN alert_sources s
+             ON s.org_id = al.org_id AND s.cluster_id = al.cluster_id
+            AND s.deleted_at IS NULL
+          WHERE al.id = o.alert_id AND al.org_id = o.org_id
+            AND s.max_silence_s IS NOT NULL
+            AND o.last_observed_at + make_interval(secs => s.max_silence_s) < $2
+            AND (SELECT count(*) FROM alert_sources l
+                  WHERE l.org_id = al.org_id AND l.cluster_id = al.cluster_id
+                    AND l.deleted_at IS NULL) = 1)
+ ORDER BY o.last_observed_at ASC
+ LIMIT $3`
+
+// SilentCandidates feeds the `silent` expiry (ADR 0056 §3). Like ReapCandidates
+// it returns CANDIDATES, not verdicts, and THE §B.4 GUARD IS THE CALLER'S: a
+// silent episode under a source that is not healthy is held, because oto cannot
+// tell "upstream stopped speaking about it" from "Alertmanager is down".
+func (r *CaseRepository) SilentCandidates(
+	ctx context.Context, s db.TenantScope, now time.Time, limit int,
+) ([]domain.Case, error) {
+	if err := db.RequireScope(s); err != nil {
+		return nil, err
+	}
+	if now.IsZero() {
+		return nil, errs.Internal("silent_bound_missing", errsMissing("now is required"))
+	}
+	n := db.ClampLimit(limit)
+
+	rows, err := r.db(ctx).Query(ctx, silentCandidatesSQL, s.OrgID(), now.UTC(), n)
+	if err != nil {
+		return nil, mapErr(err, "list silent candidates")
+	}
+	defer rows.Close()
+	return collectCases(rows, n)
+}
+
+// sourceRemovedCandidatesSQL feeds `source_removed`: open episodes whose cluster
+// has NO live source left and at least one that was soft-deleted.
+//
+// ⭐⭐ IT IS A QUESTION ABOUT THE CLUSTER, NOT ABOUT THE DELETED SOURCE, AND THAT
+// IS WHAT KEEPS AN HA PAIR SAFE. Alertmanager replicas are several sources on one
+// cluster; deleting one leaves the other speaking for every Case they shared, so
+// those Cases must stay open. Only once the last live source is gone is there
+// nothing left that could say an episode ended.
+//
+// ⚠️ "AT LEAST ONE REMOVED" IS NOT DECORATION. A cluster no source was ever
+// deleted from has nothing to say `source_removed` about, and expiring its Cases
+// would name a cause that did not happen.
+//
+// ⚠️ COST. Unlike the other two scans this has no column to range over: it walks
+// the open episodes on `case_silence_idx` and probes `alerts` by primary key and
+// `alert_sources_cluster_idx` for each. Open episodes are the reaper's natural
+// population and the walk is bounded by it, once a minute per tenant.
+var sourceRemovedCandidatesSQL = `
+SELECT ` + caseColumns + `
+  FROM alert_cases o
+ WHERE o.org_id = $1
+   AND o.ended_at IS NULL
+   AND o.resolve_pending_at IS NULL
+   AND EXISTS (
+         SELECT 1
+           FROM alerts al
+          WHERE al.id = o.alert_id AND al.org_id = o.org_id
+            AND NOT EXISTS (SELECT 1 FROM alert_sources l
+                             WHERE l.org_id = al.org_id AND l.cluster_id = al.cluster_id
+                               AND l.deleted_at IS NULL)
+            AND EXISTS (SELECT 1 FROM alert_sources d
+                         WHERE d.org_id = al.org_id AND d.cluster_id = al.cluster_id
+                           AND d.deleted_at IS NOT NULL))
+ ORDER BY o.last_observed_at ASC
+ LIMIT $2`
+
+// SourceRemovedCandidates feeds the `source_removed` expiry (ADR 0056 §2):
+// CANDIDATES, re-proved by the caller inside the transaction that writes, because
+// an operator can register a new source for the cluster between this scan and
+// the write.
+func (r *CaseRepository) SourceRemovedCandidates(
+	ctx context.Context, s db.TenantScope, limit int,
+) ([]domain.Case, error) {
+	if err := db.RequireScope(s); err != nil {
+		return nil, err
+	}
+	n := db.ClampLimit(limit)
+
+	rows, err := r.db(ctx).Query(ctx, sourceRemovedCandidatesSQL, s.OrgID(), n)
+	if err != nil {
+		return nil, mapErr(err, "list source_removed candidates")
+	}
+	defer rows.Close()
+	return collectCases(rows, n)
+}
+
+// caseSourceCountSQL is the in-transaction re-read both ADR 0056 expiries rest
+// on. GROUP BY the Case, so a Case that does not exist yields NO row rather than
+// one whose counts are zero — which would read as "no live source" and is the
+// one wrong answer this statement must never give.
+const caseSourceCountSQL = `
+SELECT count(s.id) FILTER (WHERE s.deleted_at IS NULL)::int,
+       count(s.id) FILTER (WHERE s.deleted_at IS NOT NULL)::int,
+       (array_agg(s.id) FILTER (WHERE s.deleted_at IS NULL))[1],
+       (array_agg(s.max_silence_s) FILTER (WHERE s.deleted_at IS NULL))[1]
+  FROM alert_cases o
+  JOIN alerts al ON al.id = o.alert_id AND al.org_id = o.org_id
+  LEFT JOIN alert_sources s ON s.org_id = al.org_id AND s.cluster_id = al.cluster_id
+ WHERE o.org_id = $1 AND o.id = $2
+ GROUP BY o.id`
+
+// Sources reads what one Case's cluster says about who can still speak for it.
+// SourceID and MaxSilence are filled only when exactly one live source is left;
+// see domain.CaseSources.
+func (r *CaseRepository) Sources(
+	ctx context.Context, s db.TenantScope, caseID uuid.UUID,
+) (domain.CaseSources, error) {
+	if err := db.RequireScope(s); err != nil {
+		return domain.CaseSources{}, err
+	}
+	if err := db.RequireID("case id", caseID); err != nil {
+		return domain.CaseSources{}, err
+	}
+	var (
+		out      domain.CaseSources
+		sourceID *uuid.UUID
+		silence  *int32
+	)
+	if err := r.db(ctx).QueryRow(ctx, caseSourceCountSQL, s.OrgID(), caseID).
+		Scan(&out.Live, &out.Removed, &sourceID, &silence); err != nil {
+		if isNoRows(err) {
+			return domain.CaseSources{}, errs.NotFound("case_not_found", "no such case")
+		}
+		return domain.CaseSources{}, mapErr(err, "count case sources")
+	}
+	if out.Live == 1 && sourceID != nil {
+		out.SourceID = *sourceID
+		if silence != nil {
+			out.MaxSilence = time.Duration(*silence) * time.Second
+		}
+	}
+	return out, nil
+}
+
 // ---------------------------------------------------- the delayed close (00057)
 
 var closeDueCandidatesSQL = `

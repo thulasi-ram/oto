@@ -90,6 +90,10 @@ type SourceDraft struct {
 	// reconciler runs for every source (ADR 0006), and there is no field here that
 	// could ask for it not to.
 	ReconcileInterval time.Duration
+	// MaxSilence is the `silent` expiry threshold (ADR 0056 §3); nil turns it
+	// off. The API applies DefaultMaxSilence when a create omits the field, so
+	// nil here is always a request for "off", never an absence.
+	MaxSilence *time.Duration
 }
 
 // SourcePatch is the partial update.
@@ -122,6 +126,9 @@ type SourcePatch struct {
 	PushEnabled *bool
 	// ReconcileInterval is tunable; whether the reconciler runs at all is not.
 	ReconcileInterval *time.Duration
+	// MaxSilence is a double pointer for PrometheusURL's reason: nil leaves it,
+	// a pointer to nil turns the `silent` expiry off, a pointer to a value sets it.
+	MaxSilence **time.Duration
 }
 
 // IsEmpty reports whether the patch would change nothing.
@@ -130,7 +137,7 @@ func (p SourcePatch) IsEmpty() bool {
 		p.PrometheusURL == nil && p.AuthCredentialID == nil && p.TLSSkipVerify == nil &&
 		p.InjectLabels == nil && p.IgnoreLabels == nil && p.RedactLabels == nil &&
 		p.RedactAnnotations == nil && p.PushEnabled == nil &&
-		p.ReconcileInterval == nil
+		p.ReconcileInterval == nil && p.MaxSilence == nil
 }
 
 // DefaultIgnoreLabels mirrors the `alert_sources.ignore_labels` DDL default and

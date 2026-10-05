@@ -411,9 +411,10 @@ func (o Case) State() CaseState { return o.state }
 // out in snooze.go:25-32.
 //
 // ⭐ THE DERIVATION IS STILL TOTAL, and `check` is what makes it so: a closed
-// episode always carries a `resolve_reason` and it is one of exactly two values,
-// so the closed half is exhaustive; the open half is now a single answer and
-// cannot fail to be.
+// episode always carries a `resolve_reason`, `upstream` is resolved and the three
+// expiries (`timeout`, `silent`, `source_removed` — ADR 0056 §4) are expired, so
+// the closed half is exhaustive; the open half is now a single answer and cannot
+// fail to be.
 //
 // It returns StateNone only for the zero Case, which is the state T1's row comes
 // from — an Alert with no episode at all.
@@ -421,7 +422,7 @@ func (o Case) AlertState() State {
 	switch {
 	case o.state.IsOpen():
 		return StateFiring
-	case o.state.IsClosed() && o.resolveReason == ResolveTimeout:
+	case o.state.IsClosed() && o.resolveReason.IsExpiry():
 		return StateExpired
 	case o.state.IsClosed():
 		return StateResolved
