@@ -128,6 +128,30 @@ type SlackIdentityStore interface {
 	// member, never an org. Its caller has already authenticated by Slack's HMAC
 	// signature (§H.8).
 	ResolveBySlackUser(ctx context.Context, team domain.SlackTeamID, member domain.SlackUserID) (domain.SlackIdentity, error)
+
+	// LockByID reads one identity and holds its row to the end of the transaction, so the
+	// self-service link's "is this another real person's?" and its write cannot be split by a
+	// concurrent link (git-bug a556a5c).
+	LockByID(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.SlackIdentity, error)
+	// ListByUser is every identity linked to one user.
+	ListByUser(ctx context.Context, s db.TenantScope, userID uuid.UUID) ([]domain.SlackIdentity, error)
+	// Unlink drops the link of an identity linked to userID, and is NotFound for any other.
+	Unlink(ctx context.Context, s db.TenantScope, id, userID uuid.UUID) (domain.SlackIdentity, error)
+}
+
+// SlackLinkStore is the self-service link's own state (git-bug a556a5c, migration 00105): the one
+// live code per identity (stored as a sha256 only), the per-user count of wrong codes, and the
+// recorded fact of every link and unlink.
+type SlackLinkStore interface {
+	IssueCode(ctx context.Context, s db.TenantScope, identityID uuid.UUID, hash domain.TokenHash, issuedAt, expiresAt time.Time) error
+	// PresentCode spends one presentation of a live code without consuming it.
+	PresentCode(ctx context.Context, s db.TenantScope, hash domain.TokenHash, now time.Time) (uuid.UUID, time.Time, error)
+	// ConsumeCode uses a live code up. Both answer `slack_link_code_invalid` for any code that is
+	// not live, whatever the reason.
+	ConsumeCode(ctx context.Context, s db.TenantScope, hash domain.TokenHash, userID uuid.UUID, now time.Time) (uuid.UUID, error)
+	CountWrongAttempts(ctx context.Context, s db.TenantScope, userID uuid.UUID, since time.Time) (int, error)
+	RecordWrongAttempt(ctx context.Context, s db.TenantScope, id, userID uuid.UUID, at, pruneBefore time.Time) error
+	RecordFact(ctx context.Context, s db.TenantScope, f domain.SlackLinkFact) error
 }
 
 // RemedyApproverReader reads `remedy_approver_grants` (ADR 0054 §4, migration 00099,

@@ -3180,6 +3180,48 @@ export const CreateTokenRequestSchema = v.strictObject({
   "expires_at": v.exactOptional(TimestampSchema),
 });
 
+export const SlackLinkCodeRequestSchema = v.strictObject({
+  "code": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(32),
+  ),
+});
+
+export const SlackLinkPreviewDTOSchema = v.looseObject({
+  "team_id": v.pipe(
+    v.string(),
+    v.regex(/^T[A-Z0-9]{2,}$/),
+  ),
+  "slack_user_id": v.pipe(
+    v.string(),
+    v.regex(/^[UW][A-Z0-9]{2,}$/),
+  ),
+  "handle": v.nullable(v.pipe(
+    v.string(),
+    v.maxLength(120),
+  )),
+  "expires_at": TimestampSchema,
+  "already_yours": v.boolean(),
+});
+
+export const SlackIdentityDTOSchema = v.looseObject({
+  "id": UuidSchema,
+  "team_id": v.pipe(
+    v.string(),
+    v.regex(/^T[A-Z0-9]{2,}$/),
+  ),
+  "slack_user_id": v.pipe(
+    v.string(),
+    v.regex(/^[UW][A-Z0-9]{2,}$/),
+  ),
+  "handle": v.nullable(v.pipe(
+    v.string(),
+    v.maxLength(120),
+  )),
+  "linked_at": TimestampSchema,
+});
+
 export const DeliveryDrillResponseSchema = v.looseObject({
   "data": DeliveryDrillDTOSchema,
   "meta": MetaSchema,
@@ -4479,6 +4521,25 @@ export const ApiTokenListResponseSchema = v.looseObject({
 
 export const ApiTokenCreatedResponseSchema = v.looseObject({
   "data": ApiTokenCreatedDTOSchema,
+  "meta": MetaSchema,
+});
+
+export const SlackIdentityListResponseSchema = v.looseObject({
+  "data": v.pipe(
+    v.array(SlackIdentityDTOSchema),
+    v.maxLength(50),
+  ),
+  "page": PageInfoSchema,
+  "meta": MetaSchema,
+});
+
+export const SlackIdentityResponseSchema = v.looseObject({
+  "data": SlackIdentityDTOSchema,
+  "meta": MetaSchema,
+});
+
+export const SlackLinkPreviewResponseSchema = v.looseObject({
+  "data": SlackLinkPreviewDTOSchema,
   "meta": MetaSchema,
 });
 

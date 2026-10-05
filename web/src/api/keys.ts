@@ -262,6 +262,11 @@ export const qk = {
      */
     apiTokens: () => ["settings", "api-tokens"] as const,
     /**
+     * The Slack accounts linked to the signed-in user (git-bug a556a5c). Narrowed to the caller
+     * by the server for `apiTokens`' reason, and cleared with the rest of the cache on sign-out.
+     */
+    slackIdentities: () => ["settings", "slack-identities"] as const,
+    /**
      * One drill, polled while it is still running.
      *
      * Under `["settings","drills"]` and not a root of its own: a drill is a

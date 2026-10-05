@@ -6711,6 +6711,169 @@ paths:
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
 
+  /api/v1/me/slack-identities:
+    get:
+      operationId: listMySlackIdentities
+      summary: The Slack accounts linked to me
+      tags: [Identity]
+      description: |
+        Every Slack member linked to the **signed-in** user — one per workspace they linked. A Slack
+        approve or decline by any of them counts as this user (ADR 0054 §4). Never paged; there is no
+        way to list anybody else's.
+      responses:
+        '200':
+          description: The signed-in user's linked Slack accounts.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SlackIdentityListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    post:
+      operationId: linkSlackIdentity
+      summary: Link a Slack account to me with the code Slack showed it
+      tags: [Identity]
+      security:
+        - sessionCookie: []
+      description: |
+        Uses a **link code** up and links its Slack member to the **signed-in** user. The code is the one
+        an unlinked member is shown — only to them — when they press a Remedy's Approve or Decline in
+        Slack: ten characters, single-use, ten minutes. It links through the same re-point that adopts the
+        member's shadow, and records the fact with who did it.
+
+        **No operation links anybody but the signed-in user**: the body is a code and nothing else. A
+        session is required — a token cannot link, because a link decides whose approval a Slack click
+        counts as.
+
+        ⚠️ **A link code is a credential.** Whoever enters it in their own oto session makes that Slack
+        member's clicks count as them. Show the preview (`previewSlackLink`) and confirm.
+
+        Refusals, none of them a write: `422 slack_link_code_invalid` for a code that is wrong, used,
+        expired or presented five times (one answer for all, counted against you); `429
+        slack_link_attempts_exhausted` after five of those in fifteen minutes; `409
+        slack_identity_linked_elsewhere` when the Slack member is already linked to another real user —
+        a link is never moved; they unlink it themselves first.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SlackLinkCodeRequest'
+      responses:
+        '201':
+          description: The Slack account, now linked to you.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SlackIdentityResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/me/slack-identities/preview:
+    post:
+      operationId: previewSlackLink
+      summary: Which Slack account a link code would link to me
+      tags: [Identity]
+      security:
+        - sessionCookie: []
+      description: |
+        Names the Slack member and workspace a link code would link to the **signed-in** user, **without
+        using the code up** — the confirmation screen's *"Clicks from this Slack account will count as
+        you."* It counts as one of the code's five presentations. Same refusals as `linkSlackIdentity`,
+        including `409 slack_identity_linked_elsewhere`, so the screen says so before anybody confirms.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SlackLinkCodeRequest'
+      responses:
+        '200':
+          description: The Slack account the code would link.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SlackLinkPreviewResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/me/slack-identities/{id}:
+    delete:
+      operationId: unlinkSlackIdentity
+      summary: Unlink one of my Slack accounts
+      tags: [Identity]
+      security:
+        - sessionCookie: []
+      description: |
+        Unlinks a Slack member linked to the **signed-in** user, and records the fact. From then on its
+        Slack clicks count as nobody until it is linked again. A Slack account linked to anybody else —
+        or not linked, or in another org — is a `404`: you can unlink only your own.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   # =================================================================================================
   # Integrations
   # =================================================================================================
@@ -14304,6 +14467,70 @@ components:
         Mint a personal access token. The secret is returned exactly once in the response and only its
         hash is stored, so it can never be shown again.
 
+    SlackLinkCodeRequest:
+      type: object
+      required: [code]
+      additionalProperties: false
+      properties:
+        code:
+          type: string
+          minLength: 1
+          maxLength: 32
+          description: |
+            The link code as typed — `ABCDE-FGHJK`. Case, spaces and hyphens are ignored, and I, L and O
+            are read as 1, 1 and 0.
+          examples: ['ABCDE-FGHJK']
+      description: A link code an unlinked Slack member was shown. There is no user id here and nowhere to put one.
+
+    SlackLinkPreviewDTO:
+      type: object
+      required: [team_id, slack_user_id, handle, expires_at, already_yours]
+      additionalProperties: false
+      properties:
+        team_id:
+          type: string
+          pattern: '^T[A-Z0-9]{2,}$'
+          description: The Slack workspace id.
+          examples: ['T9TK3CUKW']
+        slack_user_id:
+          type: string
+          pattern: '^[UW][A-Z0-9]{2,}$'
+          examples: ['U0123456789']
+        handle:
+          type: ['string', 'null']
+          maxLength: 120
+          description: The member's Slack handle as last seen, without the `@`; null when Slack never sent one.
+          examples: ['ram']
+        expires_at:
+          $ref: '#/components/schemas/Timestamp'
+        already_yours:
+          type: boolean
+          description: True when this Slack member is already linked to you, so confirming changes nothing.
+      description: The Slack account a link code would link to you. Reading it does not use the code up.
+
+    SlackIdentityDTO:
+      type: object
+      required: [id, team_id, slack_user_id, handle, linked_at]
+      additionalProperties: false
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        team_id:
+          type: string
+          pattern: '^T[A-Z0-9]{2,}$'
+          examples: ['T9TK3CUKW']
+        slack_user_id:
+          type: string
+          pattern: '^[UW][A-Z0-9]{2,}$'
+          examples: ['U0123456789']
+        handle:
+          type: ['string', 'null']
+          maxLength: 120
+          examples: ['ram']
+        linked_at:
+          $ref: '#/components/schemas/Timestamp'
+      description: A Slack member linked to you. Its Slack clicks — approving a Remedy among them — count as you.
+
     # ---------------------------------------------------------------------------------------------
     # Response envelopes. Every collection is `{data, page, meta}`; every single resource is
     # `{data, meta}`. Defined once per payload type so no operation carries an inline duplicate.
@@ -16602,6 +16829,41 @@ components:
       properties:
         data:
           $ref: '#/components/schemas/ApiTokenCreatedDTO'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    SlackIdentityListResponse:
+      type: object
+      required: [data, page, meta]
+      additionalProperties: false
+      properties:
+        data:
+          type: array
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/SlackIdentityDTO'
+        page:
+          $ref: '#/components/schemas/PageInfo'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    SlackIdentityResponse:
+      type: object
+      required: [data, meta]
+      additionalProperties: false
+      properties:
+        data:
+          $ref: '#/components/schemas/SlackIdentityDTO'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    SlackLinkPreviewResponse:
+      type: object
+      required: [data, meta]
+      additionalProperties: false
+      properties:
+        data:
+          $ref: '#/components/schemas/SlackLinkPreviewDTO'
         meta:
           $ref: '#/components/schemas/Meta'
 

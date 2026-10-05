@@ -268,3 +268,84 @@ func (r *SlackIdentityRepository) Link(
 	}
 	return row.toDomain()
 }
+
+const lockSlackIdentityByIDSQL = `
+SELECT ` + slackIdentityColumns + `
+  FROM slack_identities si
+ WHERE si.org_id = $1 AND si.id = $2
+   FOR UPDATE`
+
+// LockByID reads one identity and holds its row until the transaction ends (git-bug a556a5c).
+//
+// ⭐ IT IS WHAT MAKES "NEVER MOVE A LINK THAT NAMES ANOTHER REAL USER" A FACT RATHER THAN A RACE.
+// The self-service link reads who the identity resolves to, refuses if that is another real
+// person, and then writes — and two people confirming two codes for one member at once must not
+// both see "a shadow" and both write. Outside a transaction the lock lasts one statement and this
+// is a plain read.
+func (r *SlackIdentityRepository) LockByID(
+	ctx context.Context, s db.TenantScope, id uuid.UUID,
+) (domain.SlackIdentity, error) {
+	var row slackIdentityRow
+	err := scanSlackIdentity(&row, r.db(ctx).QueryRow(ctx, lockSlackIdentityByIDSQL, s.OrgID(), id).Scan)
+	if err != nil {
+		return domain.SlackIdentity{}, mapErr(err, "slack_identity_not_found", "slack identity")
+	}
+	return row.toDomain()
+}
+
+const listSlackIdentitiesByUserSQL = `
+SELECT ` + slackIdentityColumns + `
+  FROM slack_identities si
+ WHERE si.org_id = $1 AND si.user_id = $2
+ ORDER BY si.linked_at DESC, si.id
+ LIMIT 50`
+
+// ListByUser returns every Slack identity linked to one user — one per workspace they linked, and
+// bounded because a person has a handful at most.
+func (r *SlackIdentityRepository) ListByUser(
+	ctx context.Context, s db.TenantScope, userID uuid.UUID,
+) ([]domain.SlackIdentity, error) {
+	rows, err := r.db(ctx).Query(ctx, listSlackIdentitiesByUserSQL, s.OrgID(), userID)
+	if err != nil {
+		return nil, mapErr(err, "slack_identity_not_found", "slack identity")
+	}
+	defer rows.Close()
+	out := []domain.SlackIdentity{}
+	for rows.Next() {
+		var row slackIdentityRow
+		if err := scanSlackIdentity(&row, rows.Scan); err != nil {
+			return nil, mapErr(err, "slack_identity_not_found", "slack identity")
+		}
+		si, err := row.toDomain()
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, si)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapErr(err, "slack_identity_not_found", "slack identity")
+	}
+	return out, nil
+}
+
+// unlinkSlackIdentitySQL clears both halves of slack_identities_link_ck — and ONLY for an identity
+// linked to the user named in $3. ⛔ That condition is the whole authorisation: a user unlinks
+// their own Slack account and nobody else's, and an identity linked to somebody else is a 404
+// indistinguishable from one that does not exist.
+const unlinkSlackIdentitySQL = `
+UPDATE slack_identities AS si
+   SET user_id = NULL, linked_at = NULL
+ WHERE si.org_id = $1 AND si.id = $2 AND si.user_id = $3
+RETURNING ` + slackIdentityColumns
+
+// Unlink drops the link of an identity linked to userID.
+func (r *SlackIdentityRepository) Unlink(
+	ctx context.Context, s db.TenantScope, id, userID uuid.UUID,
+) (domain.SlackIdentity, error) {
+	var row slackIdentityRow
+	err := scanSlackIdentity(&row, r.db(ctx).QueryRow(ctx, unlinkSlackIdentitySQL, s.OrgID(), id, userID).Scan)
+	if err != nil {
+		return domain.SlackIdentity{}, mapErr(err, "slack_identity_not_found", "slack identity")
+	}
+	return row.toDomain()
+}

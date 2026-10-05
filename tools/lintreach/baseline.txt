@@ -107,7 +107,6 @@ noread:github.com/thulasiram/oto/internal/enrichment/service.RunResult.Subject	f
 noread:github.com/thulasiram/oto/internal/identity/domain.Org.CreatedAt	field is never read in production — the value goes nowhere (internal/identity/domain/org.go:37)
 noread:github.com/thulasiram/oto/internal/identity/domain.Org.UpdatedAt	field is never read in production — the value goes nowhere (internal/identity/domain/org.go:38)
 noread:github.com/thulasiram/oto/internal/identity/domain.SlackIdentity.CreatedAt	field is never read in production — the value goes nowhere (internal/identity/domain/slack_identity.go:78)
-noread:github.com/thulasiram/oto/internal/identity/domain.SlackIdentity.LinkedAt	field is never read in production — the value goes nowhere (internal/identity/domain/slack_identity.go:77)
 noread:github.com/thulasiram/oto/internal/identity/domain.User.CreatedAt	field is never read in production — the value goes nowhere (internal/identity/domain/user.go:119)
 noread:github.com/thulasiram/oto/internal/identity/domain.User.UpdatedAt	field is never read in production — the value goes nowhere (internal/identity/domain/user.go:120)
 noread:github.com/thulasiram/oto/internal/ingestion.Module.Metrics	field is never read in production — the value goes nowhere (internal/ingestion/module.go:57)

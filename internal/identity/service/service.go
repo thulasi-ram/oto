@@ -43,6 +43,11 @@ type Deps struct {
 	// by `oto grant` from the host shell. Nil fails every check closed, loudly.
 	RemedyApprovers RemedyApproverReader
 
+	// SlackLinks is the self-service Slack link's state (git-bug a556a5c). Nil fails every
+	// code issue, preview, confirm and unlink closed with a 503 — never a link written without
+	// its code checked or its fact recorded.
+	SlackLinks SlackLinkStore
+
 	// Tx makes the ingest-token rotation atomic: the mint and the revocation
 	// sweep beside it commit together (IssueIngestToken). Nil degrades to two
 	// independent writes, which is what once left a source with no working
@@ -92,6 +97,8 @@ type Service struct {
 	tx       TxRunner
 	// approvers reads Remedy approver grants; see Deps.RemedyApprovers.
 	approvers RemedyApproverReader
+	// links is the self-service Slack link's state; see Deps.SlackLinks.
+	links SlackLinkStore
 
 	hasher     authn.PasswordHasher
 	clk        clock.Clock
@@ -138,6 +145,7 @@ func New(d Deps) *Service {
 		slack:            d.Slack,
 		tx:               d.Tx,
 		approvers:        d.RemedyApprovers,
+		links:            d.SlackLinks,
 		hasher:           hasher,
 		clk:              clk,
 		log:              logger,

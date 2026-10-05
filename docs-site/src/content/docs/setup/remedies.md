@@ -86,14 +86,49 @@ so far, and only then the Investigator's description — with **Approve** and **
 - A press is applied as the **oto user your Slack account is linked to**, through the same
   approval and decline the UI makes: the grant, the window, the Tool check and the count of
   different people are the same, and approving in Slack and again in the UI counts once.
-- **An unlinked Slack account is refused**, and nothing is recorded: the reply names your Slack
-  member and workspace ids for whoever runs oto to link, or you decide it in oto. A linked account
-  without the grant gets `remedy_approver_required`'s answer.
+- **An unlinked Slack account is refused**, and nothing is recorded. The reply — seen only by you —
+  carries a one-time **link code**: sign in to oto, open **Account** from your menu, enter it, check
+  the Slack account and workspace it names, and confirm. From then on your Slack clicks count as you.
+  See [Linking your Slack account](#linking-your-slack-account) below. A linked account without the
+  grant gets `remedy_approver_required`'s answer.
 - **Approve asks for confirmation first.** It is not offered for a Remedy no configured Tool can
   carry out, nor for one whose arguments the reply had to cut — approve those in oto, where the
   arguments are shown whole. Decline is always offered.
 - The buttons stay on the reply after the Remedy moves on; a late press is answered with why it no
   longer applies. Each transition is its own reply, as it is to every other destination.
+
+### Linking your Slack account
+
+A link decides **whose approval a Slack click counts as**, and double approval counts *different*
+oto users — so linking is something each person does for themselves, from a place only they can
+reach on each side:
+
+1. Press a Remedy's **Approve** or **Decline** in Slack while unlinked. oto verifies Slack's
+   signature on the press and answers, in a message only you can see, with a code such as
+   `ABCDE-FGHJK`. It is bound to your Slack member and workspace, works **once**, and dies after
+   **ten minutes** — or as soon as you press again and get a newer one.
+2. Signed in to oto in your browser, open **Account** from the menu under your initials and enter
+   the code. oto shows the Slack account and workspace it would link — *"Clicks from this Slack
+   account will count as you."* — and links nothing until you confirm.
+3. Unlink from the same page at any time. Every link and unlink is recorded with who did it.
+
+> ⚠️ **A link code is a credential.** Whoever enters your code in **their own** oto session makes
+> **your** Slack clicks count as **theirs** — including approving a Remedy. Never paste it anywhere
+> but oto's Account page, never send it to anybody, and if the confirmation names a Slack account
+> that is not yours, cancel. The confirmation screen, the ten-minute single-use life and the
+> recorded fact of every link are the mitigation; nothing else is.
+
+The rules oto keeps whatever you do:
+
+- **Only the signed-in person is ever linked.** No route takes a user id, and linking needs a
+  browser session — a personal access token cannot link, unlink or preview.
+- **A link to another real person is never moved.** A code for a Slack account already linked to
+  somebody else is refused (`409 slack_identity_linked_elsewhere`); they unlink it first. A link
+  to the stand-in oto created when you first pressed a button is replaced, and the stand-in retired.
+- **Wrong codes are limited.** A wrong, used or expired code is one answer
+  (`422 slack_link_code_invalid`); five in fifteen minutes and further attempts are refused with
+  `429` for a while. One code may be checked or confirmed five times at most, then it is dead.
+- oto stores only a hash of the code.
 
 ## Execution
 

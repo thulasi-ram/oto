@@ -277,6 +277,10 @@ var bindings = []binding{
 	// `API`; the JSON is identical and the difference is only in the type name.
 	{"identity", "ApiTokenDTO", identityapi.APITokenDTO{}},
 	{"identity", "ApiTokenCreatedDTO", identityapi.APITokenCreatedDTO{}},
+	// The self-service Slack link (git-bug a556a5c).
+	{"identity", "SlackLinkCodeRequest", identityapi.SlackLinkCodeRequest{}},
+	{"identity", "SlackLinkPreviewDTO", identityapi.SlackLinkPreviewDTO{}},
+	{"identity", "SlackIdentityDTO", identityapi.SlackIdentityDTO{}},
 
 	// ------------------------------------------------------------ silences
 	{"silences", "SilenceDTO", silencesapi.SilenceDTO{}},

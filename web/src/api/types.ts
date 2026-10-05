@@ -250,6 +250,11 @@ export type SettingBound = S["SettingBoundDTO"];
 export type User = S["UserDTO"];
 export type ApiToken = S["ApiTokenDTO"];
 export type ApiTokenCreated = S["ApiTokenCreatedDTO"];
+/** A Slack member linked to the signed-in user (git-bug a556a5c). */
+export type SlackIdentity = S["SlackIdentityDTO"];
+/** Which Slack member a link code would link — read without using the code up. */
+export type SlackLinkPreview = S["SlackLinkPreviewDTO"];
+export type SlackLinkCodeRequest = S["SlackLinkCodeRequest"];
 export type VersionInfo = S["VersionDTO"];
 
 /* ---- investigators (ADR 0053) ------------------------------------------- */

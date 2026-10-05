@@ -394,6 +394,10 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		// ⛔ READ-ONLY (ADR 0054 §4, git-bug 47f67c8): who may approve a Remedy. A grant
 		// is written by `oto grant` from the host shell (remedyapprover.go), never here.
 		RemedyApprovers: identityrepo.NewRemedyApproverRepository(general),
+		// The self-service Slack link's codes, wrong-attempt counts and recorded facts (git-bug
+		// a556a5c, 00105). A link is made ONLY by a signed-in session entering a code Slack showed
+		// the member — never by a route that names a user.
+		SlackLinks: identityrepo.NewSlackLinkRepository(general),
 		// The same runner the identity API uses: it is what makes the ingest-token
 		// rotation's mint and revocation ONE commit (IssueIngestToken).
 		Tx:          identityTx,
@@ -944,7 +948,10 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		// A Remedy's Approve and Decline (git-bug ac9b492): the linked user, through the
 		// approval and decline the UI's routes make.
 		Remedies: slackRemedyActions{investigator: c.Investigator, identity: c.Identity},
-		Enqueuer: c.enqueuer,
+		// An unlinked member's Remedy press is answered with a one-time link code bound to the
+		// member the verified envelope names (git-bug a556a5c).
+		LinkCodes: slackLinkCodes{identity: c.Identity},
+		Enqueuer:  c.enqueuer,
 		// The ephemeral reply goes to Slack's own `response_url`, which needs no
 		// token and no scope — which is why oto can tell a user "that already
 		// resolved" without asking the operator for anything the manifest does
@@ -1248,7 +1255,10 @@ func (c *Container) buildRouters(
 			// token whose secret nobody ever receives.
 			Tx:     identityTx,
 			Claims: c.Idempotency,
-			Clock:  clk,
+			// The self-service Slack link (git-bug a556a5c): four operations under `/me`, the
+			// three writes session-only, none taking a user id.
+			SlackLinks: c.Identity,
+			Clock:      clk,
 		}),
 		alerts: alertsapi.NewRouter(c.Alerts, clk),
 		// ⛔ THE `grouping` ROUTER WAS HERE AND IS DELETED (git-bug `7570090`), and

@@ -31,6 +31,9 @@ import type {
   AlertRollupQuery,
   ApiToken,
   ApiTokenCreated,
+  SlackIdentity,
+  SlackLinkCodeRequest,
+  SlackLinkPreview,
   Channel,
   ChannelConnection,
   ChannelTest,
@@ -1332,6 +1335,40 @@ export function createApiToken(body: CreateTokenRequest, key: string): Promise<A
  */
 export function revokeApiToken(id: Uuid): Promise<void> {
   return del(`${V1}/api-tokens/${id}`);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Linking a Slack account (git-bug a556a5c)                                  */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * ⛔ THE THREE WRITES ARE SESSION-ONLY AND NONE TAKES A USER ID. The only person
+ * they ever link or unlink is the signed-in one, because a link decides whose
+ * approval a Slack click counts as (ADR 0054 §4). The body is a code a Slack
+ * member was shown — only to them — when they pressed a Remedy button unlinked.
+ */
+
+/** The Slack accounts linked to me. */
+export function listMySlackIdentities(c: Ctx = {}): Promise<ListEnvelope<SlackIdentity>> {
+  return getList<SlackIdentity>(`${V1}/me/slack-identities`, ctx(c));
+}
+
+/**
+ * Which Slack account a code would link to me, WITHOUT using it up — the
+ * confirmation screen. It counts as one of the code's five presentations.
+ */
+export function previewSlackLink(body: SlackLinkCodeRequest): Promise<SlackLinkPreview> {
+  return postItem<SlackLinkPreview>(`${V1}/me/slack-identities/preview`, body);
+}
+
+/** Use the code up and link its Slack account to me. */
+export function linkSlackIdentity(body: SlackLinkCodeRequest): Promise<SlackIdentity> {
+  return postItem<SlackIdentity>(`${V1}/me/slack-identities`, body);
+}
+
+/** Unlink one of my Slack accounts. Anybody else's is a 404. */
+export function unlinkSlackIdentity(id: Uuid): Promise<void> {
+  return del(`${V1}/me/slack-identities/${id}`);
 }
 
 /**

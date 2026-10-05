@@ -3,8 +3,10 @@ package service
 import (
 	"context"
 	"log/slog"
+	"math"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -28,8 +30,9 @@ import (
 // An acknowledgement records what a Slack member saw and stands on its own; an approval is a
 // grant holder's, and a grant belongs to an oto user. A member oto has only ever seen press a
 // button — no link, or a link to the SHADOW member a press mints (migration 00074) — names no
-// one who can hold a grant, so the press is answered with how to get linked, and nothing is
-// written. A shadow is refused for decline too: "linked" means a person who gave oto an address.
+// one who can hold a grant, so the press is answered with a one-time LINK CODE (git-bug a556a5c)
+// the member enters on their own Account page in oto, and nothing is written. A shadow is refused
+// for decline too: "linked" means a person who gave oto an address.
 //
 // ⛔ WHO PRESSED COMES FROM THE VERIFIED ENVELOPE AND NOWHERE ELSE. `Handle` copies `user.id`
 // out of the payload whose HMAC the transport checked; the button's value is the Remedy's id
@@ -55,6 +58,27 @@ type Remedies interface {
 	ApproveRemedy(ctx context.Context, s db.TenantScope, remedyID, userID uuid.UUID) (RemedyApproval, error)
 	// DeclineRemedy declines one Remedy as this user, through the decline the UI makes.
 	DeclineRemedy(ctx context.Context, s db.TenantScope, remedyID, userID uuid.UUID) error
+}
+
+// SlackLinkCodes issues the one-time code an unlinked Slack member enters in oto to link themselves
+// (git-bug a556a5c). A PORT DECLARED BY THE CONSUMER, in primitives, for `Remedies`' reason.
+//
+// ⚠️ ITS CALLER HAS VERIFIED SLACK'S SIGNATURE. The code is bound to the member the VERIFIED
+// envelope names, inside the org the CHANNEL resolves to, which is the whole reason the flow starts
+// here: only Slack can prove a Slack identity.
+type SlackLinkCodes interface {
+	// IssueSlackLinkCode mints a code for this member, replacing any code they had. Its refusals
+	// are typed — a member already linked to a real user is a Conflict, a deployment that cannot
+	// link is Unavailable — and anything else is worth retrying.
+	IssueSlackLinkCode(ctx context.Context, s db.TenantScope, teamID, slackUserID string) (SlackLinkCode, error)
+}
+
+// SlackLinkCode is an issued code, in the form a person reads it.
+type SlackLinkCode struct {
+	// Code is `ABCDE-FGHJK`. ⛔ It is a credential for its few minutes: it goes into the ephemeral
+	// and nowhere else — not a log line, not a job arg, not an error.
+	Code      string
+	ExpiresAt time.Time
 }
 
 // RemedyApproval is where one approval left its Remedy.
@@ -90,14 +114,15 @@ func (s *InteractionService) applyRemedy(
 
 	// ---- 3. THE HUMAN: A LINKED oto USER, OR NOBODY ---------------------
 	if s.actors == nil {
-		s.tell(ctx, args, unlinkedRemedyText(args))
+		s.tell(ctx, args, unlinkedRemedyText(args, SlackLinkCode{}, 0))
 		return nil
 	}
 	who, err := s.actors.SlackActor(ctx, scope, args.TeamID, args.SlackUserID, args.SlackUserName)
 	switch {
 	case errs.IsKind(err, errs.KindValidation):
-		// A team or member id oto cannot read names nobody it could have linked.
-		s.tell(ctx, args, unlinkedRemedyText(args))
+		// A team or member id oto cannot read names nobody it could have linked — and nobody it
+		// could bind a link code to.
+		s.tell(ctx, args, unlinkedRemedyText(args, SlackLinkCode{}, 0))
 		return nil
 	case err != nil:
 		// ⛔ UNLIKE AN ACK, A DIRECTORY FAILURE IS NOT DEGRADED TO "THE SLACK MEMBER DID IT":
@@ -106,8 +131,7 @@ func (s *InteractionService) applyRemedy(
 	}
 	if who.UserID == uuid.Nil || who.Shadow {
 		logger.Info("channels: an unlinked Slack member pressed a Remedy button")
-		s.tell(ctx, args, unlinkedRemedyText(args))
-		return nil
+		return s.offerLinkCode(ctx, logger, scope, args)
 	}
 	logger = logger.With(slog.String("user_id", who.UserID.String()))
 
@@ -148,14 +172,63 @@ func (s *InteractionService) remedyRefused(
 	}
 }
 
-// unlinkedRemedyText is the reply to a press by a Slack member who is not linked to an oto
-// user. ⭐ IT NAMES THE MEMBER AND WORKSPACE IDS, read off the verified press, because those
-// are what whoever links them needs and the person pressing cannot easily find them.
-func unlinkedRemedyText(args jobs.SlackInteractionArgs) string {
-	return "Approving or declining a Remedy from Slack needs your Slack account linked to your oto account, " +
-		"and this Slack account is not linked, so oto recorded nothing. Ask whoever runs oto to link Slack member " +
-		noticeCode(args.SlackUserID) + " in workspace " + noticeCode(args.TeamID) +
-		" to your oto account — or open the Remedy in oto and decide it there."
+// offerLinkCode answers an unlinked member's press with a link code bound to the member the
+// verified envelope names (git-bug a556a5c). Nothing about the Remedy is written.
+//
+// ⛔ A CODE oto COULD NOT ISSUE IS NEVER SHOWN, AND THE PRESS IS STILL ANSWERED. A typed refusal —
+// no port, a deployment that cannot link, a member another real user holds — is answered with
+// how to decide the Remedy in oto; anything else is returned so the job retries, which issues a
+// fresh code (and so kills any code an earlier attempt stored but never delivered).
+func (s *InteractionService) offerLinkCode(
+	ctx context.Context, logger *slog.Logger, scope db.TenantScope, args jobs.SlackInteractionArgs,
+) error {
+	if s.linkCodes == nil {
+		s.tell(ctx, args, unlinkedRemedyText(args, SlackLinkCode{}, 0))
+		return nil
+	}
+	code, err := s.linkCodes.IssueSlackLinkCode(ctx, scope, args.TeamID, args.SlackUserID)
+	if err != nil {
+		switch errs.KindOf(err) {
+		case errs.KindValidation, errs.KindNotFound, errs.KindConflict, errs.KindUnavailable, errs.KindForbidden:
+			logger.Info("channels: no Slack link code was issued", slog.String("refusal", errs.CodeOf(err)))
+			s.tell(ctx, args, unlinkedRemedyText(args, SlackLinkCode{}, 0))
+			return nil
+		default:
+			return err
+		}
+	}
+	if code.Code == "" {
+		// A port that answered nothing is not a code; showing "``" would be worse than none.
+		s.tell(ctx, args, unlinkedRemedyText(args, SlackLinkCode{}, 0))
+		return nil
+	}
+	// ⛔ The code is not logged.
+	logger.Info("channels: answered an unlinked Remedy press with a link code")
+	s.tell(ctx, args, unlinkedRemedyText(args, code, code.ExpiresAt.Sub(s.clk.Now())))
+	return nil
+}
+
+// unlinkedRemedyText is the reply to a press by a Slack member who is not linked to an oto user.
+// With a code it says how to link — sign in, Account, enter the code — and that the code is a
+// credential; without one it says how to decide the Remedy in oto instead. ⭐ IT NAMES THE MEMBER
+// AND WORKSPACE IDS, read off the verified press, so the person can match them against what oto's
+// confirmation screen shows before they confirm.
+func unlinkedRemedyText(args jobs.SlackInteractionArgs, code SlackLinkCode, life time.Duration) string {
+	head := "Approving or declining a Remedy from Slack needs your Slack account linked to your oto account, " +
+		"and Slack member " + noticeCode(args.SlackUserID) + " in workspace " + noticeCode(args.TeamID) +
+		" is not linked, so oto recorded nothing. "
+	if code.Code == "" {
+		return head + "oto could not give you a link code just now — press the button again for one, " +
+			"or open the Remedy in oto and decide it there."
+	}
+	minutes := int(math.Round(life.Minutes()))
+	if minutes < 1 {
+		minutes = 1
+	}
+	return head + "To link it, sign in to oto, open *Account* from your menu and enter " + noticeCode(code.Code) +
+		" within " + strconv.Itoa(minutes) + " " + plural(minutes, "minute", "minutes") +
+		"; it works once. ⚠️ This code is a credential: whoever enters it in their own oto session makes your " +
+		"Slack clicks count as theirs, so never share it. Or open the Remedy in oto and decide it there."
 }
 
 // partialApprovalText tells an approver their approval is recorded and the Remedy still waits.

@@ -158,7 +158,10 @@ var (
 	_ channelsservice.Labels = slackLabelReads{}
 	// Optional for the same reason: a nil `Remedies` answers a Remedy's Approve and Decline
 	// with "not in this deployment yet" instead of failing a build (git-bug ac9b492).
-	_ channelsservice.Remedies           = slackRemedyActions{}
+	_ channelsservice.Remedies = slackRemedyActions{}
+	// Optional too: a nil `LinkCodes` answers an unlinked member's Remedy press with no code
+	// (git-bug a556a5c), so only this line catches the adapter drifting off the port.
+	_ channelsservice.SlackLinkCodes     = slackLinkCodes{}
 	_ channelsservice.SlackActors        = slackActors{}
 	_ channelsservice.Cases              = slackCaseActions{}
 	_ channelsservice.SlackConversations = slackConversations{}

@@ -204,3 +204,32 @@ type APITokenCreatedDTO struct {
 	Token  APITokenDTO `json:"token"`
 	Secret string      `json:"secret"`
 }
+
+// SlackLinkCodeRequest is the body of `POST /api/v1/me/slack-identities/preview` and
+// `POST /api/v1/me/slack-identities` (git-bug a556a5c): the link code an unlinked Slack member
+// was shown, as typed. There is no user id in it, and there is nowhere to put one — the only
+// user these operations ever link is the signed-in one.
+type SlackLinkCodeRequest struct {
+	Code string `json:"code" validate:"required,notblank,max=32"`
+}
+
+// SlackLinkPreviewDTO is what a code WOULD link, read without using it up: the confirmation
+// screen's "clicks from this Slack account will count as you".
+type SlackLinkPreviewDTO struct {
+	TeamID      string  `json:"team_id"`
+	SlackUserID string  `json:"slack_user_id"`
+	Handle      *string `json:"handle"`
+	// ExpiresAt is when the code dies, whether or not it is confirmed.
+	ExpiresAt time.Time `json:"expires_at"`
+	// AlreadyYours is true when the member already resolves to the signed-in user.
+	AlreadyYours bool `json:"already_yours"`
+}
+
+// SlackIdentityDTO is one Slack member linked to the signed-in user.
+type SlackIdentityDTO struct {
+	ID          uuid.UUID `json:"id"`
+	TeamID      string    `json:"team_id"`
+	SlackUserID string    `json:"slack_user_id"`
+	Handle      *string   `json:"handle"`
+	LinkedAt    time.Time `json:"linked_at"`
+}

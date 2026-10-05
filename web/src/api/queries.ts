@@ -484,6 +484,8 @@ export const FRESHNESS: Readonly<Record<string, Freshness>> = {
   // whose whole purpose is "is this old token still in use somewhere", a
   // question answered by looking rather than by watching.
   "settings.apiTokens": { by: "mutation" },
+  // Only this person's own link and unlink change it (git-bug a556a5c), and both invalidate it.
+  "settings.slackIdentities": { by: "mutation" },
   "settings.channels": { by: "mutation" },
   "settings.channelConnections": { by: "mutation" },
   "settings.policies": { by: "mutation" },

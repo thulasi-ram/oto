@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 104 {
-		t.Fatalf("latest migration is %d, want 104 — this test pins the number so that a "+
+	if latest != 105 {
+		t.Fatalf("latest migration is %d, want 105 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1633,6 +1633,34 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// accepts a kind the release below it cannot interpret. No column reading can
 	// see that, and it is the half most likely to be forgotten because nothing
 	// references it.
+	// ⭐ 00105 LETS A SLACK MEMBER LINK THEMSELVES WITH A CODE (git-bug a556a5c): three tables —
+	// the one live code per identity, the per-user wrong-attempt count, and the recorded fact of
+	// every link and unlink — with their CHECKs. Read on both sides, for 00075's reason: a Down that
+	// exits 0 and drops nothing leaves a schema no release below it has run against.
+	if n := countTables("slack_link_codes", "slack_link_attempts", "slack_identity_links"); n != 3 {
+		t.Fatalf("%d of 00105's three tables exist at migration 105", n)
+	}
+	if n := countConstraints("slack_link_codes_hash_uniq", "slack_link_codes_hash_ck", "slack_link_codes_life_ck",
+		"slack_link_codes_presented_ck", "slack_link_codes_consumed_ck",
+		"slack_identity_links_change_ck", "slack_identity_links_displaced_ck"); n != 7 {
+		t.Fatalf("%d of 00105's seven named constraints exist at migration 105, want 7", n)
+	}
+	if n := countIndexes("slack_link_attempts_user_idx", "slack_identity_links_identity_idx"); n != 2 {
+		t.Fatalf("%d of 00105's two indexes exist at migration 105", n)
+	}
+	if c := tableComment("slack_link_codes"); !strings.Contains(c, "credential") {
+		t.Fatalf("slack_link_codes's comment at migration 105 does not say a code is a credential: %s", c)
+	}
+
+	down(105)
+
+	if n := countTables("slack_link_codes", "slack_link_attempts", "slack_identity_links"); n != 0 {
+		t.Fatalf("%d of 00105's three tables survived its Down", n)
+	}
+	if n := countIndexes("slack_link_attempts_user_idx", "slack_identity_links_identity_idx"); n != 0 {
+		t.Fatalf("%d of 00105's indexes survived its Down", n)
+	}
+
 	// ⭐ 00104 LETS THE RISK MODEL SPEND FROM THE DAY'S BUDGET (owner ruling 2026-10-05 on git-bug
 	// eb4f21b): `budget` added to `remedies_risk_model_ck` and to the TWO-approval arm of
 	// `remedies_risk_tier_ck` only, `remedies_risk_spend_idx`, and three comments restated. Both

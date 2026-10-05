@@ -44,6 +44,7 @@ const IncidentsRoute = lazy(() => import("~/routes/incidents"));
 const IncidentDetailRoute = lazy(() => import("~/routes/incident-detail"));
 const NotificationsRoute = lazy(() => import("~/routes/notifications"));
 const SettingsRoute = lazy(() => import("~/routes/settings"));
+const AccountRoute = lazy(() => import("~/routes/account"));
 const LoginRoute = lazy(() => import("~/routes/login"));
 const ProtoAlertsPreviewRoute = lazy(() => import("~/routes/proto-alerts-preview"));
 const ProtoUiPreviewRoute = lazy(() => import("~/routes/proto-ui-preview"));
@@ -160,6 +161,8 @@ export const routes = (): JSX.Element => (
           Each route redirects the bare path to its own first section. */}
       <Route path="/notifications/:section?" component={NotificationsRoute} />
       <Route path="/settings/:section?" component={SettingsRoute} />
+      {/* The signed-in person's own things — a linked Slack account (git-bug a556a5c). */}
+      <Route path="/account" component={AccountRoute} />
     </Route>
     {/* Deliberately outside the authenticated layout: static, fixture-only
         visual references with no real API calls, so they need neither a session

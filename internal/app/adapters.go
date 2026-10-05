@@ -1848,3 +1848,19 @@ func (a slackSnoozeActions) UnsnoozeAlert(
 	}
 	return a.alerts.UnsnoozeAs(ctx, s, alertID, actorKind, actorID, actorLabel, "")
 }
+
+// slackLinkCodes adapts `identity/service.IssueSlackLinkCode` onto the channels port (git-bug
+// a556a5c). The code crosses this adapter as a string once, on its way into an ephemeral reply.
+type slackLinkCodes struct {
+	identity *identityservice.Service
+}
+
+func (a slackLinkCodes) IssueSlackLinkCode(
+	ctx context.Context, s db.TenantScope, teamID, slackUserID string,
+) (channelsservice.SlackLinkCode, error) {
+	got, err := a.identity.IssueSlackLinkCode(ctx, s, teamID, slackUserID)
+	if err != nil {
+		return channelsservice.SlackLinkCode{}, err
+	}
+	return channelsservice.SlackLinkCode{Code: got.Code, ExpiresAt: got.ExpiresAt}, nil
+}

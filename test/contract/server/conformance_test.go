@@ -197,7 +197,12 @@ func TestTheRunningServerMatchesTheContract(t *testing.T) {
 // ⬇️ 115 → 114 (owner ruling 2026-10-05 on git-bug eb4f21b). The replace is gone: the rules
 // are written by `oto remedy-rules apply` from the host shell and no route writes them, so
 // its operation, and the one 2xx probe it was credited for, are removed. The read stays.
-const minimumSuccessfulOperations = 114
+//
+// ⬆️ 114 → 115 (git-bug a556a5c). Four self-service Slack link operations under `/me`, and ONE
+// answers 2xx: the list, empty. A link code exists only once a Slack member presses a Remedy
+// button, which this world never does, so the preview and the link are driven to their typed
+// 422s and the unlink to its 404 — not credited, which is why the floor rises by one and not four.
+const minimumSuccessfulOperations = 115
 
 /* -------------------------------------------------------------------------- */
 /* The three assertions                                                       */

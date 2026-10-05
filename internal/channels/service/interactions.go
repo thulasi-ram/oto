@@ -424,8 +424,12 @@ type InteractionOptions struct {
 	// Remedies is OPTIONAL for `Snoozes`' reason: a press at a deployment that has not
 	// wired it is answered with a sentence saying so (`applyRemedy`).
 	Remedies Remedies
-	Enqueuer db.Enqueuer
-	Notice   SlackNotice
+	// LinkCodes is OPTIONAL: an unlinked member's Remedy press is answered with a link code
+	// when it is wired (git-bug a556a5c), and with how to decide the Remedy in oto when it is
+	// not — never with a code oto could not have checked.
+	LinkCodes SlackLinkCodes
+	Enqueuer  db.Enqueuer
+	Notice    SlackNotice
 	// Metrics is optional. A nil one costs the `oto_slack_unknown_action_total`
 	// series and nothing else, which is the right trade for a test that does not
 	// want a registry.
@@ -449,6 +453,7 @@ type InteractionService struct {
 	snoozes       Snoozes
 	labels        Labels
 	remedies      Remedies
+	linkCodes     SlackLinkCodes
 	enqueuer      db.Enqueuer
 	notice        SlackNotice
 	metrics       *InteractionMetrics
@@ -477,6 +482,7 @@ func NewInteractionService(o InteractionOptions) (*InteractionService, error) {
 		snoozes:       o.Snoozes,
 		labels:        o.Labels,
 		remedies:      o.Remedies,
+		linkCodes:     o.LinkCodes,
 		enqueuer:      o.Enqueuer,
 		notice:        o.Notice,
 		metrics:       o.Metrics,

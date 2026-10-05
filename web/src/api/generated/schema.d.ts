@@ -3112,6 +3112,93 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/slack-identities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The Slack accounts linked to me
+         * @description Every Slack member linked to the **signed-in** user — one per workspace they linked. A Slack
+         *     approve or decline by any of them counts as this user (ADR 0054 §4). Never paged; there is no
+         *     way to list anybody else's.
+         */
+        get: operations["listMySlackIdentities"];
+        put?: never;
+        /**
+         * Link a Slack account to me with the code Slack showed it
+         * @description Uses a **link code** up and links its Slack member to the **signed-in** user. The code is the one
+         *     an unlinked member is shown — only to them — when they press a Remedy's Approve or Decline in
+         *     Slack: ten characters, single-use, ten minutes. It links through the same re-point that adopts the
+         *     member's shadow, and records the fact with who did it.
+         *
+         *     **No operation links anybody but the signed-in user**: the body is a code and nothing else. A
+         *     session is required — a token cannot link, because a link decides whose approval a Slack click
+         *     counts as.
+         *
+         *     ⚠️ **A link code is a credential.** Whoever enters it in their own oto session makes that Slack
+         *     member's clicks count as them. Show the preview (`previewSlackLink`) and confirm.
+         *
+         *     Refusals, none of them a write: `422 slack_link_code_invalid` for a code that is wrong, used,
+         *     expired or presented five times (one answer for all, counted against you); `429
+         *     slack_link_attempts_exhausted` after five of those in fifteen minutes; `409
+         *     slack_identity_linked_elsewhere` when the Slack member is already linked to another real user —
+         *     a link is never moved; they unlink it themselves first.
+         */
+        post: operations["linkSlackIdentity"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/slack-identities/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Which Slack account a link code would link to me
+         * @description Names the Slack member and workspace a link code would link to the **signed-in** user, **without
+         *     using the code up** — the confirmation screen's *"Clicks from this Slack account will count as
+         *     you."* It counts as one of the code's five presentations. Same refusals as `linkSlackIdentity`,
+         *     including `409 slack_identity_linked_elsewhere`, so the screen says so before anybody confirms.
+         */
+        post: operations["previewSlackLink"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/slack-identities/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Unlink one of my Slack accounts
+         * @description Unlinks a Slack member linked to the **signed-in** user, and records the fact. From then on its
+         *     Slack clicks count as nobody until it is linked again. A Slack account linked to anybody else —
+         *     or not linked, or in another org — is a `404`: you can unlink only your own.
+         */
+        delete: operations["unlinkSlackIdentity"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/integrations/slack/interactions": {
         parameters: {
             query?: never;
@@ -8018,6 +8105,44 @@ export interface components {
             /** @description Optional expiry, which must be in the future. Omit for a token that never expires. */
             expires_at?: components["schemas"]["Timestamp"];
         };
+        /** @description A link code an unlinked Slack member was shown. There is no user id here and nowhere to put one. */
+        SlackLinkCodeRequest: {
+            /**
+             * @description The link code as typed — `ABCDE-FGHJK`. Case, spaces and hyphens are ignored, and I, L and O
+             *     are read as 1, 1 and 0.
+             * @example ABCDE-FGHJK
+             */
+            code: string;
+        };
+        /** @description The Slack account a link code would link to you. Reading it does not use the code up. */
+        SlackLinkPreviewDTO: {
+            /**
+             * @description The Slack workspace id.
+             * @example T9TK3CUKW
+             */
+            team_id: string;
+            /** @example U0123456789 */
+            slack_user_id: string;
+            /**
+             * @description The member's Slack handle as last seen, without the `@`; null when Slack never sent one.
+             * @example ram
+             */
+            handle: string | null;
+            expires_at: components["schemas"]["Timestamp"];
+            /** @description True when this Slack member is already linked to you, so confirming changes nothing. */
+            already_yours: boolean;
+        };
+        /** @description A Slack member linked to you. Its Slack clicks — approving a Remedy among them — count as you. */
+        SlackIdentityDTO: {
+            id: components["schemas"]["Uuid"];
+            /** @example T9TK3CUKW */
+            team_id: string;
+            /** @example U0123456789 */
+            slack_user_id: string;
+            /** @example ram */
+            handle: string | null;
+            linked_at: components["schemas"]["Timestamp"];
+        };
         DeliveryDrillResponse: {
             data: components["schemas"]["DeliveryDrillDTO"];
             meta: components["schemas"]["Meta"];
@@ -9232,6 +9357,19 @@ export interface components {
         };
         ApiTokenCreatedResponse: {
             data: components["schemas"]["ApiTokenCreatedDTO"];
+            meta: components["schemas"]["Meta"];
+        };
+        SlackIdentityListResponse: {
+            data: components["schemas"]["SlackIdentityDTO"][];
+            page: components["schemas"]["PageInfo"];
+            meta: components["schemas"]["Meta"];
+        };
+        SlackIdentityResponse: {
+            data: components["schemas"]["SlackIdentityDTO"];
+            meta: components["schemas"]["Meta"];
+        };
+        SlackLinkPreviewResponse: {
+            data: components["schemas"]["SlackLinkPreviewDTO"];
             meta: components["schemas"]["Meta"];
         };
         IngestAcceptedResponse: {
@@ -16331,6 +16469,122 @@ export interface operations {
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    listMySlackIdentities: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The signed-in user's linked Slack accounts. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SlackIdentityListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    linkSlackIdentity: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SlackLinkCodeRequest"];
+            };
+        };
+        responses: {
+            /** @description The Slack account, now linked to you. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SlackIdentityResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    previewSlackLink: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SlackLinkCodeRequest"];
+            };
+        };
+        responses: {
+            /** @description The Slack account the code would link. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SlackLinkPreviewResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    unlinkSlackIdentity: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: components["responses"]["NoContent"];
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
             429: components["responses"]["RateLimited"];
             500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];

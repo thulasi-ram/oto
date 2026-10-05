@@ -91,6 +91,7 @@ type Router struct {
 	gate    LoginGate
 	tx      UnitOfWork
 	claims  IdempotencyClaims
+	links   SlackLinks
 	clk     clock.Clock
 }
 
@@ -118,7 +119,10 @@ type Options struct {
 	// unprotected create — the whole defect was a header the contract promised and
 	// the server ignored, and ignoring it quietly a second time is the same bug.
 	Claims IdempotencyClaims
-	Clock  clock.Clock
+	// SlackLinks is the self-service Slack link (git-bug a556a5c). Nil answers its four
+	// operations 503 — never a link made some other way.
+	SlackLinks SlackLinks
+	Clock      clock.Clock
 }
 
 // NewRouter builds the identity router.
@@ -135,6 +139,7 @@ func NewRouter(o Options) *Router {
 		gate:    o.Gate,
 		tx:      o.Tx,
 		claims:  o.Claims,
+		links:   o.SlackLinks,
 		clk:     clk,
 	}
 }
@@ -177,6 +182,8 @@ func (rt *Router) Mount(r chi.Router) {
 		// Reading the tuning is a read: a token that can list alerts can see the
 		// numbers that decided how loudly they were announced.
 		g.Get("/org/settings", rt.getOrgSettings)
+		// Which Slack accounts are linked to ME. Reading it is a read, like `/me`.
+		g.Get("/me/slack-identities", rt.listMySlackIdentities)
 	})
 
 	// sessionCookie only.
@@ -193,6 +200,12 @@ func (rt *Router) Mount(r chi.Router) {
 		g.Get("/api-tokens", rt.listAPITokens)
 		g.Post("/api-tokens", rt.createAPIToken)
 		g.Delete("/api-tokens/{id}", rt.revokeAPIToken)
+		// ⛔ SESSION-ONLY, for minting credentials' reason (git-bug a556a5c): a link decides whose
+		// approval a Slack click counts as. A leaked PAT that could link would let its holder's
+		// Slack clicks count as the PAT's owner. None of these takes a user id.
+		g.Post("/me/slack-identities/preview", rt.previewSlackLink)
+		g.Post("/me/slack-identities", rt.linkSlackIdentity)
+		g.Delete("/me/slack-identities/{id}", rt.unlinkSlackIdentity)
 	})
 }
 

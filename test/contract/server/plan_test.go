@@ -69,6 +69,28 @@ func plan() []probe {
 			want:    http.StatusCreated,
 			capture: map[string][]string{"token": {"data", "token", "id"}},
 		},
+		// The self-service Slack link (git-bug a556a5c). The list answers 2xx, empty: nobody in
+		// this world has pressed a Remedy button, so no code exists to link with. The three writes
+		// are session-only and are driven to their typed refusals.
+		{method: http.MethodGet, tmpl: "/api/v1/me/slack-identities", want: http.StatusOK},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/me/slack-identities/preview", auth: authSession,
+			body: map[string]any{"code": "ABCDE-FGHJK"},
+			want: http.StatusUnprocessableEntity,
+			why:  "a code exists only once a Slack member has pressed a Remedy button; this one names none",
+		},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/me/slack-identities", auth: authSession,
+			body: map[string]any{"code": "ABCDE-FGHJK"},
+			want: http.StatusUnprocessableEntity,
+			why:  "the same code, which names no live code, so nothing is linked",
+		},
+		{
+			method: http.MethodDelete, tmpl: "/api/v1/me/slack-identities/{id}",
+			url: "/api/v1/me/slack-identities/019fe2a1-5d1e-7c00-8000-00000000a556", auth: authSession,
+			want: http.StatusNotFound,
+			why:  "a Slack identity is linked to nobody in this world, so there is none of mine to unlink",
+		},
 
 		/* ------------------------------------------------------------ clusters */
 		{method: http.MethodGet, tmpl: "/api/v1/clusters", want: http.StatusOK},
