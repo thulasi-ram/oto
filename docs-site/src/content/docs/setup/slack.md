@@ -176,9 +176,10 @@ that user. **If they are not, the acknowledgement is still recorded**, attribute
 to their Slack handle — losing a real acknowledgement because somebody has not
 onboarded would be worse than the missing link.
 
-**Each person links their own Slack account**, and it starts in Slack: pressing a
-Remedy's **Approve** or **Decline** while unlinked answers with a one-time link
-code only the presser sees, which they enter on oto's **Account** page while
+**Each person links their own Slack account**, and it starts in Slack: pressing
+**Acknowledge** or **Un-acknowledge** on any card, or a Remedy's **Approve** or
+**Decline**, while unlinked answers with a one-time link code only the presser
+sees (the acknowledgement is still recorded, as the Slack handle), which they enter on oto's **Account** page while
 signed in. oto shows which Slack account and workspace it would link before it
 links anything. The steps and the limits are in
 [Remedies → Linking your Slack account](/oto/setup/remedies/#linking-your-slack-account).
@@ -186,7 +187,9 @@ links anything. The steps and the limits are in
 > ⚠️ **A link code is a credential.** Whoever enters your code in their own oto
 > session makes your Slack clicks count as theirs — approving a Remedy among
 > them. The confirmation screen and the recorded fact of every link are the
-> mitigation. A link already naming another person is never moved.
+> mitigation. A link already naming another active person is never moved; one
+> naming a disabled person moves to the member's own code, and the record names
+> who it displaced.
 
 oto answers Slack's request **before** it does any of that work, so a slow
 database shows up as a card that updates a moment late, never as *"This app is
@@ -427,7 +430,7 @@ it is sent, so a source fanning one event into many alerts is fixed at the sourc
 | Button settles, but the card never changes | The press was recorded and the follow-up notification has not gone out. The card is updated through the normal delivery path — deliberately, so thread ordering and rate limiting still apply — so a backed-up `notify` or `deliver_slack` queue delays it. | Check the Deliveries view and the queue depth metrics. The acknowledgement itself is already on the alert's timeline; only the card is late. |
 | oto replies *"oto has no channel configured for this conversation"* | The press came from a Slack conversation no oto channel points at. oto resolves the tenant from `(team_id, conversation_id)` and will not guess. | Create an oto channel whose `config.conversation_id` is that channel's ID, in the right organisation. |
 | oto replies *"already acknowledged"* | Somebody got there first — possibly you, twice. | Nothing to fix. An acknowledgement is a receipt, and the first one is the fact on the record. |
-| Button works, but the ack is attributed to a bare Slack handle instead of an oto user | That Slack member is not linked to an oto user **in the organisation that owns this channel**. The mapping is per-organisation on purpose: one workspace can serve two oto tenants, and a link in one must not attribute a press in the other. | The member links themselves: press a Remedy's Approve or Decline in Slack for a one-time code, then enter it on oto's **Account** page ([Remedies → Linking your Slack account](/oto/setup/remedies/#linking-your-slack-account)). oto records the ack either way rather than refusing it — losing an acknowledgement because of a missing link would be worse. |
+| Button works, but the ack is attributed to a bare Slack handle instead of an oto user | That Slack member is not linked to an oto user **in the organisation that owns this channel**. The mapping is per-organisation on purpose: one workspace can serve two oto tenants, and a link in one must not attribute a press in the other. | The member links themselves: their next Acknowledge or Un-acknowledge press (or a Remedy's Approve or Decline) answers with a one-time code only they see; they enter it on oto's **Account** page ([Remedies → Linking your Slack account](/oto/setup/remedies/#linking-your-slack-account)). oto records the ack either way rather than refusing it — losing an acknowledgement because of a missing link would be worse. |
 
 ### `invalid_blocks`, `msg_blocks_too_long`, `too_many_attachments`, `metadata_*`
 

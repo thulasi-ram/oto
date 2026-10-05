@@ -6,6 +6,8 @@ title: "0013 — oto is alert-first: the Flight Recorder Test defines the scope 
 — its refusal of incident objects and the PERMANENTLY-OUT classification of `incidents`. 0052 admits
 the **grouping** (an Incident drawn over Cases) and keeps the **response** out; this ADR's handoff
 contract is not superseded, and 0052 is built on it.
+**Superseded in part by:** [0054](/oto/adr/0054-a-remedy-earns-the-write-path/) — FR-1's refusal of facts
+about a response effort, for the one noun `Remedy`. Every other FR-1 refusal stands.
 **Doctrine:** `docs/design/SCOPE-BOUNDARY.md` (the full test, 32 worked verdicts, the audit delta, the
 slippery-slope map and the handoff contract). This ADR records the *decision*; that document is what
 engineers cite when refusing a feature.

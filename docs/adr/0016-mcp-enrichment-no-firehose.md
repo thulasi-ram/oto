@@ -5,6 +5,8 @@
 [0009](0009-rule-snapshot-versioning-at-fire-time.md) (snapshot-at-fire-time semantics),
 [0013](0013-alert-first-scope-boundary.md) (oto is a flight recorder, not an observability store)
 **Resolves:** the open question *"is oto k8s-enriched or only k8s-shaped?"*
+**Amended by:** [0054](0054-a-remedy-earns-the-write-path.md) §5 — a ToolServer may expose write
+Tools; oto still holds no cluster credential.
 
 ## Context
 

@@ -14,7 +14,8 @@ proposed ──► approved ──► executed | failed
 ```
 
 Every transition is made by a named actor — the Investigator proposes, a person approves or
-declines, oto (`system`) expires — and every transition is sent to the Incident as a fact.
+declines, oto (`system`) expires — and every transition is sent as a fact to the Incident it is
+declared to (none, for a Case no Incident holds — see [What goes outbound](#what-goes-outbound)).
 
 ## What you configure
 
@@ -33,6 +34,22 @@ declines, oto (`system`) expires — and every transition is sent to the Inciden
    No route in oto can create, change or delete a grant — an in-app grant would let one holder mint
    a second approver and approve alone. `GET /api/v1/tool-servers/{id}/remedy-approvers` lists the
    holders, read-only.
+
+   **On the Helm chart, "the host shell" is the oto pod.** The image's entrypoint is the `oto`
+   binary itself, so run the subcommand in the API Deployment (`<release>-oto-api`, or
+   `<release>-api` when the release name already contains `oto`), which already holds the database
+   credentials:
+
+   ```sh
+   kubectl -n <namespace> exec deploy/<release>-oto-api -- \
+     oto grant remedy-approver --org <slug> --toolserver <name> --email <address>
+   ```
+
+   `oto remedy-rules apply` runs the same way, with the file on standard input
+   (`kubectl -n <namespace> exec -i deploy/<release>-oto-api -- oto remedy-rules apply --org <slug> -f - < rules.yaml`).
+   ⚠️ **Whoever may `exec` into the oto pod is the authority that mints approvers and writes the
+   risk rules** — the pod holds the database credentials. Restrict `pods/exec` on that namespace
+   to the people you would trust with that.
 3. **An Investigator that may propose.** Add `oto_propose_remedy` to its Tool allowlist, and
    `oto_write_tools` so it can read which write Tools exist and what arguments they take. Both are
    built in; neither calls a ToolServer.
@@ -70,7 +87,15 @@ configure a Tool and ask for another Investigation.
   removed, re-declared `read`, or no longer lists the Tool, the Remedy cannot be approved
   (`409 remedy_tool_unavailable`) and says why — it is never executed against nothing.
 - A person without a counting grant is refused (`403 remedy_approver_required`).
-- **Decline** is any member's: saying no is the safe direction. A Remedy that is proposed, or
+- **Approve from a browser session, or from Slack — never with a token.** A personal access
+  token's approval is refused (`403 remedy_approval_needs_a_session`) before the Remedy is read: an
+  approval makes a command run, and a leaked or scripted token must not make one count. A Slack
+  press is a signed click by a linked person and is unaffected.
+- **Before you decide, see what went outbound.** Above **Approve** and **Decline**, the approval
+  screen lists the last three facts sent outbound about the Remedy's Incident — what each said,
+  when, and whether it landed. A Remedy on a Case no Incident holds has none, and shows no list.
+- **Decline** is any member's, from the UI, a token or Slack: saying no is the safe direction, and
+  a declined Remedy may be proposed again by a later Investigation. A Remedy that is proposed, or
   approved and not yet being executed, can be declined.
 
 When the last approval it needs lands the Remedy is `approved`, and its window starts again: it
@@ -78,7 +103,9 @@ must be executed within `remedy_approval_window_s` of its approval.
 
 ### From Slack
 
-When the Incident is a Slack conversation, a proposed Remedy's reply in its thread says the exact
+When the Incident is a Slack conversation **and a notification policy routing it names
+`remedy_proposed`** (see [What goes outbound](#what-goes-outbound)), a proposed Remedy's reply in
+its thread says the exact
 command first, then its target, how many approvals it needs and what set that, who has approved
 so far, and only then the Investigator's description — with **Approve** and **Decline** under it.
 
@@ -91,8 +118,12 @@ so far, and only then the Investigator's description — with **Approve** and **
   See [Linking your Slack account](#linking-your-slack-account) below. A linked account without the
   grant gets `remedy_approver_required`'s answer.
 - **Approve asks for confirmation first.** It is not offered for a Remedy no configured Tool can
-  carry out, nor for one whose arguments the reply had to cut — approve those in oto, where the
+  carry out, nor for one whose arguments the reply had to cut — measured after Slack's escaping, so
+  arguments heavy in `&`, `<`, `>` or non-ASCII text are cut sooner than their length suggests;
+  the reply then says so and still shows the target and the tier. Approve those in oto, where the
   arguments are shown whole. Decline is always offered.
+- **The facts it was proposed among are above it.** The reply sits in the Incident's thread, under
+  the facts already sent there — which is what the approval screen's list shows in the UI.
 - The buttons stay on the reply after the Remedy moves on; a late press is answered with why it no
   longer applies. Each transition is its own reply, as it is to every other destination.
 
@@ -102,9 +133,10 @@ A link decides **whose approval a Slack click counts as**, and double approval c
 oto users — so linking is something each person does for themselves, from a place only they can
 reach on each side:
 
-1. Press a Remedy's **Approve** or **Decline** in Slack while unlinked. oto verifies Slack's
-   signature on the press and answers, in a message only you can see, with a code such as
-   `ABCDE-FGHJK`. It is bound to your Slack member and workspace, works **once**, and dies after
+1. Press **Acknowledge** or **Un-acknowledge** on any card, or a Remedy's **Approve** or
+   **Decline**, in Slack while unlinked. oto verifies Slack's signature on the press and answers,
+   in a message only you can see, with a code such as `ABCDE-FGHJK`. (An acknowledgement is still
+   recorded, as your Slack account; a Remedy press records nothing.) It is bound to your Slack member and workspace, works **once**, and dies after
    **ten minutes** — or as soon as you press again and get a newer one.
 2. Signed in to oto in your browser, open **Account** from the menu under your initials and enter
    the code. oto shows the Slack account and workspace it would link — *"Clicks from this Slack
@@ -121,9 +153,12 @@ The rules oto keeps whatever you do:
 
 - **Only the signed-in person is ever linked.** No route takes a user id, and linking needs a
   browser session — a personal access token cannot link, unlink or preview.
-- **A link to another real person is never moved.** A code for a Slack account already linked to
-  somebody else is refused (`409 slack_identity_linked_elsewhere`); they unlink it first. A link
+- **A link to another active person is never moved.** A code for a Slack account already linked
+  to somebody else is refused (`409 slack_identity_linked_elsewhere`); they unlink it first. A link
   to the stand-in oto created when you first pressed a button is replaced, and the stand-in retired.
+- **A link to a disabled person moves to your own code.** A disabled user cannot sign in to unlink,
+  so a Slack account linked to one is issued a code like an unlinked one, and confirming it links
+  you; the record of the link names the disabled user it displaced.
 - **Wrong codes are limited.** A wrong, used or expired code is one answer
   (`422 slack_link_code_invalid`); five in fifteen minutes and further attempts are refused with
   `429` for a while. One code may be checked or confirmed five times at most, then it is dead.
@@ -159,8 +194,8 @@ A ToolServer that could not be reached at all is `tool_unavailable`: no session,
 **A failed Remedy is never retried.** `failed` is final. If the change still matters, ask for
 another Investigation: a retry is a **new** Remedy and a **new** approval.
 
-**An executed Remedy is followed up.** The transaction that records it `executed` also asks for
-**one** Investigation of its Incident — the one its facts are declared to — so the timeline says
+**An executed Remedy is followed up.** Right after the record of it `executed` commits, oto asks,
+in a transaction of its own, for **one** Investigation of its Incident — the one its facts are declared to — so the timeline says
 whether the change helped. A Remedy on a Case that no Incident holds is followed up on that Case.
 
 - **The Investigator that proposed it runs it**, whether or not it is opted into Incidents: it
@@ -170,7 +205,9 @@ whether the change helped. A Remedy on a Case that no Incident holds is followed
   coalesces under the Investigator's minimum interval like a membership change — into a run of
   the same Investigator on the same subject that has not started yet, or after the interval since
   the last one began. Several Remedies executed close together are one follow-up.
-- **A failed Remedy is followed by nothing**, and a retried execution job never asks twice.
+- **A failed Remedy is followed by nothing**, and a retried execution job never asks twice. A
+  follow-up that cannot be asked for is logged, and never costs the record of what the Tool
+  answered.
 - Its Finding goes outbound like any other Incident Finding (`finding`); it never decides whether
   anyone is notified.
 
@@ -184,15 +221,17 @@ Settings → Remedy risk and `GET /api/v1/remedy-risk-rules` show them; nothing 
 ### What a rule says
 
 A rule has a **name** (lower-case letters, digits, `_`, `-`; it is what the approval screen shows),
-**1 or 2 approvals**, and one or more **conditions**, every one of which must hold:
+**1 or 2 approvals**, and one or more **conditions**, every one of which must hold. **A rule that says
+1 must name its `tool`** — so you say which of your write Tools take kubectl-shaped arguments; a
+1-rule without one is refused (`single_needs_tool`). A rule that says 2 may omit it.
 
 | Condition | Holds when |
 |---|---|
 | `tool` | the Remedy's write Tool is exactly this `<toolserver>__<tool>`. |
 | `verbs` | the command's verb is one of these — `delete`, `scale`, `rollout restart`, `set image`. |
-| `kinds` | the command's resource kind is one of these. kubectl's plurals and short names for the built-in kinds fold onto one name (`deploy`, `deployments`, `deployment.apps` are all `deployment`); any other kind matches as written, lower-cased. |
+| `kinds` | the command's resource kind is one of these. kubectl's plurals, short names and group-qualified names for the built-in kinds fold onto one name (`deploy`, `deployments`, `deployment.apps` are all `deployment`). A kind oto does not know every spelling of — a CRD's, say — is refused in a rule (`unknown_kind`), and a command naming one is unparseable. |
 | `namespaces` | the command **names** one of these namespaces. A command that names no namespace, or names all of them (`-A`), matches no namespace condition. |
-| `reversibility` | `reversible`: the verb is one oto knows to be reversible — `rollout restart`, `rollout pause`, `rollout resume`, `rollout undo`, `scale`, `cordon`, `uncordon`. `irreversible`: any other verb, including one oto does not know, and a command with no verb. |
+| `reversibility` | `reversible`: the verb is one oto knows to be reversible — `rollout restart`, `rollout pause`, `rollout resume`, `rollout undo`, `scale`, `cordon`, `uncordon` — read from a command line. `irreversible`: any other verb, including one oto does not know, a command with no verb, and **every structured Remedy** (its `verb` member is the model's claim, not what the Tool does). |
 
 A rule with no condition is refused: it would match every command.
 
@@ -216,6 +255,7 @@ Example:
 ```yaml
 rules:
   - name: restart-payments
+    tool: k8s-write__kubectl
     verbs: [rollout restart]
     kinds: [deployment]
     namespaces: [payments]
@@ -226,7 +266,8 @@ rules:
     approvals: 2
 ```
 
-`kubectl rollout restart deployment/api -n payments` needs one approval (`restart-payments`);
+`kubectl rollout restart deployment/api -n payments`, sent to `k8s-write__kubectl`, needs one
+approval (`restart-payments`);
 the same restart in `checkout` matches nothing and needs two; `kubectl delete secret db -n payments`
 needs two (`secrets-need-two`).
 
@@ -234,26 +275,34 @@ needs two (`secrets-need-two`).
 
 A Remedy is a write Tool and its JSON arguments. The rules read them in one of two shapes:
 
-- **A command line** — the arguments carry `command` (a string, or an array of words) or `args` (an
-  array of words). It is read as **kubectl's** command line: `kubectl` first, or one of kubectl's
-  own verbs first. Words are split on spaces and tabs and **nothing is interpreted** — no quoting,
-  escaping, expansion or globbing. The verb is kubectl's (two words for `rollout`, `set`, `auth`,
-  `certificate`, `top`); the kind is the next word, or the type in `type/name`; `cordon`, `uncordon`
-  and `drain` name a `node`; the namespace is `-n`/`--namespace`.
-- **Structured arguments** — no command line. The verb is the `verb` member, the kind is `kind`
-  (or `resource`), the namespace is `namespace`, each a string when present. A Tool whose arguments
-  carry none of these can still be matched by a rule on its `tool`.
+- **A command line** — the arguments are exactly **one** member, `command` (a string, or an array of
+  words) or `args` (an array of words), with nothing beside it. It is read as **kubectl's** command
+  line: `kubectl` first, or one of kubectl's own verbs first. A string is split on spaces and tabs
+  only, and **nothing is interpreted** — no quoting, escaping, expansion or globbing. Every word must
+  be ASCII letters, digits and `_ . : / = @ , + -`. The verb is kubectl's (two words for `rollout`,
+  `set`, `auth`, `certificate`, `top`); the kind is the next word, or the type in `type/name`;
+  `cordon`, `uncordon` and `drain` name a `node`; the namespace is `-n`/`--namespace`, a namespace
+  name.
+- **Structured arguments** — no command line, and only these members, each a JSON string: `verb`,
+  `kind` (or `resource`, or `resourceType`), `namespace` and `name`. A Tool whose arguments carry
+  none of these can still be matched by a rule on its `tool`.
 
 **Unparseable — two approvals, whatever the rules say:**
 
-- any of `; | & $ < > ( ) { } [ ] * ? ~ # \ ' "` `` ` `` or a newline in a command line — so `sh -c …`,
-  pipes, `;`, `&&`, backticks, `$(…)`, redirects, quotes and globs;
+- a word with any character outside that allowlist — so `sh -c …`, pipes, `;`, `&&`, backticks,
+  `$(…)`, redirects, quotes, globs, and any other whitespace (a no-break space, an em space, a
+  vertical tab, …), which is never split on;
 - `; | & $ < > ` `` ` `` or a newline in **any** string anywhere in the arguments, keys included;
+- a key twice at any depth, two keys that differ only in case, or a key that is not ASCII;
+- a member beside `command`/`args`, or, in structured arguments, any member but the four above, or
+  a value that is not a string (a `manifest`, a `patch`, a number, a nested object);
 - a program other than kubectl (`sh`, `bash`, `helm`, …);
 - `--` and whatever follows it (`kubectl exec … -- …`), or `-` (standard input);
 - a flag that names resources in a file (`-f`, `-k`, `--raw`), changes who kubectl runs as
-  (`--as`, `--token`, `--kubeconfig`, …) or where it connects (`--server`);
-- a flag oto does not know, unless written `--flag=value`, so its arity is plain;
+  (`--as`, `--token`, `--kubeconfig`, …) or where it connects (`--server`, `--context`, `--cluster`,
+  `--tls-server-name`), or `--profile`, `--cache-dir`;
+- a flag oto does not know, in any form, `--flag=value` included;
+- a kind oto does not know every spelling of;
 - two kinds (`secret,configmap`, or `deploy/a secret/b`), or two different namespaces.
 
 The Remedy records which of these it was, and the approval screen shows it.
@@ -306,12 +355,13 @@ risk_model: risk-checker
 # Required. The whole list, in order; `rules: []` makes every Remedy need two.
 rules:
   - name: restart-payments          # required; lower-case, digits, _ and -; unique
+    tool: k8s-write__kubectl        # required when approvals is 1: <toolserver>__<tool>
     verbs: [rollout restart]        # optional conditions — at least one is required
     kinds: [deployment]
     namespaces: [payments]
     approvals: 1                    # required; 1 or 2
   - name: secrets-need-two
-    tool: k8s-write__kubectl        # a qualified write Tool, <toolserver>__<tool>
+    tool: k8s-write__kubectl        # optional when approvals is 2
     kinds: [secret]
     reversibility: irreversible     # reversible | irreversible; omit for either
     approvals: 2
@@ -327,7 +377,7 @@ rules:
 - On success it prints each rule with its tier, the risk model, and how many rules it replaced.
 - The last apply and when are recorded and shown on the Settings screen.
 - ⚠️ Treat a change to the rules like a change to who may approve. Applying them **re-tiers no
-  Remedy already proposed**.
+  Remedy already proposed**: decline any pending Remedy the new rules would have tiered higher.
 
 ## The trust boundary is your ToolServer
 
@@ -362,8 +412,10 @@ job records the transition (by `system`) within a minute and declares it. Record
 Each transition is an Incident fact — `remedy_proposed`, `remedy_approved`, `remedy_declined`,
 `remedy_expired`, `remedy_executed`, `remedy_failed` — sent to the Incident the Remedy is about,
 or to the Incident holding its Case at the time. A Remedy on a Case that is in no Incident is
-declared nowhere; its transitions record that. Route them with a notification policy like any
-Incident fact; the envelope's `incident.remedy` carries the transition, the exact command first, with
+declared nowhere: it has no outbound fact, so no Slack card and no list of facts on its approval
+screen; it is decided on the Case's Investigation panel, and its transitions are on its record.
+Route them with a notification policy like any Incident fact — **a policy must name
+`remedy_proposed`, or no Slack card with Approve and Decline is posted**; the envelope's `incident.remedy` carries the transition, the exact command first, with
 `required_approvals` and what set it (`approvals_set_by`, `approvals_rule`)
 (see [the webhook envelope](webhook.md)). They are **facts**: approval happens in oto, and oto
 reads nothing back from your incident tool.
