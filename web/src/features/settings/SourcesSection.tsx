@@ -37,7 +37,7 @@ import type {
   SourceHealthStatus,
   SourceKind,
 } from "~/api/types";
-import { RelativeTime } from "~/components/Time";
+import { Ago } from "~/components/Time";
 import { Button } from "~/components/ui/Button";
 import { Checkbox } from "~/components/ui/Checkbox";
 import {
@@ -98,17 +98,18 @@ import {
  * look rather than being told not to.
  */
 const HEALTH_NOTE: Record<SourceHealthStatus, string> = {
-  healthy: "Reachable, and reconciling on schedule. Alerts oto stops hearing about can expire.",
+  healthy:
+    "Reachable, and reconciling on schedule. Alerts oto stops hearing about can expire, once every live source on this cluster is healthy.",
   // ⛔ NOT "SOME RECONCILES ARE FAILING". `degraded` is either of two things
   // (sources/service ApplyProbe): one or two probes in a row failed — the third
   // makes it `unreachable` — or the probe reached it and its HA cluster reported
   // not ready, which can return an incomplete alert set. Both are said.
   degraded:
-    "The last probe failed (three in a row makes it unreachable), or this Alertmanager's HA cluster is not ready, so the alerts it reports may be incomplete. Nothing from this source will be expired until it recovers.",
+    "The last probe failed (three in a row makes it unreachable), or this Alertmanager's HA cluster is not ready, so the alerts it reports may be incomplete. Nothing on its cluster will be expired until it recovers.",
   unreachable:
-    "oto cannot reach this Alertmanager. Alerts pushed by webhook may still arrive; state reconciliation will not, so oto cannot see a silence here and will not expire anything from this source.",
+    "oto cannot reach this Alertmanager. Alerts pushed by webhook may still arrive; state reconciliation will not, so oto cannot see a silence here and will not expire anything on its cluster.",
   unknown:
-    "oto has not checked this source yet, so nothing from it will be expired until a reconcile pass succeeds.",
+    "oto has not checked this source yet, so nothing on its cluster will be expired until a reconcile pass succeeds.",
 };
 
 /**
@@ -390,7 +391,7 @@ const SourceRow: Component<{
         <Show when={s().health?.last_reconcile_at}>
           {(at) => (
             <span class="text-meta text-ink-subtle">
-              reconciled <RelativeTime value={at()} label="Last reconcile" /> ago
+              reconciled <Ago value={at()} label="Last reconcile" />
             </span>
           )}
         </Show>
@@ -403,7 +404,7 @@ const SourceRow: Component<{
           <Show when={s().health?.last_push_at} fallback="no webhook received yet">
             {(at) => (
               <>
-                last push <RelativeTime value={at()} label="Last push" /> ago
+                last push <Ago value={at()} label="Last push" />
               </>
             )}
           </Show>
@@ -532,10 +533,12 @@ const SourceRow: Component<{
  * holding because of it (ADR 0056 §1) — the per-source form of the `held` count
  * the sweep used to report only to a log line.
  *
- * Held is every open Case on the cluster while the source is not healthy, or
- * while the cluster has another live source: the reaper expires a Case only
- * under its cluster's ONE live source. The sentence says which of the two it is.
- * Absent counts render nothing — "not counted" is not "none".
+ * Held is every open Case on the cluster while this source is not healthy, and
+ * none while it is (owner ruling R1): the reaper expires a Case only while every
+ * live source on its cluster is healthy, so one unhealthy replica of an HA pair
+ * holds them all, and a healthy one holds nothing on its own account — a
+ * sibling's row says so for itself. Absent counts render nothing — "not
+ * counted" is not "none".
  */
 const OpenCases: Component<{ readonly source: Source }> = (props) => {
   const open = (): number | undefined => props.source.open_case_count;
@@ -543,8 +546,8 @@ const OpenCases: Component<{ readonly source: Source }> = (props) => {
   const status = (): SourceHealthStatus => props.source.health?.status ?? "unknown";
   const why = (): string =>
     status() !== "healthy"
-      ? `None of them can expire while this source is ${status()}; upstream can still resolve them.`
-      : "None of them can expire while its cluster has another live source: oto expires a case only under one. Upstream can still resolve them.";
+      ? `None of them can expire while this source is ${status()}: oto expires a case only while every live source on its cluster is healthy. Upstream can still resolve them.`
+      : "None of them can expire until oto has confirmed this source is healthy again: oto expires a case only while every live source on its cluster is healthy. Upstream can still resolve them.";
   const plural = (n: number): string => (n === 1 ? "case" : "cases");
 
   return (
@@ -606,6 +609,7 @@ const SourceWarnings: Component<{ readonly source: Source }> = (props) => (
 const SILENCE_MIN_S = minValueOf(UpdateSourceRequestSchema, "max_silence_seconds");
 const SILENCE_MAX_S = maxValueOf(UpdateSourceRequestSchema, "max_silence_seconds");
 const HOUR_S = 3600;
+/** The column default for a newly registered source, offered when turning it on. */
 const DEFAULT_SILENCE_S = 86_400;
 
 /**
@@ -621,7 +625,13 @@ const DEFAULT_SILENCE_S = 86_400;
  * operator.
  *
  * ⛔ IT IS NOT A WAY TO END A CASE. Nothing here closes anything a person picks:
- * it is configuration the reaper reads, and only while the source is healthy.
+ * it is configuration the reaper reads, and only while every live source on the
+ * cluster is healthy.
+ *
+ * ⭐ THE DEFAULT IS STATED, NOT BACKFILLED (owner ruling R2). A source registered
+ * after migration 00094 starts at one day; one that existed before it starts
+ * off, so the expiry never acts on a number nobody wrote (ADR 0044 §3). The box
+ * offers the day to an operator turning it on, and the help says both.
  */
 const MaxSilenceField: Component<{ readonly source: Source }> = (props) => {
   const client = useQueryClient();
@@ -699,8 +709,13 @@ const MaxSilenceField: Component<{ readonly source: Source }> = (props) => {
         </Button>
       </div>
       <p class={HELP}>
-        An open case this source has said nothing about for this long expires as{" "}
-        <em>silent</em> — only while the source is healthy. Raise it if this Alertmanager's{" "}
+        An open case its cluster has said nothing about for this long expires as <em>silent</em> —
+        only while every live source on the cluster is healthy. Under an HA pair the longest max
+        silence applies, and off on any one source turns it off for the whole cluster. A source
+        registered now starts at 1 day; a source registered before this setting existed starts
+        with it off, until someone sets it here. The expiry itself runs only where the deployment
+        has turned it on (<code class="font-mono">jobs.expire_silent_and_removed</code>, off by
+        default in this release). Raise it if this Alertmanager's{" "}
         <code class="font-mono">repeat_interval</code> is longer: Alertmanager re-sends a firing
         alert once per repeat, so a shorter max silence ends long-firing cases while they are still
         firing.

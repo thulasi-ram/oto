@@ -20,6 +20,7 @@ import type {
   Case,
   CaseDetail,
   CaseListItem,
+  CaseSource,
   CaseSources,
   Incident,
   IncidentDetail,
@@ -77,27 +78,49 @@ export function alertRef(patch: Partial<AlertRef> = {}): AlertRef {
   };
 }
 
+/** One live source on a Case's cluster: healthy, with the new-source default of a day. */
+export function caseSource(patch: Partial<CaseSource> = {}): CaseSource {
+  return {
+    id: "2d8e4a5b-3c6f-4d8e-9f0a-1b2c3d4e5f60",
+    name: "prod-eu alertmanager",
+    healthy: true,
+    max_silence_seconds: 86_400,
+    ...patch,
+  };
+}
+
+/**
+ * Who can still speak for a Case, derived from its cluster's live sources the
+ * way the server derives it (owner ruling R1): `all_healthy` only with at least
+ * one live source and every one healthy; the effective max silence the longest
+ * of theirs, or null when any one turned it off; `source` only under exactly one.
+ */
+export function clusterSources(live: readonly CaseSource[], removed = 0): CaseSources {
+  const silences = live.map((s) => s.max_silence_seconds);
+  return {
+    live: live.length,
+    removed,
+    all_healthy: live.length > 0 && live.every((s) => s.healthy),
+    max_silence_seconds:
+      live.length === 0 || silences.some((s) => s === null)
+        ? null
+        : Math.max(...(silences as number[])),
+    live_sources: live.slice(0, 10),
+    source: live.length === 1 ? live[0]! : null,
+  };
+}
+
 /**
  * Who can still speak for a Case (ADR 0056 §1), in its ordinary shape: one live,
- * healthy source with the default max silence of a day. Patch `source` to null
- * and `live`/`removed` for the shapes that hold or end a Case.
+ * healthy source with the default max silence of a day. `source` patches that
+ * one source (and the cluster facts derived from it); `patch` overrides the
+ * result. For an HA cluster or none, build it with `clusterSources`.
  */
 export function caseSources(
   patch: Partial<CaseSources> = {},
-  source: Partial<NonNullable<CaseSources["source"]>> = {},
+  source: Partial<CaseSource> = {},
 ): CaseSources {
-  return {
-    live: 1,
-    removed: 0,
-    source: {
-      id: "2d8e4a5b-3c6f-4d8e-9f0a-1b2c3d4e5f60",
-      name: "prod-eu alertmanager",
-      healthy: true,
-      max_silence_seconds: 86_400,
-      ...source,
-    },
-    ...patch,
-  };
+  return { ...clusterSources([caseSource(source)]), ...patch };
 }
 
 /** One row of `GET /api/v1/cases`: a firing episode plus its identity. */

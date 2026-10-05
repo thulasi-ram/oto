@@ -1331,18 +1331,22 @@ const RowAck = (props: {
     acked() ? "withdraw the acknowledgement of" : "acknowledge";
 
   /**
-   * The button's word, and it is the whole of its accessible name.
+   * The button's word, and the start of its accessible name.
    *
    * ⛔ IT USED TO BE A CHECK GLYPH IN BOTH DIRECTIONS, told apart only by an
    * `aria-label` a sighted operator never sees: the ack and the unack looked
    * identical, and the tick read as "done" rather than as a thing to press. The
    * owner asked for the verb in words. `Ack` while the firing carries no
-   * receipt, `Unack` once it does — and with no `aria-label` on top, what a
-   * screen reader announces is exactly what is printed (WCAG 2.5.3). The row's
-   * alertname and number sit beside it in the same `<li>`; the `title` says
-   * what the press does.
+   * receipt, `Unack` once it does.
+   *
+   * ⭐ THE ACCESSIBLE NAME STARTS WITH THE PRINTED WORD AND THEN SAYS WHICH ROW.
+   * A list of fifty buttons all named "Ack" is fifty identical stops in a
+   * screen reader's control list. `Ack HighErrorRate #412` contains the visible
+   * text, at the start (WCAG 2.5.3, label in name), so a voice-control user who
+   * says "click Ack" still reaches it; the `title` says what the press does.
    */
   const label = (): string => (acked() ? "Unack" : "Ack");
+  const name = (): string => `${label()} ${props.item.alert.alertname} #${props.item.number}`;
 
   const title = (): string => {
     const failed = failure();
@@ -1370,6 +1374,7 @@ const RowAck = (props: {
         class="w-16 shrink-0"
         disabled={props.disabled || receipt.isPending}
         aria-busy={receipt.isPending ? "true" : undefined}
+        aria-label={name()}
         title={title()}
         onClick={() => receipt.mutate()}
       >

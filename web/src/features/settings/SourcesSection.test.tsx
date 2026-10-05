@@ -31,6 +31,22 @@ describe("a source's max silence", () => {
     expect(document.body.textContent).not.toMatch(/longer than its max silence/);
   });
 
+  it("states the default precisely: a day for a new source, off for an existing one until set", async () => {
+    stubFetch({
+      "GET /api/v1/sources": list([source()]),
+      "GET /api/v1/clusters": list([cluster()]),
+    });
+    renderScreen(() => <SourcesSection />);
+
+    await until(() => expect(screen.getByText("Max silence (hours)")).toBeTruthy());
+    const text = document.body.textContent ?? "";
+    expect(text).toMatch(/A source registered now starts at 1 day/);
+    expect(text).toMatch(/starts\s+with it off, until someone sets it here/);
+    // R1: the HA rule, and B2: the flag — neither left for the operator to guess.
+    expect(text).toMatch(/off on any one source turns it off for the whole cluster/);
+    expect(text).toMatch(/jobs\.expire_silent_and_removed/);
+  });
+
   it("names the numbers when this Alertmanager repeats less often than its max silence", async () => {
     stubFetch({
       "GET /api/v1/sources": list([source({ max_silence_seconds: 86_400 }, { repeatIntervalS: 172_800 })]),
@@ -129,14 +145,17 @@ describe("what a source is doing to endings", () => {
     const held = document.querySelector("[data-held-cases]")!;
     expect(held.textContent).toBe("12 held");
     expect(held.getAttribute("title")).toMatch(/can expire while this source is degraded/);
+    expect(held.getAttribute("title")).toMatch(
+      /only while every live source on its cluster is healthy/,
+    );
   });
 
-  it("names the HA pair as the reason when a healthy source still holds", async () => {
-    mountSources([source({ open_case_count: 3, held_case_count: 3 })]);
-    await until(() => expect(document.querySelector("[data-held-cases]")).toBeTruthy());
-    expect(document.querySelector("[data-held-cases]")!.getAttribute("title")).toMatch(
-      /while its cluster has another live source/,
-    );
+  it("⛔ no longer blames a healthy source's HA sibling: an HA pair holds nothing by being one", async () => {
+    // Owner ruling R1: a healthy source's count is zero, so it shows no marker.
+    mountSources([source({ open_case_count: 3, held_case_count: 0 })]);
+    await until(() => expect(screen.getByText("3 open cases")).toBeTruthy());
+    expect(document.querySelector("[data-held-cases]")).toBeNull();
+    expect(document.body.textContent).not.toMatch(/another live source/);
   });
 
   it("says nothing about cases the count did not reach — not counted is not none", async () => {
@@ -152,6 +171,18 @@ describe("what a source is doing to endings", () => {
     // an exact minute would race it.
     mountSources([withHealth({ last_push_at: new Date(Date.now() - 300_000).toISOString() })]);
     await until(() => expect(document.body.textContent).toMatch(/last push \d+m ago/));
+    const at = document.querySelector("time[title^='Last push: ']");
+    expect(at?.getAttribute("datetime")).toBeTruthy();
+  });
+
+  it("⛔ reads a push this browser's clock places in the future as `just now`, never `in 2m ago`", async () => {
+    const ahead = new Date(Date.now() + 120_000).toISOString();
+    mountSources([withHealth({ last_push_at: ahead, last_reconcile_at: ahead })]);
+    await until(() => expect(document.body.textContent).toMatch(/last push just now/));
+    expect(document.body.textContent).toMatch(/reconciled just now/);
+    expect(document.body.textContent).not.toMatch(/in \d+m ago/);
+    const at = document.querySelector("time[title^='Last push: ']");
+    expect(at?.getAttribute("datetime")).toBe(ahead);
   });
 
   it("says so when no webhook batch has been accepted", async () => {

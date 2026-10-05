@@ -11,8 +11,8 @@ import { Show, type Component } from "solid-js";
 
 import { tickingNow } from "~/components/Time";
 import { cn } from "~/lib/cn";
-import { absoluteTime } from "~/lib/format";
-import { ago, caseExpiry, expiryNote, isHeld, type StalenessInput } from "./expiry";
+import { absoluteTime, ago } from "~/lib/format";
+import { caseExpiry, expiryNote, isHeld, type StalenessInput } from "./expiry";
 
 /** `last heard from upstream 3h ago`, with the instant behind a hover. */
 export const LastHeard: Component<{ readonly at: string; readonly class?: string }> = (props) => (
