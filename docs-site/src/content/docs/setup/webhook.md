@@ -442,7 +442,7 @@ and `status` — is reached without a bridge by putting a **payload mapping** on
 ### Starting from the catalog
 
 oto ships a small **catalog** of mappings, one file per tool, in
-[`mappings/`](../../mappings/README.md) — today incident.io's HTTP alert source and PagerDuty's
+[`mappings/`](https://github.com/thulasi-ram/oto/tree/main/mappings) — today incident.io's HTTP alert source and PagerDuty's
 Events API v2, each with the vendor docs its field names were checked against and the date. On a
 webhook connection, *Import from the catalog* shows what a mapping does, what it **never** sends,
 and the setup it needs, and **copies** it into the mapping editor. Save stores the copy as the
