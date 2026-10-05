@@ -36,6 +36,12 @@ if (typeof window !== "undefined") {
   setInterval(() => setNow(Date.now()), 10_000);
 }
 
+/**
+ * The same shared tick, for a component that composes its own relative copy
+ * ("expires as silent in 21h") rather than rendering a bare `<RelativeTime>`.
+ */
+export const tickingNow = now;
+
 export interface RelativeTimeProps {
   readonly value: string | null | undefined;
   /** Prefix for the accessible label, e.g. "Last seen". */

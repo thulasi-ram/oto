@@ -108,6 +108,7 @@ import {
   drawOver,
   type PickedCase,
 } from "~/features/incidents/membership";
+import { ExpiryMeta, LastHeard } from "~/features/alerts/Staleness";
 import { cn } from "~/lib/cn";
 import { count as fmtCount, idempotencyKey } from "~/lib/format";
 import {
@@ -1244,6 +1245,13 @@ const CaseRow = (props: {
               </Show>
               <Show when={c().acked_by_label}>
                 {(who) => <span>seen by {who()}</span>}
+              </Show>
+              {/* ADR 0056 §1, on the open rows: when upstream last spoke about
+                  this firing, and whether it can expire. An ended row is
+                  history; its chip already names how it ended. */}
+              <Show when={open()}>
+                <LastHeard at={c().last_observed_at} />
+                <ExpiryMeta case={c()} />
               </Show>
             </div>
           </div>
