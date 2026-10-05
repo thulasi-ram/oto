@@ -51,6 +51,7 @@ func sourceDTO(s domain.Source, clusterKey string, health *domain.SourceHealth) 
 		RedactAnnotations:        nonNilSlice(s.RedactAnnotations),
 		PushEnabled:              s.PushEnabled,
 		ReconcileIntervalSeconds: int32(s.ReconcileInterval / time.Second), //nolint:gosec // <= 3600
+		MaxSilenceSeconds:        optionalSeconds(s.MaxSilence),
 		IngestPath:               ingestPath(s.ID),
 		CreatedAt:                s.CreatedAt.UTC(),
 		UpdatedAt:                s.UpdatedAt.UTC(),
@@ -414,6 +415,15 @@ func (r CreateSourceRequest) toDraft(credentialID *uuid.UUID) domain.SourceDraft
 	if r.ReconcileIntervalSeconds != nil {
 		d.ReconcileInterval = time.Duration(*r.ReconcileIntervalSeconds) * time.Second
 	}
+	// Omitted takes the DDL's default; an explicit null is "off" and stays nil.
+	switch {
+	case !r.MaxSilenceSeconds.Set:
+		v := domain.DefaultMaxSilence
+		d.MaxSilence = &v
+	case r.MaxSilenceSeconds.Value != nil:
+		v := time.Duration(*r.MaxSilenceSeconds.Value) * time.Second
+		d.MaxSilence = &v
+	}
 	return d
 }
 
@@ -446,7 +456,23 @@ func (r UpdateSourceRequest) toPatch(credential **uuid.UUID) domain.SourcePatch 
 		d := time.Duration(*r.ReconcileIntervalSeconds) * time.Second
 		p.ReconcileInterval = &d
 	}
+	if r.MaxSilenceSeconds.Set {
+		var silence *time.Duration
+		if v := r.MaxSilenceSeconds.Value; v != nil {
+			d := time.Duration(*v) * time.Second
+			silence = &d
+		}
+		p.MaxSilence = &silence
+	}
 	return p
+}
+
+func optionalSeconds(d *time.Duration) *int32 {
+	if d == nil {
+		return nil
+	}
+	v := int32(*d / time.Second) //nolint:gosec // bounded by alert_sources_silence_ck
+	return &v
 }
 
 // ------------------------------------------------------------------- helpers

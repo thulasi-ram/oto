@@ -579,7 +579,8 @@ export interface paths {
          *     **A case's `state` is `open` or `closed`, and it is the only liveness axis here.** The four
          *     words `firing | suppressed | resolved | expired` describe the ALERT, and every alert-shaped
          *     object in this contract carries them. What an episode adds is `resolve_reason` — `upstream`
-         *     for a resolution the source asserted, `timeout` for one oto never heard — and
+         *     for a resolution the source asserted, and `timeout`, `silent` or `source_removed` for the
+         *     three ways oto stops being able to say it is firing — and
          *     `suppression_reason`, which names the silence that muted that firing. A client wanting the
          *     four-word reading composes it from those fields exactly as the server does.
          *
@@ -2765,7 +2766,8 @@ export interface components {
          *     - `open` — the episode is live. `ended_at` is null, guaranteed by the `case_terminal_ended`
          *       CHECK.
          *     - `closed` *(terminal, and terminal means terminal)* — the episode ended. `resolve_reason`
-         *       says whether upstream resolved it (`upstream`) or oto stopped hearing about it (`timeout`),
+         *       says whether upstream resolved it (`upstream`) or how oto stopped hearing about it
+         *       (`timeout`, `silent`, `source_removed`),
          *       and a closed case is never reopened: a re-fire opens the NEXT episode at `seq + 1`,
          *       unacknowledged.
          *
@@ -2799,12 +2801,21 @@ export interface components {
          */
         SuppressionReason: "silence" | "inhibition" | "mute_time_interval" | "active_time_interval" | null;
         /**
-         * @description Why a case ended. Non-null **if and only if** the state is terminal, and the two agree:
-         *     `resolved` always pairs with `upstream`, `expired` always pairs with `timeout`.
+         * @description Why a case ended. Non-null **if and only if** the case is closed. `upstream` is the only
+         *     resolution — an explicit `status="resolved"` arrived — and it alone reads as `resolved`.
+         *     The other three all read as `expired` (ADR 0056 §4), and say why:
+         *
+         *     - `timeout` — upstream's `endsAt` plus `resolve_grace` passed while the source was healthy.
+         *     - `silent` — the source was healthy and said nothing about the case for longer than its
+         *       `max_silence_seconds`.
+         *     - `source_removed` — no live source feeds the case's cluster any more, so nothing is left
+         *       that could say it ended.
+         *
+         *     None of them is a person's decision: no human ends a case.
          * @example upstream
          * @enum {string|null}
          */
-        ResolveReason: "upstream" | "timeout" | null;
+        ResolveReason: "upstream" | "timeout" | "silent" | "source_removed" | null;
         /**
          * @description `open` while at least one member case is `firing` or `suppressed`; `closed` once no live
          *     member is left.
@@ -4620,6 +4631,18 @@ export interface components {
              * @default 30
              */
             reconcile_interval_seconds: number;
+            /**
+             * Format: int32
+             * @description How long, in seconds, this source may say nothing about an open case before oto expires
+             *     it with `resolve_reason=silent` (ADR 0056 §3). `null` turns that expiry off for this
+             *     source. Asked only while the source is `healthy`: under an unhealthy one oto cannot tell
+             *     silence from an outage, so the case is held.
+             *
+             *     ⚠️ It must exceed the Alertmanager's `repeat_interval` (4h unless set). Alertmanager
+             *     re-sends a firing alert once per repeat, so a shorter value expires long-firing cases
+             *     while they are still firing.
+             */
+            max_silence_seconds: number | null;
             /**
              * @description The exact path to configure in this source's Alertmanager `webhook_config`.
              * @example /api/v1/ingest/alertmanager/0198f3c1-6a2e-7c31-9b4d-2f5a1c8e0b77
@@ -6599,6 +6622,14 @@ export interface components {
              * @default 30
              */
             reconcile_interval_seconds: number;
+            /**
+             * Format: int32
+             * @description How long this source may say nothing about an open case before it expires as `silent`
+             *     (ADR 0056 §3). Omitted, it is a day; `null` turns the expiry off. ⚠️ It must exceed the
+             *     Alertmanager's `repeat_interval`, or long-firing cases expire while still firing.
+             * @default 86400
+             */
+            max_silence_seconds: number | null;
             credential?: components["schemas"]["CredentialInput"];
         };
         /**
@@ -6634,6 +6665,13 @@ export interface components {
              *     polls is tunable here; whether it polls is not.
              */
             reconcile_interval_seconds?: number;
+            /**
+             * Format: int32
+             * @description How long this source may say nothing about an open case before it expires as `silent`
+             *     (ADR 0056 §3). Omitted leaves it; `null` turns the expiry off. ⚠️ It must exceed the
+             *     Alertmanager's `repeat_interval`, or long-firing cases expire while still firing.
+             */
+            max_silence_seconds?: number | null;
             credential?: components["schemas"]["CredentialInput"];
         };
         /**

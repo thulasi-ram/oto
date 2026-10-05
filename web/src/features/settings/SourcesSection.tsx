@@ -14,7 +14,7 @@ import { For, Match, Show, Switch, createMemo, createSignal, type Component } fr
 import { useMutation, useQuery, useQueryClient } from "@tanstack/solid-query";
 import * as v from "valibot";
 
-import { maxLengthOf, patternOf } from "~/api/bounds";
+import { maxLengthOf, maxValueOf, minValueOf, patternOf } from "~/api/bounds";
 import { violationsByField } from "~/api/client";
 import {
   createCluster,
@@ -23,7 +23,11 @@ import {
   testSource,
   updateSource,
 } from "~/api/endpoints";
-import { CreateSourceRequestSchema, SourceKindSchema } from "~/api/generated/validators";
+import {
+  CreateSourceRequestSchema,
+  SourceKindSchema,
+  UpdateSourceRequestSchema,
+} from "~/api/generated/validators";
 import { qk } from "~/api/keys";
 import { clustersQuery, sourcesQuery } from "~/api/queries";
 import type {
@@ -64,7 +68,7 @@ import {
 } from "~/components/ui/TextField";
 import { EmptyState, ErrorBanner, ErrorState, LoadingLine } from "~/components/ui/states";
 import { cn } from "~/lib/cn";
-import { idempotencyKey } from "~/lib/format";
+import { duration, idempotencyKey } from "~/lib/format";
 
 import { DrillPanel } from "./DrillPanel";
 import { OneTimeSecret } from "./OneTimeSecret";
@@ -408,6 +412,8 @@ const SourceRow: Component<{
 
       <p class="break-all font-mono text-meta text-ink-subtle">{s().base_url}</p>
 
+      <MaxSilenceField source={s()} />
+
       <Show when={s().health?.last_error}>
         {(err) => (
           <p class="border-l-2 border-line-strong pl-sm text-meta leading-snug text-ink">
@@ -467,6 +473,128 @@ const SourceRow: Component<{
         onConfirm={() => rotate.mutate()}
       />
     </li>
+  );
+};
+
+/*
+ * The contract's bounds on `max_silence_seconds`, read rather than repeated. The
+ * field is edited in hours because that is the unit Alertmanager's
+ * `repeat_interval` is usually written in, and the comparison the warning below
+ * asks an operator to make is against that number.
+ */
+const SILENCE_MIN_S = minValueOf(UpdateSourceRequestSchema, "max_silence_seconds");
+const SILENCE_MAX_S = maxValueOf(UpdateSourceRequestSchema, "max_silence_seconds");
+const HOUR_S = 3600;
+const DEFAULT_SILENCE_S = 86_400;
+
+/**
+ * Max silence (ADR 0056 §3): how long this source may say nothing about an open
+ * case before oto expires it as `silent`.
+ *
+ * ⚠️ THE WARNING IS NEXT TO THE FIELD BECAUSE THE FAILURE IS SILENT. Alertmanager
+ * re-sends a firing alert once per `repeat_interval`; a max silence shorter than
+ * that ends long-firing cases while they are still firing, and nothing else on
+ * any screen would say why (ADR 0056 Consequences). When oto has read this
+ * source's own `repeat_interval` off its config and it is the longer of the two,
+ * the row says so in those numbers rather than leaving the arithmetic to the
+ * operator.
+ *
+ * ⛔ IT IS NOT A WAY TO END A CASE. Nothing here closes anything a person picks:
+ * it is configuration the reaper reads, and only while the source is healthy.
+ */
+const MaxSilenceField: Component<{ readonly source: Source }> = (props) => {
+  const client = useQueryClient();
+  const saved = (): number | null => props.source.max_silence_seconds ?? null;
+  const [hours, setHours] = createSignal(String((saved() ?? DEFAULT_SILENCE_S) / HOUR_S));
+  const [on, setOn] = createSignal(saved() !== null);
+
+  const save = useMutation(() => ({
+    mutationFn: (seconds: number | null) =>
+      updateSource(props.source.id, { max_silence_seconds: seconds }),
+    onSuccess: () => void client.invalidateQueries({ queryKey: qk.settings.sources() }),
+  }));
+
+  const seconds = (): number | null => (on() ? Math.round(Number(hours()) * HOUR_S) : null);
+  const invalid = (): string | undefined => {
+    const value = seconds();
+    if (value === null) return undefined;
+    if (!Number.isFinite(value) || value < SILENCE_MIN_S || value > SILENCE_MAX_S) {
+      return `Between ${SILENCE_MIN_S / HOUR_S} and ${SILENCE_MAX_S / HOUR_S} hours.`;
+    }
+    return undefined;
+  };
+  const error = (): string | undefined =>
+    invalid() ?? violationsByField(save.error).get("max_silence_seconds");
+  const dirty = (): boolean => seconds() !== saved();
+
+  /** This source's own `repeat_interval`, when oto has read it off the config. */
+  const repeatS = (): number | null => {
+    const ms = props.source.health?.route_timings.repeat_interval.value_ms;
+    return ms === null || ms === undefined ? null : ms / 1000;
+  };
+  const outlived = (): boolean => {
+    const silence = saved();
+    const repeat = repeatS();
+    return silence !== null && repeat !== null && repeat > silence;
+  };
+
+  const id = (): string => `source-${props.source.id}-silence`;
+
+  return (
+    <div class={cn(FIELD, "border-t border-line pt-sm")}>
+      <div class={FIELD_ROW}>
+        <TextField
+          class={cn(FIELD, "w-36")}
+          value={hours()}
+          disabled={!on()}
+          validationState={error() ? "invalid" : "valid"}
+          onChange={setHours}
+        >
+          <TextFieldLabel>Max silence (hours)</TextFieldLabel>
+          <TextFieldInput
+            id={id()}
+            type="number"
+            min={SILENCE_MIN_S / HOUR_S}
+            max={SILENCE_MAX_S / HOUR_S}
+            step={1}
+          />
+          <TextFieldErrorMessage role="alert">{error()}</TextFieldErrorMessage>
+        </TextField>
+        <div class={cn(CHECK_ROW, "mt-6")}>
+          <Checkbox id={`${id()}-on`} checked={on()} onChange={setOn} />
+          <label for={`${id()}-on-input`} class={CHECK_LABEL}>
+            expire cases this source stops speaking about
+          </label>
+        </div>
+        <Button
+          class="mt-5"
+          size="sm"
+          variant="secondary"
+          disabled={!dirty() || invalid() !== undefined}
+          busy={save.isPending}
+          onClick={() => save.mutate(seconds())}
+        >
+          Save
+        </Button>
+      </div>
+      <p class={HELP}>
+        An open case this source has said nothing about for this long expires as{" "}
+        <em>silent</em> — only while the source is healthy. Raise it if this Alertmanager's{" "}
+        <code class="font-mono">repeat_interval</code> is longer: Alertmanager re-sends a firing
+        alert once per repeat, so a shorter max silence ends long-firing cases while they are still
+        firing.
+      </p>
+      <Show when={outlived()}>
+        <p class="border-l-2 border-line-strong pl-sm text-meta font-medium leading-snug text-ink">
+          This Alertmanager's <code class="font-mono">repeat_interval</code> is{" "}
+          {duration(repeatS())}, longer than its max silence of {duration(saved())}. Its long-firing
+          cases will expire while they are still firing.
+        </p>
+      </Show>
+      <Show when={save.error !== null && error() === undefined}>
+        <ErrorBanner error={save.error} />
+      </Show>
+    </div>
   );
 };
 

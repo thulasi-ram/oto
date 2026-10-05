@@ -92,7 +92,7 @@ export const AckStateSchema = v.picklist(["unacked", "acked"]);
 
 export const SuppressionReasonSchema = v.nullable(v.picklist(["silence", "inhibition", "mute_time_interval", "active_time_interval"]));
 
-export const ResolveReasonSchema = v.nullable(v.picklist(["upstream", "timeout"]));
+export const ResolveReasonSchema = v.nullable(v.picklist(["upstream", "timeout", "silent", "source_removed"]));
 
 export const GroupStateSchema = v.picklist(["open", "closed"]);
 
@@ -1357,6 +1357,12 @@ export const SourceDTOSchema = v.looseObject({
     v.minValue(10),
     v.maxValue(3600),
   ),
+  "max_silence_seconds": v.nullable(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(3600),
+    v.maxValue(2592000),
+  )),
   "ingest_path": v.string(),
   "health": v.exactOptional(v.nullable(SourceHealthDTOSchema)),
   "created_at": TimestampSchema,
@@ -2616,6 +2622,12 @@ export const CreateSourceRequestSchema = v.strictObject({
     v.minValue(10),
     v.maxValue(3600),
   ), 30),
+  "max_silence_seconds": v.exactOptional(v.nullable(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(3600),
+    v.maxValue(2592000),
+  )), 86400),
   "credential": v.exactOptional(CredentialInputSchema),
 });
 
@@ -2667,6 +2679,12 @@ export const UpdateSourceRequestSchema = v.pipe(
       v.minValue(10),
       v.maxValue(3600),
     )),
+    "max_silence_seconds": v.exactOptional(v.nullable(v.pipe(
+      v.number(),
+      v.integer(),
+      v.minValue(3600),
+      v.maxValue(2592000),
+    ))),
     "credential": v.exactOptional(CredentialInputSchema),
   }),
   v.check((value) => Object.keys(value).length >= 1, "at least 1 property required"),

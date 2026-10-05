@@ -137,19 +137,28 @@ export const CASE_STATE_LABEL: Record<CaseState, string> = {
 };
 
 /**
- * ⛔ `upstream` AND `timeout` ARE NEVER MERGED (§E.3, §M.1). "The upstream said
- * it ended" and "oto stopped hearing about it" are different facts, and only the
- * first one is a resolution — the copy for `timeout` must never claim otherwise.
+ * ⛔ `upstream` AND THE THREE EXPIRIES ARE NEVER MERGED (§E.3, §M.1, ADR 0056 §4).
+ * "The upstream said it ended" and "oto stopped hearing about it" are different
+ * facts, and only the first one is a resolution — the copy for `timeout`,
+ * `silent` and `source_removed` must never claim otherwise. The three are kept
+ * apart from each other too, because "the source went silent for a day" and "the
+ * source was removed" are different facts an operator acts on differently.
  */
 const OUTCOME_WORD: Record<NonNullable<ResolveReason>, string> = {
   upstream: "resolved",
   timeout: "timed out",
+  silent: "went silent",
+  source_removed: "source removed",
 };
 
 const OUTCOME_MEANING: Record<NonNullable<ResolveReason>, string> = {
   upstream: "This firing ended because the upstream said the alert resolved.",
   timeout:
     "This firing ended because oto stopped hearing about it while the source was healthy. That is not the same as it being fixed.",
+  silent:
+    "This firing ended because its source was healthy and said nothing about it for longer than the source's max silence. That is not the same as it being fixed.",
+  source_removed:
+    "This firing ended because its source was removed, so nothing was left that could say when it ended. That is not the same as it being fixed.",
 };
 
 const CASE_STATE_MEANING: Record<CaseState, string> = {
