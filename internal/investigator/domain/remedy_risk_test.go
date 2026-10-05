@@ -418,3 +418,25 @@ func TestTheRiskModelIsAskedOnlyAboutTheCommand(t *testing.T) {
 		t.Fatalf("the model is told %s", req.Messages[1].Content)
 	}
 }
+
+// TestASpentBudgetLeavesTwoOnTheRecord — owner ruling 2026-10-05 on git-bug eb4f21b: the risk
+// model spends from the org's daily token budget, and when that is spent it is not asked and a
+// Remedy the rules said one for needs two, recorded `budget` with why. A two stays two.
+func TestASpentBudgetLeavesTwoOnTheRecord(t *testing.T) {
+	const why = "this org has spent 1000 of its 1000 daily Investigation tokens"
+	single := domain.RiskVerdict{Approvals: 1, Basis: domain.BasisRule, Rule: "restart-payments"}
+	got := single.BudgetSpent(why)
+	if got.Approvals != 2 || got.Model != domain.ModelBudget || got.SetBy() != "risk_model_budget" ||
+		got.Rule != "restart-payments" || !strings.Contains(got.Detail, why) || got.ModelIdentity != "" || got.ModelTokens != 0 {
+		t.Fatalf("a spent budget recorded %+v", got)
+	}
+	for _, v := range []domain.RiskVerdict{
+		{Approvals: 2, Basis: domain.BasisRule, Rule: "secrets-need-two"},
+		{Approvals: 2, Basis: domain.BasisNoRule},
+		{Approvals: 2, Basis: domain.BasisUnparseable, Detail: "sh"},
+	} {
+		if got := v.BudgetSpent(why); got.Approvals != 2 || got.Model != domain.ModelNotAsked {
+			t.Fatalf("a double verdict %+v became %+v on a spent budget", v, got)
+		}
+	}
+}

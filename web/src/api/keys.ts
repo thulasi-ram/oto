@@ -231,12 +231,12 @@ export const qk = {
      */
     investigationClasses: () => ["settings", "investigation-classes"] as const,
     /**
-     * The org's Remedy risk rules and risk model (ADR 0054 §3). Only the Remedy risk
-     * section writes them, and its save writes the answer back with `setQueryData`.
+     * The org's Remedy risk rules and risk model (ADR 0054 §3), READ only: they are applied
+     * from the host shell by `oto remedy-rules apply`, and no screen writes them.
      */
     remedyRiskRules: () => ["settings", "remedy-risk-rules"] as const,
     /**
-     * The org's model endpoints, read by the Remedy risk section to offer a risk model.
+     * The org's model endpoints, read by the Remedy risk section to name the risk model.
      * No screen writes one yet — they are configured through the API.
      */
     modelProviders: () => ["settings", "model-providers"] as const,

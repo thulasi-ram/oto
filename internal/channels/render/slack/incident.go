@@ -584,6 +584,11 @@ func remedyTier(r domain.IncidentRemedyView) string {
 		if rule != "" {
 			why += "; the rule " + rule + " said one"
 		}
+	case "risk_model_budget":
+		why = "the day's token budget was spent, so the risk model was not asked"
+		if rule != "" {
+			why += "; the rule " + rule + " said one"
+		}
 	}
 	if why == "" {
 		return need

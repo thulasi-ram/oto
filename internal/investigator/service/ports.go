@@ -96,7 +96,9 @@ type InvestigationStore interface {
 	// CountRunning counts the org's `running` runs: a peek, not the decision.
 	CountRunning(ctx context.Context, s db.TenantScope) (int, error)
 	// SpentSince is the input + output tokens of every model turn the org's runs
-	// recorded at or after `since` — the day's spend against its daily budget.
+	// recorded at or after `since`, and of every Remedy risk-model question asked about a
+	// Remedy proposed since then (owner ruling 2026-10-05 on git-bug eb4f21b) — the day's
+	// spend against its daily budget.
 	SpentSince(ctx context.Context, s db.TenantScope, since time.Time) (int64, error)
 	// LockSubjectRuns takes the (Investigator, subject) advisory lock and reads what
 	// the minimum interval decides on. Inside a transaction.
@@ -394,10 +396,11 @@ type RemedyDeclarer interface {
 
 // RemedyRiskStore is an org's Remedy risk rules and its risk model (ADR 0054 §3, git-bug
 // eb4f21b), satisfied by `investigator/repository.RemedyRiskRepository`.
+//
+// ⛔ READ-ONLY, ON PURPOSE (owner ruling 2026-10-05). `oto remedy-rules apply` is the only
+// writer, in internal/app; a write method here would be one handler away from a route.
 type RemedyRiskStore interface {
 	// RemedyRisk reads the rules in the operator's order, the risk model, and who last wrote
 	// them; no rules and no model for an org that never wrote any.
 	RemedyRisk(ctx context.Context, s db.TenantScope) (domain.RemedyRiskSettings, error)
-	// ReplaceRemedyRisk writes the whole set and who wrote it, in the caller's transaction.
-	ReplaceRemedyRisk(ctx context.Context, s db.TenantScope, set domain.RemedyRiskSettings, by domain.Requester, at time.Time) error
 }

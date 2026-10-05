@@ -1,14 +1,13 @@
 package api
 
 // REMEDY RISK RULES (ADR 0054 §3; git-bug eb4f21b): the org's rules over a Remedy's command and
-// its risk model, read and replaced whole at `/api/v1/remedy-risk-rules`; and, on every
-// RemedyDTO, how its tier was set.
+// its risk model, READ at `GET /api/v1/remedy-risk-rules`; and, on every RemedyDTO, how its
+// tier was set.
 //
-// ⭐ READ AND REPLACED WHOLE, like the Classification set: the rules are one list whose order
-// names the rule that set a tier, and a partial edit of it is a list nobody wrote. Who wrote it
-// last, and when, is recorded and shown.
-//
-// ⛔ A HUMAN WRITES THE RULES. A system principal is refused before the service is reached.
+// ⛔⛔ READ-ONLY (owner ruling 2026-10-05). The rules are applied whole from the host shell by
+// `oto remedy-rules apply --org SLUG -f rules.yaml` (internal/app/remedyrules.go), like an
+// approval grant: a rule saying one lets one grant holder approve alone, so any member who could
+// write one over HTTP could approve alone. No route, request DTO or handler here writes them.
 
 import (
 	"net/http"
@@ -16,10 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
-	kernel "github.com/thulasiram/oto/internal/alerts/domain"
 	"github.com/thulasiram/oto/internal/investigator/domain"
-	"github.com/thulasiram/oto/internal/platform/authn"
-	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/httpx"
 )
 
@@ -61,53 +57,10 @@ func remedyRiskRulesDTO(set domain.RemedyRiskSettings) RemedyRiskRulesDTO {
 	return out
 }
 
-// RemedyRiskRuleRequest is one rule in `ReplaceRemedyRiskRulesRequest`. What a verb, kind or
-// namespace may be, and that a rule names at least one condition, are the domain's to refuse
-// (domain.NewRiskRules), each with the field it is about.
-type RemedyRiskRuleRequest struct {
-	Name          string   `json:"name"                    validate:"required,min=1,max=63"`
-	Tool          *string  `json:"tool,omitempty"          validate:"omitempty,max=160"`
-	Verbs         []string `json:"verbs,omitempty"         validate:"max=20,dive,max=63"`
-	Kinds         []string `json:"kinds,omitempty"         validate:"max=20,dive,max=63"`
-	Namespaces    []string `json:"namespaces,omitempty"    validate:"max=20,dive,max=63"`
-	Reversibility *string  `json:"reversibility,omitempty" validate:"omitempty,oneof=reversible irreversible"`
-	Approvals     int      `json:"approvals"               validate:"required,oneof=1 2"`
-}
-
-// ReplaceRemedyRiskRulesRequest is the body of `PUT /api/v1/remedy-risk-rules`: the whole rule
-// list, which replaces the old one, and the risk model (absent or null for none). An empty list
-// is legal, and is how an operator makes every Remedy need two approvals again.
-type ReplaceRemedyRiskRulesRequest struct {
-	Rules               []RemedyRiskRuleRequest `json:"rules"                            validate:"required,max=100,dive"`
-	RiskModelProviderID *uuid.UUID              `json:"risk_model_provider_id,omitempty"`
-}
-
-func (dto ReplaceRemedyRiskRulesRequest) toDomain() (domain.RemedyRiskSettings, error) {
-	rules := make([]domain.RiskRule, 0, len(dto.Rules))
-	for _, r := range dto.Rules {
-		rule := domain.RiskRule{Name: r.Name, Verbs: r.Verbs, Kinds: r.Kinds, Namespaces: r.Namespaces, Approvals: r.Approvals}
-		if r.Tool != nil {
-			rule.Tool = *r.Tool
-		}
-		if r.Reversibility != nil {
-			rule.Reversibility = domain.Reversibility(*r.Reversibility)
-		}
-		rules = append(rules, rule)
-	}
-	rs, err := domain.NewRiskRules(rules)
-	if err != nil {
-		return domain.RemedyRiskSettings{}, err
-	}
-	out := domain.RemedyRiskSettings{Rules: rs}
-	if dto.RiskModelProviderID != nil {
-		out.RiskModelProviderID = *dto.RiskModelProviderID
-	}
-	return out, nil
-}
-
 // RemedyRiskDTO renders `RemedyRiskDTO`: how a Remedy's required approvals were set, shown
 // under its exact command. `set_by` is rule, no_rule, unparseable, risk_model (it raised the
-// tier) or risk_model_failed.
+// tier), risk_model_failed or risk_model_budget (the day's token budget was spent, so it was
+// not asked: two).
 type RemedyRiskDTO struct {
 	SetBy           string  `json:"set_by"`
 	Rule            *string `json:"rule"`
@@ -147,44 +100,4 @@ func (rt *Router) getRemedyRiskRules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.Data(w, r, http.StatusOK, remedyRiskRulesDTO(set), started)
-}
-
-// replaceRemedyRiskRules serves PUT /api/v1/remedy-risk-rules: the whole list and the risk
-// model, replacing the old ones. ⛔ No Remedy already proposed is re-tiered.
-func (rt *Router) replaceRemedyRiskRules(w http.ResponseWriter, r *http.Request) {
-	started := rt.now()
-	p, scope, err := authn.Scope(r.Context())
-	if err != nil {
-		httpx.WriteProblem(w, r, err)
-		return
-	}
-	if err := httpx.NewParams(r).Err(); err != nil {
-		httpx.WriteProblem(w, r, err)
-		return
-	}
-	if kind, err := kernel.NewActorKind(p.ActorKind()); err != nil || !kind.IsHuman() {
-		httpx.WriteProblem(w, r, errs.Forbidden("forbidden", "writing the Remedy risk rules requires a human actor"))
-		return
-	}
-	by, err := domain.NewRequester(p.UserID, p.ActorLabel())
-	if err != nil {
-		httpx.WriteProblem(w, r, err)
-		return
-	}
-	dto, err := httpx.Bind[ReplaceRemedyRiskRulesRequest](w, r)
-	if err != nil {
-		httpx.WriteProblem(w, r, err)
-		return
-	}
-	set, err := dto.toDomain()
-	if err != nil {
-		httpx.WriteProblem(w, r, err)
-		return
-	}
-	stored, err := rt.svc.ReplaceRemedyRisk(r.Context(), scope, set, by)
-	if err != nil {
-		httpx.WriteProblem(w, r, err)
-		return
-	}
-	httpx.Data(w, r, http.StatusOK, remedyRiskRulesDTO(stored), started)
 }

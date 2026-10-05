@@ -183,8 +183,6 @@ var bindings = []binding{
 	{"investigator", "RemedyRiskDTO", investigatorapi.RemedyRiskDTO{}},
 	{"investigator", "RemedyRiskRuleDTO", investigatorapi.RemedyRiskRuleDTO{}},
 	{"investigator", "RemedyRiskRulesDTO", investigatorapi.RemedyRiskRulesDTO{}},
-	{"investigator", "RemedyRiskRuleRequest", investigatorapi.RemedyRiskRuleRequest{}},
-	{"investigator", "ReplaceRemedyRiskRulesRequest", investigatorapi.ReplaceRemedyRiskRulesRequest{}},
 	{"investigator", "RemedyApprovalDTO", investigatorapi.RemedyApprovalDTO{}},
 	{"investigator", "RemedyTransitionDTO", investigatorapi.RemedyTransitionDTO{}},
 	{"investigator", "ApproveRemedyRequest", investigatorapi.ApproveRemedyRequest{}},

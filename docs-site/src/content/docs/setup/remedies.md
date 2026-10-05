@@ -40,8 +40,8 @@ declines, oto (`system`) expires — and every transition is sent to the Inciden
 4. **How long a Remedy waits.** `remedy_approval_window_s` (Settings → Tuning → Remedies), 60 to
    86400 seconds, default 3600 — see [tuning](/oto/setup/tuning/).
 5. **Optionally, risk rules** that let a harmless command need only one approval, and a risk model
-   that may ask for two (Settings → Remedy risk) — see [Risk rules](#risk-rules) below. With none,
-   every Remedy needs two.
+   that may ask for two, applied from the host shell with `oto remedy-rules apply` — see
+   [Risk rules](#risk-rules) below. With none, every Remedy needs two.
 
 ## What a Remedy says
 
@@ -127,9 +127,10 @@ another Investigation: a retry is a **new** Remedy and a **new** approval.
 
 ## Risk rules
 
-How many approvals a Remedy needs is set **once, when it is proposed**, from rules you write
-(Settings → Remedy risk, or `GET`/`PUT /api/v1/remedy-risk-rules`). oto ships no rule: with none,
-every Remedy needs two.
+How many approvals a Remedy needs is set **once, when it is proposed**, from rules you write in a
+YAML file and apply from the host shell with `oto remedy-rules apply` — see
+[Applying the rules](#applying-the-rules). oto ships no rule: with none, every Remedy needs two.
+Settings → Remedy risk and `GET /api/v1/remedy-risk-rules` show them; nothing inside oto writes them.
 
 ### What a rule says
 
@@ -163,12 +164,17 @@ approval. Here a rule that says 2 cannot be outvoted, and a rule that says 1 low
 
 Example:
 
-```json
-{"rules": [
-  {"name": "restart-payments", "verbs": ["rollout restart"], "kinds": ["deployment"],
-   "namespaces": ["payments"], "approvals": 1},
-  {"name": "secrets-need-two", "verbs": ["delete"], "kinds": ["secret"], "approvals": 2}
-]}
+```yaml
+rules:
+  - name: restart-payments
+    verbs: [rollout restart]
+    kinds: [deployment]
+    namespaces: [payments]
+    approvals: 1
+  - name: secrets-need-two
+    verbs: [delete]
+    kinds: [secret]
+    approvals: 2
 ```
 
 `kubectl rollout restart deployment/api -n payments` needs one approval (`restart-payments`);
@@ -216,14 +222,63 @@ to two; it can never lower anything, and a Remedy the rules said needs two is no
 - **It fails closed.** An error, a timeout (30 s), an answer without token usage, or an answer that
   is not 1 or 2 leaves the Remedy at **two**, recorded as *the risk model failed* with why.
 - **With no risk model named, the rules' tier stands**, and the Remedy records that none was asked.
-- What it said, which endpoint and model, and the tokens it cost are kept on the Remedy. Those
-  tokens are not counted against the org's daily Investigation budget.
+- **Its tokens are the org's.** What it said, which endpoint and model, and the tokens it cost are
+  kept on the Remedy, and those tokens **count against the org's daily token budget**
+  (`investigation_daily_tokens`, [Investigators](/oto/setup/investigators/)) beside every Investigation's.
+- **A spent budget is two.** When the day's budget is already spent, the risk model is **not
+  asked**, and a Remedy the rules said needs one needs **two**, recorded as *the day's token budget
+  was spent* (`approvals_set_by: risk_model_budget`). The check fails closed: a question nobody
+  paid for never lets one approval stand. The budget resets at 00:00 UTC.
 
-### Who writes the rules
+### Applying the rules
 
-Any member of the org, from the settings screen or the API — the last writer and when are shown.
-⚠️ A rule that says 1 lets one grant holder approve alone, so treat a change to the rules like a
-change to who may approve. Changing the rules **re-tiers no Remedy already proposed**.
+The rules and the risk model are one YAML file, applied from the host shell — the same place an
+approval grant is given (`oto grant remedy-approver`):
+
+```sh
+oto remedy-rules apply --org acme -f rules.yaml     # replace the rules and the risk model
+oto remedy-rules show  --org acme > rules.yaml      # print what stands, as a file that applies
+```
+
+**Why the shell and not the app.** A rule that says 1 lets one grant holder approve alone. If any
+member could write the rules, a grant holder could write a one-approval rule and then approve their
+own way through — the loophole the grant itself was moved out of the app to close. Writing a rule
+is the same authority as granting a second approver, so it takes the same thing: a shell on the
+host and the database credentials. No HTTP route writes a rule, and the Settings screen shows them
+read-only, *managed by `oto remedy-rules`*.
+
+The file:
+
+```yaml
+# Optional: one of the org's model endpoints, by name, asked whether a Remedy the
+# rules say needs one approval should need two. Omit it for none.
+risk_model: risk-checker
+
+# Required. The whole list, in order; `rules: []` makes every Remedy need two.
+rules:
+  - name: restart-payments          # required; lower-case, digits, _ and -; unique
+    verbs: [rollout restart]        # optional conditions — at least one is required
+    kinds: [deployment]
+    namespaces: [payments]
+    approvals: 1                    # required; 1 or 2
+  - name: secrets-need-two
+    tool: k8s-write__kubectl        # a qualified write Tool, <toolserver>__<tool>
+    kinds: [secret]
+    reversibility: irreversible     # reversible | irreversible; omit for either
+    approvals: 2
+```
+
+- **Applied whole, in one transaction.** The file replaces every rule and the risk model; a rule
+  you leave out is gone. `-f -` reads the file from standard input.
+- **A malformed file changes nothing** and exits non-zero, naming the problem and where it is —
+  YAML that does not parse, a key oto does not know (`namespace:` for `namespaces:` would silently
+  drop a condition and broaden the rule, so it is refused), a missing `rules:`, a rule that breaks
+  one of the rules above (`rules/0/namespaces/0: …`), a `risk_model` that is not one of the org's
+  endpoints, or an unknown org.
+- On success it prints each rule with its tier, the risk model, and how many rules it replaced.
+- The last apply and when are recorded and shown on the Settings screen.
+- ⚠️ Treat a change to the rules like a change to who may approve. Applying them **re-tiers no
+  Remedy already proposed**.
 
 ## The trust boundary is your ToolServer
 

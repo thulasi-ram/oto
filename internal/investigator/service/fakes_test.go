@@ -153,6 +153,9 @@ type memInvestigations struct {
 	rows      map[uuid.UUID]domain.Investigation
 	steps     map[uuid.UUID][]domain.Step
 	failSteps error
+	// remedies, when wired, is where the Remedy risk questions' tokens are: SpentSince sums
+	// them as the repository does (owner ruling 2026-10-05 on git-bug eb4f21b).
+	remedies *memRemedies
 }
 
 func newMemInvestigations() *memInvestigations {
@@ -236,6 +239,15 @@ func (m *memInvestigations) SpentSince(_ context.Context, s db.TenantScope, sinc
 				n += st.Usage.Total()
 			}
 		}
+	}
+	if m.remedies != nil {
+		m.remedies.mu.Lock()
+		for _, r := range m.remedies.rows {
+			if r.OrgID == s.OrgID() && !r.ProposedAt.Before(since) {
+				n += r.Risk.ModelTokens
+			}
+		}
+		m.remedies.mu.Unlock()
 	}
 	return n, nil
 }

@@ -221,20 +221,30 @@ func (r *InvestigationRepository) CountRunning(ctx context.Context, s db.TenantS
 }
 
 // SpentSince sums the input + output tokens of every model turn the org's runs have
-// recorded at or after `since`, served by `investigation_steps_spend_idx`.
+// recorded at or after `since`, served by `investigation_steps_spend_idx`, and of every
+// Remedy risk-model question asked about a Remedy proposed at or after it, served by
+// `remedies_risk_spend_idx` (00104).
 //
 // ⭐ STEPS, NOT RUNS: a turn's tokens are on its Step the moment it happens, so a run
 // still going is counted, and a run that crossed midnight counts in each day it spent
 // in. A run's own tokens_in / tokens_out are written only when it ends.
+//
+// ⭐ AND THE RISK MODEL'S QUESTIONS (owner ruling 2026-10-05 on git-bug eb4f21b): a model
+// endpoint's tokens are the org's whichever loop spent them. They are on the Remedy, stamped
+// with its proposal — the instant the Finding that asked them was recorded.
 func (r *InvestigationRepository) SpentSince(ctx context.Context, s db.TenantScope, since time.Time) (int64, error) {
 	if err := db.RequireScope(s); err != nil {
 		return 0, err
 	}
 	var n int64
 	if err := r.db(ctx).QueryRow(ctx, `
-SELECT coalesce(sum(tokens_in + tokens_out), 0)::bigint
-  FROM investigation_steps
- WHERE org_id = $1 AND kind = 'model_turn' AND recorded_at >= $2`, s.OrgID(), since.UTC()).Scan(&n); err != nil {
+SELECT (SELECT coalesce(sum(tokens_in + tokens_out), 0)::bigint
+          FROM investigation_steps
+         WHERE org_id = $1 AND kind = 'model_turn' AND recorded_at >= $2)
+     + (SELECT coalesce(sum(risk_model_tokens), 0)::bigint
+          FROM remedies
+         WHERE org_id = $1 AND risk_model_tokens IS NOT NULL AND proposed_at >= $2)`,
+		s.OrgID(), since.UTC()).Scan(&n); err != nil {
 		return 0, mapInvestigationErr(err, "sum the day's Investigation tokens")
 	}
 	return n, nil

@@ -3,7 +3,8 @@ package service
 // HOW MANY APPROVALS A REMEDY NEEDS (ADR 0054 §3; git-bug eb4f21b).
 //
 // An operator writes the org's risk rules and, optionally, names a model endpoint as the risk
-// model; both are read whole and replaced whole, like the Classification set. When a run's
+// model, in one YAML file applied from the host shell (`oto remedy-rules apply`), replaced
+// whole. When a run's
 // Finding is recorded, every Remedy it proposed that names a Tool is ASSESSED, before the
 // Finding's transaction: its command is parsed (domain.ParseRemedyCommand), the rules give
 // their verdict (domain.RiskRules.Evaluate), and — only when the verdict is ONE approval and
@@ -19,67 +20,38 @@ package service
 // by domain.RiskModelTimeout; a failure, an answer without usage, or an answer that is neither
 // one nor two is recorded on the Remedy as `failed` and the Remedy needs two.
 //
-// ⚠️ A MODEL'S TOKENS ARE RECORDED ON THE REMEDY, NOT AGAINST THE ORG'S DAILY BUDGET. The
-// daily budget bounds Investigations (ADR 0053 §6); one bounded question per proposed Remedy,
-// at most three per run, is recorded where it was spent.
+// ⭐⭐ A MODEL'S TOKENS ARE RECORDED ON THE REMEDY AND COUNT AGAINST THE ORG'S DAILY BUDGET
+// (owner ruling 2026-10-05 on git-bug eb4f21b, superseding 5ace8f3's "not budgeted"). The day's
+// spend (InvestigationStore.SpentSince) sums them beside every Investigation's model turns, so a
+// risk question delays the next run like any other spend; and when the day is already spent the
+// question is NOT asked and the Remedy needs two, recorded `budget` (domain.RiskVerdict.BudgetSpent)
+// — fail closed: an unpaid check never lets one approval stand.
+//
+// ⛔ AND THE RULES ARE NOT WRITTEN HERE. They are read; `oto remedy-rules apply` writes them from
+// the host shell (internal/app/remedyrules.go), like an approval grant.
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/thulasiram/oto/internal/investigator/domain"
 	"github.com/thulasiram/oto/internal/platform/db"
-	"github.com/thulasiram/oto/internal/platform/errs"
 )
 
 // RemedyRisk reads the org's risk rules, its risk model and who last wrote them.
+//
+// ⛔⛔ THERE IS NO WRITE HERE, AND NONE ON THE PORT (owner ruling 2026-10-05 on git-bug
+// eb4f21b). The rules are written by `oto remedy-rules apply` from the host shell, in
+// internal/app, and by nothing reachable from a route: a rule saying one lets one grant holder
+// approve alone, so writing one is the same authority as granting a second approver (ADR 0054
+// §4), and it lives where the grant does.
 func (s *Service) RemedyRisk(ctx context.Context, scope db.TenantScope) (domain.RemedyRiskSettings, error) {
 	if err := db.RequireScope(scope); err != nil {
 		return domain.RemedyRiskSettings{}, err
 	}
 	return s.remedyRisk.RemedyRisk(ctx, scope)
-}
-
-// ReplaceRemedyRisk writes the org's whole rule set and its risk model — no rules, which is
-// how an operator makes every Remedy need two again, and no model included — records who
-// wrote them, and returns them as stored. A risk model must be an endpoint this org has.
-//
-// ⛔ IT RE-TIERS NOTHING ALREADY PROPOSED. A Remedy's tier is set once, at its proposal, and
-// frozen with it; new rules decide the next Remedy's.
-func (s *Service) ReplaceRemedyRisk(
-	ctx context.Context, scope db.TenantScope, set domain.RemedyRiskSettings, by domain.Requester,
-) (domain.RemedyRiskSettings, error) {
-	if err := db.RequireScope(scope); err != nil {
-		return domain.RemedyRiskSettings{}, err
-	}
-	if by.UserID == uuid.Nil || by.Label == "" {
-		return domain.RemedyRiskSettings{}, errs.Forbidden("forbidden", "the risk rules are written by a person, who is recorded")
-	}
-	if set.RiskModelProviderID != uuid.Nil {
-		if _, err := s.providers.Get(ctx, scope, set.RiskModelProviderID); err != nil {
-			if errs.IsKind(err, errs.KindNotFound) {
-				return domain.RemedyRiskSettings{}, errs.Validation("risk_model_not_found",
-					"the risk model is one of this org's model endpoints",
-					errs.Violation{Field: "risk_model_provider_id", Code: "not_found", Message: "no such model endpoint"})
-			}
-			return domain.RemedyRiskSettings{}, err
-		}
-	}
-	at := s.now()
-	var out domain.RemedyRiskSettings
-	err := s.tx.InTx(ctx, func(ctx context.Context) error {
-		if err := s.remedyRisk.ReplaceRemedyRisk(ctx, scope, set, by, at); err != nil {
-			return err
-		}
-		read, err := s.remedyRisk.RemedyRisk(ctx, scope)
-		out = read
-		return err
-	})
-	if err != nil {
-		return domain.RemedyRiskSettings{}, err
-	}
-	return out, nil
 }
 
 // assessRemedies sets each draft's tier, in order: the zero RemedyRisk for a draft that names
@@ -103,6 +75,7 @@ func (s *Service) assessRemedies(ctx context.Context, scope db.TenantScope, draf
 		model    domain.ModelProvider
 		modelErr error
 		opened   bool
+		day      *dayBudget
 	)
 	for i, d := range drafts {
 		if !d.Tool.Named() {
@@ -115,14 +88,50 @@ func (s *Service) assessRemedies(ctx context.Context, scope db.TenantScope, draf
 		case verdict.Approvals != domain.SingleApproval:
 			out[i] = verdict.Settle(domain.ModelNotAsked)
 		default:
+			// ⭐ THE QUESTION IS PAID FOR FROM THE DAY'S BUDGET, OR IT IS NOT ASKED (owner ruling
+			// 2026-10-05). Read once, at the first question, and carried forward by what each
+			// answer cost: those tokens are recorded on the Remedy only when the Finding's
+			// transaction commits, so a re-read would not yet see them.
+			if day == nil {
+				if day, err = s.readDayBudget(ctx, scope); err != nil {
+					return nil, err
+				}
+			}
+			if why := day.controls.BudgetSpent(day.spent, day.at); why != "" {
+				out[i] = verdict.BudgetSpent(why)
+				continue
+			}
 			if !opened {
 				model, modelErr = s.OpenProvider(ctx, scope, settings.RiskModelProviderID)
 				opened = true
 			}
 			out[i] = assessRemedy(ctx, model, modelErr, d, verdict)
+			day.spent += out[i].ModelTokens
 		}
 	}
 	return out, nil
+}
+
+// dayBudget is what the risk model's question is checked against: the org's controls and what
+// it has spent today — every Investigation Step's model turn and every Remedy's risk question
+// (InvestigationStore.SpentSince).
+type dayBudget struct {
+	controls domain.OrgControls
+	spent    int64
+	at       time.Time
+}
+
+func (s *Service) readDayBudget(ctx context.Context, scope db.TenantScope) (*dayBudget, error) {
+	controls, err := s.orgControls.InvestigationControls(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	at := s.now()
+	spent, err := s.investigations.SpentSince(ctx, scope, domain.DayStart(at))
+	if err != nil {
+		return nil, err
+	}
+	return &dayBudget{controls: controls, spent: spent, at: at}, nil
 }
 
 // assessRemedy asks the risk model about ONE draft the rules said needs one approval. ⛔ Its

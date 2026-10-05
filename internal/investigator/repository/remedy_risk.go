@@ -4,19 +4,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/thulasiram/oto/internal/investigator/domain"
 	"github.com/thulasiram/oto/internal/platform/db"
-	"github.com/thulasiram/oto/internal/platform/errs"
 )
 
-// RemedyRiskRepository is every statement against `remedy_risk_rules` and
-// `remedy_risk_settings` (migration 00103): an org's Remedy risk rules, its risk model, and who
-// last wrote them (ADR 0054 §3, git-bug eb4f21b).
+// RemedyRiskRepository reads `remedy_risk_rules` and `remedy_risk_settings` (migration 00103):
+// an org's Remedy risk rules, its risk model, and who last wrote them (ADR 0054 §3, git-bug
+// eb4f21b).
+//
+// ⛔⛔ IT ONLY READS (owner ruling 2026-10-05). The one writer is `oto remedy-rules apply`, as
+// raw statements in internal/app/remedyrules.go beside the approval grant's, for the grant's
+// reason: a rule saying one lets one grant holder approve alone, and a repository write would
+// be one handler away from a route.
 //
 // ⛔ NOTHING HERE TOUCHES `remedies`. A Remedy copied the NAME of the rule that set its tier
 // onto its own frozen row; replacing the rules re-tiers no Remedy — by construction.
@@ -89,50 +92,4 @@ SELECT name, tool, verbs, kinds, namespaces, reversibility, approvals
 		return domain.RemedyRiskSettings{}, err
 	}
 	return out, nil
-}
-
-// ReplaceRemedyRisk writes the org's whole rule set and its risk model, and who wrote them,
-// in the caller's transaction: the old rules go and the new ones are written in order.
-//
-// ⭐ SERIALISED ON THE ORG'S ADVISORY LOCK, for ReplaceClassSet's reason: two operators saving
-// at once cannot both delete the old rules and collide on the primary key.
-func (r *RemedyRiskRepository) ReplaceRemedyRisk(
-	ctx context.Context, s db.TenantScope, set domain.RemedyRiskSettings, by domain.Requester, at time.Time,
-) error {
-	if err := db.RequireScope(s); err != nil {
-		return err
-	}
-	key := db.AdvisoryKey(db.LockNamespaceInvestigations, "remedy-risk/"+s.OrgID().String())
-	if err := db.AdvisoryXactLock(ctx, r.db(ctx), key); err != nil {
-		return errs.Internal("remedy_risk_lock", err)
-	}
-	if _, err := r.db(ctx).Exec(ctx, `
-INSERT INTO remedy_risk_settings (org_id, risk_model_provider_id, written_by, written_by_label, written_at)
-VALUES ($1, $2, $3, $4, $5)
-ON CONFLICT (org_id) DO UPDATE
-   SET risk_model_provider_id = EXCLUDED.risk_model_provider_id,
-       written_by = EXCLUDED.written_by, written_by_label = EXCLUDED.written_by_label,
-       written_at = EXCLUDED.written_at`,
-		s.OrgID(), nullableID(set.RiskModelProviderID), nullableID(by.UserID), by.Label, at.UTC()); err != nil {
-		return mapRiskErr(err, "store the risk settings")
-	}
-	if _, err := r.db(ctx).Exec(ctx, `DELETE FROM remedy_risk_rules WHERE org_id = $1`, s.OrgID()); err != nil {
-		return mapRiskErr(err, "replace the risk rules")
-	}
-	rules := set.Rules.Rules()
-	if len(rules) == 0 {
-		return nil
-	}
-	batch := &pgx.Batch{}
-	for i, rule := range rules {
-		batch.Queue(`INSERT INTO remedy_risk_rules
-  (org_id, name, position, tool, verbs, kinds, namespaces, reversibility, approvals, created_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-			s.OrgID(), rule.Name, i, nullable(rule.Tool), rule.Verbs, rule.Kinds, rule.Namespaces,
-			nullable(string(rule.Reversibility)), rule.Approvals, at.UTC())
-	}
-	if err := r.db(ctx).SendBatch(ctx, batch).Close(); err != nil {
-		return mapRiskErr(err, "store the risk rules")
-	}
-	return nil
 }

@@ -807,24 +807,9 @@ func plan() []probe {
 			why:  "unclassified is always admissible and is reserved; the set it was refused against stands",
 		},
 		// ADR 0054 §3 (git-bug eb4f21b): the org's Remedy risk rules. A fresh org reads them
-		// EMPTY — oto ships no rule, and every Remedy needs two — then writes two rules, and a
-		// rule with no condition is driven to its 422: it would lower every command by accident.
+		// EMPTY — oto ships no rule, and every Remedy needs two. ⛔ There is no write to probe:
+		// `oto remedy-rules apply` writes them from the host shell (owner ruling 2026-10-05).
 		{method: http.MethodGet, tmpl: "/api/v1/remedy-risk-rules", want: http.StatusOK},
-		{
-			method: http.MethodPut, tmpl: "/api/v1/remedy-risk-rules",
-			body: map[string]any{"rules": []map[string]any{
-				{"name": "restart-payments", "verbs": []string{"rollout restart"}, "kinds": []string{"deployment"},
-					"namespaces": []string{"payments"}, "approvals": 1},
-				{"name": "secrets-need-two", "verbs": []string{"delete"}, "kinds": []string{"secret"}, "approvals": 2},
-			}},
-			want: http.StatusOK,
-		},
-		{
-			method: http.MethodPut, tmpl: "/api/v1/remedy-risk-rules",
-			body: map[string]any{"rules": []map[string]any{{"name": "everything", "approvals": 1}}},
-			want: http.StatusUnprocessableEntity,
-			why:  "a rule with no condition would match every command; the rules it was refused against stand",
-		},
 
 		/* -------------------------------------------------------- tool servers */
 		// ADR 0053 §3, 0054 §5 (git-bug 2e9a086): an operator's MCP server, configured,

@@ -206,14 +206,23 @@ describe("a Finding's Remedies", () => {
       id: "aaaaaaaa-0000-4000-8000-000000000004",
       risk: { ...base, set_by: "risk_model_failed", rule: "restart-payments", risk_model_check: "failed", detail: "timeout" },
     });
-    mount([none, sh, raised, failed]);
-    await until(() => expect(shown(failed.id)).toBeTruthy());
+    const budget = remedy({
+      id: "aaaaaaaa-0000-4000-8000-000000000005",
+      risk: { ...base, set_by: "risk_model_budget", rule: "restart-payments", risk_model_check: "budget",
+        detail: "the risk model was not asked, so it needs two: this org has spent 1000 of its 1000 daily Investigation tokens" },
+    });
+    mount([none, sh, raised, failed, budget]);
+    await until(() => expect(shown(budget.id)).toBeTruthy());
     expect(shown(none.id).querySelector("[data-tier]")!.textContent).toMatch(/Needs two approvals.*no rule matched/);
     expect(shown(sh.id).querySelector("[data-tier]")!.textContent).toMatch(/could not parse this command.*sh/);
     expect(shown(raised.id).querySelector("[data-tier]")!.textContent).toMatch(
       /raised by the risk model \(one replica\); the rule restart-payments said one/,
     );
     expect(shown(failed.id).querySelector("[data-tier]")!.textContent).toMatch(/risk model gave no answer/);
+    // Owner ruling 2026-10-05 (git-bug eb4f21b): a spent day asks no model and leaves two.
+    expect(shown(budget.id).querySelector("[data-tier]")!.textContent).toMatch(
+      /token budget was spent, so the risk model was not asked and it needs two; the rule restart-payments said one/,
+    );
   });
 
   it("renders nothing when the Finding proposed nothing", async () => {

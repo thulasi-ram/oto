@@ -27,7 +27,9 @@ package domain
 // it answers about a Remedy the rules said two for, the Remedy needs two. A model that
 // fails, answers without usage, or answers anything but one or two leaves the Remedy at two
 // — fail closed, and said in the record. A model that is not configured is not asked, and
-// the rules' tier stands, recorded as such.
+// the rules' tier stands, recorded as such. A model that IS configured but whose question the
+// org's daily token budget can no longer pay for (its tokens count against that budget, owner
+// ruling 2026-10-05) is not asked either, and the Remedy needs two (BudgetSpent).
 //
 // ⛔ THE MODEL SEES ONLY THE COMMAND, ITS TARGET AND THE RULES' VERDICT (RiskModelRequest).
 // Never the Investigation, its Steps, its Finding, a log line or a Tool's answer: logs are
@@ -288,7 +290,7 @@ func (rs RiskRules) Evaluate(c RemedyCommand) RiskVerdict {
 // RiskModelCheck is what the risk model did about one Remedy (`remedies_risk_model_ck`).
 type RiskModelCheck string
 
-// The five answers.
+// The six answers.
 const (
 	// ModelUnset: the org names no risk model, so none was asked and the rules' tier stands.
 	ModelUnset RiskModelCheck = "unset"
@@ -301,6 +303,11 @@ const (
 	// ModelFailed: asked, it gave no answer oto could take — an error, no usage, or neither
 	// one nor two — so the Remedy needs two.
 	ModelFailed RiskModelCheck = "failed"
+	// ModelBudget: the rules said one, a risk model is configured, and the org's daily token
+	// budget was already spent, so it was NOT asked and the Remedy needs two (owner ruling
+	// 2026-10-05 on git-bug eb4f21b). ⛔ Fail closed: a check that cannot be paid for is a check
+	// that did not pass, and one approval never stands on a question nobody asked.
+	ModelBudget RiskModelCheck = "budget"
 )
 
 // RemedyRisk is how a Remedy's tier was set, as recorded at proposal and shown under the
@@ -326,8 +333,9 @@ type RemedyRisk struct {
 func (r RemedyRisk) Recorded() bool { return r.Basis != "" }
 
 // SetBy is the one word for what set the tier, as the approval screen and the outbound fact
-// say it: `rule`, `no_rule`, `unparseable`, `risk_model` (it raised it) or `risk_model_failed`;
-// "" when nothing was recorded.
+// say it: `rule`, `no_rule`, `unparseable`, `risk_model` (it raised it), `risk_model_failed`
+// or `risk_model_budget` (the day's token budget was spent, so it was not asked: two); "" when
+// nothing was recorded.
 func (r RemedyRisk) SetBy() string {
 	switch {
 	case !r.Recorded():
@@ -336,6 +344,8 @@ func (r RemedyRisk) SetBy() string {
 		return "risk_model"
 	case r.Model == ModelFailed:
 		return "risk_model_failed"
+	case r.Model == ModelBudget:
+		return "risk_model_budget"
 	default:
 		return string(r.Basis)
 	}
@@ -345,6 +355,18 @@ func (r RemedyRisk) SetBy() string {
 // when the org names no risk model, ModelNotAsked when the rules already said two.
 func (v RiskVerdict) Settle(check RiskModelCheck) RemedyRisk {
 	return RemedyRisk{Approvals: v.Approvals, Basis: v.Basis, Rule: v.Rule, Detail: v.Detail, Model: check}
+}
+
+// BudgetSpent is the verdict when the risk model would have been asked but the org's daily
+// token budget is spent (`why` is OrgControls.BudgetSpent's sentence). ⛔⛔ A verdict of one
+// becomes TWO — the model is the one check that may raise it, and an unasked check never lets
+// one stand. A verdict of two is two whatever, and nothing was going to be asked.
+func (v RiskVerdict) BudgetSpent(why string) RemedyRisk {
+	if v.Approvals != SingleApproval {
+		return v.Settle(ModelNotAsked)
+	}
+	return RemedyRisk{Approvals: DoubleApproval, Basis: v.Basis, Rule: v.Rule, Model: ModelBudget,
+		Detail: clip("the risk model was not asked, so it needs two: "+why, MaxRiskDetail)}
 }
 
 // RiskModelAnswer is what came back from asking the risk model: a tier and its reason, or

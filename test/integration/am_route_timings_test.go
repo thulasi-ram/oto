@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 103 {
-		t.Fatalf("latest migration is %d, want 103 — this test pins the number so that a "+
+	if latest != 104 {
+		t.Fatalf("latest migration is %d, want 104 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1633,6 +1633,51 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// accepts a kind the release below it cannot interpret. No column reading can
 	// see that, and it is the half most likely to be forgotten because nothing
 	// references it.
+	// ⭐ 00104 LETS THE RISK MODEL SPEND FROM THE DAY'S BUDGET (owner ruling 2026-10-05 on git-bug
+	// eb4f21b): `budget` added to `remedies_risk_model_ck` and to the TWO-approval arm of
+	// `remedies_risk_tier_ck` only, `remedies_risk_spend_idx`, and three comments restated. Both
+	// CHECKs are read for their BODY on both sides, for 00075's reason — a Down that dropped and
+	// re-added the same widened CHECK exits 0 — and the tier CHECK is read for WHERE `budget` sits:
+	// on the one-approval arm it would let an unasked question leave one approval standing.
+	tierDef := func() string { t.Helper(); return constraintDef("remedies_risk_tier_ck", "remedies") }
+	if def := constraintDef("remedies_risk_model_ck", "remedies"); !strings.Contains(def, "'budget'") {
+		t.Fatalf("remedies_risk_model_ck does not admit budget at migration 104: %s", def)
+	}
+	if def := tierDef(); !strings.Contains(def, "'budget'") || !strings.Contains(def, "required_approvals = 2") ||
+		strings.Contains(def[:strings.Index(def, "required_approvals = 2")], "'budget'") {
+		t.Fatalf("remedies_risk_tier_ck does not admit budget on the two-approval arm alone at migration 104: %s", def)
+	}
+	if n := countIndexes("remedies_risk_spend_idx"); n != 1 {
+		t.Fatalf("remedies_risk_spend_idx exists %d time(s) at migration 104", n)
+	}
+	if c := tableComment("remedy_risk_rules"); !strings.Contains(c, "oto remedy-rules apply") {
+		t.Fatalf("remedy_risk_rules's comment at migration 104 does not say who writes the rules: %s", c)
+	}
+	if c := columnComment("remedies", "risk_basis"); !strings.Contains(c, "budget") {
+		t.Fatalf("remedies.risk_basis's comment at migration 104 does not say budget: %s", c)
+	}
+
+	down(104)
+
+	if def := constraintDef("remedies_risk_model_ck", "remedies"); strings.Contains(def, "'budget'") || !strings.Contains(def, "'failed'") {
+		t.Fatalf("00104's Down did not restore 00103's remedies_risk_model_ck: %s", def)
+	}
+	if def := tierDef(); strings.Contains(def, "'budget'") || !strings.Contains(def, "required_approvals = 1") {
+		t.Fatalf("00104's Down did not restore 00103's remedies_risk_tier_ck: %s", def)
+	}
+	if n := countIndexes("remedies_risk_spend_idx"); n != 0 {
+		t.Fatalf("remedies_risk_spend_idx survived 00104's Down")
+	}
+	if c := tableComment("remedy_risk_rules"); strings.Contains(c, "oto remedy-rules apply") || !strings.Contains(c, "settings API") {
+		t.Fatalf("00104's Down did not restore 00103's remedy_risk_rules comment: %s", c)
+	}
+	if c := tableComment("remedy_risk_settings"); strings.Contains(c, "00104") {
+		t.Fatalf("00104's Down did not restore 00103's remedy_risk_settings comment: %s", c)
+	}
+	if c := columnComment("remedies", "risk_basis"); strings.Contains(c, "budget") {
+		t.Fatalf("00104's Down did not restore 00103's risk_basis comment: %s", c)
+	}
+
 	// ⭐ 00103 LETS AN OPERATOR'S RULES SAY HOW MANY APPROVALS A REMEDY NEEDS (ADR 0054 §3,
 	// git-bug eb4f21b): two tables, six columns on `remedies` with seven CHECKs, a new body for
 	// `remedies_refuse_rewrite`, and the required_approvals comment. The tier CHECK is read for

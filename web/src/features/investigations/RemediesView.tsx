@@ -295,6 +295,10 @@ const RemedyTier: Component<{ readonly remedy: Remedy }> = (props) => {
               one.
               <Show when={risk().detail}>{(d) => <span class="text-ink-muted"> {d()}</span>}</Show>
             </Match>
+            <Match when={risk().set_by === "risk_model_budget"}>
+              the day's token budget was spent, so the risk model was not asked and it needs two; the rule{" "}
+              {rule(risk())} said one.
+            </Match>
           </Switch>
         )}
       </Show>

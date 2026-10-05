@@ -64,9 +64,9 @@ type InvestigatorService interface {
 	ClassSet(ctx context.Context, s db.TenantScope) (domain.ClassSet, error)
 	ReplaceClassSet(ctx context.Context, s db.TenantScope, set domain.ClassSet) (domain.ClassSet, error)
 
-	// The Remedy risk rules and risk model (ADR 0054 §3, git-bug eb4f21b), read and replaced whole.
+	// The Remedy risk rules and risk model (ADR 0054 §3, git-bug eb4f21b), READ only: they are
+	// written by `oto remedy-rules apply` from the host shell (owner ruling 2026-10-05).
 	RemedyRisk(ctx context.Context, s db.TenantScope) (domain.RemedyRiskSettings, error)
-	ReplaceRemedyRisk(ctx context.Context, s db.TenantScope, set domain.RemedyRiskSettings, by domain.Requester) (domain.RemedyRiskSettings, error)
 }
 
 // Compile-time proof that the service satisfies the port this layer declares.
@@ -140,10 +140,13 @@ func (rt *Router) Mount(r chi.Router) {
 	r.Get("/investigation-classes", rt.getInvestigationClasses)
 	r.Put("/investigation-classes", rt.replaceInvestigationClasses)
 	// ⭐ HOW MANY APPROVALS A REMEDY NEEDS (ADR 0054 §3, git-bug eb4f21b): the operator's rules
-	// and risk model, read and replaced whole. A Remedy's tier is set from them at its proposal
-	// and frozen; replacing them re-tiers nothing already proposed.
+	// and risk model, READ here. A Remedy's tier is set from them at its proposal and frozen.
+	//
+	// ⛔⛔ NO ROUTE WRITES THEM (owner ruling 2026-10-05). A rule saying one lets one grant
+	// holder approve alone, so writing one is the authority of granting a second approver
+	// (ADR 0054 §4): `oto remedy-rules apply`, from the host shell, is the only writer, and
+	// test/scope/remedy_risk_rules_routes_test.go walks the mounted router to hold that.
 	r.Get("/remedy-risk-rules", rt.getRemedyRiskRules)
-	r.Put("/remedy-risk-rules", rt.replaceRemedyRiskRules)
 }
 
 func (rt *Router) now() time.Time { return rt.clk.Now().UTC() }

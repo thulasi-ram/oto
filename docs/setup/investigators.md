@@ -257,7 +257,7 @@ Settings → Tuning, or the org settings API.
 | Setting | Bounds | Default | On breach |
 |---|---|---|---|
 | `investigations_enabled` | on/off | on | The kill switch for every Investigator in the org. Nothing new starts, and notifications are unaffected. |
-| `investigation_daily_tokens` | 1000–1,000,000,000 | 2,000,000 | Once the day's recorded spend reaches it, a new Investigation is recorded `skipped` with reason `budget` and never queued. It resets at 00:00 UTC. A run already going is bounded by its own budget, so the day can overrun by at most what the runs in flight still had left. |
+| `investigation_daily_tokens` | 1000–1,000,000,000 | 2,000,000 | Once the day's recorded spend — every Investigation's model turns, and every Remedy risk-model question ([Remedies](remedies.md#the-risk-model)) — reaches it, a new Investigation is recorded `skipped` with reason `budget` and never queued. It resets at 00:00 UTC. A run already going is bounded by its own budget, so the day can overrun by at most what the runs in flight still had left. |
 | `investigation_concurrency` | 1–32 | 2 | A run past it waits `queued` and is never dropped. |
 
 **Capacity across the deployment.** Investigations run on the dedicated `investigate` River queue,

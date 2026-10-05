@@ -3976,7 +3976,7 @@ export const RemedyToolDTOSchema = v.looseObject({
 });
 
 export const RemedyRiskDTOSchema = v.looseObject({
-  "set_by": v.picklist(["rule", "no_rule", "unparseable", "risk_model", "risk_model_failed"]),
+  "set_by": v.picklist(["rule", "no_rule", "unparseable", "risk_model", "risk_model_failed", "risk_model_budget"]),
   "rule": v.nullable(v.pipe(
     v.string(),
     v.regex(/^[a-z][a-z0-9_-]{0,62}$/),
@@ -3985,7 +3985,7 @@ export const RemedyRiskDTOSchema = v.looseObject({
     v.string(),
     v.maxLength(1000),
   )),
-  "risk_model_check": v.picklist(["unset", "not_asked", "kept", "raised", "failed"]),
+  "risk_model_check": v.picklist(["unset", "not_asked", "kept", "raised", "failed", "budget"]),
   "risk_model": v.nullable(v.string()),
   "risk_model_tokens": v.nullable(v.pipe(
     v.number(),
@@ -4140,49 +4140,6 @@ export const RemedyRiskRulesDTOSchema = v.looseObject({
 export const RemedyRiskRulesResponseSchema = v.looseObject({
   "data": RemedyRiskRulesDTOSchema,
   "meta": MetaSchema,
-});
-
-export const RemedyRiskRuleRequestSchema = v.strictObject({
-  "name": v.pipe(
-    v.string(),
-    v.minLength(1),
-    v.maxLength(63),
-  ),
-  "tool": v.exactOptional(v.pipe(
-    v.string(),
-    v.maxLength(160),
-  )),
-  "verbs": v.exactOptional(v.pipe(
-    v.array(v.pipe(
-      v.string(),
-      v.maxLength(63),
-    )),
-    v.maxLength(20),
-  )),
-  "kinds": v.exactOptional(v.pipe(
-    v.array(v.pipe(
-      v.string(),
-      v.maxLength(63),
-    )),
-    v.maxLength(20),
-  )),
-  "namespaces": v.exactOptional(v.pipe(
-    v.array(v.pipe(
-      v.string(),
-      v.maxLength(63),
-    )),
-    v.maxLength(20),
-  )),
-  "reversibility": v.exactOptional(v.picklist(["reversible", "irreversible"])),
-  "approvals": v.picklist([1, 2]),
-});
-
-export const ReplaceRemedyRiskRulesRequestSchema = v.strictObject({
-  "rules": v.pipe(
-    v.array(RemedyRiskRuleRequestSchema),
-    v.maxLength(100),
-  ),
-  "risk_model_provider_id": v.exactOptional(v.nullable(UuidSchema)),
 });
 
 export const ApproveRemedyRequestSchema = v.strictObject({

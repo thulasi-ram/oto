@@ -193,7 +193,11 @@ func TestTheRunningServerMatchesTheContract(t *testing.T) {
 //
 // ⬆️ 113 → 115 (ADR 0054 §3, git-bug eb4f21b). The org's Remedy risk rules — read and
 // replace — each with a probe that answers 2xx.
-const minimumSuccessfulOperations = 115
+//
+// ⬇️ 115 → 114 (owner ruling 2026-10-05 on git-bug eb4f21b). The replace is gone: the rules
+// are written by `oto remedy-rules apply` from the host shell and no route writes them, so
+// its operation, and the one 2xx probe it was credited for, are removed. The read stays.
+const minimumSuccessfulOperations = 114
 
 /* -------------------------------------------------------------------------- */
 /* The three assertions                                                       */

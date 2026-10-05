@@ -46,6 +46,7 @@ import {
   listClusters,
   listInvestigators,
   listModelProviders,
+  getRemedyRiskRules,
   listLabelNames,
   listNotifications,
   listPayloadMappingCatalog,
@@ -272,6 +273,19 @@ export function modelProvidersQuery() {
   };
 }
 
+/**
+ * The org's Remedy risk rules and risk model (ADR 0054 §3), shown read-only. Bounded at the
+ * reference staleness: they are applied from the host shell by `oto remedy-rules apply`, no
+ * frame announces a change, and nothing in the app writes them.
+ */
+export function remedyRiskRulesQuery() {
+  return {
+    queryKey: qk.settings.remedyRiskRules(),
+    queryFn: ({ signal }: { signal: AbortSignal }) => getRemedyRiskRules({ signal }),
+    staleTime: REFERENCE_STALE_MS,
+  };
+}
+
 /** The label names offered as matcher completions. */
 export function labelNamesQuery() {
   return {
@@ -482,9 +496,6 @@ export const FRESHNESS: Readonly<Record<string, Freshness>> = {
   // The Classification set is written on the screen that reads it, and its save
   // writes the server's answer back; no frame is about it.
   "settings.investigationClasses": { by: "mutation" },
-  // The Remedy risk rules, likewise: written on the screen that reads them, and the save
-  // writes the server's answer back.
-  "settings.remedyRiskRules": { by: "mutation" },
   // Settings, like the policies beside them: creating, editing and deleting a
   // A template is written, edited and deleted on the screen that reads the list,
   // and all three invalidate it. No stream frame can change one — a template is
@@ -511,7 +522,12 @@ export const FRESHNESS: Readonly<Record<string, Freshness>> = {
   "settings.modelProviders": {
     by: "bounded",
     ms: REFERENCE_STALE_MS,
-    why: "the org's model endpoints are configured through the API and no screen writes one yet; a list five minutes behind costs a reload when choosing a risk model, and the server refuses an endpoint this org does not have",
+    why: "the org's model endpoints are configured through the API and no screen writes one yet; a list five minutes behind costs a reload before the risk model's name is shown, and the rules name it by id",
+  },
+  "settings.remedyRiskRules": {
+    by: "bounded",
+    ms: REFERENCE_STALE_MS,
+    why: "the Remedy risk rules are applied from the host shell by `oto remedy-rules apply` and nothing in the app writes them; a screen five minutes behind costs a reload, never a wrong tier, because a Remedy's tier is set by the server at its proposal",
   },
   "settings.investigators": {
     by: "bounded",

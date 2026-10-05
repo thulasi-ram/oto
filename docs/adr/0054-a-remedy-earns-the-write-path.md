@@ -54,6 +54,25 @@ command, its target and the rules' verdict, never the Investigation: logs are at
 a log line is the obvious injection path. The approval screen shows the exact command **first**,
 above the Investigator's description of it.
 
+**Two rulings on the built rules (owner, 2026-10-05; git-bug eb4f21b).** As first built (5ace8f3),
+any org member could replace the rules over `PUT /api/v1/remedy-risk-rules`, and the risk model's
+tokens were recorded on the Remedy but not budgeted.
+
+1. **The rules are written from the host shell only, like an approval grant (§4).** A rule that
+   says one lets one grant holder approve alone, so a member who could write one could write a
+   one-approval rule and then approve alone — the loophole §4 closed for grants. The rules and the
+   risk model are one YAML file applied by `oto remedy-rules apply --org SLUG -f rules.yaml`,
+   atomically, in one transaction; a malformed file changes nothing and exits non-zero naming the
+   problem (`oto remedy-rules show` prints what stands as a file that applies). The HTTP API and the
+   Settings screen are **read-only** and say the rules are managed by `oto remedy-rules`. No route
+   writes a rule, which a test over the mounted router asserts; the one writer is raw SQL in
+   `internal/app`, beside the grant's.
+2. **The risk model's tokens count against the org's daily token budget** (ADR 0053 §6), summed
+   into the day's spend beside every Investigation's model turns. When the budget is spent the risk
+   check does not run, and a Remedy the rules said needs one needs **two**, recorded with that
+   reason (`approvals_set_by = risk_model_budget`, migration 00104) — fail closed: a question nobody
+   paid for never lets one approval stand.
+
 ### 4. Who may approve
 
 A user holding the approval grant **on that Remedy's ToolServer** — the first and only piece of the

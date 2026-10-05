@@ -78,7 +78,6 @@ import type {
   Rejection,
   RejectionListQuery,
   ReplaceInvestigationClassesRequest,
-  ReplaceRemedyRiskRulesRequest,
   RemedyRiskRules,
   ModelProvider,
   Remedy,
@@ -680,18 +679,11 @@ export function replaceInvestigationClasses(
 
 /**
  * The org's Remedy risk rules and risk model (ADR 0054 §3), in the operator's order. Empty
- * until an operator writes some — oto ships no rule, and every Remedy then needs two.
+ * until an operator applies some from the host shell with `oto remedy-rules apply` — oto ships
+ * no rule, and every Remedy then needs two. ⛔ Read-only: no route writes them.
  */
 export function getRemedyRiskRules(c: Ctx = {}): Promise<RemedyRiskRules> {
   return getItem<RemedyRiskRules>(`${V1}/remedy-risk-rules`, ctx(c));
-}
-
-/**
- * Replace the whole rule list and the risk model. ⛔ No Remedy already proposed is
- * re-tiered: a Remedy's approvals are set once, at its proposal.
- */
-export function replaceRemedyRiskRules(body: ReplaceRemedyRiskRulesRequest): Promise<RemedyRiskRules> {
-  return putItem<RemedyRiskRules>(`${V1}/remedy-risk-rules`, body);
 }
 
 /** The org's model endpoints — what the risk model is chosen from. Keys are never returned. */

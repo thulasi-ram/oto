@@ -17,7 +17,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 
@@ -43,14 +42,6 @@ func (m *memRemedyRisk) RemedyRisk(context.Context, db.TenantScope) (domain.Reme
 		return domain.RemedyRiskSettings{}, m.fail
 	}
 	return m.set, nil
-}
-
-func (m *memRemedyRisk) ReplaceRemedyRisk(_ context.Context, _ db.TenantScope, set domain.RemedyRiskSettings, by domain.Requester, at time.Time) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	set.WrittenByLabel, set.WrittenAt = by.Label, at
-	m.set = set
-	return nil
 }
 
 // riskModelName is the risk model endpoint's model, which the dialer scripts on its own.
@@ -412,30 +403,75 @@ func TestTheRiskModelSeesNoStepOrLogContent(t *testing.T) {
 	}
 }
 
-// TestTheRiskRulesAreWrittenByAPersonAndNameAnEndpointThisOrgHas.
-func TestTheRiskRulesAreWrittenByAPersonAndNameAnEndpointThisOrgHas(t *testing.T) {
+// TestAnUnreadableRuleSetFailsTheRecord — a rules read that fails fails the Finding's record
+// rather than proposing at two silently.
+func TestAnUnreadableRuleSetFailsTheRecord(t *testing.T) {
 	rr := newRiskRig(t)
-	rs, _ := domain.NewRiskRules([]domain.RiskRule{restartPayments})
+	rr.remedyRisk.fail = errors.New("down")
+	if _, err := rr.svc.assessRemedies(context.Background(), rr.scope, []domain.RemedyDraft{{Tool: domain.RemedyTool{ToolServerID: uuid.New(),
+		ToolServerName: "k8s-write", Tool: "kubectl"}, Arguments: `{}`}}); err == nil {
+		t.Fatalf("an unreadable rule set was assessed")
+	}
+}
+
+// TestTheRiskModelsTokensAreSpentFromTheDaysBudget — owner ruling 2026-10-05 on git-bug
+// eb4f21b: what the risk question cost is in the day's spend, beside the run's own turns.
+func TestTheRiskModelsTokensAreSpentFromTheDaysBudget(t *testing.T) {
+	rr := newRiskRig(t, restartPayments)
+	rr.withRiskModel(t, riskAnswer(1, "a restart of a replicated Deployment"))
 	ctx := context.Background()
-	if _, err := rr.svc.ReplaceRemedyRisk(ctx, rr.scope, domain.RemedyRiskSettings{Rules: rs}, domain.Requester{}); !errs.IsKind(err, errs.KindForbidden) {
-		t.Fatalf("a write with no person: %v", err)
-	}
-	ada := domain.Requester{UserID: uuid.New(), Label: "Ada"}
-	if _, err := rr.svc.ReplaceRemedyRisk(ctx, rr.scope, domain.RemedyRiskSettings{Rules: rs, RiskModelProviderID: uuid.New()}, ada); !errs.IsKind(err, errs.KindValidation) {
-		t.Fatalf("an unknown risk model: %v", err)
-	}
-	cfg := rr.withRiskModel(t)
-	got, err := rr.svc.ReplaceRemedyRisk(ctx, rr.scope, domain.RemedyRiskSettings{Rules: rs, RiskModelProviderID: cfg.ID}, ada)
+	before, err := rr.investigations.SpentSince(ctx, rr.scope, domain.DayStart(rr.clock.Now()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Rules.Rules()) != 1 || got.RiskModelProviderID != cfg.ID || got.WrittenByLabel != "Ada" || got.WrittenAt.IsZero() {
-		t.Fatalf("stored = %+v", got)
+	rem := rr.proposeOne(t, kubectlProposal("kubectl rollout restart deployment/api -n payments"))
+	if rem.Risk.Model != domain.ModelKept || rem.Risk.ModelTokens != 135 {
+		t.Fatalf("risk = %+v", rem.Risk)
 	}
-	// A rules read that fails fails the Finding's record rather than proposing at two silently.
-	rr.remedyRisk.fail = errors.New("down")
-	if _, err := rr.svc.assessRemedies(ctx, rr.scope, []domain.RemedyDraft{{Tool: domain.RemedyTool{ToolServerID: uuid.New(),
-		ToolServerName: "k8s-write", Tool: "kubectl"}, Arguments: `{}`}}); err == nil {
-		t.Fatalf("an unreadable rule set was assessed")
+	after, err := rr.investigations.SpentSince(ctx, rr.scope, domain.DayStart(rr.clock.Now()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var turns int64
+	for _, st := range rr.investigations.steps[rem.InvestigationID] {
+		if st.Kind == domain.StepModelTurn {
+			turns += st.Usage.Total()
+		}
+	}
+	if after-before != turns+135 {
+		t.Fatalf("the day's spend rose by %d, want the run's %d and the risk question's 135", after-before, turns)
+	}
+}
+
+// TestASpentBudgetAsksNoRiskModelAndLeavesTwo — owner ruling 2026-10-05 on git-bug eb4f21b:
+// when the org's daily token budget is spent, the risk check does not run, and a Remedy the
+// rules said one for needs two, recorded `budget` with why — fail closed. One approval does not
+// approve it.
+func TestASpentBudgetAsksNoRiskModelAndLeavesTwo(t *testing.T) {
+	rr := newRiskRig(t, restartPayments)
+	rr.withRiskModel(t, riskAnswer(1, "fine"))
+	// One token: the run starts with the day unspent, and its own turns spend it.
+	rr.orgControls.dailyTokens = 1
+	rem := rr.proposeOne(t, kubectlProposal("kubectl rollout restart deployment/api -n payments"))
+	if rem.RequiredApprovals != 2 || rem.Risk.Model != domain.ModelBudget || rem.Risk.SetBy() != "risk_model_budget" ||
+		rem.Risk.Rule != "restart-payments" || !strings.Contains(rem.Risk.Detail, "investigation_daily_tokens") ||
+		rem.Risk.ModelTokens != 0 || rem.Risk.ModelIdentity != "" {
+		t.Fatalf("a spent day = %+v, required %d", rem.Risk, rem.RequiredApprovals)
+	}
+	if n := len(rr.riskRequests()); n != 0 {
+		t.Fatalf("the risk model was asked %d time(s) on a spent day", n)
+	}
+	ada := rr.grant(rr.cfg.ID, "Ada")
+	if got, err := rr.svc.ApproveRemedy(context.Background(), rr.scope, rem.ID, ada, rem.ArgumentsSHA256); err != nil ||
+		got.State != domain.RemedyProposed || executeJobs(rr.rig, rem.ID) != 0 {
+		t.Fatalf("one approval moved a budget-held Remedy: %v %s", err, got.State)
+	}
+
+	// ⭐ With no risk model configured nothing is asked, so nothing is spent: the rules' one stands.
+	rr2 := newRiskRig(t, restartPayments)
+	rr2.orgControls.dailyTokens = 1
+	if rem := rr2.proposeOne(t, kubectlProposal("kubectl rollout restart deployment/api -n payments")); rem.RequiredApprovals != 1 ||
+		rem.Risk.Model != domain.ModelUnset {
+		t.Fatalf("no risk model on a spent day = %+v", rem.Risk)
 	}
 }

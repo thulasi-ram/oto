@@ -311,7 +311,6 @@ export type MoveIncidentCaseRequest = S["MoveIncidentCaseRequest"];
 export type CreateCorrelatorRequest = S["CreateCorrelatorRequest"];
 export type RequestInvestigationRequest = S["RequestInvestigationRequest"];
 export type ReplaceInvestigationClassesRequest = S["ReplaceInvestigationClassesRequest"];
-export type ReplaceRemedyRiskRulesRequest = S["ReplaceRemedyRiskRulesRequest"];
 export type ApplySuggestionRequest = S["ApplySuggestionRequest"];
 export type ApproveRemedyRequest = S["ApproveRemedyRequest"];
 export type UpdateCorrelatorRequest = S["UpdateCorrelatorRequest"];

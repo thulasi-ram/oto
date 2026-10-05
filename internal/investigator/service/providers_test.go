@@ -192,6 +192,7 @@ func newRig(t *testing.T) *rig {
 		remedyFacts:    &memRemedyDeclarer{},
 		remedyRisk:     &memRemedyRisk{},
 	}
+	r.investigations.remedies = r.remedies
 	scope, err := db.NewTenantScope(uuid.New())
 	if err != nil {
 		t.Fatal(err)
