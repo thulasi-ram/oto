@@ -107,15 +107,19 @@ type CaseRepository interface {
 	// case whose AlertSource is not healthy is HELD, never expired. Losing
 	// sight of an alert is not the same as the alert resolving.
 	ReapCandidates(ctx context.Context, s db.TenantScope, before time.Time, limit int) ([]domain.Case, error)
-	// SilentCandidates feeds T6 as `silent` (ADR 0056 §3): open episodes under a
-	// cluster's one live source that have been silent past its `max_silence_s`.
-	// The §B.4 guard is the caller's, exactly as for ReapCandidates.
+	// SilentCandidates feeds T6 as `silent` (ADR 0056 §3): open episodes whose
+	// cluster's live sources are all healthy and have been silent past the longest
+	// `max_silence_s` among them. The §B.4 guard is the caller's, exactly as for
+	// ReapCandidates.
 	SilentCandidates(ctx context.Context, s db.TenantScope, now time.Time, limit int) ([]domain.Case, error)
 	// SourceRemovedCandidates feeds T6 as `source_removed` (ADR 0056 §2): open
-	// episodes whose cluster has no live source left and had one removed.
-	SourceRemovedCandidates(ctx context.Context, s db.TenantScope, limit int) ([]domain.Case, error)
+	// episodes whose cluster has no live source left, had one removed, and saw its
+	// last removal before `removedBefore` (now - resolve_grace).
+	SourceRemovedCandidates(ctx context.Context, s db.TenantScope, removedBefore time.Time, limit int) ([]domain.Case, error)
 	// Sources re-reads, inside the expiring transaction, what a Case's cluster
-	// says about who can still speak for it. Both ADR 0056 expiries rest on it.
+	// says about who can still speak for it. Every expiry rests on it: `timeout`
+	// and `silent` to prove the live set is still the one whose health was asked,
+	// `source_removed` to prove it is still empty.
 	Sources(ctx context.Context, s db.TenantScope, caseID uuid.UUID) (domain.CaseSources, error)
 	// CloseDueCandidates feeds the DELAYED CLOSE (migration 00057): open episodes
 	// whose upstream resolve has been held for the whole case retention window W.

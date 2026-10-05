@@ -130,18 +130,35 @@ func caseSourcesDTO(cover map[uuid.UUID]domain.CaseCover, caseID uuid.UUID) *Cas
 		return nil
 	}
 	out := &CaseSourcesDTO{
-		Live:    int32(c.Live),    //nolint:gosec // a count of rows in one org
-		Removed: int32(c.Removed), //nolint:gosec // a count of rows in one org
+		Live:              int32(c.Live),    //nolint:gosec // a count of rows in one org
+		Removed:           int32(c.Removed), //nolint:gosec // a count of rows in one org
+		AllHealthy:        c.AllHealthy,
+		MaxSilenceSeconds: silenceSeconds(c.MaxSilence),
+		LiveSources:       make([]CaseSourceDTO, 0, min(len(c.Sources), maxListedCaseSources)),
 	}
-	if c.Live == 1 && c.SourceID != uuid.Nil {
-		src := &CaseSourceDTO{ID: c.SourceID, Name: c.SourceName, Healthy: c.Healthy}
-		if c.MaxSilence > 0 {
-			secs := int32(c.MaxSilence / time.Second) //nolint:gosec // bounded by alert_sources_silence_ck
-			src.MaxSilenceSeconds = &secs
+	for i, src := range c.Sources {
+		if i == maxListedCaseSources {
+			break
 		}
-		out.Source = src
+		out.LiveSources = append(out.LiveSources, CaseSourceDTO{
+			ID: src.ID, Name: src.Name, Healthy: src.Healthy,
+			MaxSilenceSeconds: silenceSeconds(src.MaxSilence),
+		})
+	}
+	if c.Live == 1 && len(out.LiveSources) == 1 {
+		one := out.LiveSources[0]
+		out.Source = &one
 	}
 	return out
+}
+
+// silenceSeconds renders a max silence as `integer | null`, zero being "off".
+func silenceSeconds(d time.Duration) *int32 {
+	if d <= 0 {
+		return nil
+	}
+	secs := int32(d / time.Second) //nolint:gosec // bounded by alert_sources_silence_ck
+	return &secs
 }
 
 func eventDTO(e domain.Event) AlertEventDTO {

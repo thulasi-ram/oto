@@ -342,9 +342,10 @@ type TransitionCommand struct {
 	// preconditions below; naming `upstream` here is refused, because T6 cannot
 	// produce a resolution under any spelling.
 	ExpireAs ResolveReason
-	// MaxSilence is the owning source's `max_silence_s`, read by T6 under
-	// ResolveSilent only. Zero means the source turned the expiry off, and T6
-	// refuses.
+	// MaxSilence is the Case's cluster's effective `max_silence_s` — the longest
+	// among its live sources, or zero when any of them turned the expiry off
+	// (owner ruling R1) — read by T6 under ResolveSilent only. Zero means off, and
+	// T6 refuses.
 	MaxSilence time.Duration
 	// NoLiveSource reports that the caller proved, inside the transaction
 	// that writes the row, that no live source feeds this Case's cluster. It is

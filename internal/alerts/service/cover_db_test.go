@@ -46,10 +46,11 @@ func (f *fixture) coverService(healthy ...uuid.UUID) *Service {
 	return svc
 }
 
-// TestCaseCoverSaysWhoCanStillSpeakForACase walks one Case through the four
-// shapes its screen distinguishes: one healthy source with a max silence, the
-// same source not proven healthy, an HA pair (no single source, so held), and a
-// cluster whose sources were all removed.
+// TestCaseCoverSaysWhoCanStillSpeakForACase walks one Case through the shapes its
+// screen distinguishes: one healthy source with a max silence, the same source not
+// proven healthy, an HA pair (owner ruling R1: it may expire only while BOTH are
+// healthy, on the longer threshold, and not at all while either turned it off),
+// and a cluster whose sources were all removed.
 func TestCaseCoverSaysWhoCanStillSpeakForACase(t *testing.T) {
 	f := newFixture(t, harness.Epoch)
 	ctx := t.Context()
@@ -61,24 +62,40 @@ func TestCaseCoverSaysWhoCanStillSpeakForACase(t *testing.T) {
 	got := cover[c.ID()]
 	assert.Equal(t, 1, got.Live)
 	assert.Zero(t, got.Removed)
-	assert.Equal(t, src.ID, got.SourceID)
-	assert.Equal(t, src.Name, got.SourceName)
-	assert.Equal(t, 24*time.Hour, got.MaxSilence, "the DDL default is a day")
-	assert.True(t, got.Healthy)
+	assert.Equal(t, []uuid.UUID{src.ID}, got.LiveIDs)
+	require.Len(t, got.Sources, 1)
+	assert.Equal(t, src.ID, got.Sources[0].ID)
+	assert.Equal(t, src.Name, got.Sources[0].Name)
+	assert.True(t, got.Sources[0].Healthy)
+	assert.Equal(t, 24*time.Hour, got.MaxSilence, "a source registered after 00094 defaults to a day")
+	assert.True(t, got.AllHealthy)
 
 	cover, err = f.coverService().CaseCover(ctx, f.scope, []uuid.UUID{c.ID()})
 	require.NoError(t, err)
-	assert.False(t, cover[c.ID()].Healthy,
+	assert.False(t, cover[c.ID()].AllHealthy,
 		"a source the guard cannot vouch for reads as not healthy, as the reaper reads it")
+	assert.False(t, cover[c.ID()].Sources[0].Healthy)
 
 	second := f.h.Source(f.org, f.cluster)
+	f.h.Exec(`UPDATE alert_sources SET max_silence_s = 172800 WHERE id = $1`, second.ID)
 	cover, err = f.coverService(src.ID, second.ID).CaseCover(ctx, f.scope, []uuid.UUID{c.ID()})
 	require.NoError(t, err)
 	got = cover[c.ID()]
 	assert.Equal(t, 2, got.Live)
-	assert.Equal(t, uuid.Nil, got.SourceID, "two live sources name no single one")
-	assert.Empty(t, got.SourceName)
-	assert.False(t, got.Healthy)
+	assert.ElementsMatch(t, []uuid.UUID{src.ID, second.ID}, got.LiveIDs)
+	assert.Len(t, got.Sources, 2)
+	assert.True(t, got.AllHealthy, "an HA pair whose replicas are both healthy may expire")
+	assert.Equal(t, 48*time.Hour, got.MaxSilence, "the cluster waits for its slowest replica")
+
+	cover, err = f.coverService(src.ID).CaseCover(ctx, f.scope, []uuid.UUID{c.ID()})
+	require.NoError(t, err)
+	assert.False(t, cover[c.ID()].AllHealthy, "one replica the guard cannot vouch for holds the pair")
+
+	f.h.Exec(`UPDATE alert_sources SET max_silence_s = NULL WHERE id = $1`, second.ID)
+	cover, err = f.coverService(src.ID, second.ID).CaseCover(ctx, f.scope, []uuid.UUID{c.ID()})
+	require.NoError(t, err)
+	assert.Zero(t, cover[c.ID()].MaxSilence,
+		"one replica with the expiry off turns it off for the whole cluster")
 
 	f.removeSource(src.ID)
 	f.removeSource(second.ID)
@@ -87,6 +104,9 @@ func TestCaseCoverSaysWhoCanStillSpeakForACase(t *testing.T) {
 	got = cover[c.ID()]
 	assert.Zero(t, got.Live)
 	assert.Equal(t, 2, got.Removed)
+	assert.Empty(t, got.Sources)
+	assert.False(t, got.AllHealthy, "no live source is nobody to vouch for the Case")
+	assert.Equal(t, f.clk.Now().UTC(), got.LastRemovedAt.UTC())
 }
 
 // TestCaseCoverOmitsACaseItCannotSee — a Case id this org does not hold is
@@ -102,8 +122,9 @@ func TestCaseCoverOmitsACaseItCannotSee(t *testing.T) {
 
 // TestOpenCasesBySourceCountsWhatTheReaperHolds — the reaper's `held` number, per
 // source. Under a healthy single source nothing is held; under one the guard
-// cannot vouch for, every open Case on the cluster is; and an HA pair holds them
-// all whatever the health, because the reaper acts only under ONE live source.
+// cannot vouch for, every open Case on the cluster is. In an HA pair (owner ruling
+// R1) a healthy replica holds nothing — its unhealthy sibling's row is the one
+// that says the pair's Cases are held.
 func TestOpenCasesBySourceCountsWhatTheReaperHolds(t *testing.T) {
 	f := newFixture(t, harness.Epoch)
 	ctx := t.Context()
@@ -122,8 +143,17 @@ func TestOpenCasesBySourceCountsWhatTheReaperHolds(t *testing.T) {
 	counts, err = f.coverService(src.ID, second.ID).OpenCasesBySource(ctx, f.scope,
 		[]uuid.UUID{src.ID, second.ID})
 	require.NoError(t, err)
-	assert.Equal(t, SourceCaseCount{Open: 1, Held: 1}, counts[src.ID])
-	assert.Equal(t, SourceCaseCount{Open: 1, Held: 1}, counts[second.ID])
+	assert.Equal(t, SourceCaseCount{Open: 1, Held: 0}, counts[src.ID],
+		"an HA pair that is all healthy holds nothing")
+	assert.Equal(t, SourceCaseCount{Open: 1, Held: 0}, counts[second.ID])
+
+	counts, err = f.coverService(src.ID).OpenCasesBySource(ctx, f.scope,
+		[]uuid.UUID{src.ID, second.ID})
+	require.NoError(t, err)
+	assert.Equal(t, SourceCaseCount{Open: 1, Held: 0}, counts[src.ID],
+		"the healthy replica is not why anything is held")
+	assert.Equal(t, SourceCaseCount{Open: 1, Held: 1}, counts[second.ID],
+		"the replica the guard cannot vouch for holds the pair's Cases")
 
 	f.removeSource(second.ID)
 	counts, err = f.coverService(src.ID).OpenCasesBySource(ctx, f.scope,

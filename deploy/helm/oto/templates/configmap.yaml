@@ -84,6 +84,7 @@ data:
   OTO_JOBS_FETCH_INTERVAL: {{ .Values.config.jobs.fetch_interval | quote }}
   OTO_JOBS_JOB_TIMEOUT: {{ .Values.config.jobs.job_timeout | quote }}
   OTO_JOBS_RESCUE_AFTER: {{ .Values.config.jobs.rescue_after | quote }}
+  OTO_JOBS_EXPIRE_SILENT_AND_REMOVED: {{ .Values.config.jobs.expire_silent_and_removed | quote }}
 
   OTO_INGEST_RETRY_AFTER: {{ .Values.config.ingest.retry_after | quote }}
   OTO_INGEST_ACQUIRE_TIMEOUT: {{ .Values.config.ingest.acquire_timeout | quote }}

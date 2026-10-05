@@ -44,6 +44,9 @@ func TestReaperDoesNotExpireAnAlertAWebhookJustRefreshed(t *testing.T) {
 	ctx := t.Context()
 	cfg := DefaultSettings()
 
+	// A healthy source on the cluster, so the scan's §B.4 pre-filter offers the
+	// case and the in-transaction re-read finds the set the guard proved.
+	src := f.healthySource()
 	startsAt := now.Add(-2 * time.Hour)
 	f.openFiring(startsAt, now.Add(-30*time.Minute))
 
@@ -67,7 +70,7 @@ func TestReaperDoesNotExpireAnAlertAWebhookJustRefreshed(t *testing.T) {
 		"the webhook should have moved source_ends_at into the future")
 
 	// 3. The sweep now reaches `expire`, still holding the snapshot from step 1.
-	expired, err := f.svc.expire(ctx, f.scope, stale, now, cfg, domain.ResolveTimeout, uuid.Nil)
+	expired, err := f.svc.expire(ctx, f.scope, stale, now, cfg, domain.ResolveTimeout, []uuid.UUID{src.ID})
 	require.NoError(t, err)
 	assert.False(t, expired, "the reaper must stand down, not expire a refreshed alert")
 
@@ -98,6 +101,10 @@ func TestReaperDoesNotClobberAGenuineResolution(t *testing.T) {
 	ctx := t.Context()
 	cfg := DefaultSettings()
 
+	// The PROVEN set is the cluster's real live set, so the reaper passes its
+	// cluster re-read and reaches the compare-and-set this test is about — a
+	// mismatched set would stand it down earlier and pass vacuously.
+	src := f.healthySource()
 	startsAt := now.Add(-2 * time.Hour)
 	f.openFiring(startsAt, now.Add(-30*time.Minute))
 
@@ -122,7 +129,8 @@ func TestReaperDoesNotClobberAGenuineResolution(t *testing.T) {
 	}
 	reaped := make(chan reapResult, 1)
 	go func() {
-		ok, err := f.svc.expire(context.Background(), f.scope, candidates[0], now, cfg, domain.ResolveTimeout, uuid.Nil)
+		ok, err := f.svc.expire(context.Background(), f.scope, candidates[0], now, cfg,
+			domain.ResolveTimeout, []uuid.UUID{src.ID})
 		reaped <- reapResult{ok, err}
 	}()
 
@@ -350,6 +358,7 @@ func TestOutOfOrderWebhookCannotRewindSourceEndsAt(t *testing.T) {
 	ctx := t.Context()
 	cfg := DefaultSettings()
 
+	src := f.healthySource()
 	startsAt := now.Add(-2 * time.Hour)
 	f.openFiring(startsAt, now.Add(-30*time.Minute))
 
@@ -375,7 +384,7 @@ func TestOutOfOrderWebhookCannotRewindSourceEndsAt(t *testing.T) {
 	candidates, err := f.cases.ReapCandidates(ctx, f.scope, now.Add(-cfg.ResolveGrace), 10)
 	require.NoError(t, err)
 	for _, c := range candidates {
-		_, err := f.svc.expire(ctx, f.scope, c, now, cfg, domain.ResolveTimeout, uuid.Nil)
+		_, err := f.svc.expire(ctx, f.scope, c, now, cfg, domain.ResolveTimeout, []uuid.UUID{src.ID})
 		require.NoError(t, err)
 	}
 

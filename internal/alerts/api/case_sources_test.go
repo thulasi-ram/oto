@@ -48,6 +48,17 @@ func TestACaseDetailSaysWhoCanStillSpeakForIt(t *testing.T) {
 	if svc.calls["CaseCover"] != 1 {
 		t.Fatalf("the cover was read %d time(s), want 1", svc.calls["CaseCover"])
 	}
+	if src["all_healthy"] != true || src["max_silence_seconds"] != float64(86400) {
+		t.Fatalf("all_healthy/max_silence_seconds = %v/%v, want true/86400",
+			src["all_healthy"], src["max_silence_seconds"])
+	}
+	list, _ := src["live_sources"].([]any)
+	if len(list) != 1 {
+		t.Fatalf("live_sources = %v, want the one live source", src["live_sources"])
+	}
+	if first, _ := list[0].(map[string]any); first["id"] != fxSourceID.String() {
+		t.Fatalf("live_sources[0] = %v, want %s", list[0], fxSourceID)
+	}
 }
 
 // TestACaseWhoseCoverCannotBeReadSaysNullNotNoSource.
@@ -100,8 +111,58 @@ func TestEveryCaseListRowSaysWhoCanStillSpeakForIt(t *testing.T) {
 	if removed["live"] != float64(0) || removed["removed"] != float64(1) || removed["source"] != nil {
 		t.Fatalf("removed-source row = %v, want live 0, removed 1, source null", removed)
 	}
+	if removed["all_healthy"] != false || removed["max_silence_seconds"] != nil {
+		t.Fatalf("removed-source row = %v, want all_healthy false and no threshold: nobody "+
+			"is left to vouch for it", removed)
+	}
+	if list, _ := removed["live_sources"].([]any); list == nil || len(list) != 0 {
+		t.Fatalf("removed-source live_sources = %v, want an empty list, never null", removed["live_sources"])
+	}
 	ha := byID[fxSuppOccID.String()]
 	if ha["live"] != float64(2) || ha["source"] != nil {
 		t.Fatalf("HA row = %v, want live 2 and no single source", ha)
+	}
+}
+
+// TestAnHAClusterRowShowsTheRuleItExpiresUnder — owner ruling R1, shown. An HA
+// pair's Cases expire only while EVERY live source is healthy, on the LONGEST
+// max silence among them; the row carries both replicas with their own verdicts,
+// the cluster's `all_healthy`, and the effective threshold, so the screen can say
+// which replica is holding the Case.
+func TestAnHAClusterRowShowsTheRuleItExpiresUnder(t *testing.T) {
+	t.Parallel()
+
+	c, _ := newAlertsProbe(t)
+	resp := c.GET("/cases").MustStatus(t, http.StatusOK)
+	schema.Assert(t, "listCases", http.StatusOK, resp.Body())
+
+	var ha map[string]any
+	rows, _ := resp.JSON(t)["data"].([]any)
+	for _, row := range rows {
+		r, _ := row.(map[string]any)
+		if r["id"] == fxSuppOccID.String() {
+			ha, _ = r["sources"].(map[string]any)
+		}
+	}
+	if ha == nil {
+		t.Fatalf("the HA row carries no sources object")
+	}
+	if ha["all_healthy"] != false {
+		t.Fatalf("all_healthy = %v, want false: replica B is not proven healthy", ha["all_healthy"])
+	}
+	if ha["max_silence_seconds"] != float64(172800) {
+		t.Fatalf("max_silence_seconds = %v, want 172800 — the longer of the pair's", ha["max_silence_seconds"])
+	}
+	list, _ := ha["live_sources"].([]any)
+	if len(list) != 2 {
+		t.Fatalf("live_sources = %v, want both replicas", ha["live_sources"])
+	}
+	a, _ := list[0].(map[string]any)
+	b, _ := list[1].(map[string]any)
+	if a["id"] != fxHASourceA.String() || a["healthy"] != true {
+		t.Fatalf("live_sources[0] = %v, want replica A, healthy", a)
+	}
+	if b["id"] != fxHASourceB.String() || b["healthy"] != false || b["max_silence_seconds"] != float64(172800) {
+		t.Fatalf("live_sources[1] = %v, want replica B, not healthy, two days", b)
 	}
 }

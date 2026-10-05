@@ -1212,6 +1212,13 @@ export interface paths {
          * Soft-delete a source
          * @description Stops ingestion and reconciliation and revokes the ingest token. **Alert history is retained** —
          *     deleting a source must never erase the record of what it once reported.
+         *
+         *     **Deleting a cluster's last live source ends its open cases.** With nothing left that could
+         *     say they ended, each open case on that cluster expires with `resolve_reason:
+         *     source_removed` (ADR 0056 §2) once the resolve grace has passed since the deletion — while
+         *     the reaper's ADR 0056 expiries are turned on (`jobs.expire_silent_and_removed`). A source
+         *     registered on the cluster inside that grace stands the expiry down. Deleting one replica of
+         *     an HA pair ends nothing: the other still speaks for every case they shared.
          */
         delete: operations["deleteSource"];
         options?: never;
@@ -1223,6 +1230,13 @@ export interface paths {
          *     Be deliberate about `ignore_labels`: it feeds the alert-identity hash, and changing it does
          *     **not** re-key existing alerts. New identities are created from that point forward, which is
          *     documented behaviour rather than a defect.
+         *
+         *     **`kind` and `cluster_id` are immutable** and are refused by name with a `422`
+         *     (`additionalProperties: false`). A source's cluster is which cases it speaks for: the
+         *     reaper's health guard, the `silent` threshold and `source_removed` are all questions about
+         *     the live sources on a case's cluster, so moving a source would orphan one cluster's cases
+         *     and hand another a witness to alerts it never carried. Delete the source and register it
+         *     again on the right cluster.
          */
         patch: operations["updateSource"];
         trace?: never;
@@ -2805,11 +2819,12 @@ export interface components {
          *     resolution — an explicit `status="resolved"` arrived — and it alone reads as `resolved`.
          *     The other three all read as `expired` (ADR 0056 §4), and say why:
          *
-         *     - `timeout` — upstream's `endsAt` plus `resolve_grace` passed while the source was healthy.
-         *     - `silent` — the source was healthy and said nothing about the case for longer than its
-         *       `max_silence_seconds`.
-         *     - `source_removed` — no live source feeds the case's cluster any more, so nothing is left
-         *       that could say it ended.
+         *     - `timeout` — upstream's `endsAt` plus `resolve_grace` passed while every live source on the
+         *       case's cluster was healthy.
+         *     - `silent` — every live source on the case's cluster was healthy and none said anything
+         *       about the case for longer than the longest `max_silence_seconds` among them.
+         *     - `source_removed` — no live source has fed the case's cluster for a `resolve_grace`, so
+         *       nothing is left that could say it ended.
          *
          *     None of them is a person's decision: no human ends a case.
          * @example upstream
@@ -3543,43 +3558,70 @@ export interface components {
         };
         /**
          * @description What an episode's cluster says about who can still speak for it (ADR 0056 §1). It is the
-         *     reaper's own reading, shown — the same counts its `source_removed` and `silent` passes rest
-         *     on, and the same §B.4 health verdict. It is read for display and decides nothing.
+         *     reaper's own reading, shown — the same live set, threshold and §B.4 health verdicts its
+         *     passes rest on. It is read for display and decides nothing.
          */
         CaseSourcesDTO: {
             /**
              * Format: int32
              * @description How many live sources feed the episode's cluster. The reaper expires a case as `timeout`
-             *     or `silent` only under **exactly one** live source: under two or more (an HA pair) it
-             *     cannot tell which one carried the alert, so it holds the case.
-             * @example 1
+             *     or `silent` only when there is **at least one** and **every one** is healthy
+             *     (`all_healthy`): an HA pair is two witnesses, and either one oto cannot see might be the
+             *     one still carrying the alert.
+             * @example 2
              */
             live: number;
             /**
              * Format: int32
              * @description How many sources were removed from the cluster. With `live == 0` and `removed > 0` the
-             *     episode expires as `source_removed` on the reaper's next pass.
+             *     episode expires as `source_removed` once the last removal is a resolve grace old, while
+             *     the reaper's ADR 0056 expiries are turned on.
              * @example 0
              */
             removed: number;
-            /** @description The one live source when `live == 1`, and `null` otherwise. */
+            /**
+             * @description `true` when `live >= 1` and the §B.4 guard vouches for every live source — the
+             *     condition under which the reaper may expire the episode as `timeout` or `silent` at all.
+             *     `false` holds it: some live source is not `healthy` (or oto could not read its health),
+             *     or there is no live source.
+             */
+            all_healthy: boolean;
+            /**
+             * Format: int32
+             * @description The cluster's `silent` threshold (ADR 0056 §3): the **longest** `max_silence_seconds`
+             *     among its live sources. An open episode none of them has said anything about for this
+             *     long expires as `silent`, while `all_healthy`. `null` when **any** live source turned
+             *     the expiry off — which turns it off for the whole cluster — or when none is live.
+             * @example 86400
+             */
+            max_silence_seconds: number | null;
+            /**
+             * @description The live sources, in name order, each with its own health verdict and max silence — at
+             *     most ten; `live` says how many there are in all.
+             */
+            live_sources: components["schemas"]["CaseSourceDTO"][];
+            /**
+             * @description The one live source when `live == 1`, and `null` otherwise. It is `live_sources[0]` in
+             *     that case; `live_sources`, `all_healthy` and `max_silence_seconds` carry the rule for
+             *     any number of sources.
+             */
             source: components["schemas"]["CaseSourceDTO"] | null;
         };
-        /** @description The one live source an episode's expiry waits on. */
+        /** @description One live source an episode's expiry waits on. */
         CaseSourceDTO: {
             id: components["schemas"]["Uuid"];
             /** @example alertmanager-prod-eu */
             name: string;
             /**
              * @description The §B.4 guard's verdict on this source. `false` — any status but `healthy`, or one oto
-             *     could not read — holds every open case under it: it can expire only once the source
+             *     could not read — holds every open case on its cluster: they can expire only once it
              *     recovers.
              */
             healthy: boolean;
             /**
              * Format: int32
-             * @description The source's max silence (ADR 0056 §3): an open case it has said nothing about for this
-             *     long expires as `silent`, while the source is healthy. `null` turns that expiry off.
+             * @description This source's own max silence (ADR 0056 §3). `null` turns the `silent` expiry off — for
+             *     every case on its cluster, whatever the other sources there say.
              */
             max_silence_seconds: number | null;
         };
@@ -4687,9 +4729,12 @@ export interface components {
             /**
              * Format: int32
              * @description How long, in seconds, this source may say nothing about an open case before oto expires
-             *     it with `resolve_reason=silent` (ADR 0056 §3). `null` turns that expiry off for this
-             *     source. Asked only while the source is `healthy`: under an unhealthy one oto cannot tell
-             *     silence from an outage, so the case is held.
+             *     it with `resolve_reason=silent` (ADR 0056 §3). `null` turns that expiry off — for every
+             *     case on this source's cluster, since an HA pair expires on the longest threshold among
+             *     its live sources and not at all while any of them is off. Asked only while every live
+             *     source on the cluster is `healthy`: under an unhealthy one oto cannot tell silence from an
+             *     outage, so the case is held. A source registered before this field existed reads `null`
+             *     until an operator sets it.
              *
              *     ⚠️ It must exceed the Alertmanager's `repeat_interval` (4h unless set). Alertmanager
              *     re-sends a firing alert once per repeat, so a shorter value expires long-firing cases
@@ -4712,10 +4757,10 @@ export interface components {
             /**
              * Format: int32
              * @description How many of those open cases the reaper is **holding** because of this source (§B.4):
-             *     all of them while it is not `healthy`, or while its cluster has another live source —
-             *     the reaper expires a case only under its cluster's one live source. A held case ends
-             *     only when upstream resolves it or the hold lifts. Absent exactly when
-             *     `open_case_count` is.
+             *     all of them while it is not `healthy`, and none while it is. The reaper asks every live
+             *     source on a cluster, so an HA sibling that is not `healthy` holds the cases too — and
+             *     it is that sibling's count that says so. A held case ends only when upstream resolves it
+             *     or the hold lifts. Absent exactly when `open_case_count` is.
              * @example 12
              */
             held_case_count?: number;
@@ -6712,7 +6757,6 @@ export interface components {
          */
         UpdateSourceRequest: {
             name?: string;
-            cluster_id?: components["schemas"]["Uuid"];
             /** Format: uri */
             base_url?: string;
             /** Format: uri */
@@ -11032,7 +11076,20 @@ export interface operations {
             409: components["responses"]["Conflict"];
             413: components["responses"]["PayloadTooLarge"];
             415: components["responses"]["UnsupportedMediaType"];
-            422: components["responses"]["UnprocessableContent"];
+            /**
+             * @description `422 validation_failed` — the body parsed but is semantically invalid, or carries an
+             *     unknown field. Always carries `violations[]`. **An attempt to change an immutable field
+             *     lands here**: `{"cluster_id": …}` or `{"kind": …}` is refused with a violation naming the
+             *     field and `code: unknown_field`, and nothing is written.
+             */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             429: components["responses"]["RateLimited"];
             500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];

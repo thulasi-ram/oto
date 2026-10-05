@@ -1657,7 +1657,7 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	}
 	if def := silenceDefault; !strings.Contains(def, "86400") {
 		t.Fatalf("alert_sources.max_silence_s defaults to %q at migration 94, want 86400 — a "+
-			"day is ADR 0056's default, and every existing source takes it", def)
+			"day is ADR 0056's default for a source registered after it", def)
 	}
 	if def := constraintDef("alert_sources_silence_ck", "alert_sources"); !strings.Contains(def, "3600") ||
 		!strings.Contains(def, "2592000") {
@@ -1714,6 +1714,52 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if rewritten != "timeout" {
 		t.Fatalf("00094's Down left resolve_reason %q; an expired case must read as the one "+
 			"expiry the release below can spell, `timeout`", rewritten)
+	}
+
+	// ⭐ R2 (owner ruling, 2026-10-05): A SOURCE THAT EXISTED BEFORE 00094 STARTS WITH
+	// THE EXPIRY OFF, and only one registered after it takes the day. That is a
+	// property of the Up's ORDER — ADD COLUMN bare, then SET DEFAULT — and no reading
+	// of the schema at the top of the stack can see it: `column_default` says 86400
+	// either way. So 00094 is re-applied here, over the source seeded above (which
+	// predates it now that the Down has run), and the two rows are read back. A
+	// single `ADD COLUMN ... DEFAULT 86400` would backfill the old row and fail the
+	// first check. Then the Down runs again, and the loop below carries on from 93.
+	if err := migrate.Up(env.ctx, dsn); err != nil {
+		t.Fatalf("re-apply 00094 over a source that predates it: %v", err)
+	}
+	if top := appliedTop(); top != 94 {
+		t.Fatalf("re-applying 00094 left the top applied migration at %s, want 94",
+			migrate.FormatVersion(top))
+	}
+	var existingSilence *int32
+	if err := env.pool.QueryRow(env.ctx,
+		`SELECT max_silence_s FROM alert_sources WHERE id = $1`, silentHealth.SourceID).
+		Scan(&existingSilence); err != nil {
+		t.Fatalf("read the pre-existing source's max_silence_s: %v", err)
+	}
+	if existingSilence != nil {
+		t.Fatalf("a source that existed before 00094 reads max_silence_s = %d, want NULL — "+
+			"R2: existing sources start with the silent expiry OFF, and only an operator "+
+			"turns it on", *existingSilence)
+	}
+	freshSource := id.New()
+	var freshSilence *int32
+	if err := env.pool.QueryRow(env.ctx,
+		`INSERT INTO alert_sources (id, org_id, cluster_id, name, kind, base_url,
+		                            created_at, updated_at)
+		 VALUES ($1, $2, $3, 'r2-after-00094', 'alertmanager', 'https://am.invalid.example',
+		         now(), now())
+		 RETURNING max_silence_s`,
+		freshSource, silentScope.OrgID(), silentCluster).Scan(&freshSilence); err != nil {
+		t.Fatalf("register a source after 00094: %v", err)
+	}
+	if freshSilence == nil || *freshSilence != 86400 {
+		t.Fatalf("a source registered after 00094 reads max_silence_s = %v, want 86400 (a day)",
+			freshSilence)
+	}
+	down(94)
+	if n := countColumns("alert_sources", "max_silence_s"); n != 0 {
+		t.Fatalf("alert_sources.max_silence_s survived 00094's second Down (found %d)", n)
 	}
 
 	// ⭐ 00093 NUMBERS AN INCIDENT'S FACTS (ADR 0052 §5, owner ruling 2026-10-04): a
