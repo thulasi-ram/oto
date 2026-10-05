@@ -716,8 +716,9 @@ func assertOrdinals(t *testing.T, d domain.Digest, w time.Duration, starts []tim
 
 // TestAnInvestigatorSummarisesOnlyADigestThatIsSent — migration 00098's
 // `policies_digest_investigator_ck`, said as a field the settings form can point at: a
-// policy may name an Investigator for its digest only while it has a window, and a PATCH
-// that clears the window without clearing the Investigator is refused against the merge.
+// policy may name an Investigator for its digest only while it has a window, and a merge
+// that keeps the Investigator without the window is refused. (A PATCH that merely omits
+// the Investigator never produces that merge: see the test below.)
 func TestAnInvestigatorSummarisesOnlyADigestThatIsSent(t *testing.T) {
 	p := digestPolicy(10*time.Minute, 0)
 	p.Digest.InvestigatorID = uuid.New()
@@ -732,4 +733,33 @@ func TestAnInvestigatorSummarisesOnlyADigestThatIsSent(t *testing.T) {
 	require.NoError(t, domain.PolicyPatch{DigestWindow: &noWindow, DigestInvestigatorID: &none}.ValidateAgainst(p),
 		"clearing both is turning the summarised digest off")
 	assert.False(t, domain.PolicyPatch{DigestInvestigatorID: &none}.IsEmpty())
+}
+
+// TestTurningASummarisedDigestOffClearsItsInvestigator — review B4. The settings form never
+// sends `digest_investigator_id`, so a patch that clears the window and says nothing about
+// the Investigator clears it too: validation passes and the stored column goes NULL. A
+// patch that clears the window while naming an Investigator is still a 422, because that
+// contradiction was written by the caller.
+func TestTurningASummarisedDigestOffClearsItsInvestigator(t *testing.T) {
+	p := digestPolicy(10*time.Minute, 0)
+	x := uuid.New()
+	p.Digest.InvestigatorID = x
+
+	var noWindow *time.Duration
+	patch := domain.PolicyPatch{DigestWindow: &noWindow}.WithImpliedClears()
+	require.NotNil(t, patch.DigestInvestigatorID, "the Investigator was left untouched by a cleared window")
+	assert.Nil(t, *patch.DigestInvestigatorID, "the implied change must be a CLEAR (NULL), not a value")
+	require.NoError(t, patch.ValidateAgainst(p), "turning the summarised digest off was refused")
+
+	named := &x
+	explicit := domain.PolicyPatch{DigestWindow: &noWindow, DigestInvestigatorID: &named}.WithImpliedClears()
+	require.Same(t, named, *explicit.DigestInvestigatorID, "an explicit Investigator was overridden")
+	err := explicit.ValidateAgainst(p)
+	require.Error(t, err, "clearing the window while naming an Investigator must still be refused")
+	assert.Contains(t, err.Error(), "policy")
+
+	// A patch that does not touch the window implies nothing.
+	renamed := "renamed"
+	untouched := domain.PolicyPatch{Name: &renamed}.WithImpliedClears()
+	assert.Nil(t, untouched.DigestInvestigatorID, "a patch that left the window alone cleared the Investigator")
 }

@@ -181,6 +181,9 @@ func (w *PolicyWriter) UpdatePolicy(
 		return domain.Policy{}, errs.Unavailable("policies_unavailable",
 			"the policy store is not configured in this deployment", 0)
 	}
+	// Clearing the digest window also clears its Investigator unless the patch names one
+	// (review B4): validated and stored as the same patch, so the 422 and the row agree.
+	patch = patch.WithImpliedClears()
 	var out domain.Policy
 	err := w.inTx(ctx, func(ctx context.Context) error {
 		existing, err := w.store.GetPolicy(ctx, scope, id)

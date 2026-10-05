@@ -144,6 +144,28 @@ type PolicyPatch struct {
 	TemplateID **uuid.UUID
 }
 
+// WithImpliedClears returns the patch with the one clear another clear implies, and is
+// what every policy edit validates and stores (`PolicyWriter.UpdatePolicy`).
+//
+// ⭐ CLEARING THE DIGEST WINDOW CLEARS THE DIGEST'S INVESTIGATOR TOO, unless the patch says
+// otherwise. `policies_digest_investigator_ck` refuses an Investigator without a window,
+// and the settings form never sends `digest_investigator_id` — so without this a person
+// turning a summarised digest off got a 422 on a field they cannot see, and could not turn
+// it off at all (review B4). An Investigator summarises a digest's windows; with no window
+// there is nothing for it to summarise, so dropping it is the only reading of the request.
+//
+// ⚠️ ONLY WHEN THE FIELD IS ABSENT. A patch that clears the window AND names an
+// Investigator in the same breath is a contradiction the caller wrote, and it is still
+// refused by ValidateAgainst — this never overrides what a request said, only fills in
+// what it left out.
+func (p PolicyPatch) WithImpliedClears() PolicyPatch {
+	if p.DigestWindow != nil && *p.DigestWindow == nil && p.DigestInvestigatorID == nil {
+		var none *uuid.UUID
+		p.DigestInvestigatorID = &none
+	}
+	return p
+}
+
 // IsEmpty reports whether the patch would change nothing.
 func (p PolicyPatch) IsEmpty() bool {
 	return p.Name == nil && p.Priority == nil && p.Enabled == nil &&

@@ -936,7 +936,9 @@ func (p Policy) validateDigest() []errs.Violation {
 	}
 
 	// `policies_digest_investigator_ck` (00098): an Investigator asked to summarise a
-	// digest that is never sent is a knob nothing reads.
+	// digest that is never sent is a knob nothing reads. A PATCH that clears the window
+	// and does not mention the Investigator never reaches this: PolicyPatch.WithImpliedClears
+	// clears it too. Only a request that clears the window AND names one is refused here.
 	if p.Digest.InvestigatorID != uuid.Nil && p.Digest.Window == 0 {
 		v = append(v, errs.Violation{
 			Field: "digest_investigator_id", Code: "incomplete",
