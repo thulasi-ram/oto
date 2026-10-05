@@ -438,7 +438,7 @@ func TestReapWritesNeitherNewReasonWhileTheFlagIsOff(t *testing.T) {
 	src := f.healthySource()
 	silent := f.openWebhookCase()
 
-	gone := f.h.Cluster(f.org)
+	gone := f.h.ClusterNamed(f.org, "gone")
 	goneSrc := f.h.Source(f.org, gone)
 	orphan := f.openOnCluster(gone)
 	f.removeSource(goneSrc.ID)
