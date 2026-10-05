@@ -173,6 +173,10 @@ func (rt *Router) createSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := checkMaxSilence(dto.MaxSilenceSeconds); err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
 	if err := rt.checkTLSSkipVerify(dto.TLSSkipVerify); err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
@@ -263,6 +267,10 @@ func (rt *Router) updateSource(w http.ResponseWriter, r *http.Request) {
 			}))
 		return
 	}
+	if err := checkMaxSilence(dto.MaxSilenceSeconds); err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
 
 	if err := rt.checkTLSSkipVerify(dto.TLSSkipVerify); err != nil {
 		httpx.WriteProblem(w, r, err)
@@ -292,6 +300,24 @@ func (rt *Router) updateSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.Data(w, r, http.StatusOK, rt.oneDTO(r.Context(), scope, src), started)
+}
+
+// checkMaxSilence enforces `alert_sources_silence_ck` at layer 2, because a custom
+// unmarshaller has no field for a validator tag to hang on. A null is always
+// allowed: it is "off".
+func checkMaxSilence(n NullableInt32) error {
+	if n.Value == nil {
+		return nil
+	}
+	v := int64(*n.Value)
+	if v < int64(domain.MaxSilenceFloor.Seconds()) || v > int64(domain.MaxSilenceCeiling.Seconds()) {
+		return errs.Validation("validation_failed", "1 field failed validation.",
+			errs.Violation{
+				Field: "max_silence_seconds", Code: "range",
+				Message: "max_silence_seconds must be between 3600 (an hour) and 2592000 (thirty days), or null to turn the silent expiry off",
+			})
+	}
+	return nil
 }
 
 // deleteSource serves DELETE /api/v1/sources/{id}.

@@ -117,8 +117,9 @@ type RuleSnapshotRef struct {
 //
 // ⭐ `state` IS `open | closed` AND NOTHING ELSE (ADR 0040). The four §B.2 words
 // describe the ALERT and are on every alert-shaped DTO; what this episode adds is
-// `resolve_reason` — `upstream` for a resolution upstream asserted, `timeout` for
-// one oto never heard — and `suppression_reason`, which names the silence that
+// `resolve_reason` — `upstream` for a resolution upstream asserted, `timeout`,
+// `silent` or `source_removed` for the three ways oto stops being able to say it
+// is firing (ADR 0056) — and `suppression_reason`, which names the silence that
 // muted THIS firing. A client that wants the four-way reading composes it from
 // those three fields exactly as the server does.
 //

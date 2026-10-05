@@ -57,6 +57,11 @@ type SourceDTO struct {
 	// alerts that were merely silenced upstream. ADR 0006's second amendment and
 	// migration 00038 removed the switch; the interval is the whole knob.
 	ReconcileIntervalSeconds int32 `json:"reconcile_interval_seconds"`
+	// MaxSilenceSeconds is how long this source may say nothing about an open
+	// Case before the reaper expires it as `silent` (ADR 0056 §3). null means the
+	// expiry is off for this source. ⚠️ It must exceed the Alertmanager's
+	// `repeat_interval`, or long-firing Cases expire while still firing.
+	MaxSilenceSeconds *int32 `json:"max_silence_seconds"`
 
 	// IngestPath is the exact path to configure in this source's Alertmanager
 	// `webhook_config`.
@@ -483,6 +488,10 @@ type CreateSourceRequest struct {
 	// it, and a silent drop would let somebody believe they had turned
 	// reconciliation off while oto carried on. See ADR 0006's second amendment.
 	ReconcileIntervalSeconds *int32 `json:"reconcile_interval_seconds,omitempty" validate:"omitempty,min=10,max=3600"`
+	// MaxSilenceSeconds is `integer | null`: omitted takes the default (a day),
+	// an explicit null turns the `silent` expiry off (ADR 0056 §3). Its bound is
+	// enforced by checkMaxSilence, for PrometheusURL's reason.
+	MaxSilenceSeconds NullableInt32 `json:"max_silence_seconds,omitempty"`
 
 	Credential *CredentialInputDTO `json:"credential,omitempty" validate:"omitempty"`
 }
@@ -520,6 +529,9 @@ type UpdateSourceRequest struct {
 	// field. `reconcile_interval_seconds` remains: how often oto polls is a
 	// legitimate operational choice, whether it polls is not.
 	ReconcileIntervalSeconds *int32 `json:"reconcile_interval_seconds,omitempty" validate:"omitempty,min=10,max=3600"`
+	// MaxSilenceSeconds: omitted leaves it, an explicit null turns the `silent`
+	// expiry off, a number sets it (ADR 0056 §3).
+	MaxSilenceSeconds NullableInt32 `json:"max_silence_seconds,omitempty"`
 
 	Credential *CredentialInputDTO `json:"credential,omitempty" validate:"omitempty"`
 }
@@ -531,7 +543,7 @@ func (r UpdateSourceRequest) IsEmpty() bool {
 	return r.Name == nil && r.ClusterID == nil && r.BaseURL == nil && !r.PrometheusURL.Set &&
 		r.TLSSkipVerify == nil && r.InjectLabels == nil && r.IgnoreLabels == nil &&
 		r.RedactLabels == nil && r.RedactAnnotations == nil && r.PushEnabled == nil &&
-		r.ReconcileIntervalSeconds == nil && r.Credential == nil
+		r.ReconcileIntervalSeconds == nil && !r.MaxSilenceSeconds.Set && r.Credential == nil
 }
 
 // NullableString is a contract field typed `["string","null"]`, where an explicit
@@ -572,3 +584,37 @@ func (n NullableString) Cleared() bool { return n.Set && n.Value == "" }
 
 // Supplied reports an explicit request to set the value.
 func (n NullableString) Supplied() bool { return n.Set && n.Value != "" }
+
+// NullableInt32 is a contract field typed `integer | null`, where an explicit
+// `null` means OFF and an omitted field means the default (on create) or LEAVE
+// ALONE (on update). `max_silence_seconds` is the field: a NULL `max_silence_s`
+// turns the `silent` expiry off, which is a real operation and not an absence.
+type NullableInt32 struct {
+	// Set is true when the key was present at all, whatever its value.
+	Set bool
+	// Value is the supplied number, nil for an explicit null.
+	Value *int32
+}
+
+// UnmarshalJSON records presence as well as value.
+func (n *NullableInt32) UnmarshalJSON(b []byte) error {
+	n.Set = true
+	if string(b) == "null" {
+		n.Value = nil
+		return nil
+	}
+	var v int32
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	n.Value = &v
+	return nil
+}
+
+// MarshalJSON renders the field back, for symmetry. An unset value is null.
+func (n NullableInt32) MarshalJSON() ([]byte, error) {
+	if !n.Set || n.Value == nil {
+		return []byte("null"), nil
+	}
+	return json.Marshal(*n.Value)
+}

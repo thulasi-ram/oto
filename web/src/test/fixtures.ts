@@ -374,6 +374,7 @@ export function source(patch: Partial<Source> = {}, timings: TimingSpec = {}): S
     redact_annotations: [],
     push_enabled: true,
     reconcile_interval_seconds: 60,
+    max_silence_seconds: 86_400,
     ingest_path: "/api/v1/ingest/alertmanager/2d8e4a5b-3c6f-4d8e-9f0a-1b2c3d4e5f60",
     created_at: T0,
     updated_at: T0,
