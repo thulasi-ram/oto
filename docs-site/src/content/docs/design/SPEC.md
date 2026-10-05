@@ -180,11 +180,11 @@ Nothing is lost, because the four-way reading of a Case is **derived**, and the 
 state='open'   AND suppression_reason IS NULL      ->  firing
 state='open'   AND suppression_reason IS NOT NULL  ->  suppressed
 state='closed' AND resolve_reason = 'upstream'     ->  resolved
-state='closed' AND resolve_reason = 'timeout'      ->  expired
+state='closed' AND resolve_reason IN ('timeout','silent','source_removed')  ->  expired
 ```
 
 `case_resolve_ck` makes `resolve_reason` present exactly when closed and `case_resreason_ck` bounds
-it to those two values, so the closed half is exhaustive; `case_suppress_ck` keeps
+it to those four values (two until 00094, ADR 0056), so the closed half is exhaustive; `case_suppress_ck` keeps
 `suppression_reason` off a closed row, so the open half is. `Case.AlertState()` is that table in Go
 and `Case.check()` is what makes it total.
 
@@ -208,7 +208,7 @@ witness for it is now the Case list, but nobody has re-measured the plan on the 
 | `firing` | no | Alertmanager reports this label set active and not suppressed. | Ingest (webhook), Reconciler |
 | `suppressed` | no | Active but suppressed **upstream**. `suppression_reason ∈ {silence, inhibition, mute_time_interval, active_time_interval}` — Alertmanager's four reasons and no others. **Never observable via webhook (C1); `snoozed` is NOT one of these (§B.8.2).** | **Entered:** reconciler only. **Left:** reconciler *or* ingest (§B.3.1) |
 | `resolved` | yes | An explicit per-alert `status="resolved"` observation was received. | Ingest only |
-| `expired` | yes | oto stopped hearing about it: `now > source_ends_at + resolve_grace` **and** the AlertSource is healthy. Means *"Prometheus or Alertmanager went away"*, not *"the problem went away"*. | Reaper job |
+| `expired` | yes | oto stopped hearing about it, and `resolve_reason` says how (ADR 0056): `timeout` — `now > source_ends_at + resolve_grace` **and** the AlertSource is healthy; `silent` — the AlertSource is healthy and has said nothing about the case for longer than its `max_silence_s`; `source_removed` — no live AlertSource feeds the case's cluster any more. Means *"Prometheus or Alertmanager went away"*, not *"the problem went away"*. | Reaper job |
 
 `alert.state` = the four-way reading of the current open case; if none is open, the reading of the most recent case.
 ⛔ **`alert_group.state` WAS DEFINED HERE AND THERE IS NO SUCH STATE** (git-bug `7570090`,
@@ -232,7 +232,7 @@ they are edges, not columns.
 | T3 | `firing` | `suppressed` | Reconciler observes `status.state == "suppressed"` | Reconciler | Set `suppression_reason` from `silencedBy`/`inhibitedBy`/`mutedBy`; emit `case.suppressed`; enqueue `notify.evaluate(reason=suppressed)` |
 | T4 | `suppressed` | `firing` | **(a)** Reconciler observes `status.state == "active"`, **OR** **(b)** ANY ingest observation with `status == "firing"` arrives for this case | **Reconciler AND Ingest** | Clear `suppression_reason` and `suppressed_by`; emit `case.unsuppressed` with `detected_by ∈ {reconciler, webhook}`; enqueue `notify.evaluate(reason=unsuppressed)` |
 | T5 | `firing`\|`suppressed` | `resolved` | Per-alert `status == "resolved"` | Ingest | Set `ended_at = max(occurred_at, started_at)` **(clamped — see B.3.2)**, `resolve_reason='upstream'`; emit `case.resolved`; enqueue `notify.evaluate(reason=all_resolved\|some_resolved)` |
-| T6 | `firing`\|`suppressed` | `expired` | `now > source_ends_at + resolve_grace` AND `source_health.status = 'healthy'` | Reaper | Set `ended_at = now`, `resolve_reason='timeout'`; emit `case.expired`; enqueue `notify.evaluate(reason=expired)` |
+| T6 | `firing`\|`suppressed` | `expired` | **`timeout`:** `now > source_ends_at + resolve_grace` AND `source_health.status = 'healthy'`. **`silent`** (ADR 0056 §3): `now > last_observed_at + max_silence_s` of the cluster's one live source AND it is `healthy`. **`source_removed`** (ADR 0056 §2): the case's cluster has no live source and had one soft-deleted | Reaper | Set `ended_at = now`, `resolve_reason` to the expiry that was proven; emit `case.expired` (payload `resolve_reason`); enqueue `notify.evaluate(reason=expired)` |
 | T7 | `resolved`\|`expired` | *(new case `firing`)* | Same `alert_key` fires again — **always, whatever the clock says** | Ingest | The closed case is left exactly as it is; new case `seq+1`, **`unacked`** → **a new Case is a new conversation, so a new Slack root message, always** (git-bug `7570090`); emit `case.opened`; `alerts.total_cases += 1` |
 | T9 | any | `ack_state = acked` | Human via `POST /cases/{id}/ack`, or Slack `oto.ack` button (the `/alert-groups/{id}/ack` fan-out is deleted with the entity — git-bug `7570090`) | Human | Set `acked_by`, `acked_at`, `ack_note`; emit `case.acknowledged`; enqueue `notify.evaluate(reason=acked)` |
 | T10 | `acked` | `unacked` | Human unack via `POST /cases/{id}/unack` (the `/alert-groups/{id}/unack` fan-out is deleted with the entity), **or** a new case opens (T7) | Human, Ingest | Emit `case.unacknowledged` with `reason ∈ {manual, new_case}`; enqueue `notify.evaluate(reason=unacked)` |
@@ -347,6 +347,8 @@ surfaced, never rejected** (C12). The same clamp applies to T6 (`expired`).
 > **Losing sight of an alert is NOT the same as the alert resolving.**
 
 `case.reap` MUST, for each candidate case, load `source_health` for the owning AlertSource. If `status != 'healthy'`, the case is **held in its current state** and a single `source.unreachable` banner is raised for the source. It MUST NOT be expired. A `source_degraded_holds` counter is exported.
+
+The guard applies to `timeout` **and** to `silent` (ADR 0056 §3): under an unhealthy source oto cannot tell "upstream stopped speaking about it" from "Alertmanager is down", so silence proves nothing. It does **not** apply to `source_removed` (ADR 0056 §2), and that is the guard's own reasoning rather than an exception to it: the guard protects a source oto cannot see, and a case whose cluster has **no live source** has none — the one thing that could have said it ended is gone. The test is the CLUSTER, not the deleted source, so deleting one Alertmanager HA replica while another live source feeds the cluster expires nothing; and a cluster no source was ever removed from is not one whose source was removed. The `source_removed` pass runs first in each tick and is re-proved inside the expiring transaction, so a source registered between the scan and the write stands it down.
 
 ### B.5 Re-fire policy (stated plainly)
 
@@ -1486,6 +1488,10 @@ CREATE TABLE alert_sources (
   -- reconciler runs for every source (ADR 0006 + its second amendment). The
   -- interval below is the whole of the reconciliation tuning surface.
   reconcile_interval_s INT       NOT NULL DEFAULT 30 CHECK (reconcile_interval_s >= 10),
+  -- ADR 0056 §3 (00094): how long this source may say nothing about an open case before the reaper
+  -- expires it as `silent`. NULL turns it off; asked only while the source is healthy (§B.4). Must
+  -- exceed the Alertmanager's repeat_interval, or long-firing cases expire while still firing.
+  max_silence_s      INT         DEFAULT 86400,
   -- no DEFAULT now() (§D conventions); `SourceRepository.Create`/`Update`/`SoftDelete` stamp them.
   created_at         TIMESTAMPTZ NOT NULL,
   updated_at         TIMESTAMPTZ NOT NULL,
@@ -1501,6 +1507,7 @@ CREATE TABLE alert_sources (
   CONSTRAINT alert_sources_redactl_ck CHECK (coalesce(array_length(redact_labels, 1), 0) <= 64),
   CONSTRAINT alert_sources_redacta_ck CHECK (coalesce(array_length(redact_annotations, 1), 0) <= 64),
   CONSTRAINT alert_sources_ivl_ck     CHECK (reconcile_interval_s <= 3600),
+  CONSTRAINT alert_sources_silence_ck CHECK (max_silence_s IS NULL OR max_silence_s BETWEEN 3600 AND 2592000),
   CONSTRAINT alert_sources_time_ck    CHECK (updated_at >= created_at)
 );
 CREATE INDEX alert_sources_cluster_idx ON alert_sources (org_id, cluster_id) WHERE deleted_at IS NULL;
@@ -1779,7 +1786,10 @@ CREATE TABLE alert_cases (
 
   -- Since 00054 this is the SOLE record of resolved-vs-expired on a Case, so case_resolve_ck
   -- below is load-bearing rather than redundant: a closed episode MUST say how it ended.
-  resolve_reason     TEXT        CHECK (resolve_reason IS NULL OR resolve_reason IN ('upstream','timeout')),
+  -- 00094 (ADR 0056) widened it from two values to four: `upstream` is the only resolution, and
+  -- `timeout`, `silent` and `source_removed` are the three expiries.
+  resolve_reason     TEXT        CHECK (resolve_reason IS NULL
+                                        OR resolve_reason IN ('upstream','timeout','silent','source_removed')),
   -- ⛔ NO reopen_count, NO reopen_of (dropped by 00054). A Case is strictly terminal, so there is
   -- nothing to count; and `seq` is 1-based and gapless, so the episode this one succeeds is the
   -- row at `seq - 1` and a column repeating that was a second spelling of the same edge.
@@ -1812,8 +1822,9 @@ CREATE TABLE alert_cases (
   CONSTRAINT case_resolve_ck     CHECK ((state = 'closed') = (resolve_reason IS NOT NULL)),
   -- ⛔ NO case_resolve_map_ck. It locked `state` to `resolve_reason` because the two carried the
   -- SAME fact; 00054 left only one of them carrying it, so there is nothing left to lock together.
-  -- The column CHECK above (`case_resreason_ck`) needs no widening: `upstream` IS resolved and
-  -- `timeout` IS expired, which is precisely why the map constraint could exist in the first place.
+  -- The column CHECK above (`case_resreason_ck`) needed no widening at 00054: `upstream` IS resolved
+  -- and `timeout` IS expired, which is precisely why the map constraint could exist in the first
+  -- place. 00094 widened it for ADR 0056's two further expiries, which read as expired too.
   -- ack fields are all-or-nothing
   CONSTRAINT case_ack_ck         CHECK ((ack_state = 'acked') = (acked_at IS NOT NULL)),
   CONSTRAINT case_acklabel_ck    CHECK ((acked_at IS NULL) = (acked_by_label IS NULL)),
@@ -1830,6 +1841,9 @@ CREATE INDEX case_alert_idx  ON alert_cases (org_id, alert_id, seq DESC);
 -- here and are dropped BY NAME by migration 00069, with the column they indexed.
 CREATE INDEX case_reap_idx   ON alert_cases (source_ends_at)
                              WHERE ended_at IS NULL AND source_ends_at IS NOT NULL;
+-- ADR 0056 (00094): the `silent` and `source_removed` scans walk open episodes oldest-heard-first.
+CREATE INDEX case_silence_idx ON alert_cases (org_id, last_observed_at)
+                             WHERE ended_at IS NULL AND resolve_pending_at IS NULL;
 -- ⭐ THE LAST COLUMN OF EACH IS THE KEYSET TIEBREAK (00053), AND IT IS NOT
 -- DECORATION. One Alertmanager batch opens every episode in it at the SAME
 -- INSTANT, so `started_at` alone is not a total order and a page boundary inside
@@ -2910,7 +2924,8 @@ CREATE TABLE alert_quality_daily (
   deliveries        INT         NOT NULL DEFAULT 0,
   acked_cases INT         NOT NULL DEFAULT 0,
   -- ⭐ BOTH COME FROM `resolve_reason`, NOT FROM A STATE LITERAL: `stats.rollup` counts
-  -- `resolve_reason = 'upstream'` as auto_resolved and `'timeout'` as expired. Since ADR 0040 a
+  -- `resolve_reason = 'upstream'` as auto_resolved and every other reason (`timeout`, `silent`,
+  -- `source_removed` — ADR 0056) as expired. Since ADR 0040 a
   -- Case's state says only that the episode closed, and `resolve_reason` is the sole record of
   -- WHICH — which is exactly why `case_resolve_ck` guarantees a closed episode has one.
   auto_resolved     INT         NOT NULL DEFAULT 0,
@@ -6028,7 +6043,7 @@ Invariants enforced inside `Transition` (each mirrored by a DDL `CHECK` in §D.4
 2. `suppressed` can only be entered by a `reconciler` actor (C1). An `ingest` actor attempting
    T3 is a programming error and returns `KindInternal`.
 3. `resolved` *is* `closed` + `resolve_reason='upstream'`; `expired` *is* `closed` +
-   `resolve_reason='timeout'`. Since ADR 0040 that is a derivation rather than a pair of columns
+   `resolve_reason` ∈ {`timeout`, `silent`, `source_removed`} (ADR 0056). Since ADR 0040 that is a derivation rather than a pair of columns
    agreeing, which is why `case_resolve_ck` — a closed episode HAS a reason — became load-bearing.
 4. `ended_at >= started_at`, always.
 5. Ack fields are all-or-nothing.

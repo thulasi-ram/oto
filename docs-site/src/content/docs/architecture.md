@@ -192,7 +192,9 @@ Rules you must not get wrong:
 - **`ended_at` is clamped to `started_at`.** A backward-skewed upstream clock must never abort an
   ingest transaction. Clamp, flag `clamped: true`, measure the skew — never reject.
 - **Losing sight of an alert is not the alert resolving.** The reaper is *blocked* while
-  `source_health.status != 'healthy'`.
+  `source_health.status != 'healthy'` — for `timeout` and `silent` alike. `source_removed` is the
+  one expiry it does not ask, because there is no source left to be blind to: it fires only when no
+  live source feeds the case's cluster, so deleting one HA replica ends nothing (ADR 0056).
 
 ---
 
@@ -283,6 +285,7 @@ No import exists in either direction, and nothing enforces the arrow:
 | `rules/service.RuleLookup` | `sources/service.ResolveRule` | adapters.go |
 | `silences/service.SilenceSource`, `silences/api.SourceBaseURLs` | `sources` | `app/silencesource.go` |
 | `alerts/service.CaseOpenings` | the outbox (`incidents.correlate`) — never `incidents` itself | `app.caseOpenings` (adapters.go) |
+| `sources/api.CaseCounts` — open and held Cases per source (ADR 0056 §1) | `alerts` | `app.sourceCases` (adapters.go) |
 
 **3. River job enqueues — a STRING in `internal/platform/jobs/kinds.go`, not a call.** The
 producer never names the consumer, so there is nothing to enforce at all:
