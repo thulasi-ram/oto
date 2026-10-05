@@ -44,10 +44,11 @@ import (
 // first error is returned after every policy has been tried, so the tick is retried and
 // a window still inside its lead is armed then.
 //
-// ⭐ AN INVESTIGATOR SWITCHED OFF IS NOT ASKED, as for an Incident (IncidentChanged): it
-// is not subscribed, and a `skipped` row per window — 288 a day for a five-minute window —
-// would be noise rather than a record. The org's own switch and its daily budget ARE
-// recorded, as `skipped` with the reason, like any request's.
+// ⭐ A SWITCH THAT IS OFF IS AN UNSUBSCRIPTION, NOT A CONTROL HIT (owner ruling O1,
+// 2026-10-05), as for an Incident (IncidentChanged): neither a switched-off Investigator
+// nor a switched-off org is asked, and no row is written — a `skipped` row per window, 288
+// a day for a five-minute window, would be noise, and the switch is itself the readable
+// record. The org's daily budget IS recorded, as `skipped`/`budget`, like any request's.
 func (s *Service) ArmDigestInvestigations(ctx context.Context, scope db.TenantScope) (int, error) {
 	if err := db.RequireScope(scope); err != nil {
 		return 0, err
@@ -56,6 +57,14 @@ func (s *Service) ArmDigestInvestigations(ctx context.Context, scope db.TenantSc
 	due, err := s.digests.SummarisedDigests(ctx, scope, now)
 	if err != nil {
 		return 0, err
+	}
+	if len(due) == 0 {
+		return 0, nil
+	}
+	if controls, err := s.orgControls.InvestigationControls(ctx, scope); err != nil {
+		return 0, err
+	} else if !controls.Enabled {
+		return 0, nil
 	}
 	var (
 		armed  int

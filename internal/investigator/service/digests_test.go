@@ -231,25 +231,42 @@ func TestAFailedOrSkippedDigestRunIsTheBuiltInBody(t *testing.T) {
 	})
 	t.Run("skipped", func(t *testing.T) {
 		r := newRig(t)
+		r.orgControls.dailyTokens = 1000
+		caseInv, c := r.setup(t, domain.DefaultBudgets())
+		r.runToEnd(t, caseInv, c, 900, 100) // the day's 1000, spent
 		inv := r.digestInvestigator(t, "digest", true, digestBudgets(t, 10, 100_000, 300), ToolDigestCases)
+		jobsBefore := len(r.queue.jobs)
 		d := r.summarise(t, inv)
-		r.orgControls.on = false
 		r.clock.Set(d.Window.End.Add(-5 * time.Minute))
 		r.arm(t)
 		run, _ := r.investigations.DigestRun(context.Background(), r.scope, d.PolicyID, d.Window)
-		if run == nil || run.Status != domain.StatusSkipped || run.Ending.Reason != domain.ReasonDisabled {
-			t.Fatalf("the org's switch was not recorded on the window's run: %+v", run)
+		if run == nil || run.Status != domain.StatusSkipped || run.Ending.Reason != domain.ReasonBudget {
+			t.Fatalf("the org's spent budget was not recorded on the window's run: %+v", run)
 		}
-		if len(r.queue.jobs) != 0 {
+		if len(r.queue.jobs) != jobsBefore {
 			t.Fatal("a skipped run was enqueued")
 		}
 		if _, ok := r.carried(t, d); ok {
 			t.Fatal("a skipped run's window carries a Finding")
 		}
 		// And the window is not re-armed: the skip is the record.
-		r.orgControls.on = true
+		r.orgControls.dailyTokens = 2_000_000
 		if n := r.arm(t); n != 0 {
 			t.Fatalf("a skipped window was armed again (%d)", n)
+		}
+	})
+	// Owner ruling O1: a switched-off org is unsubscribed — no row per window.
+	t.Run("org switched off", func(t *testing.T) {
+		r := newRig(t)
+		inv := r.digestInvestigator(t, "digest", true, digestBudgets(t, 10, 100_000, 300), ToolDigestCases)
+		d := r.summarise(t, inv)
+		r.orgControls.on = false
+		r.clock.Set(d.Window.End.Add(-5 * time.Minute))
+		if n := r.arm(t); n != 0 {
+			t.Fatalf("a switched-off org armed %d", n)
+		}
+		if run, _ := r.investigations.DigestRun(context.Background(), r.scope, d.PolicyID, d.Window); run != nil {
+			t.Fatalf("a switched-off org left a row per window: %+v", run)
 		}
 	})
 }
@@ -305,3 +322,4 @@ func TestADigestRunStillQueuedWhenItsWindowClosedIsSkipped(t *testing.T) {
 		t.Fatal("a model was called for a window nothing will read")
 	}
 }
+

@@ -178,6 +178,14 @@ func (s *Service) IncidentChanged(
 	if len(subscribed) == 0 {
 		return 0, nil
 	}
+	// ⛔ AN ORG SWITCHED OFF IS UNSUBSCRIBED TOO (owner ruling O1, 2026-10-05): an automatic
+	// trigger leaves no row, exactly as a switched-off Investigator's does. `investigations_enabled`
+	// is itself the readable record; a human's request still records `skipped/disabled`.
+	if controls, err := s.orgControls.InvestigationControls(ctx, scope); err != nil {
+		return 0, err
+	} else if !controls.Enabled {
+		return 0, nil
+	}
 	incident, err := s.incidents.InvestigationIncident(ctx, scope, incidentID)
 	if errs.IsKind(err, errs.KindNotFound) {
 		return 0, nil

@@ -369,3 +369,30 @@ func TestATriggerWithNoSubscriberNeverReadsTheIncident(t *testing.T) {
 		t.Fatalf("the Incident was read %d time(s) for nobody", r.incidents.reads)
 	}
 }
+
+// TestASwitchedOffOrgIsUnsubscribedFromIncidents — owner ruling O1: with the org's switch
+// off, an Incident trigger leaves no row (the switch is the record), while a human asking
+// about the same Incident is still recorded `skipped/disabled`.
+func TestASwitchedOffOrgIsUnsubscribedFromIncidents(t *testing.T) {
+	r := newRig(t)
+	inv := r.incidentInvestigator(t, "storm", true, true, ToolMemberFindings)
+	i := r.drawIncident()
+	r.orgControls.on = false
+	if n := r.changed(t, i, domain.TriggerDrawn); n != 0 {
+		t.Fatalf("a switched-off org started %d runs", n)
+	}
+	if n := len(r.incidentRuns(t, i)); n != 0 {
+		t.Fatalf("a switched-off org left %d rows for an automatic trigger", n)
+	}
+	by, err := domain.NewRequester(uuid.New(), "Ada Lovelace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := r.svc.RequestIncidentInvestigation(context.Background(), r.scope, i.Number, inv.ID, by)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != domain.StatusSkipped || run.Ending.Reason != domain.ReasonDisabled {
+		t.Fatalf("a human's request with the org off = %+v, want skipped/disabled on the record", run.Ending)
+	}
+}
