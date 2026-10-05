@@ -790,8 +790,15 @@ func plan() []probe {
 		},
 		{
 			method: http.MethodPost, tmpl: "/api/v1/remedies/{id}/approve", url: "/api/v1/remedies/{{stranger}}/approve",
+			auth: authSession,
 			body: map[string]any{"arguments_sha256": "0000000000000000000000000000000000000000000000000000000000000000"}, want: http.StatusNotFound,
 			why: "a Remedy is made only by a run's Finding, and this world works no runs; remedy_not_found",
+		},
+		{
+			// Owner ruling F5 (2026-10-05): approving is session-only, refused before any lookup.
+			method: http.MethodPost, tmpl: "/api/v1/remedies/{id}/approve", url: "/api/v1/remedies/{{stranger}}/approve",
+			body: map[string]any{"arguments_sha256": "0000000000000000000000000000000000000000000000000000000000000000"}, want: http.StatusForbidden,
+			why: "a personal access token never approves a Remedy; remedy_approval_needs_a_session",
 		},
 		{
 			method: http.MethodPost, tmpl: "/api/v1/remedies/{id}/decline", url: "/api/v1/remedies/{{stranger}}/decline",

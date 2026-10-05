@@ -608,11 +608,11 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
     key: "remedy_approval_window_s",
     kind: "seconds",
     label: "Remedy approval window",
-    what: "How long a Remedy an Investigator proposed waits for its two approvals, and then — once approved — for oto to execute it. Past it the Remedy is recorded as expired, said on the Incident, and can no longer be approved or executed; a new Investigation can propose it again.",
+    what: "How long a Remedy an Investigator proposed waits for its approvals (one or two, as the risk rules say), and then — once approved — for oto to execute it. Past it the Remedy is recorded as expired, said on the Incident, and can no longer be approved or executed; a new Investigation can propose it again.",
     risks: [
       {
         label: "Too short",
-        text: "Two people holding the grant on the ToolServer have to read the exact command and approve it inside the window, or it expires and the change is not made. An expired Remedy is recorded and declared, never silent, and nothing about it is retried.",
+        text: "The people holding the grant on the ToolServer that the Remedy needs (one or two, as the risk rules say) have to read the exact command and approve it inside the window, or it expires and the change is not made. An expired Remedy is recorded and declared, never silent, and nothing about it is retried.",
       },
       {
         label: "Too long",

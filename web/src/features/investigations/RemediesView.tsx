@@ -24,6 +24,13 @@
  * second approver can see they would be the second — and the first can see that approving
  * again counts once.
  *
+ * ⭐ WHAT WENT OUTBOUND COMES BEFORE THE DECISION (ADR 0054 §2, owner ruling F1 of 2026-10-05).
+ * Above Approve and Decline, an open Remedy shows the last three facts sent outbound about the
+ * Incident it is declared to — what the people outside oto have most recently been told — so
+ * an approver does not decide on a state the room has already moved past. A Remedy on a Case
+ * no Incident holds is declared nowhere, sent nowhere, and shows no such list. (In Slack the
+ * card sits in the Incident's thread, under those very facts.)
+ *
  * ⛔ NOTHING HERE EXECUTES ANYTHING. Approving records an approval; the Remedy is executed by
  * a separate step on the server once it has the approvals it needs.
  *
@@ -36,11 +43,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/solid-query";
 
 import { approveRemedy, declineRemedy, listInvestigationRemedies } from "~/api/endpoints";
 import { qk } from "~/api/keys";
-import type { ListEnvelope, Remedy, RemedyRisk } from "~/api/types";
+import { notificationActivityQuery } from "~/api/queries";
+import type { ListEnvelope, NotificationListQuery, Remedy, RemedyRisk } from "~/api/types";
 import { Button } from "~/components/ui/Button";
 import { SECTION_LABEL } from "~/components/ui/surfaces";
 import { ErrorBanner } from "~/components/ui/states";
 import { PANEL_CODE_BLOCK } from "~/features/alerts/detail/rhythm";
+import { REASON_LABEL, STATUS_LABEL } from "~/features/notifications/vocabulary";
 import { cn } from "~/lib/cn";
 import { absoluteTime } from "~/lib/format";
 
@@ -173,6 +182,7 @@ export const RemediesView: Component<RemediesViewProps> = (props) => {
                   </p>
                 </Show>
                 <Show when={r.state === "proposed" || r.state === "approved"}>
+                  <Show when={declaredIncident(r)}>{(id) => <IncidentOutboundFacts incidentId={id()} />}</Show>
                   <div class="mt-2xs flex flex-wrap items-center gap-sm">
                     <Show when={r.state === "proposed" && r.tool !== null && r.blocked === null}>
                       <Button
@@ -303,5 +313,90 @@ const RemedyTier: Component<{ readonly remedy: Remedy }> = (props) => {
         )}
       </Show>
     </p>
+  );
+};
+
+/** How many of an Incident's latest outbound facts an approver is shown. */
+export const OUTBOUND_FACTS_SHOWN = 3;
+
+/** Every status of a fact that was sent, or is being sent: everything but `suppressed`. */
+const OUTBOUND_STATUSES: NonNullable<NotificationListQuery["status"]> = [
+  "pending",
+  "dispatched",
+  "partial",
+  "delivered",
+  "failed",
+];
+
+/**
+ * The Incident a Remedy is declared to: the one its latest declared transition names. `null` for
+ * a Remedy on a Case no Incident holds — declared nowhere (ADR 0054 §2), so nothing about it went
+ * outbound and there is no list to show.
+ */
+export function declaredIncident(r: Remedy): string | null {
+  for (let i = r.transitions.length - 1; i >= 0; i--) {
+    const id = r.transitions[i]?.declared_incident_id;
+    if (id) return id;
+  }
+  return null;
+}
+
+/**
+ * The last `OUTBOUND_FACTS_SHOWN` facts sent outbound into the Incident's conversation, newest
+ * first: what each said, when, and whether it landed. Read through the activity log's own
+ * query (`GET /notifications?conversation_id=`), since an Incident's conversation id IS the
+ * Incident's id (migration 00084). A read that fails says so and blocks nothing.
+ */
+const IncidentOutboundFacts: Component<{ readonly incidentId: string }> = (props) => {
+  const facts = useQuery(() =>
+    notificationActivityQuery({
+      conversation_id: props.incidentId,
+      status: OUTBOUND_STATUSES,
+      limit: OUTBOUND_FACTS_SHOWN,
+    }),
+  );
+  return (
+    <div class="mt-2xs" data-outbound-facts>
+      <p class="text-meta text-ink-subtle">Most recently sent outbound about its Incident:</p>
+      <Switch>
+        <Match when={facts.isError}>
+          <ErrorBanner class="mt-2xs" error={facts.error} />
+        </Match>
+        <Match when={facts.data && facts.data.data.length === 0}>
+          <p class="text-meta text-ink-muted" data-no-facts>
+            Nothing has been sent outbound about it yet.
+          </p>
+        </Match>
+        <Match when={facts.data}>
+          {(page) => (
+            <ul class="mt-2xs space-y-2xs">
+              <For each={page().data.slice(0, OUTBOUND_FACTS_SHOWN)}>
+                {(n) => (
+                  <li class="text-meta text-ink" data-fact={n.id}>
+                    <span class="font-medium">{REASON_LABEL[n.reason] ?? n.reason}</span>
+                    {" · "}
+                    <time datetime={n.created_at} class="tabular-nums">
+                      {absoluteTime(n.created_at)}
+                    </time>
+                    {" · "}
+                    <span class="text-ink-muted">
+                      {STATUS_LABEL[n.status]}
+                      <Show when={n.delivery_summary}>
+                        {(d) => (
+                          <>
+                            {" "}
+                            ({d().sent} of {d().total} {d().total === 1 ? "destination" : "destinations"})
+                          </>
+                        )}
+                      </Show>
+                    </span>
+                  </li>
+                )}
+              </For>
+            </ul>
+          )}
+        </Match>
+      </Switch>
+    </div>
   );
 };

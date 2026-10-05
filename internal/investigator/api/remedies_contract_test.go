@@ -10,7 +10,9 @@ package api
 //   - approving a Remedy with no Tool is the typed `409 remedy_has_no_tool`;
 //   - approving names the hash of the arguments approved, and a body without one is refused;
 //   - a human approves and a human declines: a system principal is a 403 before the service is
-//     reached.
+//     reached;
+//   - ⛔ only a browser session approves: a PAT is `403 remedy_approval_needs_a_session`, and may
+//     still decline (owner ruling F5).
 
 import (
 	"context"
@@ -22,6 +24,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/thulasiram/oto/internal/investigator/domain"
+	"github.com/thulasiram/oto/internal/platform/authn"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/test/contract/apitest"
@@ -208,6 +211,27 @@ func TestOnlyAHumanApprovesOrDeclinesARemedy(t *testing.T) {
 	if f.callCount() != 0 {
 		t.Fatal("a machine reached the service")
 	}
+}
+
+// ⛔⛔ OWNER RULING F5 (2026-10-05): a personal access token does not approve — a typed 403 before
+// the service is reached — and DOES decline: saying no is the safe direction.
+func TestAPersonalAccessTokenDeclinesButNeverApproves(t *testing.T) {
+	t.Parallel()
+	f, c := newClient(t)
+	pat := apitest.Member()
+	pat.Kind, pat.SessionID = authn.KindPAT, uuid.Nil
+	resp := c.As(pat).POST(t, "/remedies/"+fxRemedyTool.String()+"/approve",
+		map[string]any{"arguments_sha256": domain.HashArguments(fxRemedyArgs)}).MustStatus(t, http.StatusForbidden)
+	schema.AssertProblem(t, "approveRemedy", http.StatusForbidden, resp.Body())
+	if p := resp.Problem(t); p.Code != "remedy_approval_needs_a_session" {
+		t.Fatalf("problem = %+v", p)
+	}
+	if f.callCount() != 0 {
+		t.Fatal("a PAT's approval reached the service")
+	}
+	resp = c.As(pat).Raw(http.MethodPost, "/remedies/"+fxRemedyNoTool.String()+"/decline", "", "").
+		MustStatus(t, http.StatusOK)
+	schema.Assert(t, "declineRemedy", http.StatusOK, resp.Body())
 }
 
 func remedyRoutes() []apitest.Route {

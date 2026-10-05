@@ -1569,6 +1569,12 @@ export interface paths {
          *     `409 remedy_already_approved` for a second approval by the same person; and
          *     `409 remedy_arguments_changed` when the hash is not this Remedy's. Needs a human: a system
          *     principal is a `403`.
+         *
+         *     ⛔ **Session only** (owner ruling 2026-10-05, ADR 0054 §4): a personal access token is refused with
+         *     `403 remedy_approval_needs_a_session` before the Remedy is looked up — an approval is what makes a
+         *     command run, and a leaked or scripted token must not make one count. A Remedy is approved from a
+         *     signed-in browser session or from its Slack card (a signed click on a linked account). Declining
+         *     stays open to a token.
          */
         post: operations["approveRemedy"];
         delete?: never;
@@ -1594,7 +1600,9 @@ export interface paths {
          *     Tool can carry out is declinable like any other. Takes no body.
          *
          *     Refusals: `404 remedy_not_found`; `409 remedy_expired`; `409 remedy_not_open` once it is being
-         *     executed or has ended. Needs a human: a system principal is a `403`.
+         *     executed or has ended. Needs a human: a system principal is a `403`. A personal access token may
+         *     decline (only approving is session-only), and a declined Remedy may be proposed again by a later
+         *     Investigation.
          */
         post: operations["declineRemedy"];
         delete?: never;

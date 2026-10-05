@@ -208,10 +208,37 @@ func humanOnRemedy(r *http.Request, verb string) (db.TenantScope, uuid.UUID, dom
 	return scope, id, by, nil
 }
 
+// remedyApprovalNeedsASession refuses an approval made by any credential but a browser SESSION
+// (owner ruling F5, 2026-10-05; review C10).
+//
+// ⛔⛔ A PERSONAL ACCESS TOKEN DOES NOT APPROVE, for the reason a PAT does not link a Slack account
+// (`identity/api` mounts those writes session-only, and `identity/service.slackLinkSubject` refuses
+// again with `slack_link_needs_a_session`): an approval is what makes a command run against a
+// cluster, and a leaked or scripted token must not make one count. Two holders' PATs in a script
+// are an auto-approver, which double approval exists to prevent. Decline stays open to a PAT —
+// saying no is the safe direction — and a Slack approval is a signed human click on a linked
+// account, not a token, so it is unaffected. Checked before the Remedy is even looked up.
+func remedyApprovalNeedsASession(r *http.Request) error {
+	p, _, err := authn.Scope(r.Context())
+	if err != nil {
+		return err
+	}
+	if p.Kind != authn.KindSession {
+		return errs.Forbidden("remedy_approval_needs_a_session",
+			"a Remedy is approved only from a signed-in browser session, or from its Slack card; a token cannot approve")
+	}
+	return nil
+}
+
 // approveRemedy serves POST /api/v1/remedies/{id}/approve: one human's approval of the
-// arguments whose hash the body names. The refusals are the service's, each typed.
+// arguments whose hash the body names, from a session (`remedyApprovalNeedsASession`). The
+// refusals are the service's, each typed.
 func (rt *Router) approveRemedy(w http.ResponseWriter, r *http.Request) {
 	started := rt.now()
+	if err := remedyApprovalNeedsASession(r); err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
 	scope, id, by, err := humanOnRemedy(r, "approving")
 	if err != nil {
 		httpx.WriteProblem(w, r, err)

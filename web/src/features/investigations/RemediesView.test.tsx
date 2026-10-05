@@ -16,7 +16,7 @@ import { fireEvent, screen, within } from "@solidjs/testing-library";
 import { describe, expect, it } from "vitest";
 
 import { RemediesView } from "./RemediesView";
-import type { Remedy } from "~/api/types";
+import type { Notification, Remedy } from "~/api/types";
 import { expectNoUndefined, item, list, problem, renderScreen, stubFetch, until } from "~/test/harness";
 
 const RUN = "3a1f0c2e-5b6d-4e7f-8a9b-0c1d2e3f4a5b";
@@ -80,9 +80,10 @@ const noTool = (): Remedy =>
     description: "Add a node: the pool is out of memory.",
   });
 
-function mount(rows: readonly Remedy[]) {
+function mount(rows: readonly Remedy[], facts: readonly Notification[] = []) {
   const net = stubFetch({
     [`GET /api/v1/investigations/${RUN}/remedies`]: () => ({ json: list(rows) }),
+    "GET /api/v1/notifications": () => ({ json: list(facts) }),
   });
   renderScreen(() => <RemediesView investigationId={RUN} pollMs={20} />);
   return net;
@@ -225,9 +226,73 @@ describe("a Finding's Remedies", () => {
     );
   });
 
+  it("⭐ shows the Incident's last three outbound facts above Approve and Decline (ruling F1, 2026-10-05)", async () => {
+    const r = remedy({ transitions: [proposal(INCIDENT)] });
+    const facts = [
+      fact("f1", "remedy_proposed", "delivered", "2026-08-09T09:12:05.000Z"),
+      fact("f2", "acked", "failed", "2026-08-09T09:05:00.000Z"),
+      fact("f3", "fired", "delivered", "2026-08-09T09:00:00.000Z"),
+    ];
+    const net = mount([r], facts);
+    await until(() => expect(shown(r.id).querySelectorAll("[data-fact]")).toHaveLength(3));
+    const asked = net.to("/notifications")[0]!.search;
+    expect(asked.get("conversation_id")).toBe(INCIDENT);
+    expect(asked.get("limit")).toBe("3");
+    expect(asked.get("status")).not.toMatch(/suppressed/);
+
+    const el = shown(r.id);
+    const list = el.querySelector("[data-outbound-facts]")!;
+    expect(list.textContent).toMatch(/an Investigator proposed a Remedy/);
+    expect(list.textContent).toMatch(/nothing landed/);
+    // Above the controls: the facts are read before the decision.
+    const approve = within(el).getByRole("button", { name: "Approve" });
+    expect(list.compareDocumentPosition(approve) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expectNoUndefined(el);
+  });
+
+  it("shows no outbound facts for a Remedy on a Case no Incident holds, and asks for none", async () => {
+    const r = remedy({ subject_kind: "case", transitions: [proposal(null)] });
+    const net = mount([r]);
+    await until(() => expect(shown(r.id)).toBeTruthy());
+    expect(shown(r.id).querySelector("[data-outbound-facts]")).toBeNull();
+    expect(net.to("/notifications")).toHaveLength(0);
+  });
+
   it("renders nothing when the Finding proposed nothing", async () => {
     const net = mount([]);
     await until(() => expect(net.to(`/investigations/${RUN}/remedies`).length).toBeGreaterThan(0));
     expect(document.querySelector("[data-remedies]")).toBeNull();
   });
 });
+
+const INCIDENT = "7b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e";
+
+function proposal(declared: string | null): Remedy["transitions"][number] {
+  return {
+    from: null,
+    to: "proposed",
+    actor_kind: "investigator",
+    actor_label: "Investigator firstlook v2",
+    at: "2026-08-09T09:12:00.000Z",
+    failure_reason: null,
+    detail: null,
+    declared_incident_id: declared,
+  };
+}
+
+function fact(id: string, reason: Notification["reason"], status: Notification["status"], at: string): Notification {
+  return {
+    id: `0000000${id.slice(1)}-0000-4000-8000-000000000000`,
+    subject_kind: "incident",
+    subject_id: INCIDENT,
+    alert_id: null,
+    case_id: null,
+    reason,
+    policy_id: null,
+    state_version: 1,
+    status,
+    delivery_summary: { total: 1, sent: status === "delivered" ? 1 : 0, failed: 0, dead: 0, skipped: 0, pending: 0 },
+    created_at: at,
+    updated_at: null,
+  };
+}
