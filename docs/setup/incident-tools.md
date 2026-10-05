@@ -14,7 +14,7 @@ hosts no bridge** ([ADR 0055](../adr/0055-an-incident-tool-integration-is-data-o
 | Route | What oto sends | You write |
 |---|---|---|
 | **The plain envelope** | `oto.notification.v1`, exactly as [webhook.md §3](webhook.md#3-the-envelope) describes it. | Nothing in oto. The tool accepts arbitrary JSON and maps the fields itself (a generic "custom webhook" alert source, a log pipeline). |
-| **A payload mapping** | One request per fact, in the shape the tool's API wants, rendered from the envelope by a document on the webhook **connection**. | A mapping — or start from oto's [catalog](../../mappings/README.md) (incident.io, PagerDuty) and import a copy. See [webhook.md §7](webhook.md#7-reaching-a-tool-that-wants-a-different-shape-the-payload-mapping). |
+| **A payload mapping** | One request per fact, in the shape the tool's API wants, rendered from the envelope by a document on the webhook **connection**. | A mapping — or start from oto's [catalog](https://github.com/thulasi-ram/oto/tree/main/mappings) (incident.io, PagerDuty) and import a copy. See [webhook.md §7](webhook.md#7-reaching-a-tool-that-wants-a-different-shape-the-payload-mapping). |
 | **A bridge** | The plain envelope, to a small service **you** run. | The service. It runs outside oto, in any language, and talks to the tool however the tool needs. |
 
 ### How to choose
@@ -74,7 +74,7 @@ state can do better — ignore a fact for an incident it knows a human resolved 
 the reason it is a bridge.
 
 oto's own code never sends that command, and no mapping in oto's catalog does — a test refuses one
-([mappings/README.md](../../mappings/README.md)). You may write it yourself: it is then a rule you
+([mappings/README.md](https://github.com/thulasi-ram/oto/tree/main/mappings)). You may write it yourself: it is then a rule you
 wrote, keyed on a fact oto stated, and the cost above is yours to accept. Ending a response is
 usually a human's call in the incident tool.
 
