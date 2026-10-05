@@ -75,6 +75,7 @@ import { caseIncidentQuery, parseIncidentNumber } from "~/features/incidents/mem
 import { absoluteTime, idempotencyKey } from "~/lib/format";
 import { createKeysetFeed, keepPrevious, type KeysetFeed } from "~/lib/keysetFeed";
 import { EnrichmentPanel } from "~/features/alerts/detail/EnrichmentPanel";
+import { ExpiryNote, LastHeard } from "~/features/alerts/Staleness";
 import { PANEL_CODE_BLOCK } from "~/features/alerts/detail/rhythm";
 import { Timeline } from "~/features/alerts/detail/Timeline";
 import { typesForCategories, type EventCategory } from "~/features/alerts/detail/eventKinds";
@@ -298,6 +299,9 @@ export default function CaseDetailRoute() {
                           </span>
                         )}
                       </Show>
+                      {/* ADR 0056 §1: how long since upstream last said anything
+                          about this firing — the fact a stale Case is made of. */}
+                      <LastHeard at={c().last_observed_at} />
                       <Show when={c().alert}>
                         {(a) => (
                           <>
@@ -317,6 +321,13 @@ export default function CaseDetailRoute() {
                         )}
                       </Show>
                     </div>
+
+                    {/* ⭐ WHETHER THIS FIRING CAN EXPIRE, AND WHY NOT (ADR 0056 §1).
+                        A Case that upstream stopped speaking about used to sit
+                        open with nothing on screen to say whether it ever would
+                        end. This says so in the reaper's own terms. It is facts
+                        only: nothing here ends a Case. */}
+                    <ExpiryNote case={c()} class="mt-1.5" />
 
                     <Show when={c().ack_note}>
                       {(note) => (

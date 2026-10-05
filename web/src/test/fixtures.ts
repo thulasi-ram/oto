@@ -20,6 +20,7 @@ import type {
   Case,
   CaseDetail,
   CaseListItem,
+  CaseSources,
   Incident,
   IncidentDetail,
   IncidentMember,
@@ -76,9 +77,32 @@ export function alertRef(patch: Partial<AlertRef> = {}): AlertRef {
   };
 }
 
+/**
+ * Who can still speak for a Case (ADR 0056 §1), in its ordinary shape: one live,
+ * healthy source with the default max silence of a day. Patch `source` to null
+ * and `live`/`removed` for the shapes that hold or end a Case.
+ */
+export function caseSources(
+  patch: Partial<CaseSources> = {},
+  source: Partial<NonNullable<CaseSources["source"]>> = {},
+): CaseSources {
+  return {
+    live: 1,
+    removed: 0,
+    source: {
+      id: "2d8e4a5b-3c6f-4d8e-9f0a-1b2c3d4e5f60",
+      name: "prod-eu alertmanager",
+      healthy: true,
+      max_silence_seconds: 86_400,
+      ...source,
+    },
+    ...patch,
+  };
+}
+
 /** One row of `GET /api/v1/cases`: a firing episode plus its identity. */
 export function caseListItem(patch: Partial<CaseListItem> = {}): CaseListItem {
-  return { ...alertCase(), alert: alertRef(), ...patch } as CaseListItem;
+  return { ...alertCase(), alert: alertRef(), sources: caseSources(), ...patch } as CaseListItem;
 }
 
 /** One expanded case, as `GET /api/v1/cases/{id}` serves it. */
@@ -86,6 +110,7 @@ export function caseDetail(patch: Partial<CaseDetail> = {}): CaseDetail {
   return {
     ...alertCase(),
     alert: alertRef(),
+    sources: caseSources(),
     enrichments: [],
     delivery_summary: { total: 0, sent: 0, failed: 0, pending: 0, suppressed: 0 },
     ...patch,

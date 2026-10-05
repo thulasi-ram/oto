@@ -28,7 +28,7 @@ import { describe, expect, it } from "vitest";
 
 import CaseDetailRoute from "./case-detail";
 import type { Incident } from "~/api/types";
-import { alertRef, caseDetail, incident, incidentDetail } from "~/test/fixtures";
+import { alertRef, caseDetail, caseSources, incident, incidentDetail } from "~/test/fixtures";
 import {
   item,
   list,
@@ -396,5 +396,55 @@ describe("the word on screen", () => {
     }
     expect(withoutMembership).not.toMatch(/\bincident\b/i);
     expect(text).not.toMatch(/\bcorrelat/i);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Whether this firing can expire (ADR 0056 §1)                               */
+/* -------------------------------------------------------------------------- */
+
+describe("whether this firing can expire", () => {
+  it("says when upstream last spoke about it", async () => {
+    mount();
+    await ready("Ack");
+    expect(document.body.textContent).toMatch(/last heard from upstream/);
+  });
+
+  it("says when it expires as silent, from its source's max silence", async () => {
+    mount();
+    await ready("Ack");
+    const note = document.querySelector('[data-expiry="can_expire"]');
+    expect(note?.textContent).toMatch(/^Expires as silent after 1d without word/);
+  });
+
+  it("says plainly that it is held while its source is not healthy", async () => {
+    mount({ sources: caseSources({}, { healthy: false, name: "am-eu" }) });
+    await ready("Ack");
+    const note = document.querySelector('[data-expiry="not_healthy"]');
+    expect(note?.textContent).toMatch(/^Held: its source am-eu is not healthy/);
+  });
+
+  it("⛔ says it of an acked firing too: a receipt does not change whether upstream speaks", async () => {
+    mount({
+      ack_state: "acked",
+      acked_by_label: "Ada",
+      sources: caseSources({}, { max_silence_seconds: null }),
+    });
+    await ready("Unack");
+    const note = document.querySelector('[data-expiry="no_end_time"]');
+    expect(note?.textContent).toMatch(/^Cannot expire: upstream gave no end time/);
+  });
+
+  it("says nothing about expiry when oto could not read its sources", async () => {
+    mount({ sources: null });
+    await ready("Ack");
+    expect(document.querySelector("[data-expiry]")).toBeNull();
+  });
+
+  it("names which expiry ended an expired firing, next to the word", async () => {
+    mount({ state: "closed", ended_at: "2026-08-10T09:00:00.000Z", resolve_reason: "silent" });
+    await until(() => expect(screen.getByText("Ended · expired: silent")).toBeTruthy());
+    // An ended firing has no forecast; the chip says how it ended.
+    expect(document.querySelector("[data-expiry]")).toBeNull();
   });
 });

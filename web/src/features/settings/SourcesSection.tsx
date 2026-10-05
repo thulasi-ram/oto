@@ -99,12 +99,46 @@ import {
  */
 const HEALTH_NOTE: Record<SourceHealthStatus, string> = {
   healthy: "Reachable, and reconciling on schedule. Alerts oto stops hearing about can expire.",
+  // ⛔ NOT "SOME RECONCILES ARE FAILING". `degraded` is either of two things
+  // (sources/service ApplyProbe): one or two probes in a row failed — the third
+  // makes it `unreachable` — or the probe reached it and its HA cluster reported
+  // not ready, which can return an incomplete alert set. Both are said.
   degraded:
-    "Reachable but not entirely well — some reconciles are failing. Nothing from this source will be expired until it recovers.",
+    "The last probe failed (three in a row makes it unreachable), or this Alertmanager's HA cluster is not ready, so the alerts it reports may be incomplete. Nothing from this source will be expired until it recovers.",
   unreachable:
     "oto cannot reach this Alertmanager. Alerts pushed by webhook may still arrive; state reconciliation will not, so oto cannot see a silence here and will not expire anything from this source.",
   unknown:
     "oto has not checked this source yet, so nothing from it will be expired until a reconcile pass succeeds.",
+};
+
+/**
+ * A standing warning's headline, keyed by the stable `code` the server records
+ * (`internal/sources/domain` Warn*). The server's own `message` follows it, so
+ * a code this map does not know yet is still shown, under its code.
+ *
+ * ⭐ ADR 0006: these are warned LOUDLY. `send_resolved_false` above all — it
+ * means this receiver will never tell oto an alert resolved, so every alert it
+ * carries can only ever expire — and nothing else on any screen says so.
+ */
+const WARNING_HEADLINE: Readonly<Record<string, string>> = {
+  send_resolved_false: "Resolves will never arrive",
+  alertmanager_cluster_not_ready: "HA cluster not ready",
+  alertmanager_config_unparseable: "Configuration unreadable",
+  alertmanager_unreachable: "Alertmanager not answering",
+  alertmanager_malformed_response: "Not an Alertmanager answer",
+  clock_skew: "Clock skew",
+  prometheus_not_configured: "No Prometheus",
+  prometheus_unreachable: "Prometheus not answering",
+};
+
+/** The server writes a warning's message as a clause; on screen it follows a headline. */
+const sentence = (message: string): string =>
+  message.length === 0 ? message : message.charAt(0).toUpperCase() + message.slice(1);
+
+/** What a warning's `subject` names, where the code says what kind of thing it is. */
+const WARNING_SUBJECT: Readonly<Record<string, string>> = {
+  send_resolved_false: "receiver",
+  alertmanager_cluster_not_ready: "cluster status",
 };
 
 /**
@@ -360,6 +394,21 @@ const SourceRow: Component<{
             </span>
           )}
         </Show>
+        {/* The other half of "is this Alertmanager still telling oto anything":
+            the last webhook batch accepted from it (efdac6b writes it). */}
+        <span
+          class="text-meta text-ink-subtle"
+          title="When oto last accepted a webhook batch from this source. Stamped at most every 15 seconds."
+        >
+          <Show when={s().health?.last_push_at} fallback="no webhook received yet">
+            {(at) => (
+              <>
+                last push <RelativeTime value={at()} label="Last push" /> ago
+              </>
+            )}
+          </Show>
+        </span>
+        <OpenCases source={s()} />
         {/*
           The cadence is shown beside the last pass because it is the only
           reconciliation setting there is. There is no on/off switch here and
@@ -413,6 +462,8 @@ const SourceRow: Component<{
       <p class="break-all font-mono text-meta text-ink-subtle">{s().base_url}</p>
 
       <MaxSilenceField source={s()} />
+
+      <SourceWarnings source={s()} />
 
       <Show when={s().health?.last_error}>
         {(err) => (
@@ -475,6 +526,76 @@ const SourceRow: Component<{
     </li>
   );
 };
+
+/**
+ * The open Cases on this source's cluster, and how many of them the reaper is
+ * holding because of it (ADR 0056 §1) — the per-source form of the `held` count
+ * the sweep used to report only to a log line.
+ *
+ * Held is every open Case on the cluster while the source is not healthy, or
+ * while the cluster has another live source: the reaper expires a Case only
+ * under its cluster's ONE live source. The sentence says which of the two it is.
+ * Absent counts render nothing — "not counted" is not "none".
+ */
+const OpenCases: Component<{ readonly source: Source }> = (props) => {
+  const open = (): number | undefined => props.source.open_case_count;
+  const held = (): number => props.source.held_case_count ?? 0;
+  const status = (): SourceHealthStatus => props.source.health?.status ?? "unknown";
+  const why = (): string =>
+    status() !== "healthy"
+      ? `None of them can expire while this source is ${status()}; upstream can still resolve them.`
+      : "None of them can expire while its cluster has another live source: oto expires a case only under one. Upstream can still resolve them.";
+  const plural = (n: number): string => (n === 1 ? "case" : "cases");
+
+  return (
+    <Show when={open() !== undefined}>
+      <span class="text-meta text-ink-subtle">
+        {open()} open {plural(open() ?? 0)}
+      </span>
+      <Show when={held() > 0}>
+        <span
+          data-held-cases
+          class="rounded-chip border border-line-strong bg-raised px-1.5 text-meta font-medium leading-5 text-ink"
+          title={why()}
+        >
+          {held()} held
+        </span>
+      </Show>
+    </Show>
+  );
+};
+
+/**
+ * `source_health.warnings`, every one of them, said loudly (ADR 0006): a strong
+ * left rule, ink one tier up, the headline in bold. Tier A — a warning about an
+ * upstream is not an alert's state, so it spends no state hue (§M.2).
+ */
+const SourceWarnings: Component<{ readonly source: Source }> = (props) => (
+  <Show when={(props.source.health?.warnings.length ?? 0) > 0}>
+    <ul class="flex flex-col gap-xs" aria-label="Warnings">
+      <For each={props.source.health?.warnings ?? []}>
+        {(w) => (
+          <li
+            data-warning={w.code}
+            class="border-l-2 border-line-strong pl-sm text-meta leading-snug text-ink"
+          >
+            <strong class="font-semibold">{WARNING_HEADLINE[w.code] ?? w.code}.</strong>{" "}
+            {sentence(w.message)}
+            <Show when={w.subject}>
+              {(subject) => (
+                <>
+                  {" — "}
+                  <Show when={WARNING_SUBJECT[w.code]}>{(kind) => <>{kind()} </>}</Show>
+                  <code class="font-mono">{subject()}</code>
+                </>
+              )}
+            </Show>
+          </li>
+        )}
+      </For>
+    </ul>
+  </Show>
+);
 
 /*
  * The contract's bounds on `max_silence_seconds`, read rather than repeated. The

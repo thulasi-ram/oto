@@ -23,7 +23,7 @@ import { fireEvent, screen } from "@solidjs/testing-library";
 import { describe, expect, it } from "vitest";
 
 import CasesRoute from "./cases";
-import { alertRef, caseListItem, incident, incidentDetail } from "~/test/fixtures";
+import { alertRef, caseListItem, caseSources, incident, incidentDetail } from "~/test/fixtures";
 import {
   item,
   list,
@@ -625,5 +625,51 @@ describe("drawing an Incident over a selection", () => {
     await until(() => expect(screen.getByText("1 Case selected")).toBeTruthy());
     fireEvent.click(screen.getByRole("button", { name: "Clear selection" }));
     await until(() => expect(screen.queryByText("1 Case selected")).toBeNull());
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Whether a row can expire (ADR 0056 §1)                                     */
+/* -------------------------------------------------------------------------- */
+
+describe("a row's staleness", () => {
+  it("says when upstream last spoke about an open case, and when it expires", async () => {
+    mount();
+    await until(() => expect(screen.getByText("HighErrorRate")).toBeTruthy());
+    expect(document.body.textContent).toMatch(/last heard from upstream/);
+    expect(screen.getByText("expires as silent after 1d without word")).toBeTruthy();
+  });
+
+  it("marks a held case with the reason, and puts the whole sentence behind it", async () => {
+    mount("", [caseListItem({ sources: caseSources({ live: 2, source: null }) })]);
+    await until(() => expect(screen.getByText("cannot expire: 2 live sources")).toBeTruthy());
+    const marker = screen.getByText("cannot expire: 2 live sources");
+    expect(marker.getAttribute("title")).toMatch(/oto expires a case only under exactly one/);
+  });
+
+  it("⛔ marks an acked case exactly as it marks any other open one", async () => {
+    mount("", [
+      caseListItem({
+        ack_state: "acked",
+        acked_by_label: "Ada",
+        sources: caseSources({}, { healthy: false }),
+      }),
+    ]);
+    await until(() =>
+      expect(screen.getByText("held: prod-eu alertmanager is not healthy")).toBeTruthy(),
+    );
+  });
+
+  it("names the expiry on an ended row and forecasts nothing", async () => {
+    mount("?state=open,closed", [
+      caseListItem({
+        state: "closed",
+        ended_at: "2026-08-10T09:00:00.000Z",
+        resolve_reason: "source_removed",
+      }),
+    ]);
+    await until(() => expect(screen.getByText("Ended · expired: source removed")).toBeTruthy());
+    expect(document.querySelector("[data-expiry]")).toBeNull();
+    expect(document.body.textContent).not.toMatch(/last heard from upstream/);
   });
 });

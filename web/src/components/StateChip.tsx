@@ -146,9 +146,11 @@ export const CASE_STATE_LABEL: Record<CaseState, string> = {
  */
 const OUTCOME_WORD: Record<NonNullable<ResolveReason>, string> = {
   upstream: "resolved",
-  timeout: "timed out",
-  silent: "went silent",
-  source_removed: "source removed",
+  // ADR 0056 §4: the three expiries all read as `expired`, and the reason sits
+  // next to the word — `expired` alone would hide which fact ended the firing.
+  timeout: "expired: timed out",
+  silent: "expired: silent",
+  source_removed: "expired: source removed",
 };
 
 const OUTCOME_MEANING: Record<NonNullable<ResolveReason>, string> = {
