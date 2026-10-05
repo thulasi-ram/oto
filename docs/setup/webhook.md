@@ -112,6 +112,30 @@ which fields below you can rely on.
 `unsuppressed`, `expired`, `refired`, `acked`, `unacked`, `snoozed`, `unsnoozed`, `enriched`,
 `rule_changed`, `comment`, or `digest` for a periodic summary.
 
+### `occurrence.resolve_reason` — how a Case ended
+
+On a closed Case, `occurrence.resolve_reason` says **why it ended**
+([ADR 0056](../adr/0056-a-case-the-upstream-stopped-speaking-about-expires-and-says-why.md) §4). It
+is absent while the Case is open.
+
+| Value | Reads as | The fact |
+|---|---|---|
+| `upstream` | **resolved** | An explicit `status="resolved"` arrived from upstream. The only resolution. |
+| `timeout` | expired | Upstream's `endsAt` plus the org's resolve grace passed with no word, while every live source on the Case's cluster was healthy. |
+| `silent` | expired | Every live source on the cluster was healthy and none said anything about the Case for longer than the cluster's max silence. |
+| `source_removed` | expired | No live source has fed the Case's cluster for a resolve grace after its last one was deleted, so nothing is left that could say it ended. |
+
+**Anything but `upstream` means expired** — oto stopped hearing about the signal, which is not the
+same as the signal recovering. Treat it that way in your receiver: if you close something on a
+resolve, close it on `upstream` only, or say *expired* when you close it on the others.
+
+⚠️ **The set widened within `v1`.** It was `upstream` and `timeout`; `silent` and `source_removed`
+were added under the additive-change rule of [section 6](#6-the-compatibility-promise), and a
+deployment emits them only once its operator turns them on (`jobs.expire_silent_and_removed`,
+[configuration](configuration.md)). A receiver written against the two-value set must not reject a
+value it does not know — **read any value other than `upstream` as expired**, and it stays correct
+when the set grows again.
+
 ### Incident facts
 
 An Incident is a set of one or more Cases drawn as one story
@@ -169,7 +193,8 @@ The numbers increase but are **not gapless**: a fact your policy routes nowhere 
 destination — still takes its number, so you may see `1, 2, 4`. A gap is not a lost fact. The key is
 **absent** on a fact declared before your oto had this field; treat such a fact as unordered. A
 **test send** — a channel's test, or **Test the mapping** (§7) — always carries `1`, whichever fact
-you pick, and names a test Incident of its own, so a test never makes a receiver drop a real fact.
+you pick, and names a new test Incident each time, so a test never makes a receiver drop a real fact
+— nor a second test as a replay of the first.
 
 **Severity.** oto holds none for an Incident and invents none. If your tool needs one, map it from
 the member alerts' own labels (`members[].labels.severity`, typically) in your receiver or mapping.
