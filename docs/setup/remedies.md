@@ -124,6 +124,21 @@ A ToolServer that could not be reached at all is `tool_unavailable`: no session,
 **A failed Remedy is never retried.** `failed` is final. If the change still matters, ask for
 another Investigation: a retry is a **new** Remedy and a **new** approval.
 
+**An executed Remedy is followed up.** The transaction that records it `executed` also asks for
+**one** Investigation of its Incident — the one its facts are declared to — so the timeline says
+whether the change helped. A Remedy on a Case that no Incident holds is followed up on that Case.
+
+- **The Investigator that proposed it runs it**, whether or not it is opted into Incidents: it
+  chose the command, and its earlier Finding is the "before" the new one is read against.
+- **Every control holds.** A switched-off Investigator or org records nothing; a spent daily
+  budget records the follow-up `skipped` with reason `budget`; it waits for the concurrency; and it
+  coalesces under the Investigator's minimum interval like a membership change — into a run of
+  the same Investigator on the same subject that has not started yet, or after the interval since
+  the last one began. Several Remedies executed close together are one follow-up.
+- **A failed Remedy is followed by nothing**, and a retried execution job never asks twice.
+- Its Finding goes outbound like any other Incident Finding (`finding`); it never decides whether
+  anyone is notified.
+
 ## Risk rules
 
 How many approvals a Remedy needs is set **once, when it is proposed**, from rules you write in a

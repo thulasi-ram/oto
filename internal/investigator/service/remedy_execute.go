@@ -36,6 +36,9 @@ package service
 //
 // ⛔ NOTHING RETRIES A FAILED REMEDY. `failed` is terminal and frozen (`remedies_frozen`); a
 // retry is a new Remedy and a new approval.
+//
+// ⭐ AN EXECUTED ONE IS FOLLOWED UP (§6, git-bug a53c8b0): the transaction that records it
+// `executed` also asks for one Investigation of its Incident (remedy_followup.go).
 
 import (
 	"context"
@@ -117,9 +120,14 @@ func (s *Service) ExecuteRemedy(ctx context.Context, scope db.TenantScope, remed
 		if cur.State != domain.RemedyExecuting {
 			return nil // the sweep recorded it meanwhile; its record stands.
 		}
-		_, err = s.moveRemedy(ctx, scope, cur, outcome.to, domain.SystemActor(), s.now(), outcome.failure,
+		moved, err := s.moveRemedy(ctx, scope, cur, outcome.to, domain.SystemActor(), s.now(), outcome.failure,
 			outcome.detail, time.Time{}, outcome.result)
-		return err
+		if err != nil {
+			return err
+		}
+		// ⭐ EXECUTED, AND ITS FOLLOW-UP ASKED FOR, IN THIS ONE TRANSACTION (ADR 0054 §6, git-bug
+		// a53c8b0). A failure raises none (remedy_followup.go).
+		return s.followUpExecutedRemedy(ctx, scope, moved)
 	})
 }
 

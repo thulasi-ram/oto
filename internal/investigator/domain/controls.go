@@ -126,15 +126,27 @@ const (
 	// window's run and fold this one into it. One run per window is held by
 	// `investigations_digest_window_uniq` instead.
 	TriggerDigestWindow Trigger = "digest_window"
+	// TriggerRemedyExecuted is "a Remedy is executed" (ADR 0054 §6, ADR 0053 §4; git-bug
+	// a53c8b0): the follow-up look that lets the timeline say whether the change helped,
+	// raised in the transaction that records the Remedy `executed` — never for one that
+	// failed. ⭐ IT COALESCES LIKE A MEMBERSHIP CHANGE. A run of the same Investigator on the
+	// same subject that is still `queued` has not started, so it will read the subject after
+	// the change — the follow-up is already in what it will see; and inside the interval since
+	// the last run began, the follow-up waits the rest of it, which also gives the change time
+	// to take effect. A Finding proposes up to three Remedies; executed close together they
+	// are one follow-up, not three.
+	TriggerRemedyExecuted Trigger = "remedy_executed"
 )
 
 // Automatic reports whether the trigger is one oto raised rather than a person.
 func (t Trigger) Automatic() bool { return t != TriggerHuman }
 
 // Coalesces reports whether the trigger is admitted under the Investigator's minimum
-// interval (Admit): a draw and a membership change. A human is not held to it, and a
-// digest window has its own one-run-per-window rule.
-func (t Trigger) Coalesces() bool { return t == TriggerDrawn || t == TriggerMembership }
+// interval (Admit): a draw, a membership change and an executed Remedy. A human is not
+// held to it, and a digest window has its own one-run-per-window rule.
+func (t Trigger) Coalesces() bool {
+	return t == TriggerDrawn || t == TriggerMembership || t == TriggerRemedyExecuted
+}
 
 // CoveredByIncident reports whether a trigger on a CASE is answered by the Incident
 // the Case is in rather than by a run of its own (ADR 0053 §4: "A Case already in an
@@ -184,13 +196,14 @@ func (a Admission) Coalesced() bool { return a.Onto != uuid.Nil }
 //     finds THAT run queued and coalesces into it, so a burst of churn is one
 //     follow-up, run once the interval is up — never dropped, never one per change.
 //   - Past the interval, or with none, it is a new run, now.
+//   - An executed Remedy is admitted exactly as a membership change (TriggerRemedyExecuted).
 //
 // The anchor is when the last run STARTED, not when it was asked for: a run that
 // waited on the concurrency for five minutes saw the subject as it was five minutes
 // later, and the interval is between the things the runs saw.
 func Admit(trigger Trigger, interval time.Duration, runs SubjectRuns, now time.Time) Admission {
 	switch trigger {
-	case TriggerMembership:
+	case TriggerMembership, TriggerRemedyExecuted:
 	case TriggerDrawn:
 		switch {
 		case runs.Queued != nil:

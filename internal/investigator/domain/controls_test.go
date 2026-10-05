@@ -195,3 +195,30 @@ func TestAnIncidentIsASubjectAndItsCurrentCasesAreItsMembers(t *testing.T) {
 		t.Fatalf("CurrentCases = %v, want only the Case still in it", got)
 	}
 }
+
+// TestAnExecutedRemedyIsAdmittedLikeAMembershipChange — git-bug a53c8b0: the follow-up an
+// executed Remedy raises coalesces into a queued run, waits out the interval since the last
+// run began, and is a run now past it; it is automatic, so a Case in an Incident is covered.
+func TestAnExecutedRemedyIsAdmittedLikeAMembershipChange(t *testing.T) {
+	interval := 10 * time.Minute
+	first := run(domain.StatusCompleted, t0, t0.Add(time.Minute))
+	queued := run(domain.StatusQueued, t0.Add(2*time.Minute), time.Time{})
+	for _, tc := range []struct {
+		runs domain.SubjectRuns
+		at   time.Duration
+	}{
+		{domain.SubjectRuns{Last: first}, 3 * time.Minute},
+		{domain.SubjectRuns{Queued: queued, Last: first}, 4 * time.Minute},
+		{domain.SubjectRuns{Last: first}, 12 * time.Minute},
+		{domain.SubjectRuns{}, 0},
+	} {
+		want := domain.Admit(domain.TriggerMembership, interval, tc.runs, t0.Add(tc.at))
+		if got := domain.Admit(domain.TriggerRemedyExecuted, interval, tc.runs, t0.Add(tc.at)); got != want {
+			t.Fatalf("at +%s: executed Remedy = %+v, membership change = %+v", tc.at, got, want)
+		}
+	}
+	if !domain.TriggerRemedyExecuted.Coalesces() || !domain.TriggerRemedyExecuted.Automatic() ||
+		!domain.CoveredByIncident(domain.TriggerRemedyExecuted, uuid.New()) {
+		t.Fatal("an executed Remedy's trigger is automatic and coalesces")
+	}
+}

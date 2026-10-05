@@ -122,6 +122,16 @@ A failed Remedy is **never retried automatically** — a retry is a new Remedy a
 An executed Remedy triggers a follow-up Investigation of its Incident, so the timeline shows whether
 it helped.
 
+As built (git-bug a53c8b0): the follow-up is asked for in the transaction that records the Remedy
+`executed`, so one execution is one follow-up and a redelivered execution job asks for none; a
+failed Remedy asks for none. The Investigator that proposed the Remedy runs it — the same author
+on both sides of the change — whether or not it is opted into Incidents, since that opt-in governs
+the Incident's own facts. "Its Incident" is the one its facts are declared to; a Remedy on a Case
+no Incident holds is followed up on that Case. ADR 0053 §6's controls hold: a switched-off
+Investigator or org is unsubscribed (no row, owner ruling O1), a spent budget is recorded
+`skipped`/`budget`, the concurrency makes it wait, and it coalesces under the minimum interval
+like a membership change, so several Remedies executed together are one follow-up.
+
 ## Consequences
 
 - oto's safety class changes by the order of magnitude verdict #23 warned of. A bug is now able to
