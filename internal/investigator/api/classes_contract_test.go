@@ -97,7 +97,7 @@ func TestAClassSetOtoCannotOfferAModelIsRefusedByName(t *testing.T) {
 			t.Parallel()
 			f, c := newClient(t)
 			resp := c.PUT(t, "/investigation-classes", tc.body).MustStatus(t, http.StatusUnprocessableEntity)
-			schema.Assert(t, "replaceInvestigationClasses", http.StatusUnprocessableEntity, resp.Body())
+			schema.AssertProblem(t, "replaceInvestigationClasses", http.StatusUnprocessableEntity, resp.Body())
 			if body := string(resp.Body()); !strings.Contains(body, tc.field) {
 				t.Fatalf("the 422 does not name %s: %s", tc.field, body)
 			}

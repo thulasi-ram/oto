@@ -79,6 +79,7 @@
       "investigator": "firstlook",
       "version": 2,
       "summary": "The checkout deploy at 17:35 doubled the error rate; the crash loop began two minutes later.",
+      "classification": "deploy-regression",
       "partial": false,
       "concluded_at": "2026-08-07T17:55:29Z"
     }
