@@ -8,9 +8,11 @@ package mcpclient
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -202,5 +204,41 @@ func TestAToolServerThatNeverAnswersIsBoundedByTheCallersDeadline(t *testing.T) 
 		if err == nil || time.Since(began) > time.Second {
 			t.Fatalf("%s: err = %v after %s", transport, err, time.Since(began))
 		}
+	}
+}
+
+// TestAnEndpointOffTheConfiguredOriginIsRefused — review A2: the SSE transport POSTs to
+// whatever its `endpoint` event names, resolved against the stream's URL. A stream that
+// names another host — over plaintext, here — gets no request at all, so the token goes
+// nowhere but the origin the operator configured.
+func TestAnEndpointOffTheConfiguredOriginIsRefused(t *testing.T) {
+	var hits atomic.Int32
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer elsewhere.Close()
+	stream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			hits.Add(1) // a POST back to the stream's own origin is not what this test scripts
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintf(w, "event: endpoint\ndata: %s/messages?session=1\n\n", elsewhere.URL)
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer stream.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := Dialer{HTTPClient: stream.Client()}.Connect(ctx, cfg(t, stream.URL+"/sse", domain.TransportSSE), token)
+	if errs.CodeOf(err) != "tool_server_endpoint_off_origin" {
+		t.Fatalf("err = %v, want tool_server_endpoint_off_origin", err)
+	}
+	if n := hits.Load(); n != 0 {
+		t.Fatalf("the off-origin endpoint was sent %d request(s); the token would have gone with them", n)
 	}
 }

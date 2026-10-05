@@ -13,6 +13,14 @@
 // ⛔ THE ACCESS TOKEN IS A HEADER THIS PACKAGE ADDS AND NOTHING ELSE SEES. It is set per
 // request by the round tripper below, which also refuses to follow a redirect — a
 // redirected request would carry the header to wherever the ToolServer pointed it.
+//
+// ⛔ AND IT GOES ONLY TO THE ORIGIN THE OPERATOR CONFIGURED (review A2). The SSE
+// transport POSTs to whatever URL the server's `endpoint` event names, resolved against
+// the stream's URL — any scheme, any host. A ToolServer (or anything that can speak on
+// its stream) could otherwise point oto's token at another host, or at plain http. The
+// round tripper refuses every request whose scheme or host is not the configured URL's,
+// before anything is sent: `tool_server_endpoint_off_origin`. This is the one check on
+// every session — an Investigation's read calls and a Remedy's write call alike.
 package mcpclient
 
 import (
@@ -22,6 +30,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync/atomic"
 
@@ -66,6 +75,11 @@ func (d Dialer) Connect(ctx context.Context, cfg domain.ToolServerConfig, token 
 	if err := domain.TokenNeedsHTTPS(cfg.URL, token != ""); err != nil {
 		return nil, err
 	}
+	origin, err := url.Parse(cfg.URL)
+	if err != nil || origin.Host == "" {
+		return nil, errs.Newf(errs.KindInternal, "tool_server_url_invalid",
+			"the ToolServer %s has a URL oto cannot parse", cfg.Name)
+	}
 	limit := d.MaxResponseBytes
 	if limit <= 0 {
 		limit = DefaultMaxResponseBytes
@@ -74,7 +88,7 @@ func (d Dialer) Connect(ctx context.Context, cfg domain.ToolServerConfig, token 
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	rt := &roundTripper{base: base, token: token, limit: limit}
+	rt := &roundTripper{base: base, token: token, limit: limit, scheme: origin.Scheme, host: hostPort(origin)}
 	hc := &http.Client{
 		Transport: rt,
 		Timeout:   d.HTTPClient.Timeout,
@@ -305,6 +319,13 @@ func render(res *mcp.CallToolResult) string {
 // for a log. A ToolServer's own JSON-RPC error IS quoted, clipped: it is what tells the
 // model its arguments were wrong. The service scrubs the token from all of it anyway.
 func mapErr(ctx context.Context, server string, rt *roundTripper, err error) error {
+	// First: a refused off-origin request can surface as anything — a broken stream, a
+	// timeout waiting for the answer it never got — and it is the reason.
+	if rt.offOrigin.Load() || errors.Is(err, errOffOrigin) {
+		return errs.UpstreamDown("tool_server_endpoint_off_origin",
+			fmt.Sprintf("the ToolServer %s told oto to send its requests to another origin than its configured URL; "+
+				"oto sends its access token nowhere else", server), errOffOrigin)
+	}
 	if ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return errs.Wrap(err, errs.KindUpstreamSlow, "tool_server_timeout",
 			fmt.Sprintf("the ToolServer %s did not answer in time", server))
@@ -336,16 +357,47 @@ func clip(s string, n int) string {
 	return s[:n] + "…"
 }
 
-// roundTripper adds the access token to every request, bounds every response body it
-// can, and remembers the last refusal so an auth failure is said as one.
+// roundTripper adds the access token to every request, refuses any request off the
+// configured origin, bounds every response body it can, and remembers the last refusal
+// so an auth failure is said as one.
 type roundTripper struct {
-	base       http.RoundTripper
-	token      string
-	limit      int64
-	lastStatus atomic.Int32
+	base  http.RoundTripper
+	token string
+	limit int64
+	// scheme and host are the configured URL's origin (host with its port, the default
+	// one filled in); no request leaves for any other.
+	scheme, host string
+	lastStatus   atomic.Int32
+	offOrigin    atomic.Bool
+}
+
+var errOffOrigin = errors.New("mcpclient: a request was addressed off the ToolServer's configured origin")
+
+// hostPort is a URL's host with its port, the scheme's default filled in, lowercased —
+// so `https://k8s.test` and `https://K8S.test:443` are one origin.
+func hostPort(u *url.URL) string {
+	port := u.Port()
+	if port == "" {
+		switch strings.ToLower(u.Scheme) {
+		case "https":
+			port = "443"
+		case "http":
+			port = "80"
+		}
+	}
+	return strings.ToLower(u.Hostname()) + ":" + port
 }
 
 func (rt *roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if !strings.EqualFold(req.URL.Scheme, rt.scheme) || hostPort(req.URL) != rt.host {
+		// ⛔ Refused, not sent without the header: a ToolServer that points oto elsewhere
+		// is not one oto keeps talking to.
+		rt.offOrigin.Store(true)
+		if req.Body != nil {
+			_ = req.Body.Close()
+		}
+		return nil, errOffOrigin
+	}
 	if rt.token != "" {
 		req = req.Clone(req.Context())
 		req.Header.Set("Authorization", "Bearer "+rt.token)
