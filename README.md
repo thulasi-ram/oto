@@ -256,8 +256,14 @@ a human does not get to overwrite what a signal said.
 
 ## What oto is not
 
-Not an incident manager, an on-call or paging system, a workflow engine, a rule editor, an
-AI investigator, or anything with a write path into your cluster.
+Not an incident manager, an on-call or paging system, a workflow engine, or a rule editor. Not an
+AI that decides who is told: an **Investigator** reads (oto's own history, and MCP ToolServers you
+configure), proposes, and never decides delivery — its Finding changes what people read, never
+whether they are told ([ADR 0053](docs/adr/0053-an-investigator-reads-proposes-and-never-decides-delivery.md),
+[setup](docs/setup/investigators.md)). And no write path into your cluster but one: a **Remedy** an
+Investigator proposes, executed once through **your** write ToolServer and only after two different
+holders of the approver grant (`oto grant remedy-approver`, host shell only) say yes
+([ADR 0054](docs/adr/0054-a-remedy-earns-the-write-path.md), [setup](docs/setup/remedies.md)).
 
 This is enforced rather than promised. `tools/lintvocab` fails CI on thirteen banned concept
 words and six forbidden column names, and `notification_policies` has a `ChannelIDs` column

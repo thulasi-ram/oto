@@ -96,7 +96,7 @@ which fields below you can rely on.
 | `alerts` | array | The Alerts the message is about; `[]` on a digest and on every Incident fact. |
 | `incident` | object, optional | Present on exactly the six Incident facts. See below. |
 | `group` | object, optional | The conversation a Case fact belongs to: title, receiver, labels, `state`, counts. Absent on a digest and on an Incident fact. |
-| `digest` | object, optional | A periodic summary: `count` and the half-open span `[covered_from, covered_to)`. |
+| `digest` | object, optional | A periodic summary: `count` and the half-open span `[covered_from, covered_to)`, and — when the policy names a digest Investigator whose run had ended with a Finding by the time the window closed — `finding`, in the same shape as `incident.finding` (`investigation_id`, `investigator`, `version`, `summary`, `classification`, `partial`, `concluded_at`). `finding` is **absent** for the built-in body. It is copied at the send and never amended: a digest never waits for a Finding and is never re-sent with a later one. |
 | `occurrence` | object, optional | The Case (one firing episode) a Case fact is about: `id`, `state`, `ack_state`, `started_at`, `ended_at`, … The key keeps its v1 spelling. |
 | `focus` | object, optional | The one Alert a Case fact is about, in `alerts[]` shape. |
 | `rule`, `rule_change` | object, optional | What the alerting rule said, and what changed in it. |
@@ -181,9 +181,12 @@ set **your operator wrote** (Settings → Classification, or `PUT /api/v1/invest
 it is unsure. oto ships **no** classes: until you write some, no Finding is classified and the key is
 absent. A Finding keeps the class it was given even if you later rename or remove that class.
 
-It travels outbound — as `incident.finding.classification` on every Incident fact, and as
+It travels outbound — as `incident.finding.classification` on every Incident fact, as
+`digest.finding.classification` on a digest that carried a Finding, and as
 `enrichments["investigator.<name>"].payload.classification` on a Case's facts once its Finding is
-published — so a receiver can route on it.
+published — so a receiver can route on it. Only the Finding and its classification go outbound; an
+Investigation's Steps (its transcript) stay in oto, readable through
+`GET /api/v1/investigations/{investigation_id}`.
 
 > ⚠️ **Paging on a classification is paging on a model's judgement.** A class is what a model
 > concluded from what it could read at `concluded_at`; it can be wrong, and `unclassified` means

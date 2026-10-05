@@ -33,7 +33,7 @@ For every alert that has ever fired, oto can show: when it first appeared, every
 | # | Ruling |
 |---|---|
 | R1 | Layout is `internal/<domain>/{api,service,repository,domain}`. Deviation from the literal `src/` is deliberate: `internal/` is compiler-enforced encapsulation. The innermost package is named `domain`, not `model`. |
-| R2 | `org_id` is on every tenant table from day one. **No RBAC, no roles, no SSO/OIDC in v1.** Auth is a session cookie (local password) or a bearer PAT. Every authenticated principal has full access to its own org. |
+| R2 | `org_id` is on every tenant table from day one. **No RBAC, no roles, no SSO/OIDC in v1.** Auth is a session cookie (local password) or a bearer PAT. Every authenticated principal has full access to its own org. ⚠️ *One exception (ADR 0054 §4, 2026-10-02): approving a Remedy needs the Remedy approval grant on its write ToolServer. It is the only permission oto has, it is given and taken only by `oto grant` / `oto revoke` from the host shell — never over HTTP — and it is a permission, never an obligation (H-1).* |
 | R3 | **Silences are a READ-ONLY mirror of Alertmanager silences in v1.** oto has NO write path into the cluster. The Slack "Silence" affordance is a **deep-link URL button** into the Alertmanager UI (zero API calls, zero state). Rationale: a silence write path is safety-critical — a bug suppresses a real incident. **R3 is an H-3 (safety) refusal, NOT an FR-1 (scope) refusal: it is *earnable*.** A future write path is "create upstream, then mirror" — never "create locally and reconcile"; the `silences` table is already keyed by `source_silence_id` to keep that door open. Do not confuse R3 with the permanent refusals in §I.1.1. |
 | R4 | ~~**No AI/LLM features in v1.**~~ ⛔ **SUPERSEDED 2026-10-02 by ADRs 0053 and 0054.** **A model never decides whether anyone is told.** An Investigator reads (oto's own history and operator-configured MCP ToolServers), classifies into the operator's own closed set, and proposes — Findings, Suggestions a human applies, and Remedies a human approves — asynchronously and off the notification path. Every turn and Tool call is a Step, every budget is enforced by oto's own loop and recorded when hit, and every Finding names the Investigator version that produced it. Models are reached through one port and one OpenAI-compatible adapter (`github.com/openai/openai-go`; base URL, model, sealed key; any other provider via the operator's gateway), with no agent framework; ToolServers through `github.com/modelcontextprotocol/go-sdk`. Determinism and auditability are still the positioning: delivery stays deterministic, and the model's work is a recorded, readable fact beside it. |
 | R5 | Exactly **two** channel providers ship in v1: `slack` (full) and `webhook` (trivial, generic JSON POST). The webhook provider exists to prove the abstraction holds and MUST NOT be given Slack-specific affordances. |
@@ -2185,6 +2185,16 @@ CREATE TABLE notification_policies (
   -- (00073, §B.8.2, ADR 0044) and sends nothing.
   count_min      INT,
   count_window_s INT,
+  -- 00098 (ADR 0053 §4, git-bug 3e96f5a). THE INVESTIGATOR THAT SUMMARISES THIS POLICY'S DIGEST
+  -- WINDOWS, or NULL — the default, a policy that did not ask. Its run is armed `DigestLead` ahead
+  -- of each window's close; if it has ended with a Finding when the window closes, the digest
+  -- carries it (`notifications.digest_finding`), and otherwise the digest goes out on time with the
+  -- built-in body. A run still `queued` when its window closes ends `skipped`/`window_closed`
+  -- (00102). It never decides WHETHER a digest is sent (ADR 0053 §2). Same-org only (composite FK
+  -- `policies_digest_investigator_fk` → `investigators (org_id, id)`, ON DELETE SET NULL of this
+  -- column alone); `policies_digest_investigator_ck` requires `digest_window_s`. A PATCH that clears
+  -- `digest_window_s` and does not mention this column clears it too.
+  digest_investigator_id UUID,
   -- no DEFAULT now() (§D conventions); `ConfigRepository.CreatePolicy`/`UpdatePolicy`/
   -- `SoftDeletePolicy` stamp them.
   created_at    TIMESTAMPTZ NOT NULL,
@@ -2194,17 +2204,18 @@ CREATE TABLE notification_policies (
   CONSTRAINT policies_name_ck     CHECK (length(btrim(name::text)) BETWEEN 1 AND 120),
   CONSTRAINT policies_prio_ck     CHECK (priority BETWEEN 0 AND 10000),
   CONSTRAINT policies_matchers_ck CHECK (jsonb_typeof(matchers) = 'array' AND jsonb_array_length(matchers) <= 32),
-  -- 00046: a SET, and bounded by the enum rather than by a round number. 20 is the
+  -- 00046: a SET, and bounded by the enum rather than by a round number. 27 is the
   -- size of the §H.6 Reason enum, so it is the most a set drawn from it can hold,
   -- and it is the same number the DTO tag and domain.MaxPolicyReasons carry. The
   -- ceiling moves with the enum: 00058 added `digest`, 00060 removed `storm`, 00067
-  -- removed `unacked_reminder`, 00069 removed `new_alerts` and `some_resolved`, and
-  -- 00084 added the five Incident facts. ⛔ IT DOES NOT CONSTRAIN MEMBERSHIP: every
+  -- removed `unacked_reminder`, 00069 removed `new_alerts` and `some_resolved`,
+  -- 00084 added the five Incident facts, 00095 added `finding` (21), and 00100 added
+  -- the six Remedy transitions (27, ADR 0054 §2). ⛔ IT DOES NOT CONSTRAIN MEMBERSHIP: every
   -- narrowing of the Reason vocabulary must strip the value from this column by hand.
   -- `oto_array_is_set` is the uniqueness half: the contract publishes uniqueItems
   -- on the RESPONSE, so a duplicate reaching this column comes back on a read as a
   -- row the generated frontend client refuses.
-  CONSTRAINT policies_reasons_ck  CHECK (cardinality(reasons) BETWEEN 1 AND 20
+  CONSTRAINT policies_reasons_ck  CHECK (cardinality(reasons) BETWEEN 1 AND 27
                                          AND array_position(reasons, NULL) IS NULL
                                          AND oto_array_is_set(reasons)),
   CONSTRAINT policies_chan_ck     CHECK (array_length(channel_ids, 1) BETWEEN 1 AND 16
@@ -2247,6 +2258,9 @@ CREATE TABLE notification_policies (
   -- produces a number that is about nothing. It applies to the COUNT only: a policy carrying no
   -- condition keeps every binding `policies_subjkinds_ck` admits, including the empty one.
   CONSTRAINT policies_count_subject_ck CHECK (count_min IS NULL OR cardinality(subject_kinds) = 1),
+  CONSTRAINT policies_digest_investigator_fk FOREIGN KEY (org_id, digest_investigator_id)
+    REFERENCES investigators (org_id, id) ON DELETE SET NULL (digest_investigator_id),
+  CONSTRAINT policies_digest_investigator_ck CHECK (digest_investigator_id IS NULL OR digest_window_s IS NOT NULL),
   CONSTRAINT policies_time_ck     CHECK (updated_at >= created_at)
 );
 CREATE INDEX policies_eval_idx ON notification_policies (org_id, priority)
@@ -2361,6 +2375,15 @@ CREATE TABLE notifications (
   -- the other is a position (git-bug 893cee4).
   digest_covered_from TIMESTAMPTZ,
   digest_covered_to   TIMESTAMPTZ,
+  -- 00098 (ADR 0053 §4). The Investigator's Finding this digest carried as its body, COPIED when
+  -- the digest was sent: investigation id, Investigator name and version, the Finding, its class,
+  -- whether it was partial, and when it was concluded. NULL is the built-in body. A digest never
+  -- waits for a Finding and is never amended with a later one; the webhook envelope carries it as
+  -- `digest.finding`.
+  digest_finding  JSONB,
+  -- 00100 (ADR 0054 §2). The Remedy transition a `remedy_*` Incident fact declares, COPIED in the
+  -- transaction that made it. Set exactly on the six `remedy_*` reasons; never re-read.
+  remedy          JSONB,
   reason          TEXT        NOT NULL,            -- §H.6 Reason enum
   policy_id       UUID        REFERENCES notification_policies(id) ON DELETE SET NULL,
   state_version   INT         NOT NULL,
@@ -2394,8 +2417,10 @@ CREATE TABLE notifications (
   CONSTRAINT notifications_reason_ck CHECK (reason IN
     ('fired','all_resolved','repeat','suppressed','unsuppressed','expired','refired',
      'acked','unacked','snoozed','unsnoozed','enriched','rule_changed','comment','digest',
-     'drawn','case_added','case_removed','quiet','active_again')),
-                                                   -- TWENTY reasons: 00018's order, `digest`
+     'drawn','case_added','case_removed','quiet','active_again','finding',
+     'remedy_proposed','remedy_approved','remedy_declined','remedy_expired','remedy_executed',
+     'remedy_failed')),
+                                                   -- TWENTY-SEVEN reasons: 00018's order, `digest`
                                                    -- appended by 00058, `storm` DELETED by 00060,
                                                    -- `unacked_reminder` DELETED by 00067,
                                                    -- `new_alerts` and `some_resolved` DELETED by
@@ -2403,10 +2428,21 @@ CREATE TABLE notifications (
                                                    -- `drawn`, `case_added`, `case_removed`,
                                                    -- `quiet`, `active_again` — appended by 00084.
                                                    -- None of the five is a resolve, a close or a
-                                                   -- status (ADR 0052 §5).
+                                                   -- status (ADR 0052 §5). `finding` appended by
+                                                   -- 00095 (an Investigation of the Incident
+                                                   -- reached a new Finding; sent only to policies
+                                                   -- whose `reasons` name it — ADR 0053 §2), and
+                                                   -- the six Remedy transitions by 00100 (ADR
+                                                   -- 0054 §2).
                                                    -- `refired` is RETIRED — nothing writes it since
                                                    -- ADR 0040, the CHECK still admits it, and rows
                                                    -- carrying it still render.
+  CONSTRAINT notifications_digest_finding_ck CHECK (
+    digest_finding IS NULL OR (subject_kind = 'digest' AND jsonb_typeof(digest_finding) = 'object')),
+  CONSTRAINT notifications_remedy_ck CHECK (
+    (reason IN ('remedy_proposed','remedy_approved','remedy_declined','remedy_expired',
+                'remedy_executed','remedy_failed')) = (remedy IS NOT NULL)
+    AND (remedy IS NULL OR (subject_kind = 'incident' AND jsonb_typeof(remedy) = 'object'))),
   CONSTRAINT notifications_sver_ck   CHECK (state_version >= 1),
   CONSTRAINT notifications_idem_ck   CHECK (idempotency_key ~ '^[0-9a-f]{64}$'),
   CONSTRAINT notifications_supp_ck   CHECK ((status = 'suppressed') = (suppressed_reason IS NOT NULL)),
@@ -4239,6 +4275,11 @@ The response **body is ignored by Alertmanager on 2xx**. There is no back-channe
 | `maintenance` | 1 | `retention.prune` | `{}` | Periodic, 3600 s |
 | `maintenance` | 1 | `stats.rollup` | `{day}` | Periodic, 900 s |
 | `maintenance` | 1 | `cache.expire` | `{}` | Periodic, 600 s |
+| `investigate` | 8 | `investigations.run` | `{org_id, investigation_id}` | ADR 0053 §3: one Investigation, enqueued when it is asked for (a human, an Incident trigger, a digest window). A dedicated queue, so a minutes-long run never holds an `enrich` slot; the org's `investigation_concurrency` narrows each tenant's share (a run past it waits `queued`, its job snoozed). Width `jobs.queue_investigate`. |
+| `investigate` | 8 | `remedies.execute` | `{org_id, remedy_id}` | ADR 0054 §5: one approved Remedy's single write call. At most once, by state: a retry before the claim may claim, one after it does nothing, and a failed Remedy is never retried. |
+| `lifecycle` | 4 | `investigations.incident` | `{org_id, incident_id}` | One per `drawn` / `case_added` / `case_removed` Incident fact, `PriorityBackground`, unique by args while available or scheduled — so a Correlator storm never queues ahead of `notify.digest`. Reads current state; Investigators opted in with `investigates_incidents` only. |
+| `lifecycle` | 4 | `investigations.digest` | `{}` | Periodic, 60 s, `PriorityBackground`: arms each digest window's run `DigestLead` (the Investigator's wall budget + 2 min, capped at half the window) before the window closes. A run still `queued` at the close ends `skipped`/`window_closed`. |
+| `lifecycle` | 4 | `remedies.sweep` | `{}` | Periodic, 60 s, `PriorityBackground`: records what the clock decided about Remedies: `expired`, or `failed` with `outcome_unknown` for one left `executing` past its deadline (ADR 0054 §2). |
 
 ⛔ **`group.close` WAS A ROW IN THIS TABLE — `lifecycle`, 4 workers, `{}`, periodic 60 s — AND IT IS
 DELETED, KIND AND SCHEDULE TOGETHER** (git-bug `7570090`, migration `00069`). It swept `alert_groups`
@@ -5097,7 +5138,7 @@ Capability negotiation (in `DispatchService`, **never** in a provider):
 | `authz` | **DEFERRED-POST-V1** | RBAC, roles, SSO/OIDC (R2). Access control is not incident management. ⚠️ *Except one grant: approval of a Remedy on a named ToolServer (ADR 0054 §4), the first and only piece of this module and a prerequisite of Remedies. A permission, never an obligation (H-1).* |
 | `analytics` | **DEFERRED-POST-V1** | Signal-duration and firing-frequency distributions beyond `stats`. **Per-person and time-to-human-action metrics are permanently out** (R8, SCOPE-BOUNDARY §4.14). |
 | *(extra channel providers)* | **DEFERRED-POST-V1** | PagerDuty, MS Teams, email. A destination for a fact about a signal is IN by FR-1; R5 defers the impl, it does not exclude it. **oto pages nobody; oto tells the thing that pages.** |
-| `investigator` | **ADRs 0053, 0054** | Investigators, Investigations, Steps, Findings, Classifications and Suggestions (0053), and Remedies once the `authz` approval grant exists (0054). Asynchronous, in the enrichment phase; a Finding is published as an Enrichment and is never an input to delivery (R4). ⛔ *Was the `(AI / LLM)` row, DEFERRED-POST-V1 under the old R4, until 2026-10-02.* |
+| `investigator` | **ADRs 0053, 0054** | Investigators, Investigations, Steps, Findings, Classifications and Suggestions (0053), and Remedies, approved under the per-ToolServer approver grant `oto grant` issues from the host shell (0054). Asynchronous, on its own `investigate` queue (§G.3), off the notification path. A Case's or Incident's Finding is published as an Enrichment; a digest window's stays on its run and is copied onto the digest it was ready for (`notifications.digest_finding`, git-bug 3e96f5a). A Finding is never an input to delivery (R4). ⛔ *Was the `(AI / LLM)` row, DEFERRED-POST-V1 under the old R4, until 2026-10-02.* |
 
 ### I.1.1 PERMANENTLY OUT OF SCOPE
 

@@ -104,8 +104,8 @@ Permanently out of scope, with hand-offs: SPEC §I.1.1.
 | **ChannelThread** | The binding of a **Conversation** to `(slack_channel_id, root_ts)`. |
 | **Enrichment** | One typed, provenanced result from one named, versioned `Enricher`. |
 | **Investigator** | A **named, versioned configuration of a model-driven investigation**: which model, which prompt, which Tools it may call, and its budgets. The AI-for-SRE category word "agent" may describe it in marketing, never name it. *(ADR 0053, accepted 2026-10-02.)* _Avoid_: agent (that is `vmagent` in a VictoriaMetrics stack, and the in-cluster daemon ADR 0016 rejected), bot, assistant. |
-| **ToolServer** | One **configured MCP server** an Investigator may read through. It is where trust stops: oto holds no cluster credential, the ToolServer's operator does. *(ADR 0053, accepted 2026-10-02.)* _Avoid_: connection (that is a channel's org-wide setup, ADR 0047). |
-| **Tool** | One **capability a ToolServer exposes** that an Investigator is allowed to call. oto's own history — prior Findings, a Case's timeline, the rule as it stood at fire time — is offered as built-in Tools on the same footing. A Tool an Investigator holds while investigating is read-only; a write Tool is called only to execute an approved Remedy. *(ADR 0053, accepted 2026-10-02.)* _Avoid_: action (that is the Slack button row). |
+| **ToolServer** | One **configured MCP server** an Investigator may read through. It is where trust stops: oto holds no cluster credential, the ToolServer's operator does — oto keeps only the ToolServer's own access token, sealed. Its `access` is **declared** `read` or `write`: only a `read` ToolServer's Tools may be on an Investigator's allowlist, and a `write` one is never offered to a model (it is where a Remedy's write Tool is bound). Reached over HTTP only — oto starts no process. *(ADR 0053, accepted 2026-10-02; git-bug 2e9a086.)* _Avoid_: connection (that is a channel's org-wide setup, ADR 0047). |
+| **Tool** | One **capability a ToolServer exposes** that an Investigator is allowed to call, named `<toolserver>__<tool>` on an allowlist and to a model. oto's own history — prior Findings, a Case's timeline, the rule as it stood at fire time — is offered as built-in Tools on the same footing. A Tool an Investigator holds while investigating is read-only; a write Tool is called only to execute an approved Remedy. *(ADR 0053, accepted 2026-10-02.)* _Avoid_: action (that is the Slack button row). |
 | **Investigation** | **One run of one Investigator against one subject** — a Case, an Incident, a digest or a policy — frozen once it ends. A subject may have many over time; the latest one's Finding is the one shown. *(ADR 0053, accepted 2026-10-02.)* _Avoid_: analysis, triage (banned), probe (a source health check). |
 | **Step** | One **immutable entry in an Investigation's transcript**: a model turn, a Tool call, or a Tool's result. If you would ever `UPDATE` it, it is not a Step. *(ADR 0053, accepted 2026-10-02.)* _Avoid_: event (unqualified is banned), observation (that is ingestion's). |
 | **Finding** | **What an Investigation concluded** about its subject — a summary, a classification, and the Steps it rests on. A snapshot of what was seen at that time, never a live view, and never an input to whether a notification is sent. It may cite other Cases; citing is not drawing an Incident. *(ADR 0053, accepted 2026-10-02.)* _Avoid_: verdict, evidence (both are drills'), insight, recommendation. |
@@ -223,7 +223,7 @@ Rules you must not get wrong:
 | `app` | WIRING | The composition root. Constructs every concrete, satisfies every port, registers the workers and routes. THE one place allowed to know every module, and deliberately outside every cross-domain rule. Not a domain. |
 | `incidents` | ADR 0052 | Incidents drawn over Cases by a Correlator or a human; **active**/**quiet** read off member Cases; declared outbound as a notification, facts only. Replaces the deferred `correlation` row. |
 | `investigator` | ADR 0053, 0054 | Investigators, Investigations, Steps and Findings over oto's own history and operator-configured ToolServers, asynchronously and off the notification path; Remedies once the `authz` grant exists. Models are reached through one port and one OpenAI-compatible adapter; ToolServers through the official MCP client; oto's own loop records Steps and enforces budgets. ⛔ *"anything AI" was DEFERRED-POST-V1 in the row below until 2026-10-02, when ADRs 0053 and 0054 were accepted.* |
-| `k8scontext`, `changefeed`, `views`, `audit` (config changes only), `authz` (except the one Remedy approval grant ADR 0054 §4 needs), extra channel providers | DEFERRED-POST-V1 | Do not build. Do not stub beyond the ports that already exist. ⛔ ~~anything AI~~ — moved to `investigator` above. |
+| `k8scontext`, `changefeed`, `views`, `audit` (config changes only), `authz` (except the one Remedy approval grant ADR 0054 §4 needs — `remedy_approver_grants`, read through `identity`, written only by `oto grant` / `oto revoke` from the host shell, never by a route), extra channel providers | DEFERRED-POST-V1 | Do not build. Do not stub beyond the ports that already exist. ⛔ ~~anything AI~~ — moved to `investigator` above. |
 | Incident **response** (status, lead, severity, comms, write-up), `oncall`, assignment, multi-stage escalation, paging, status pages, postmortems, SLA/MTTA, manual resolve/merge/close, watchers | **PERMANENTLY OUT** | There is no version of oto containing these. Adding one needs an ADR arguing **against FR-1 by name**. See SPEC §I.1.1 for the hand-offs. |
 
 ### Dependency direction
@@ -290,6 +290,7 @@ No import exists in either direction, and nothing enforces the arrow:
 | `rules/service.RuleLookup` | `sources/service.ResolveRule` | adapters.go |
 | `silences/service.SilenceSource`, `silences/api.SourceBaseURLs` | `sources` | `app/silencesource.go` |
 | `alerts/service.CaseOpenings` | the outbox (`incidents.correlate`) — never `incidents` itself | `app.caseOpenings` (adapters.go) |
+| `incidents/service.Announcer` | the outbox (`notify.incident`, and `investigations.incident` for a draw or a membership change) — never `notification` or `investigator` itself | `app.incidentAnnouncers` (adapters.go) |
 
 **3. River job enqueues — a STRING in `internal/platform/jobs/kinds.go`, not a call.** The
 producer never names the consumer, so there is nothing to enforce at all:
@@ -299,6 +300,8 @@ producer never names the consumer, so there is nothing to enforce at all:
 | `alerts`, `ingestion`, `enrichment` | `notify.evaluate` | `notification` |
 | `alerts`, `enrichment` | `enrich.run` | `enrichment` |
 | `alerts` (through `CaseOpenings`) | `incidents.correlate` — on `lifecycle`, never `notify` | `incidents` (the Correlators) |
+| `incidents` (through `Announcer`) | `investigations.incident` — on `lifecycle`, never `notify` or `investigate`; not on quiet (ADR 0053 §4) | `investigator` |
+| `investigator` (through `FindingDeclarer`) | `notify.incident` with Reason `finding` — an Incident's new Finding, declared, never a decision about delivery | `notification` |
 
 **4. Table names in SQL — no Go edge whatsoever.** `drill` reads five other modules' tables by
 name (see its row above); `notification/repository/snapshot.go` joins `alert_sources` to learn a
