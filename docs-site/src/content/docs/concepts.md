@@ -424,14 +424,21 @@ In parallel, off the same transactions, never blocking a delivery:
   positive proof of non-suppression. The asymmetry is deliberate.
 - **Losing sight of an alert is not it resolving.** The reaper writing `expired` is blocked while the
   source's health is not `healthy`.
+- **An expiry says which one it was** (ADR 0056). `timeout`: upstream's `endsAt` plus
+  `resolve_grace` passed. `silent`: a healthy source said nothing about the case for longer than its
+  `max_silence_s` (a day unless set). `source_removed`: no live source feeds the case's cluster any
+  more — deleting one HA replica while another still feeds the cluster ends nothing. None of them is
+  a resolution, and none is a person's decision.
 
 ### AlertCase
 
 ```
      open ──────────────▶ closed         (once, and only this way)
        │                    │
-       │                    ├─ resolve_reason = 'upstream' → reads as resolved
-       │                    └─ resolve_reason = 'timeout'  → reads as expired
+       │                    ├─ resolve_reason = 'upstream'       → reads as resolved
+       │                    └─ resolve_reason = 'timeout'        → reads as expired
+       │                       resolve_reason = 'silent'         → reads as expired
+       │                       resolve_reason = 'source_removed' → reads as expired
        │
        └─ suppression_reason set / cleared while open
           (mirrors Alertmanager's four reasons; NOT snooze)
