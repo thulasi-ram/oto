@@ -15,6 +15,7 @@ import (
 
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
+	"github.com/thulasiram/oto/internal/platform/jobs"
 )
 
 type linkCodeCall struct {
@@ -140,5 +141,67 @@ func TestACodeOtoCouldNotIssueIsNeverShown(t *testing.T) {
 	}
 	if strings.Contains(notice.only(), "``") {
 		t.Fatalf("an empty code was shown: %q", notice.sent)
+	}
+}
+
+// ⭐ OWNER RULING F7 (2026-10-05): an unlinked member's Ack or Un-ack is recorded against the Slack
+// member as ever, and THEN answered with a link code — so an org with no Remedy in any Slack thread
+// can still link its people.
+func TestAnUnlinkedAckOrUnackIsRecordedAndThenAnsweredWithACode(t *testing.T) {
+	for name, actor := range map[string]SlackActor{
+		"a shadow member": {UserID: uuid.New(), Label: "@ram", Shadow: true},
+		"never linked":    {},
+	} {
+		for _, args := range []jobs.SlackInteractionArgs{ackArgs(), unackArgs()} {
+			codes := &fakeLinkCodes{code: SlackLinkCode{Code: "ABCDE-FGHJK", ExpiresAt: linkCodeNow.Add(10 * time.Minute)}}
+			cases, notice := &fakeCases{live: map[uuid.UUID]uuid.UUID{caseOne: orgAlpha}}, &fakeNotice{}
+			s := newServiceWith(t, InteractionOptions{
+				Conversations: alphaConversations(), Actors: &fakeActors{actor: actor}, Cases: cases,
+				LinkCodes: codes, Notice: notice,
+			})
+			if err := s.Apply(context.Background(), args); err != nil {
+				t.Fatalf("%s %s: %v", name, args.ActionID, err)
+			}
+			if len(cases.calls) != 1 || cases.calls[0].actorKind != "slack" {
+				t.Fatalf("%s %s: the press was not recorded against the Slack member: %+v", name, args.ActionID, cases.calls)
+			}
+			if len(codes.calls) != 1 || codes.calls[0].member != "U0123456789" || codes.calls[0].scope.OrgID() != orgAlpha {
+				t.Fatalf("%s %s: issued %+v", name, args.ActionID, codes.calls)
+			}
+			got := notice.only()
+			for _, want := range []string{"oto recorded your", "`ABCDE-FGHJK`", "within 10 minutes", "Account",
+				"credential", "`U0123456789`", "`T9TK3CUKW`"} {
+				if !strings.Contains(got, want) {
+					t.Errorf("%s %s: the reply %q does not say %q", name, args.ActionID, got, want)
+				}
+			}
+		}
+	}
+}
+
+// A linked member's ack still says nothing (the card is the feedback), and a code oto could not
+// issue never costs — or retries — the ack it follows.
+func TestAnAckIssuesNoCodeToALinkedMemberAndNeverFailsForOne(t *testing.T) {
+	codes, cases, notice := &fakeLinkCodes{code: SlackLinkCode{Code: "ABCDE-FGHJK"}}, &fakeCases{live: map[uuid.UUID]uuid.UUID{caseOne: orgAlpha}}, &fakeNotice{}
+	s := newServiceWith(t, InteractionOptions{
+		Conversations: alphaConversations(), Actors: linked(), Cases: cases, LinkCodes: codes, Notice: notice,
+	})
+	if err := s.Apply(context.Background(), ackArgs()); err != nil {
+		t.Fatal(err)
+	}
+	if len(codes.calls) != 0 || len(notice.sent) != 0 {
+		t.Fatalf("a linked member's ack issued %+v and said %q", codes.calls, notice.sent)
+	}
+	for _, err := range []error{errors.New("connection reset"), errs.Conflict("slack_identity_linked_elsewhere", "held")} {
+		codes, cases, notice := &fakeLinkCodes{code: SlackLinkCode{Code: "ABCDE-FGHJK"}, err: err}, &fakeCases{live: map[uuid.UUID]uuid.UUID{caseOne: orgAlpha}}, &fakeNotice{}
+		s := newServiceWith(t, InteractionOptions{
+			Conversations: alphaConversations(), Actors: &fakeActors{}, Cases: cases, LinkCodes: codes, Notice: notice,
+		})
+		if aerr := s.Apply(context.Background(), ackArgs()); aerr != nil {
+			t.Fatalf("%v: a code oto could not issue failed the ack: %v", err, aerr)
+		}
+		if len(cases.calls) != 1 || len(notice.sent) != 0 {
+			t.Fatalf("%v: recorded %+v, said %q", err, cases.calls, notice.sent)
+		}
 	}
 }

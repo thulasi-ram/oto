@@ -217,3 +217,84 @@ func TestARemedyReplySaysItsApprovalsSoFarAndWhatSetItsTier(t *testing.T) {
 		}
 	}
 }
+
+// ⛔⛔ REVIEW E1: WHOLENESS IS BYTES OF THE ESCAPED TEXT, NOT RUNES OF THE RAW ARGUMENTS. Under
+// maxRemedyArgumentsRunes runes, `&` (five bytes escaped) or `é` (two) still overran the section,
+// whose tail — the target and the tier — was cut while Approve stayed. Now such a card offers
+// Decline only, says where it is approved, and still shows what it is made to.
+func TestARemedyWhoseEscapedArgumentsOverrunTheSectionIsNotApprovedFromIt(t *testing.T) {
+	t.Parallel()
+	for name, unit := range map[string]string{"ampersands": "&", "non-ASCII": "é", "angle brackets": "<>"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			v := proposedRemedyView()
+			v.Incident.Remedy.Arguments = `{"command":"` + strings.Repeat(unit, 1400/len([]rune(unit))) + `"}`
+			body, buttons := remedyReply(t, v)
+			if len(buttons) != 1 || buttons[0].ActionID != domain.ActionRemedyDecline {
+				t.Fatalf("a Remedy whose escaped arguments overrun the section offers %+v; only Decline", buttons)
+			}
+			for _, want := range []string{"so it is approved on the Remedy's page", "on Deployment checkout/api", "*Needs 1 approval*"} {
+				if !strings.Contains(body, want) {
+					t.Errorf("the reply lost %q:\n%s", want, body)
+				}
+			}
+			if strings.Contains(body, "&am…") || strings.Contains(body, "&a…") || strings.Contains(body, "&…") {
+				t.Errorf("the arguments were cut inside an escape:\n%s", body)
+			}
+		})
+	}
+}
+
+// A long description is not what an approval approves: the section may cut it, and Approve stays.
+func TestALongDescriptionUnderShortArgumentsKeepsApprove(t *testing.T) {
+	t.Parallel()
+	v := proposedRemedyView()
+	v.Incident.Remedy.Description = strings.Repeat("the reverted config & its <rollout> é ", 200)
+	_, buttons := remedyReply(t, v)
+	if len(buttons) != 2 || buttons[0].ActionID != domain.ActionRemedyApprove {
+		t.Fatalf("short arguments under a long description offer %+v; Approve then Decline", buttons)
+	}
+}
+
+// ⭐ THE BOUNDARY (review E1), golden on both sides: the largest `&<é>`-heavy arguments the card
+// still shows whole — every escaped byte, then the target and the tier — offer Approve; one unit
+// more and the card cuts them, says so, and offers Decline only.
+func TestGoldenARemedyAtTheSectionBoundaryIsApprovedOnlyWhileItsEscapedArgumentsFit(t *testing.T) {
+	t.Parallel()
+	const unit = "&<é>" // 4 runes, 15 bytes once escaped
+	escaped := func(n int) string { return strings.Repeat("&amp;&lt;é&gt;", n) }
+	withArgs := func(n int) *domain.NotificationView {
+		v := proposedRemedyView()
+		v.Incident.Remedy.Arguments = `{"command":"` + strings.Repeat(unit, n) + `"}`
+		return v
+	}
+	first := -1
+	for n := 100; n < 300; n++ {
+		if _, buttons := remedyReply(t, withArgs(n)); len(buttons) == 1 {
+			first = n
+			break
+		}
+	}
+	if first <= 100 {
+		t.Fatalf("no boundary found between 100 and 300 units (first cut at %d)", first)
+	}
+
+	body, buttons := remedyReply(t, withArgs(first-1))
+	if len(buttons) != 2 {
+		t.Fatalf("the last whole card offers %+v; Approve then Decline", buttons)
+	}
+	if !strings.Contains(body, escaped(first-1)) || !strings.Contains(body, "on Deployment checkout/api") ||
+		!strings.Contains(body, "*Needs 1 approval*") || strings.Contains(body, "cut here") {
+		t.Fatalf("the card offering Approve did not show every escaped byte, the target and the tier:\n%s", body)
+	}
+	golden(t, "incident_reply_remedy_proposed_args_at_section_boundary.golden.json",
+		renderView(t, withArgs(first-1), domain.ModeThreadReply).Payload)
+
+	body, _ = remedyReply(t, withArgs(first))
+	if strings.Contains(body, escaped(first)) || !strings.Contains(body, "so it is approved on the Remedy's page") ||
+		!strings.Contains(body, "on Deployment checkout/api") {
+		t.Fatalf("one unit past the boundary the card does not cut, say so, and keep the target:\n%s", body)
+	}
+	golden(t, "incident_reply_remedy_proposed_args_past_section_boundary.golden.json",
+		renderView(t, withArgs(first), domain.ModeThreadReply).Payload)
+}

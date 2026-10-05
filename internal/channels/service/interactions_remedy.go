@@ -208,6 +208,62 @@ func (s *InteractionService) offerLinkCode(
 	return nil
 }
 
+// offerLinkCodeAfterAck answers an UNLINKED member's Ack or Un-ack press — already applied
+// against the Slack member, or refused as one that applied to nothing — with a link code, so an org whose Slack threads carry no Remedy can
+// still link its people (owner ruling F7, 2026-10-05; git-bug a556a5c). Without it the only door
+// to a link was a Remedy's button.
+//
+// ⛔ IT NEVER COSTS THE ACK AND NEVER RETRIES IT. The press is decided before this runs, so a
+// code oto could not issue — for any reason, typed or not — is logged and the press says nothing,
+// exactly as a successful press always has. Returning the error would re-run the acknowledgement
+// to redeliver a code. No port, nothing said: a deployment that cannot link stays silent.
+//
+// ⭐ A CODE PER PRESS REPLACES THE LAST ONE (`IssueSlackLinkCode`: one live code per member), so a
+// member who acks forty Cases holds one live code, not forty.
+func (s *InteractionService) offerLinkCodeAfterAck(
+	ctx context.Context, logger *slog.Logger, scope db.TenantScope, args jobs.SlackInteractionArgs, kind string,
+) {
+	if kind != "slack" || s.linkCodes == nil {
+		return
+	}
+	code, err := s.linkCodes.IssueSlackLinkCode(ctx, scope, args.TeamID, args.SlackUserID)
+	if err != nil {
+		logger.Info("channels: no Slack link code was issued after an acknowledgement",
+			slog.String("refusal", errs.CodeOf(err)))
+		return
+	}
+	if code.Code == "" {
+		return
+	}
+	// ⛔ The code is not logged.
+	logger.Info("channels: answered an unlinked acknowledgement with a link code")
+	s.tell(ctx, args, unlinkedAckText(args, code, code.ExpiresAt.Sub(s.clk.Now())))
+}
+
+// unlinkedAckText is the reply to an unlinked member's Ack or Un-ack: what oto recorded, as whom,
+// and how to make the next press count as their oto account — with the same credential warning a
+// Remedy press's code carries.
+func unlinkedAckText(args jobs.SlackInteractionArgs, code SlackLinkCode, life time.Duration) string {
+	what := "acknowledgement"
+	if args.ActionID == ActionUnacknowledge {
+		what = "withdrawal of the acknowledgement"
+	}
+	return "oto recorded your " + what + " as Slack member " + noticeCode(args.SlackUserID) + " in workspace " +
+		noticeCode(args.TeamID) + ", which is not linked to an oto account. " + linkCodeInstructions(code, life)
+}
+
+// linkCodeInstructions is how to use a code, said the same way after any press that issued one.
+func linkCodeInstructions(code SlackLinkCode, life time.Duration) string {
+	minutes := int(math.Round(life.Minutes()))
+	if minutes < 1 {
+		minutes = 1
+	}
+	return "To link it, sign in to oto, open *Account* from your menu and enter " + noticeCode(code.Code) +
+		" within " + strconv.Itoa(minutes) + " " + plural(minutes, "minute", "minutes") +
+		"; it works once. ⚠️ This code is a credential: whoever enters it in their own oto session makes your " +
+		"Slack clicks count as theirs, so never share it."
+}
+
 // unlinkedRemedyText is the reply to a press by a Slack member who is not linked to an oto user.
 // With a code it says how to link — sign in, Account, enter the code — and that the code is a
 // credential; without one it says how to decide the Remedy in oto instead. ⭐ IT NAMES THE MEMBER
@@ -221,14 +277,7 @@ func unlinkedRemedyText(args jobs.SlackInteractionArgs, code SlackLinkCode, life
 		return head + "oto could not give you a link code just now — press the button again for one, " +
 			"or open the Remedy in oto and decide it there."
 	}
-	minutes := int(math.Round(life.Minutes()))
-	if minutes < 1 {
-		minutes = 1
-	}
-	return head + "To link it, sign in to oto, open *Account* from your menu and enter " + noticeCode(code.Code) +
-		" within " + strconv.Itoa(minutes) + " " + plural(minutes, "minute", "minutes") +
-		"; it works once. ⚠️ This code is a credential: whoever enters it in their own oto session makes your " +
-		"Slack clicks count as theirs, so never share it. Or open the Remedy in oto and decide it there."
+	return head + linkCodeInstructions(code, life) + " Or open the Remedy in oto and decide it there."
 }
 
 // partialApprovalText tells an approver their approval is recorded and the Remedy still waits.
@@ -259,7 +308,10 @@ func remedyRefusalText(err error) string {
 		return "The oto account your Slack account is linked to is disabled, so oto records no decision by it."
 	}
 	if e, ok := errs.As(err); ok && strings.TrimSpace(e.Message) != "" {
-		return sentenceCase(e.Message)
+		// ⛔ ESCAPED (review E5): a refusal's message can carry an operator-written name — a
+		// ToolServer's, in `remedy_tool_unavailable` — and this is the one sentence here that is
+		// not oto's own words.
+		return mrkdwnText.Replace(sentenceCase(e.Message))
 	}
 	return "oto could not record that decision. Open the Remedy in oto to see why."
 }

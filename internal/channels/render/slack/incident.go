@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -481,68 +482,137 @@ func incidentRemedy(reason string, iv domain.IncidentView) (body, sentence strin
 	if r == nil {
 		return remedyEmoji + " *Remedy " + escape(verb) + "*", sentence
 	}
-	var b strings.Builder
-	b.WriteString(remedyEmoji + " *Remedy " + escape(verb) + "*")
 	if r.ActorLabel != "" {
-		b.WriteString(" by " + escape(r.ActorLabel))
 		sentence += " by " + r.ActorLabel
 	}
+	return remedyCard(reason, iv).body, sentence
+}
+
+// remedyCardText is a Remedy reply's body and whether a reader of it saw the whole command.
+type remedyCardText struct {
+	body string
+	// whole: the reply quotes EVERY byte of the arguments, and `truncateSection` keeps all of
+	// them and the target and tier lines after them. The one predicate both the "cut here" note
+	// and the Approve button read (git-bug a556a5c, review E1).
+	whole bool
+}
+
+// remedyCard builds a Remedy reply (see `incidentRemedy`) and decides whether it is whole.
+//
+// ⛔⛔ WHOLENESS IS MEASURED IN BYTES, AFTER ESCAPING, AGAINST WHAT THE SECTION KEEPS (review
+// E1). It used to be "the arguments are under maxRemedyArgumentsRunes RUNES", and the section
+// is then cut at maxSectionText BYTES of the ESCAPED text: `&` is five bytes once escaped, `<`
+// and `>` four, a non-ASCII rune two to four. About 1,400 runes of `&` lost their tail — and
+// the target and tier after it — while Approve stayed on the card, and the adapter passes the
+// stored hash, so this renderer is the only thing that stops an approval of a command nobody
+// saw. Now the reply up to and including the tier line must fit `sectionKeeps`; when it does
+// not, the arguments are cut HERE (after escaping, never inside an `&amp;`), the note says the
+// Remedy is approved on its page, and `remedyActions` offers Decline only.
+func remedyCard(reason string, iv domain.IncidentView) remedyCardText {
+	r := iv.Remedy
+	verb := strings.ReplaceAll(strings.TrimPrefix(reason, remedyReasonPrefix), "_", " ")
+
+	// lead: the transition, who made it, the approvals count, then the write Tool.
+	var lead strings.Builder
+	lead.WriteString(remedyEmoji + " *Remedy " + escape(verb) + "*")
+	if r.ActorLabel != "" {
+		lead.WriteString(" by " + escape(r.ActorLabel))
+	}
 	if r.RequiredApprovals > 0 {
-		b.WriteString(" — " + strconv.Itoa(len(r.Approvals)) + " of " + strconv.Itoa(r.RequiredApprovals) + " approvals")
+		lead.WriteString(" — " + strconv.Itoa(len(r.Approvals)) + " of " + strconv.Itoa(r.RequiredApprovals) + " approvals")
 	}
-	if r.Tool != "" {
-		b.WriteString("\n" + code(r.ToolServer+"__"+r.Tool))
-		b.WriteString("\n```" + strings.ReplaceAll(escape(remedyArgumentsOnCard(*r)), "```", "'''") + "```")
-		switch {
-		case remedyArgumentsWhole(*r):
-		case remedyAwaitingApproval(reason, *r):
-			// ⭐ NO APPROVE BUTTON BELOW, AND THIS IS WHY: nobody approves a command from a
-			// card that did not show all of it (`remedyActions`).
-			b.WriteString("\n_the arguments are cut here, so it is approved on the Remedy's page, which shows them whole_")
-		default:
-			b.WriteString("\n_the arguments are cut here; the Remedy's page shows them whole_")
-		}
-	} else {
-		b.WriteString("\n_" + escape(r.NoTool) + "_")
-	}
-	b.WriteString("\non " + escape(r.Target))
+
+	// then: what it is made to, where it is read whole, and the tier — the part a reader must
+	// still see under the arguments.
+	var then strings.Builder
+	then.WriteString("\non " + escape(r.Target))
 	if u := safeURL(iv.Link); u != "" {
 		// Where the whole Remedy is read — every argument, its history — and decided in oto.
-		b.WriteString("  ·  " + link(u, "open "+incidentName(iv)+" in oto"))
+		then.WriteString("  ·  " + link(u, "open "+incidentName(iv)+" in oto"))
 	}
 	if tier := remedyTier(*r); tier != "" {
-		b.WriteString("\n" + tier)
+		then.WriteString("\n" + tier)
 	}
+
+	// rest: approvals so far, any failure, and only then the Investigator's description. The
+	// section may cut these; they are not what an approval approves.
+	var rest strings.Builder
 	if len(r.Approvals) > 0 {
 		names := make([]string, 0, len(r.Approvals))
 		for _, a := range r.Approvals {
 			names = append(names, escape(firstNonEmpty(a.Label, "a person")))
 		}
-		b.WriteString("\nApproved so far by " + strings.Join(names, ", "))
+		rest.WriteString("\nApproved so far by " + strings.Join(names, ", "))
 	}
 	if r.FailureReason != "" {
-		b.WriteString("\n*" + escape(r.FailureReason) + "*")
+		rest.WriteString("\n*" + escape(r.FailureReason) + "*")
 		if r.Detail != "" {
-			b.WriteString(": " + escape(r.Detail))
+			rest.WriteString(": " + escape(r.Detail))
 		}
 	} else if r.Detail != "" {
-		b.WriteString("\n" + escape(r.Detail))
+		rest.WriteString("\n" + escape(r.Detail))
 	}
 	if text := strings.TrimSpace(r.Description); text != "" {
-		b.WriteString("\n>" + strings.ReplaceAll(escape(truncateRunes(text, maxFindingRunes)), "\n", "\n>"))
+		rest.WriteString("\n>" + strings.ReplaceAll(escape(truncateRunes(text, maxFindingRunes)), "\n", "\n>"))
 	}
-	return b.String(), sentence
+
+	if r.Tool == "" {
+		// Nothing can carry it out (ADR 0054 §1), so there is no command to see whole.
+		return remedyCardText{body: lead.String() + "\n_" + escape(r.NoTool) + "_" + then.String() + rest.String()}
+	}
+	lead.WriteString("\n" + code(r.ToolServer+"__"+r.Tool))
+
+	const fence = "```"
+	onCard := remedyArgumentsOnCard(*r)
+	quoted := quoteRemedyArguments(onCard)
+	keeps := sectionKeeps(iv.Link)
+	if onCard == r.Arguments && lead.Len()+len("\n"+fence+quoted+fence)+then.Len() <= keeps {
+		return remedyCardText{body: lead.String() + "\n" + fence + quoted + fence + then.String() + rest.String(), whole: true}
+	}
+
+	note := "\n_the arguments are cut here; the Remedy's page shows them whole_"
+	if remedyAwaitingApproval(reason, *r) {
+		// ⭐ NO APPROVE BUTTON BELOW, AND THIS IS WHY: nobody approves a command from a
+		// card that did not show all of it (`remedyActions`).
+		note = "\n_the arguments are cut here, so it is approved on the Remedy's page, which shows them whole_"
+	}
+	// Cut the ESCAPED arguments so the note, the target and the tier still fit the section.
+	room := keeps - lead.Len() - len("\n"+fence+fence) - len(ellipsis) - len(note) - then.Len()
+	if onCard == r.Arguments || len(quoted) > room {
+		quoted = cutEscaped(strings.TrimSuffix(quoted, ellipsis), room) + ellipsis
+	}
+	return remedyCardText{body: lead.String() + "\n" + fence + quoted + fence + note + then.String() + rest.String()}
 }
 
-// remedyArgumentsOnCard is the arguments as the reply quotes them: whole, or cut at
-// maxRemedyArgumentsRunes.
+// quoteRemedyArguments is the arguments as the code block quotes them: escaped for mrkdwn, and
+// a run of three backticks inside them turned to three apostrophes (same bytes) so they cannot
+// close the block early.
+func quoteRemedyArguments(args string) string {
+	return strings.ReplaceAll(escape(args), "```", "'''")
+}
+
+// cutEscaped cuts already-escaped text to at most n bytes without splitting a rune or an
+// `&amp;`-style entity, and without leaving a backtick to run into the closing fence.
+func cutEscaped(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	if len(s) > n {
+		s = s[:n]
+	}
+	for len(s) > 0 && !utf8.ValidString(s) {
+		s = s[:len(s)-1]
+	}
+	if i := strings.LastIndex(s, "&"); i > strings.LastIndex(s, ";") {
+		s = s[:i]
+	}
+	return strings.TrimRight(s, "`")
+}
+
+// remedyArgumentsOnCard is the arguments as the reply quotes them at most: whole, or cut at
+// maxRemedyArgumentsRunes. `remedyCard` may cut them further to fit the section.
 func remedyArgumentsOnCard(r domain.IncidentRemedyView) string {
 	return truncateRunes(r.Arguments, maxRemedyArgumentsRunes)
-}
-
-// remedyArgumentsWhole reports whether the reply quotes every byte of the arguments.
-func remedyArgumentsWhole(r domain.IncidentRemedyView) bool {
-	return remedyArgumentsOnCard(r) == r.Arguments
 }
 
 // remedyAwaitingApproval reports whether this reply is the proposal of a Remedy that is
@@ -630,7 +700,7 @@ func remedyActions(reason string, iv domain.IncidentView, nonce string) (Block, 
 		return Block{}, false
 	}
 	elements := make([]Action, 0, 2)
-	if r.Tool != "" && remedyArgumentsWhole(*r) {
+	if r.Tool != "" && remedyCard(reason, iv).whole {
 		elements = append(elements, Action{
 			Type: ElementButton, Text: plain("Approve"), ActionID: domain.ActionRemedyApprove, Value: r.RemedyID,
 			Confirm: &Confirm{

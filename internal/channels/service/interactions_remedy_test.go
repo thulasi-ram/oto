@@ -254,3 +254,19 @@ func TestARemedyPressThatCannotBeReadIsAnswered(t *testing.T) {
 		t.Fatalf("said %q", notice.sent)
 	}
 }
+
+// ⛔ REVIEW E5: a refusal answered with its own message — the one sentence here that is not oto's
+// own words, and can carry an operator-written ToolServer name — is escaped for mrkdwn, so a name
+// with "<!channel>" in it pings nobody.
+func TestARefusalsOwnMessageIsEscapedBeforeItIsPosted(t *testing.T) {
+	notice := &fakeNotice{}
+	refusal := errs.Conflict("remedy_tool_unavailable", "the ToolServer <!channel> & co is not reachable")
+	if err := remedyService(t, linked(), &fakeRemedies{refuse: refusal}, notice).
+		Apply(context.Background(), remedyArgs(ActionRemedyApprove)); err != nil {
+		t.Fatal(err)
+	}
+	got := notice.only()
+	if strings.Contains(got, "<!channel>") || !strings.Contains(got, "&lt;!channel&gt; &amp; co") {
+		t.Fatalf("the refusal was posted as %q; its message must be escaped", got)
+	}
+}

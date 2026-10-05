@@ -760,9 +760,14 @@ func (s *InteractionService) applyAcknowledge(
 	//
 	// ⭐ AND A SUCCESSFUL PRESS SAYS NOTHING IN SLACK, for the same reason: the CARD
 	// is the feedback. An ephemeral "done" would be oto talking about itself.
+	//
+	// ⚠️ ONE EXCEPTION, FOR AN UNLINKED MEMBER (owner ruling F7): the press is recorded against
+	// the Slack member as ever, and they are then shown a link code — `offerLinkCodeAfterAck`,
+	// which never fails the press.
 	switch err := s.cases.AcknowledgeCase(ctx, scope, caseID, kind, actorID, label); {
 	case err == nil:
 		logger.Info("channels: acknowledged from Slack")
+		s.offerLinkCodeAfterAck(ctx, logger, scope, args, kind)
 		return nil
 	case errs.IsKind(err, errs.KindNotFound):
 		// It existed a moment ago and does not now. A race, not a fault.
@@ -776,6 +781,7 @@ func (s *InteractionService) applyAcknowledge(
 		logger.Info("channels: a Slack acknowledgement applied to nothing",
 			slog.String("refusal", code))
 		s.tell(ctx, args, ackRefusalText(code))
+		s.offerLinkCodeAfterAck(ctx, logger, scope, args, kind)
 		return nil
 	default:
 		return err
@@ -845,6 +851,8 @@ func (s *InteractionService) applyUnacknowledge(
 	switch err := s.cases.UnacknowledgeCase(ctx, scope, caseID, kind, actorID, label); {
 	case err == nil:
 		logger.Info("channels: un-acknowledged from Slack")
+		// An unlinked member is shown a link code, as on the ack (owner ruling F7).
+		s.offerLinkCodeAfterAck(ctx, logger, scope, args, kind)
 		return nil
 	case errs.IsKind(err, errs.KindNotFound):
 		s.tell(ctx, args, "That alert is no longer available.")
@@ -854,6 +862,7 @@ func (s *InteractionService) applyUnacknowledge(
 		logger.Info("channels: a Slack un-acknowledgement applied to nothing",
 			slog.String("refusal", code))
 		s.tell(ctx, args, unackRefusalText(code))
+		s.offerLinkCodeAfterAck(ctx, logger, scope, args, kind)
 		return nil
 	default:
 		return err
@@ -1197,14 +1206,18 @@ func plural(n int, one, many string) string {
 // block — the renderer's V-checks do not run on a `response_url` body, so the
 // escaping cannot be inherited from them.
 func noticeCode(s string) string {
-	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "`", "'")
-	if s = r.Replace(s); s == "" {
+	if s = strings.ReplaceAll(mrkdwnText.Replace(s), "`", "'"); s == "" {
 		// An empty label value is legal upstream, and "``" renders as two literal
 		// backticks. `(empty)` says what oto actually knows.
 		return "(empty)"
 	}
 	return "`" + s + "`"
 }
+
+// mrkdwnText neutralises the three characters Slack's mrkdwn parser treats as markup, for a
+// sentence this module sends that carries text it did not write (`noticeCode`, and a refusal's
+// own message in `remedyRefusalText`): "<!channel>" in an operator-written name must not ping.
+var mrkdwnText = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
 
 // clipRunes cuts a short string on a RUNE boundary with a visible ellipsis, never
 // mid-character: a half-written rune is the mojibake that makes an operator
