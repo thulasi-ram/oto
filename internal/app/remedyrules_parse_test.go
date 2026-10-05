@@ -15,6 +15,7 @@ const goodRules = `
 risk_model: risk
 rules:
   - name: restart-payments
+    tool: k8s-write__kubectl
     verbs: [rollout restart]
     kinds: [deploy]
     namespaces: [payments]
@@ -74,6 +75,10 @@ func TestAMalformedRulesFileIsRefusedNamingTheProblem(t *testing.T) {
 		"a bare tool":     {"rules:\n  - name: x\n    tool: kubectl\n    approvals: 1\n", "rules/0/tool"},
 		"twice named":     {"rules:\n  - name: x\n    verbs: [delete]\n    approvals: 2\n  - name: x\n    verbs: [scale]\n    approvals: 1\n", "rules/1/name"},
 		"a blank model":   {"risk_model: ''\nrules: []\n", "risk_model"},
+		// ⛔ judgment 2, C1+C3: a rule that lowers to one names its Tool.
+		"a one with no tool": {"rules:\n  - name: x\n    namespaces: [payments]\n    approvals: 1\n", "rules/0/tool: a rule that lowers to one approval names the write Tool"},
+		// ⛔ C5: a kind oto cannot fold.
+		"an unknown kind": {"rules:\n  - name: x\n    kinds: [certificate]\n    approvals: 2\n", "rules/0/kinds/0: oto does not know every spelling"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := ParseRemedyRules([]byte(tc.file))

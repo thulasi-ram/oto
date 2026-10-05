@@ -55,7 +55,7 @@ func TestTheRiskRulesAreReadAndShipEmpty(t *testing.T) {
 
 	// What `oto remedy-rules apply` wrote reads back, in order, with its writer.
 	rs, err := domain.NewRiskRules([]domain.RiskRule{
-		{Name: "restart-payments", Verbs: []string{"Rollout Restart"}, Kinds: []string{"deploy"},
+		{Name: "restart-payments", Tool: "k8s-write__kubectl", Verbs: []string{"Rollout Restart"}, Kinds: []string{"deploy"},
 			Namespaces: []string{"payments"}, Approvals: 1},
 		{Name: "secrets-need-two", Tool: "k8s-write__kubectl", Kinds: []string{"secrets"},
 			Reversibility: domain.Irreversible, Approvals: 2},
@@ -75,7 +75,7 @@ func TestTheRiskRulesAreReadAndShipEmpty(t *testing.T) {
 	rules := data["rules"].([]any)
 	first := rules[0].(map[string]any)
 	if len(rules) != 2 || first["name"] != "restart-payments" || first["verbs"].([]any)[0] != "rollout restart" ||
-		first["kinds"].([]any)[0] != "deployment" || first["tool"] != nil {
+		first["kinds"].([]any)[0] != "deployment" || first["tool"] != "k8s-write__kubectl" {
 		t.Fatalf("the rules came back as %v, want the operator's two, normalised, in order", rules)
 	}
 	if data["risk_model_provider_id"] != model.String() || data["written_by_label"] != "oto remedy-rules apply" {

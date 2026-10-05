@@ -40,7 +40,7 @@ VALUES ($1, NULL, NULL, 'oto remedy-rules apply', $2)`, w.scope.OrgID(), w.h.Now
 	_, err = w.h.Pool.Exec(w.h.Ctx, `
 INSERT INTO remedy_risk_rules (org_id, name, position, tool, verbs, kinds, namespaces, reversibility, approvals, created_at)
 VALUES ($1, 'secrets-need-two', 1, 'k8s-write__kubectl', '{}', '{secret}', '{}', 'irreversible', 2, $2),
-       ($1, 'restart-payments', 0, NULL, '{rollout restart}', '{deployment}', '{payments}', NULL, 1, $2)`,
+       ($1, 'restart-payments', 0, 'k8s-write__kubectl', '{rollout restart}', '{deployment}', '{payments}', NULL, 1, $2)`,
 		w.scope.OrgID(), w.h.Now())
 	require.NoError(t, err)
 
@@ -62,6 +62,12 @@ VALUES ($1, 'secrets-need-two', 1, 'k8s-write__kubectl', '{}', '{secret}', '{}',
 INSERT INTO remedy_risk_rules (org_id, name, position, tool, verbs, kinds, namespaces, reversibility, approvals, created_at)
 VALUES ($1, 'everything', 2, NULL, '{}', '{}', '{}', NULL, 1, $2)`, w.scope.OrgID(), w.h.Now())
 	require.Equal(t, "remedy_risk_rules_condition_ck", errs.CodeOf(mapPG(err)))
+
+	// ⛔ Nor is a rule that lowers to one and names no Tool (00110; judgment 2, C1+C3).
+	_, err = w.h.Pool.Exec(w.h.Ctx, `
+INSERT INTO remedy_risk_rules (org_id, name, position, tool, verbs, kinds, namespaces, reversibility, approvals, created_at)
+VALUES ($1, 'payments-one', 2, NULL, '{}', '{}', '{payments}', NULL, 1, $2)`, w.scope.OrgID(), w.h.Now())
+	require.Equal(t, "remedy_risk_rules_single_names_tool_ck", errs.CodeOf(mapPG(err)))
 }
 
 func TestARemedysRiskRecordRoundTripsIsFrozenAndOneApprovalStandsOnlyOnARule(t *testing.T) {

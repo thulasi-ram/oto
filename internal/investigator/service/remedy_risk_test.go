@@ -130,7 +130,7 @@ func riskAnswer(approvals int, reason string) modelfake.Step {
 	return modelfake.Calls(120, 15, call("r1", domain.RiskAnswerTool, string(args)))
 }
 
-var restartPayments = domain.RiskRule{Name: "restart-payments", Verbs: []string{"rollout restart"},
+var restartPayments = domain.RiskRule{Name: "restart-payments", Tool: "k8s-write__kubectl", Verbs: []string{"rollout restart"},
 	Kinds: []string{"deployment"}, Namespaces: []string{"payments"}, Approvals: 1}
 
 // TestARuleMarksRolloutRestartInPaymentsSingle — one approval from one holder approves it,
@@ -171,7 +171,7 @@ func TestARuleMarksRolloutRestartInPaymentsSingle(t *testing.T) {
 // would lower everything in `payments`.
 func TestDeleteSecretUnderADoubleRuleCannotExecuteOnOneApproval(t *testing.T) {
 	rr := newRiskRig(t,
-		domain.RiskRule{Name: "payments-one", Namespaces: []string{"payments"}, Approvals: 1},
+		domain.RiskRule{Name: "payments-one", Tool: "k8s-write__kubectl", Namespaces: []string{"payments"}, Approvals: 1},
 		domain.RiskRule{Name: "secrets-need-two", Verbs: []string{"delete"}, Kinds: []string{"secret"}, Approvals: 2})
 	rem := rr.proposeOne(t, kubectlProposal("kubectl delete secret db-password -n payments"))
 	if rem.RequiredApprovals != 2 || rem.Risk.Rule != "secrets-need-two" {
@@ -214,7 +214,7 @@ func TestShCStaysDoubleWhateverTheRulesSay(t *testing.T) {
 		rr := newRiskRig(t,
 			domain.RiskRule{Name: "everything-kubectl", Tool: "k8s-write__kubectl", Approvals: 1},
 			restartPayments,
-			domain.RiskRule{Name: "reversible", Reversibility: domain.Reversible, Approvals: 1})
+			domain.RiskRule{Name: "reversible", Tool: "k8s-write__kubectl", Reversibility: domain.Reversible, Approvals: 1})
 		rr.withRiskModel(t, riskAnswer(1, "fine"))
 		rem := rr.proposeOne(t, kubectlProposal(line))
 		if rem.RequiredApprovals != 2 || rem.Risk.Basis != domain.BasisUnparseable || rem.Risk.Detail == "" ||

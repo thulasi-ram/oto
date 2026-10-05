@@ -67,6 +67,7 @@ const twoRules = `
 risk_model: risk
 rules:
   - name: restart-payments
+    tool: k8s-write__kubectl
     verbs: [rollout restart]
     kinds: [deploy]
     namespaces: [payments]

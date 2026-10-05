@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 109 {
-		t.Fatalf("latest migration is %d, want 109 — this test pins the number so that a "+
+	if latest != 110 {
+		t.Fatalf("latest migration is %d, want 110 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1633,6 +1633,67 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// accepts a kind the release below it cannot interpret. No column reading can
 	// see that, and it is the half most likely to be forgotten because nothing
 	// references it.
+	// ⭐ 00110 SAYS A SINGLE APPROVAL NAMES ITS TOOL, AND ITS RULE (judgment 2 on the Remedy review,
+	// C1+C3 and C11): two CHECKs, and a Tool-less one-approval rule already stored is RAISED to two
+	// and recorded. That raise is a row rewrite, so — for 00094's reason — it is exercised on a real
+	// row: 00110 is rolled back, a Tool-less one-approval rule written the way release N-1 could,
+	// 00110 re-applied over it (the rule reads two, recorded), and rolled back again (the rule reads
+	// one, the record gone). A Down that dropped the CHECKs and forgot the rule would pass every
+	// schema-shaped assertion here.
+	if n := countConstraints("remedy_risk_rules_single_names_tool_ck", "remedies_one_needs_a_rule_ck"); n != 2 {
+		t.Fatalf("%d of 00110's two CHECKs exist at migration 110", n)
+	}
+	if n := countTables("remedy_risk_rules_raised_by_00110"); n != 1 {
+		t.Fatalf("00110's record of the rules it raised does not exist at migration 110")
+	}
+	down(110)
+	if n := countConstraints("remedy_risk_rules_single_names_tool_ck", "remedies_one_needs_a_rule_ck"); n != 0 {
+		t.Fatalf("%d of 00110's CHECKs survived its Down", n)
+	}
+	if n := countTables("remedy_risk_rules_raised_by_00110"); n != 0 {
+		t.Fatalf("00110's record table survived its Down")
+	}
+	rulesScope, _, _ := seedSource(t, env)
+	if _, err := env.pool.Exec(env.ctx,
+		`INSERT INTO remedy_risk_rules (org_id, name, position, tool, verbs, kinds, namespaces, reversibility, approvals, created_at)
+		 VALUES ($1, 'payments-one', 0, NULL, '{}', '{}', '{payments}', 'reversible', 1, now()),
+		        ($1, 'kubectl-one', 1, 'k8s__kubectl', '{}', '{}', '{payments}', NULL, 1, now())`,
+		rulesScope.OrgID()); err != nil {
+		t.Fatalf("seed a Tool-less one-approval rule below 00110: %v", err)
+	}
+	ruleApprovals := func(name string) int {
+		t.Helper()
+		var n int
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT approvals FROM remedy_risk_rules WHERE org_id = $1 AND name = $2`, rulesScope.OrgID(), name).
+			Scan(&n); err != nil {
+			t.Fatalf("read rule %s: %v", name, err)
+		}
+		return n
+	}
+	if err := migrate.UpByOne(env.ctx, dsn); err != nil {
+		t.Fatalf("re-apply 00110 over a Tool-less one-approval rule: %v", err)
+	}
+	if got := ruleApprovals("payments-one"); got != 2 {
+		t.Fatalf("00110 left a Tool-less rule at %d approvals, want it raised to 2", got)
+	}
+	if got := ruleApprovals("kubectl-one"); got != 1 {
+		t.Fatalf("00110 moved a rule that names its Tool to %d approvals", got)
+	}
+	var recorded int
+	if err := env.pool.QueryRow(env.ctx,
+		`SELECT count(*) FROM remedy_risk_rules_raised_by_00110 WHERE org_id = $1 AND name = 'payments-one'`,
+		rulesScope.OrgID()).Scan(&recorded); err != nil || recorded != 1 {
+		t.Fatalf("00110 did not record the rule it raised: %d, %v", recorded, err)
+	}
+	down(110)
+	if got := ruleApprovals("payments-one"); got != 1 {
+		t.Fatalf("00110's Down left the rule it raised at %d approvals, want 1 again", got)
+	}
+	if _, err := env.pool.Exec(env.ctx, `DELETE FROM remedy_risk_rules WHERE org_id = $1`, rulesScope.OrgID()); err != nil {
+		t.Fatalf("clear the seeded rules: %v", err)
+	}
+
 	// ⭐ 00109 LETS A SLACK MEMBER LINK THEMSELVES WITH A CODE (git-bug a556a5c): three tables —
 	// the one live code per identity, the per-user wrong-attempt count, and the recorded fact of
 	// every link and unlink — with their CHECKs. Read on both sides, for 00075's reason: a Down that

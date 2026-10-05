@@ -72,7 +72,8 @@ type Reversibility string
 
 // The two answers a rule may require.
 const (
-	// Reversible matches a command whose verb oto knows to be reversible (ReversibleVerbs).
+	// Reversible matches a command LINE whose verb oto knows to be reversible (ReversibleVerbs) —
+	// never structured arguments, whose `verb` is the model's word (RemedyCommand.Reversible).
 	Reversible Reversibility = "reversible"
 	// Irreversible matches every other command — including a verb oto does not know.
 	Irreversible Reversibility = "irreversible"
@@ -143,7 +144,25 @@ var riskRuleNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,62}$`)
 // condition one a command can be compared with. Verbs and kinds are normalised as a command
 // is (NormalizeRiskVerb, CanonicalKind), so `deploy` and `deployments` are one kind. Each
 // violation names the rule and field it is about.
+//
+// ⛔⛔ A RULE THAT SAYS ONE NAMES ITS TOOL (judgment 2, C1+C3; `single_needs_tool`, and
+// `remedy_risk_rules_single_names_tool_ck` in the schema). Whether a Tool's arguments are
+// kubectl's command line is something only the operator knows: a rule saying one about
+// `payments` with no Tool would read a helm-shaped `args` array, or a delete Tool's
+// `{"verb":"rollout restart"}`, as the restart it names. A rule saying two may still omit
+// it — a broader two only ever raises.
+//
+// ⛔ A KIND OTO DOES NOT KNOW IS REFUSED (`unknown_kind`, C5): a command naming it is
+// unparseable, so the rule could never match, and a rule that silently never matches is
+// the operator's two-approval guard quietly gone.
 func NewRiskRules(rules []RiskRule) (RiskRules, error) {
+	return newRiskRules(rules, false)
+}
+
+// newRiskRules is NewRiskRules; `restoring` reads rules already stored, which keep a kind
+// written before C5 refused unknown kinds — such a rule matches nothing, since a command
+// naming that kind is unparseable — rather than fail every read of the org's rules.
+func newRiskRules(rules []RiskRule, restoring bool) (RiskRules, error) {
 	var v []errs.Violation
 	if len(rules) > MaxRiskRules {
 		v = append(v, errs.Violation{Field: "rules", Code: "max_items", Message: fmt.Sprintf("at most %d rules", MaxRiskRules)})
@@ -196,6 +215,14 @@ func NewRiskRules(rules []RiskRule) (RiskRules, error) {
 		}
 		n.Verbs = list("/verbs", r.Verbs, NormalizeRiskVerb, riskVerbPattern.MatchString, "verbs")
 		n.Kinds = list("/kinds", r.Kinds, CanonicalKind, func(k string) bool { return k != "" }, "kinds")
+		if !restoring {
+			for j, k := range r.Kinds {
+				if _, known := knownKind(k); !known && CanonicalKind(k) != "" {
+					bad(fmt.Sprintf("/kinds/%d", j), "unknown_kind", fmt.Sprintf("oto does not know every spelling of %s, "+
+						"so a command naming it is always two approvals and this rule could never match it", quoteShort(k)))
+				}
+			}
+		}
 		n.Namespaces = list("/namespaces", r.Namespaces, strings.TrimSpace, namespacePattern.MatchString, "namespaces")
 		switch n.Reversibility {
 		case "", Reversible, Irreversible:
@@ -204,6 +231,10 @@ func NewRiskRules(rules []RiskRule) (RiskRules, error) {
 		}
 		if n.Approvals != SingleApproval && n.Approvals != DoubleApproval {
 			bad("/approvals", "enum", "a rule says 1 or 2 approvals")
+		}
+		if n.Approvals == SingleApproval && n.Tool == "" {
+			bad("/tool", "single_needs_tool", "a rule that lowers to one approval names the write Tool it is about, "+
+				"so the operator says which Tools are kubectl-shaped")
 		}
 		if n.Tool == "" && len(r.Verbs) == 0 && len(r.Kinds) == 0 && len(r.Namespaces) == 0 && n.Reversibility == "" {
 			bad("", "no_condition", "a rule says at least one condition — a Tool, a verb, a kind, a namespace or "+
@@ -219,8 +250,11 @@ func NewRiskRules(rules []RiskRule) (RiskRules, error) {
 
 // RestoreRiskRules rebuilds rules read from their rows; a row NewRiskRules refuses is
 // corruption, said as such.
+//
+// ⚠️ A single-approval rule with no Tool is refused here too: 00110 raised every such row to
+// two and its CHECK keeps any new one out, so one read back is corruption.
 func RestoreRiskRules(rules []RiskRule) (RiskRules, error) {
-	rs, err := NewRiskRules(rules)
+	rs, err := newRiskRules(rules, true)
 	if err != nil {
 		return RiskRules{}, errs.Internal("remedy_risk_rules_corrupt", err)
 	}
@@ -272,6 +306,11 @@ func (rs RiskRules) Evaluate(c RemedyCommand) RiskVerdict {
 	single := ""
 	for _, r := range rs.rules {
 		if !r.Matches(c) {
+			continue
+		}
+		if r.Approvals == SingleApproval && r.Tool == "" {
+			// ⛔ A belt (C1): NewRiskRules and 00110's CHECK keep such a rule out; were one ever
+			// here, it lowers nothing.
 			continue
 		}
 		if r.Approvals == DoubleApproval {

@@ -56,16 +56,17 @@ func TestTheTokenizerReadsKubectlAndNothingThatAShellWouldInterpret(t *testing.T
 			verb: "rollout restart", kind: "deployment", ns: "payments", reversible: true},
 		{name: "args array", args: `{"args":["rollout","undo","deployment/api","-n","payments"]}`,
 			verb: "rollout undo", kind: "deployment", ns: "payments", reversible: true},
-		{name: "unknown flag with =", args: cmdArgs("kubectl rollout restart deployment/api --some-new-flag=x -n p"),
-			verb: "rollout restart", kind: "deployment", ns: "p", reversible: true},
+		// ⛔ A structured `verb` is the model's word, never evidence: not reversible (C1+C3).
 		{name: "structured", args: `{"verb":"Rollout  Restart","kind":"Deployments","namespace":"payments","name":"api"}`,
-			verb: "rollout restart", kind: "deployment", ns: "payments", reversible: true},
+			verb: "rollout restart", kind: "deployment", ns: "payments"},
 		{name: "structured with resource", args: `{"resource":"secret","namespace":"payments"}`, kind: "secret", ns: "payments"},
-		{name: "structured, nothing named", args: `{"deployment":"api","replicas":3}`},
+		{name: "structured, nothing named", args: `{"name":"api"}`},
 
 		// ⛔ Everything a shell would interpret, and every shape the rules cannot read.
 		{name: "sh -c", args: cmdArgs("sh -c kubectl"), unparseable: "the rules read only kubectl's"},
-		{name: "bash -c in argv", args: `{"command":["bash","-c","kubectl delete ns x"]}`, unparseable: "a shell would interpret or split"},
+		{name: "bash -c in argv", args: `{"command":["bash","-c","kubectl delete ns x"]}`, unparseable: "a shell would split"},
+		{name: "unknown flag with =", args: cmdArgs("kubectl rollout restart deployment/api --some-new-flag=x -n p"), unparseable: "does not know"},
+		{name: "structured, a member the rules cannot read", args: `{"deployment":"api","replicas":3}`, unparseable: "cannot read"},
 		{name: "pipe", args: cmdArgs("kubectl get pods | xargs kubectl delete pod"), unparseable: "`|`"},
 		{name: "semicolon", args: cmdArgs("kubectl rollout restart deploy/api -n p; kubectl delete ns p"), unparseable: "`;`"},
 		{name: "and-and", args: cmdArgs("kubectl rollout restart deploy/api && rm -rf /"), unparseable: "`&`"},
@@ -79,7 +80,7 @@ func TestTheTokenizerReadsKubectlAndNothingThatAShellWouldInterpret(t *testing.T
 		{name: "file", args: cmdArgs("kubectl delete -f manifest.yaml"), unparseable: "in a file"},
 		{name: "impersonation", args: cmdArgs("kubectl --as=system:admin delete secret x"), unparseable: "impersonates"},
 		{name: "kubeconfig", args: cmdArgs("kubectl --kubeconfig /etc/admin.conf delete secret x"), unparseable: "credentials"},
-		{name: "unknown flag", args: cmdArgs("kubectl delete --mystery secret x"), unparseable: "takes a value"},
+		{name: "unknown flag", args: cmdArgs("kubectl delete --mystery secret x"), unparseable: "does not know"},
 		{name: "combined short flags", args: cmdArgs("kubectl exec -it api-1"), unparseable: "cannot read"},
 		{name: "two kinds by comma", args: cmdArgs("kubectl delete secret,configmap x -n p"), unparseable: "more than one kind"},
 		{name: "two kinds by slash", args: cmdArgs("kubectl delete deploy/a secret/b -n p"), unparseable: "more than one kind"},
@@ -136,12 +137,12 @@ func mustRules(t *testing.T, rules ...domain.RiskRule) domain.RiskRules {
 }
 
 func TestTheMostSevereMatchingRuleWinsAndNoMatchIsTwo(t *testing.T) {
-	restartPayments := domain.RiskRule{Name: "restart-payments", Verbs: []string{"rollout restart"},
+	restartPayments := domain.RiskRule{Name: "restart-payments", Tool: "k8s-write__kubectl", Verbs: []string{"rollout restart"},
 		Kinds: []string{"deploy"}, Namespaces: []string{"payments"}, Approvals: 1}
 	deleteSecret := domain.RiskRule{Name: "secrets-need-two", Verbs: []string{"delete"}, Kinds: []string{"secrets"}, Approvals: 2}
-	anythingInStaging := domain.RiskRule{Name: "staging", Namespaces: []string{"staging"}, Approvals: 1}
+	anythingInStaging := domain.RiskRule{Name: "staging", Tool: "k8s-write__kubectl", Namespaces: []string{"staging"}, Approvals: 1}
 	irreversibleTwo := domain.RiskRule{Name: "irreversible-two", Reversibility: domain.Irreversible, Approvals: 2}
-	reversibleOne := domain.RiskRule{Name: "reversible-one", Reversibility: domain.Reversible, Approvals: 1}
+	reversibleOne := domain.RiskRule{Name: "reversible-one", Tool: "k8s-write__kubectl", Reversibility: domain.Reversible, Approvals: 1}
 	toolOnly := domain.RiskRule{Name: "scaler", Tool: "k8s-write__scale_deployment", Approvals: 1}
 
 	cases := []struct {
@@ -178,11 +179,15 @@ func TestTheMostSevereMatchingRuleWinsAndNoMatchIsTwo(t *testing.T) {
 			cmdArgs("kubectl drain node-1"), k8sWrite, 2, domain.BasisNoRule, ""},
 		{"an unknown verb is irreversible", []domain.RiskRule{reversibleOne, irreversibleTwo},
 			`{"verb":"frobnicate"}`, k8sWrite, 2, domain.BasisRule, "irreversible-two"},
-		{"a Tool-only rule matches its Tool whatever its arguments", []domain.RiskRule{toolOnly},
-			`{"deployment":"api","replicas":3}`, domain.RemedyTool{ToolServerID: uuid.New(), ToolServerName: "k8s-write", Tool: "scale_deployment"},
+		{"a Tool-only rule matches its Tool whatever its arguments say", []domain.RiskRule{toolOnly},
+			`{"kind":"deployment","name":"api","namespace":"payments"}`, domain.RemedyTool{ToolServerID: uuid.New(), ToolServerName: "k8s-write", Tool: "scale_deployment"},
 			1, domain.BasisRule, "scaler"},
 		{"a Tool-only rule matches no other Tool", []domain.RiskRule{toolOnly},
-			`{"deployment":"api"}`, k8sWrite, 2, domain.BasisNoRule, ""},
+			`{"name":"api"}`, k8sWrite, 2, domain.BasisNoRule, ""},
+		// ⛔ Arguments the Tool may act on and the rules cannot read are unparseable, Tool rule or not.
+		{"a Tool-only rule does not lower arguments the rules cannot read", []domain.RiskRule{toolOnly},
+			`{"deployment":"api","replicas":3}`, domain.RemedyTool{ToolServerID: uuid.New(), ToolServerName: "k8s-write", Tool: "scale_deployment"},
+			2, domain.BasisUnparseable, ""},
 		{"no rules at all is two", nil, cmdArgs("kubectl rollout restart deploy/api -n payments"), k8sWrite, 2, domain.BasisNoRule, ""},
 		// ⛔⛔ sh -c stays double whatever the rules say — even a rule matching its Tool.
 		{"sh -c is two whatever the rules say", []domain.RiskRule{
@@ -208,9 +213,9 @@ func TestTheMostSevereMatchingRuleWinsAndNoMatchIsTwo(t *testing.T) {
 // depends on the order of the rules, only the name does.
 func TestEveryRuleOrderGivesTheSameTier(t *testing.T) {
 	rules := []domain.RiskRule{
-		{Name: "a", Namespaces: []string{"staging"}, Approvals: 1},
+		{Name: "a", Tool: "k8s-write__kubectl", Namespaces: []string{"staging"}, Approvals: 1},
 		{Name: "b", Verbs: []string{"delete"}, Approvals: 2},
-		{Name: "c", Reversibility: domain.Reversible, Approvals: 1},
+		{Name: "c", Tool: "k8s-write__kubectl", Reversibility: domain.Reversible, Approvals: 1},
 		{Name: "d", Kinds: []string{"secret"}, Approvals: 2},
 	}
 	commands := []string{
@@ -267,6 +272,10 @@ func TestARuleThatCannotBeAppliedIsRefusedNamingItsField(t *testing.T) {
 		{domain.RiskRule{Name: "x", Namespaces: []string{"*"}, Approvals: 1}, "rules/0/namespaces/0"},
 		{domain.RiskRule{Name: "x", Reversibility: "maybe", Approvals: 1}, "rules/0/reversibility"},
 		{domain.RiskRule{Name: "x", Approvals: 1}, "rules/0"},
+		// ⛔ C1+C3: a rule that lowers to one names its Tool.
+		{domain.RiskRule{Name: "x", Namespaces: []string{"payments"}, Reversibility: domain.Reversible, Approvals: 1}, "rules/0/tool"},
+		// ⛔ C5: a kind oto cannot fold is refused, not silently never matched.
+		{domain.RiskRule{Name: "x", Kinds: []string{"certificate"}, Approvals: 2}, "rules/0/kinds/0"},
 	}
 	for _, tc := range cases {
 		_, err := domain.NewRiskRules([]domain.RiskRule{tc.rule})
@@ -287,7 +296,8 @@ func TestARuleThatCannotBeAppliedIsRefusedNamingItsField(t *testing.T) {
 	}); err == nil {
 		t.Fatalf("two rules with one name were accepted")
 	}
-	rs := mustRules(t, domain.RiskRule{Name: "x", Verbs: []string{" Rollout   Restart "}, Kinds: []string{"deploy", "Deployments"}, Approvals: 1})
+	rs := mustRules(t, domain.RiskRule{Name: "x", Tool: "k8s-write__kubectl", Verbs: []string{" Rollout   Restart "},
+		Kinds: []string{"deploy", "Deployments", "deployments.apps"}, Approvals: 1})
 	got := rs.Rules()[0]
 	if got.Verbs[0] != "rollout restart" || len(got.Kinds) != 1 || got.Kinds[0] != "deployment" {
 		t.Fatalf("normalised = %+v", got)
