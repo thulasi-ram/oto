@@ -854,7 +854,7 @@ func statusValue(v *domain.NotificationView, state CardState) string {
 			current += " until " + slackDate(*v.Case.EndedAt)
 		}
 	case CardExpired:
-		current += " — oto stopped hearing about this"
+		current += " — " + expiryClause(v)
 	case CardFiring, CardResolved:
 	}
 
