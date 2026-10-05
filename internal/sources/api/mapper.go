@@ -433,7 +433,6 @@ func (r CreateSourceRequest) toDraft(credentialID *uuid.UUID) domain.SourceDraft
 // field mean different things: CLEAR versus LEAVE ALONE.
 func (r UpdateSourceRequest) toPatch(credential **uuid.UUID) domain.SourcePatch {
 	p := domain.SourcePatch{
-		ClusterID:         r.ClusterID,
 		Name:              r.Name,
 		BaseURL:           r.BaseURL,
 		AuthCredentialID:  credential,

@@ -619,6 +619,9 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		// which exists before any service, and it never calls `incidents` — the
 		// queue is the seam.
 		CaseOpenings: caseOpenings{enq: c.enqueuer},
+		// The reaper's `silent` and `source_removed` passes (ADR 0056), off until
+		// an operator turns them on; see config.JobsConfig.ExpireSilentAndRemoved.
+		ExpireSilentAndRemoved: o.Config.Jobs.ExpireSilentAndRemoved,
 		// `commentOnAlert` and `snoozeAlert` take their claim inside the same
 		// transaction as the write, on the store every other guarded operation
 		// claims in. A comment is the one action a retry duplicates VISIBLY —

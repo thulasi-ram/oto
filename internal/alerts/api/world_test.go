@@ -537,6 +537,9 @@ var (
 	fxCasePolicy2ID = uuid.MustParse("0198f3c1-6a2e-7c31-9b4d-2f5a1c8e0b8d")
 	// The one live source the open fixture Case's expiry waits on.
 	fxSourceID = uuid.MustParse("0198f3c1-6a2e-7c31-9b4d-2f5a1c8e0b8e")
+	// The HA pair the suppressed fixture Case's cluster is fed by.
+	fxHASourceA = uuid.MustParse("0198f3c1-6a2e-7c31-9b4d-2f5a1c8e0b8f")
+	fxHASourceB = uuid.MustParse("0198f3c1-6a2e-7c31-9b4d-2f5a1c8e0b90")
 )
 
 // fxLabels is the label set every fixture Alert carries. It exercises the
@@ -919,17 +922,29 @@ func newAlertsWorld(t *testing.T) *fakeAlertsService {
 		// ⭐ THREE SHAPES OF ADR 0056 §1's ANSWER, one per episode: the open one
 		// under one healthy source with a max silence, the ended one on a
 		// cluster whose only source was removed, and the suppressed one under an
-		// HA pair — which the reaper holds, so it carries no single source.
+		// HA pair with one replica the guard cannot vouch for — which the reaper
+		// holds (owner ruling R1), so it names no single source.
 		cover: map[uuid.UUID]domain.CaseCover{
 			fxCase: {
 				CaseSources: domain.CaseSources{
-					Live: 1, SourceID: fxSourceID, MaxSilence: 24 * time.Hour,
+					Live: 1, LiveIDs: []uuid.UUID{fxSourceID}, MaxSilence: 24 * time.Hour,
 				},
-				SourceName: "alertmanager-prod-eu",
-				Healthy:    true,
+				Sources: []domain.CoverSource{{
+					ID: fxSourceID, Name: "alertmanager-prod-eu",
+					MaxSilence: 24 * time.Hour, Healthy: true,
+				}},
+				AllHealthy: true,
 			},
 			fxEndedOccID: {CaseSources: domain.CaseSources{Removed: 1}},
-			fxSuppOccID:  {CaseSources: domain.CaseSources{Live: 2}},
+			fxSuppOccID: {
+				CaseSources: domain.CaseSources{
+					Live: 2, LiveIDs: []uuid.UUID{fxHASourceA, fxHASourceB}, MaxSilence: 48 * time.Hour,
+				},
+				Sources: []domain.CoverSource{
+					{ID: fxHASourceA, Name: "am-prod-eu-0", MaxSilence: 24 * time.Hour, Healthy: true},
+					{ID: fxHASourceB, Name: "am-prod-eu-1", MaxSilence: 48 * time.Hour},
+				},
+			},
 		},
 		timelineRes: service.TimelineResult{
 			Events: []domain.Event{

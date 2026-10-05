@@ -64,14 +64,15 @@ type CaseBatchReader interface {
 	LatestByAlerts(ctx context.Context, s db.TenantScope, alertIDs []uuid.UUID) (map[uuid.UUID]domain.Case, error)
 }
 
-// CaseSourceResolver answers which AlertSource a case came from.
+// CaseSourceResolver answers which AlertSources speak for a case: every live
+// source on its Alert's cluster.
 //
-// It exists for one caller: the §B.4 reaper guard, which must load the owning
-// source's health before it may expire anything. A case absent from the
-// result has no resolvable source, and the reaper reads that as "cannot prove
-// healthy" and HOLDS it.
+// It exists for the §B.4 reaper guard, which must load the health of EVERY one of
+// them before it may expire anything (owner ruling R1). A case absent from the
+// result has no live source, and the reaper reads that as "cannot prove healthy"
+// and HOLDS it.
 type CaseSourceResolver interface {
-	SourceIDs(ctx context.Context, s db.TenantScope, caseIDs []uuid.UUID) (map[uuid.UUID]uuid.UUID, error)
+	SourceIDs(ctx context.Context, s db.TenantScope, caseIDs []uuid.UUID) (map[uuid.UUID][]uuid.UUID, error)
 }
 
 // CaseCoverReader is the READ half of ADR 0056 §1, "staleness is shown": what a

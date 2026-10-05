@@ -85,6 +85,14 @@ type Deps struct {
 	// before Correlators existed.
 	CaseOpenings CaseOpenings
 
+	// ExpireSilentAndRemoved turns on the reaper's two ADR 0056 passes, `silent`
+	// and `source_removed` (config `jobs.expire_silent_and_removed`, env
+	// OTO_JOBS_EXPIRE_SILENT_AND_REMOVED). ⭐ OFF BY DEFAULT, AND THAT IS THE
+	// ROLLOUT: migration 00094 and the readers that understand its two reasons ship
+	// first, and nothing writes either reason until an operator turns this on. Off,
+	// `case.reap` is exactly the `timeout` sweep it was before 00094.
+	ExpireSilentAndRemoved bool
+
 	Clock  clock.Clock
 	Logger *slog.Logger
 }
@@ -123,6 +131,9 @@ type Service struct {
 	notifications NotificationReader
 	caseEndings   CaseEndings
 	caseOpenings  CaseOpenings
+
+	// expireUnheard is Deps.ExpireSilentAndRemoved.
+	expireUnheard bool
 
 	clock clock.Clock
 	log   *slog.Logger
@@ -175,6 +186,7 @@ func New(d Deps) (*Service, error) {
 		notifications: d.Notifications,
 		caseEndings:   d.CaseEndings,
 		caseOpenings:  d.CaseOpenings,
+		expireUnheard: d.ExpireSilentAndRemoved,
 		clock:         clk,
 		log:           logger,
 	}, nil

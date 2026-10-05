@@ -4,11 +4,13 @@
 --
 --   1. NO UPSTREAM END TIME. Alertmanager zeroes `endsAt` on a firing webhook, so a
 --      Case known only from webhooks never carries `source_ends_at` and is never a
---      `timeout` candidate. It now expires as `silent` once its HEALTHY source has said
---      nothing about it for longer than that source's `max_silence_s`.
+--      `timeout` candidate. It now expires as `silent` once EVERY live source on its
+--      cluster is healthy and none has said anything about it for longer than the
+--      longest `max_silence_s` among them (owner ruling R1: an HA cluster expires on
+--      all of its sources, and one with the expiry off turns it off for the cluster).
 --   2. A DELETED SOURCE. `caseSourcesSQL` finds no live source for the Case and the
 --      §B.4 guard holds it, forever. It now expires as `source_removed` once no live
---      source feeds the Case's cluster.
+--      source feeds the Case's cluster, and the last removal is a resolve grace old.
 --
 -- ⭐⭐ BOTH ARE `expired`, NEVER `resolved` (ADR 0056 §4). The four alert states are
 -- unchanged: `upstream` is resolved and `timeout`, `silent` and `source_removed` are
@@ -21,24 +23,34 @@
 -- the reaper, and deleting a source is an act on configuration (CONTEXT.md's door "No
 -- human writes a signal's `state`"; SCOPE-BOUNDARY verdict #34).
 --
--- ⭐ `max_silence_s` DEFAULTS TO A DAY, AND EVERY EXISTING SOURCE TAKES THE DEFAULT.
--- Alertmanager repeats a firing notification every `repeat_interval` (4h unless set),
--- so a day of silence under a healthy source means upstream stopped speaking about the
--- alert. That includes the stale Cases this ADR exists for: on the first reaper tick
--- after this migration, open Cases that have been silent for a day expire, at most
--- `DefaultSweepLimit` per tick. NULL turns the expiry off for one source. The bounds
--- are an hour (below Alertmanager's own default repeat, so a mistyped minute count is
+-- ⭐ EVERY EXISTING SOURCE STARTS WITH THE EXPIRY OFF; A NEW ONE DEFAULTS TO A DAY
+-- (owner ruling R2, 2026-10-05). The column is added with NO default, so every row
+-- that exists when this runs reads NULL — off — and the Cases this ADR exists for
+-- are not swept away on the first tick by a threshold nobody chose for them. Only
+-- then is the default set, so a source registered afterwards takes a day: Alertmanager
+-- repeats a firing notification every `repeat_interval` (4h unless set), so a day of
+-- silence under a healthy source means upstream stopped speaking about the alert.
+-- An operator turns it on for an existing source by setting it. The bounds are an
+-- hour (below Alertmanager's own default repeat, so a mistyped minute count is
 -- refused rather than expiring every live Case) and thirty days.
 --
 -- ⚠️ AN ORG WHOSE `repeat_interval` EXCEEDS ITS `max_silence_s` MUST RAISE IT, or its
 -- long-firing Cases expire while still firing. The source settings say so next to the
 -- field (ADR 0056 Consequences).
 --
--- EXPAND/CONTRACT (CONTEXT.md §6). A defaulted, nullable column with a CHECK every row
--- satisfies, a widened CHECK, and an index. A release-N pod never names the column and
--- never writes either new reason, so it runs unchanged against this schema; it would
--- read a `silent` row's reason as an unknown enum value, which is why the Down below
--- rewrites them rather than leaving them for that release to meet.
+-- EXPAND/CONTRACT (CONTEXT.md §6): READERS SHIP FIRST. A nullable column with a
+-- CHECK every row satisfies, a widened CHECK, and an index; and NOTHING writes
+-- either new reason until an operator turns on `jobs.expire_silent_and_removed`
+-- (OTO_JOBS_EXPIRE_SILENT_AND_REMOVED, off by default). So the release carrying
+-- this migration also carries every reader that can spell `silent` and
+-- `source_removed`, and runs against this schema with the writer dark.
+--
+-- ⚠️ ONCE THE FLAG HAS BEEN ON, A ROLLBACK BELOW THIS RELEASE NEEDS
+-- `goose down 00094` FIRST. The release below cannot spell either reason and would
+-- read a `silent` row as an unknown enum value; the Down below rewrites them to
+-- `timeout` (still expired) before narrowing the CHECK, rather than leaving them for
+-- that release to meet. Rolling back with the flag never turned on needs nothing:
+-- no row carries either reason.
 
 -- +goose Up
 
@@ -50,17 +62,21 @@ ALTER TABLE alert_cases ADD CONSTRAINT case_resreason_ck
 
 -- +goose StatementBegin
 COMMENT ON COLUMN alert_cases.resolve_reason IS
-  'Why the episode closed. upstream: an explicit status=resolved arrived, and it is the ONLY resolution. timeout: source_ends_at + resolve_grace passed under a healthy source. silent: a healthy source said nothing about it for longer than its max_silence_s (ADR 0056 section 3). source_removed: no live source feeds its cluster any more (ADR 0056 section 2). The last three are all expired. Since ADR 0040 this is the SOLE record of resolved-versus-expired on a Case, and case_resolve_ck guarantees a closed episode says why.';
+  'Why the episode closed. upstream: an explicit status=resolved arrived, and it is the ONLY resolution. timeout: source_ends_at + resolve_grace passed while every live source on its cluster was healthy. silent: every live source on its cluster was healthy and none said anything about it for longer than the longest max_silence_s among them (ADR 0056 section 3). source_removed: no live source has fed its cluster for a resolve_grace (ADR 0056 section 2). The last three are all expired. Since ADR 0040 this is the SOLE record of resolved-versus-expired on a Case, and case_resolve_ck guarantees a closed episode says why.';
 -- +goose StatementEnd
 
-ALTER TABLE alert_sources ADD COLUMN max_silence_s INT DEFAULT 86400;
+-- ⭐ TWO STATEMENTS, AND THE ORDER IS R2. ADD COLUMN with a DEFAULT would backfill
+-- every existing row with it; added bare, they read NULL (off), and only rows
+-- inserted afterwards take the day.
+ALTER TABLE alert_sources ADD COLUMN max_silence_s INT;
+ALTER TABLE alert_sources ALTER COLUMN max_silence_s SET DEFAULT 86400;
 
 ALTER TABLE alert_sources ADD CONSTRAINT alert_sources_silence_ck
   CHECK (max_silence_s IS NULL OR max_silence_s BETWEEN 3600 AND 2592000);
 
 -- +goose StatementBegin
 COMMENT ON COLUMN alert_sources.max_silence_s IS
-  'How long, in seconds, this source may say nothing about an open Case before the reaper expires it as silent (ADR 0056 section 3). Default one day; NULL turns it off. Asked only while the source is healthy: under an unhealthy one oto cannot tell silence from an outage, so the Case is held (SPEC B.4). Must exceed the source Alertmanager repeat_interval, or long-firing Cases expire while still firing.';
+  'How long, in seconds, this source may say nothing about an open Case before the reaper expires it as silent (ADR 0056 section 3). New sources default to one day; sources that existed before migration 00094 start NULL, which turns it off. Per cluster the threshold is the longest among its live sources, and NULL on any of them turns it off for the cluster. Asked only while every live source on the cluster is healthy: under an unhealthy one oto cannot tell silence from an outage, so the Case is held (SPEC B.4). Must exceed the source Alertmanager repeat_interval, or long-firing Cases expire while still firing.';
 -- +goose StatementEnd
 
 -- The reaper's two new scans walk OPEN episodes oldest-heard-first: `silent` stops

@@ -31,18 +31,22 @@ func (s *Service) CaseCover(
 	if err != nil {
 		return nil, err
 	}
-	bySource := make(map[uuid.UUID]uuid.UUID, len(cover))
-	for id, c := range cover {
-		if c.SourceID != uuid.Nil {
-			bySource[id] = c.SourceID
-		}
+	var all []uuid.UUID
+	for _, c := range cover {
+		all = append(all, c.LiveIDs...)
 	}
-	healthy := s.healthBySource(ctx, scope, bySource)
+	healthy := s.healthBySource(ctx, scope, all)
 	for id, c := range cover {
-		if c.SourceID != uuid.Nil {
-			c.Healthy = healthy[c.SourceID]
-			cover[id] = c
+		// The reaper's R1 guard, as the screen reads it: at least one live
+		// source, and every one of them proven healthy.
+		c.AllHealthy = len(c.Sources) > 0
+		for i := range c.Sources {
+			c.Sources[i].Healthy = healthy[c.Sources[i].ID]
+			if !c.Sources[i].Healthy {
+				c.AllHealthy = false
+			}
 		}
+		cover[id] = c
 	}
 	return cover, nil
 }
@@ -56,13 +60,16 @@ type SourceCaseCount struct {
 }
 
 // OpenCasesBySource counts, for each named live source, the open Cases on its
-// cluster and how many of those the reaper's guard holds (ADR 0056 §1).
+// cluster and how many of those the reaper's guard holds BECAUSE OF IT (ADR 0056
+// §1).
 //
-// Held is every open Case on the cluster when the source is not proven healthy,
-// or when the cluster has more than one live source — the reaper speaks for a
-// cluster's Cases only through its ONE live source (`caseSourcesSQL`), so an HA
-// pair holds all of them. It is the per-source form of the `held` number the
-// sweep used to report only to a log line.
+// Held is every open Case on the cluster while the source is not proven healthy,
+// and none otherwise. ⭐ A HEALTHY REPLICA HOLDS NOTHING (owner ruling R1): the
+// reaper asks every live source on a cluster, so an HA pair's Cases are held while
+// either replica is unhealthy — and it is the unhealthy one's row that says so,
+// exactly as the sweep names only the sources it could not vouch for. It is the
+// per-source form of the `held` number the sweep used to report only to a log
+// line.
 //
 // A source absent from the result was not counted (removed, foreign, or the
 // reader is unwired); the caller must not render it as zero.
@@ -77,14 +84,14 @@ func (s *Service) OpenCasesBySource(
 	if err != nil {
 		return nil, err
 	}
-	self := make(map[uuid.UUID]uuid.UUID, len(counts))
+	self := make([]uuid.UUID, 0, len(counts))
 	for id := range counts {
-		self[id] = id
+		self = append(self, id)
 	}
 	healthy := s.healthBySource(ctx, scope, self)
 	for id, c := range counts {
 		held := 0
-		if c.LiveInCluster != 1 || !healthy[id] {
+		if !healthy[id] {
 			held = c.Open
 		}
 		out[id] = SourceCaseCount{Open: c.Open, Held: held}

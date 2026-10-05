@@ -103,11 +103,13 @@ type SourceDraft struct {
 // disable ingestion on a source that only meant to be renamed.
 //
 // `Kind` is deliberately absent — turning an Alertmanager into a Grafana would
-// reinterpret every payload already stored against it.
+// reinterpret every payload already stored against it. `ClusterID` is absent for
+// a reason of the same weight (owner ruling R3): a source's cluster is which Cases
+// it speaks for, and moving it would orphan one cluster's Cases and hand another a
+// witness to alerts it never carried.
 type SourcePatch struct {
-	ClusterID *uuid.UUID
-	Name      *string
-	BaseURL   *string
+	Name    *string
+	BaseURL *string
 	// PrometheusURL is a double pointer: nil leaves it, a pointer to nil clears
 	// it, a pointer to a pointer sets it. The contract types this field as
 	// `["string","null"]` for exactly that reason.
@@ -133,7 +135,7 @@ type SourcePatch struct {
 
 // IsEmpty reports whether the patch would change nothing.
 func (p SourcePatch) IsEmpty() bool {
-	return p.ClusterID == nil && p.Name == nil && p.BaseURL == nil &&
+	return p.Name == nil && p.BaseURL == nil &&
 		p.PrometheusURL == nil && p.AuthCredentialID == nil && p.TLSSkipVerify == nil &&
 		p.InjectLabels == nil && p.IgnoreLabels == nil && p.RedactLabels == nil &&
 		p.RedactAnnotations == nil && p.PushEnabled == nil &&

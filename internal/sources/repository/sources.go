@@ -412,20 +412,19 @@ func (r *SourceRepository) Create(ctx context.Context, s db.TenantScope, in doma
 // same reason, as `channels`, `orgs` and OrderingStore.Advance.
 const updateSourceSQL = `
 UPDATE alert_sources SET
-    cluster_id         = COALESCE($3, cluster_id),
-    name               = COALESCE($4, name),
-    base_url           = COALESCE($5, base_url),
-    prometheus_url     = CASE WHEN $6  THEN $7  ELSE prometheus_url END,
-    auth_credential_id = CASE WHEN $8  THEN $9  ELSE auth_credential_id END,
-    tls_skip_verify    = COALESCE($10, tls_skip_verify),
-    inject_labels      = COALESCE($11, inject_labels),
-    ignore_labels      = COALESCE($12, ignore_labels),
-    redact_labels      = COALESCE($13, redact_labels),
-    redact_annotations = COALESCE($14, redact_annotations),
-    push_enabled       = COALESCE($15, push_enabled),
-    reconcile_interval_s = COALESCE($16, reconcile_interval_s),
-    max_silence_s      = CASE WHEN $18 THEN $19 ELSE max_silence_s END,
-    updated_at         = GREATEST(updated_at, $17)
+    name               = COALESCE($3, name),
+    base_url           = COALESCE($4, base_url),
+    prometheus_url     = CASE WHEN $5  THEN $6  ELSE prometheus_url END,
+    auth_credential_id = CASE WHEN $7  THEN $8  ELSE auth_credential_id END,
+    tls_skip_verify    = COALESCE($9, tls_skip_verify),
+    inject_labels      = COALESCE($10, inject_labels),
+    ignore_labels      = COALESCE($11, ignore_labels),
+    redact_labels      = COALESCE($12, redact_labels),
+    redact_annotations = COALESCE($13, redact_annotations),
+    push_enabled       = COALESCE($14, push_enabled),
+    reconcile_interval_s = COALESCE($15, reconcile_interval_s),
+    max_silence_s      = CASE WHEN $17 THEN $18 ELSE max_silence_s END,
+    updated_at         = GREATEST(updated_at, $16)
  WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL
 RETURNING id`
 
@@ -487,7 +486,7 @@ func (r *SourceRepository) Update(
 
 	var stored uuid.UUID
 	err := r.db(ctx).QueryRow(ctx, updateSourceSQL,
-		s.OrgID(), sourceID, p.ClusterID, p.Name, p.BaseURL, setProm, promVal,
+		s.OrgID(), sourceID, p.Name, p.BaseURL, setProm, promVal,
 		setCred, credVal, p.TLSSkipVerify, inject, p.IgnoreLabels, p.RedactLabels,
 		p.RedactAnnotations, p.PushEnabled, interval,
 		r.clock.Now().UTC(), setSilence, silence,

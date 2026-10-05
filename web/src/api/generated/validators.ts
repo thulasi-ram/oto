@@ -596,6 +596,17 @@ export const CaseSourcesDTOSchema = v.looseObject({
     v.integer(),
     v.minValue(0),
   ),
+  "all_healthy": v.boolean(),
+  "max_silence_seconds": v.nullable(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(3600),
+    v.maxValue(2592000),
+  )),
+  "live_sources": v.pipe(
+    v.array(CaseSourceDTOSchema),
+    v.maxLength(10),
+  ),
   "source": v.nullable(CaseSourceDTOSchema),
 });
 
@@ -2680,7 +2691,6 @@ export const UpdateSourceRequestSchema = v.pipe(
       v.minLength(1),
       v.maxLength(120),
     )),
-    "cluster_id": v.exactOptional(UuidSchema),
     "base_url": v.exactOptional(v.pipe(
       v.string(),
       v.url(),

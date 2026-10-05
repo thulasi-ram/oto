@@ -207,6 +207,22 @@ type JobsConfig struct {
 	FetchInterval time.Duration `koanf:"fetch_interval" validate:"gt=0"`
 	JobTimeout    time.Duration `koanf:"job_timeout"    validate:"gt=0"`
 	RescueAfter   time.Duration `koanf:"rescue_after"   validate:"gt=0"`
+
+	// ExpireSilentAndRemoved turns on the reaper's two ADR 0056 expiries:
+	// `silent` (an open Case its healthy sources have said nothing about for longer
+	// than their max silence) and `source_removed` (an open Case whose cluster's
+	// last source was deleted, a resolve grace ago). OTO_JOBS_EXPIRE_SILENT_AND_REMOVED.
+	//
+	// ⭐ OFF BY DEFAULT, AND THAT IS THE ROLLOUT ORDER. Migration 00094 and every
+	// reader of the two new `resolve_reason` values ship first; nothing writes
+	// either value until this is on. Off, `case.reap` is exactly the `timeout`
+	// sweep it was before 00094.
+	//
+	// ⚠️ ONCE IT HAS BEEN ON, ROLLING BACK BELOW THE RELEASE THAT INTRODUCED IT
+	// NEEDS `goose down 00094` FIRST: a release older than the readers would meet a
+	// `silent` or `source_removed` reason it cannot spell, and 00094's Down
+	// rewrites them to `timeout` (still expired) before narrowing the CHECK.
+	ExpireSilentAndRemoved bool `koanf:"expire_silent_and_removed"`
 }
 
 // IngestConfig configures the webhook accept path. SPEC §C.9 and §G.2.

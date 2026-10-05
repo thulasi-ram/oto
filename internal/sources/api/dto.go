@@ -71,8 +71,8 @@ type SourceDTO struct {
 
 	// OpenCaseCount and HeldCaseCount are the open Cases on this source's cluster
 	// and how many of them the reaper is holding because of this source — all of
-	// them while it is not healthy, or while its cluster has another live source
-	// (ADR 0056 §1). Served on the list only; absent means not counted, never 0.
+	// them while it is not healthy, none while it is (ADR 0056 §1, owner ruling
+	// R1). Served on the list only; absent means not counted, never 0.
 	OpenCaseCount *int32 `json:"open_case_count,omitempty"`
 	HeldCaseCount *int32 `json:"held_case_count,omitempty"`
 
@@ -508,13 +508,20 @@ type CreateSourceRequest struct {
 // `kind` is absent because changing an Alertmanager into a Grafana would
 // reinterpret every payload already stored against it.
 //
+// ⛔ `cluster_id` IS ABSENT TOO, AND REFUSED BY NAME THE SAME WAY (owner ruling R3,
+// 2026-10-05). A source's cluster is what ties it to the Cases it speaks for: the
+// reaper's §B.4 guard, the `silent` threshold and `source_removed` are all
+// questions about which live sources feed a Case's CLUSTER. Moving a source would
+// leave its old cluster's Cases orphaned — expired as `source_removed` a resolve
+// grace later — and hand its new cluster a witness to alerts it never carried. A
+// source on the wrong cluster is deleted and registered again on the right one.
+//
 // ⚠️ `ignore_labels` feeds the alert-identity hash. Changing it does NOT re-key
 // existing alerts — new identities are created from that point forward, which is
 // documented behaviour rather than a defect (§C.2).
 type UpdateSourceRequest struct {
-	Name      *string    `json:"name,omitempty"       validate:"omitempty,notblank,min=1,max=120"`
-	ClusterID *uuid.UUID `json:"cluster_id,omitempty"`
-	BaseURL   *string    `json:"base_url,omitempty"   validate:"omitempty,max=2048,httpurl"`
+	Name    *string `json:"name,omitempty"       validate:"omitempty,notblank,min=1,max=120"`
+	BaseURL *string `json:"base_url,omitempty"   validate:"omitempty,max=2048,httpurl"`
 	// PrometheusURL is `["string","null"]` in the contract: an explicit null
 	// CLEARS it, which is different from omitting the field. Its `httpurl` bound
 	// is enforced in toPatch, because a custom unmarshaller has no field for a
@@ -547,7 +554,7 @@ type UpdateSourceRequest struct {
 // body `minProperties: 1`, and a PATCH that changes nothing but reports success
 // is a PATCH whose author will believe something changed.
 func (r UpdateSourceRequest) IsEmpty() bool {
-	return r.Name == nil && r.ClusterID == nil && r.BaseURL == nil && !r.PrometheusURL.Set &&
+	return r.Name == nil && r.BaseURL == nil && !r.PrometheusURL.Set &&
 		r.TLSSkipVerify == nil && r.InjectLabels == nil && r.IgnoreLabels == nil &&
 		r.RedactLabels == nil && r.RedactAnnotations == nil && r.PushEnabled == nil &&
 		r.ReconcileIntervalSeconds == nil && !r.MaxSilenceSeconds.Set && r.Credential == nil

@@ -701,6 +701,10 @@ func (l subjectLoader) LoadSubject(
 
 // caseSourceReader answers "which AlertSource did this episode come from",
 // through the batch port `alerts/service` already declares for the reaper guard.
+// That port answers with every live source on the cluster; only a cluster with
+// exactly ONE has an answer to "which", so an HA cluster reads as unresolved and
+// the enrichers that call upstream fall back to their generatorURL-only path
+// rather than querying a replica picked at random.
 type caseSourceReader struct {
 	resolver alertsservice.CaseSourceResolver
 }
@@ -715,8 +719,11 @@ func (r *caseSourceReader) SourceID(
 	if err != nil {
 		return uuid.Nil, false
 	}
-	src, ok := m[caseID]
-	return src, ok && src != uuid.Nil
+	srcs := m[caseID]
+	if len(srcs) != 1 || srcs[0] == uuid.Nil {
+		return uuid.Nil, false
+	}
+	return srcs[0], true
 }
 
 // enrichmentReader is `alerts/service.EnrichmentReader` over the enrichment

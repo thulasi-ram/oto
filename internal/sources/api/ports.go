@@ -197,7 +197,8 @@ type CaseCount struct {
 	// Open is how many Cases on the source's cluster are open.
 	Open int
 	// Held is how many of those cannot expire because of this source: all of
-	// them while it is not healthy, or while its cluster has another live source.
+	// them while it is not healthy, none while it is (owner ruling R1 — an HA
+	// sibling that is not healthy holds them too, and its own row says so).
 	Held int
 }
 
