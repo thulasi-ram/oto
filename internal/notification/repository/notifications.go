@@ -49,10 +49,13 @@ type notificationRow struct {
 	// which is the inference these two columns exist to retire.
 	digestCoveredFrom *time.Time
 	digestCoveredTo   *time.Time
-	// digestFinding is the COPY a digest carried (migration 00098), NULL for the
+	// The Incident fact's sequence (migration 00093). Nullable, because only an
+	// Incident fact numbered by a release at or above 00093 has one.
+	incidentSequence *int64
+	// digestFinding is the COPY a digest carried (migration 00102), NULL for the
 	// built-in body.
 	digestFinding []byte
-	// remedy is the Remedy transition a `remedy_*` fact declares (migration 00100), NULL on
+	// remedy is the Remedy transition a `remedy_*` fact declares (migration 00104), NULL on
 	// every other Reason.
 	remedy    []byte
 	createdAt time.Time
@@ -72,12 +75,13 @@ func (r *notificationRow) scanInto() []any {
 		&r.stateVersion, &r.idempotencyKey, &r.status, &r.suppressedReason,
 		&r.digestWindowStart, &r.digestCount,
 		&r.digestCoveredFrom, &r.digestCoveredTo,
+		&r.incidentSequence,
 		&r.digestFinding, &r.remedy,
 		&r.createdAt, &r.updatedAt,
 	}
 }
 
-// digestFindingJSON is `notifications.digest_finding` as stored (migration 00098).
+// digestFindingJSON is `notifications.digest_finding` as stored (migration 00102).
 type digestFindingJSON struct {
 	InvestigationID uuid.UUID `json:"investigation_id"`
 	Investigator    string    `json:"investigator"`
@@ -118,7 +122,7 @@ func decodeDigestFinding(b []byte) *domain.DigestFinding {
 	}
 }
 
-// remedyJSON is `notifications.remedy` as stored (migration 00100).
+// remedyJSON is `notifications.remedy` as stored (migration 00104).
 type remedyJSON struct {
 	RemedyID          uuid.UUID            `json:"remedy_id"`
 	InvestigationID   uuid.UUID            `json:"investigation_id"`
@@ -220,6 +224,9 @@ func (r notificationRow) toDomain() domain.Notification {
 		CreatedAt:         r.createdAt,
 		UpdatedAt:         r.updatedAt,
 	}
+	if r.incidentSequence != nil {
+		n.IncidentSequence = *r.incidentSequence
+	}
 	// The domain keeps `GroupID` a value, because seventeen of the eighteen Reasons
 	// always have one and forcing every reader through a pointer would be a cost paid
 	// on every path to describe one — `digest` is the eighteenth and the only Reason
@@ -254,11 +261,17 @@ func (r *NotificationRepository) db(ctx context.Context) db.Querier { return db.
 // column held the length. Every reader that wanted a span had to multiply the start
 // by the policy's CURRENT `digest_window_s`, which is the inference that re-reported
 // a whole hour as six ten-minute digests the first time somebody narrowed a window.
+//
+// ⭐ `incident_sequence` MAKES IT 21 (migration 00093): an Incident fact's place in
+// its Incident's story, frozen when the fact is evaluated so a retry renders the
+// number the first attempt did. It joins `scanInto` at the same position, which is
+// the whole reason that one argument list exists.
 const notificationColumns = `
   id, org_id, subject_kind, subject_id, conversation_kind, conversation_id,
   alert_id, case_id,
   reason, policy_id, state_version, idempotency_key, status, suppressed_reason,
   digest_window_start, digest_count, digest_covered_from, digest_covered_to,
+  incident_sequence,
   digest_finding, remedy,
   created_at, updated_at`
 
@@ -279,9 +292,10 @@ INSERT INTO notifications (
   alert_id, case_id,
   reason, policy_id, state_version, idempotency_key, status, suppressed_reason,
   digest_window_start, digest_count, digest_covered_from, digest_covered_to,
+  incident_sequence,
   digest_finding, remedy,
   created_at, updated_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$20,$21,$19,$19)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$21,$22,$20,$20)
 ON CONFLICT (org_id, idempotency_key) DO NOTHING
 RETURNING` + notificationColumns
 
@@ -314,6 +328,14 @@ func (r *NotificationRepository) Insert(
 		suppressed = &v
 	}
 
+	// 0 is the absence, and `notifications_incident_seq_ck` admits NULL and nothing
+	// below 1.
+	var sequence *int64
+	if n.IncidentSequence > 0 {
+		v := n.IncidentSequence
+		sequence = &v
+	}
+
 	finding, err := encodeDigestFinding(n.DigestFinding)
 	if err != nil {
 		return domain.Notification{}, false, mapErr(err, "notification_not_found", "encode a digest's Finding")
@@ -331,7 +353,7 @@ func (r *NotificationRepository) Insert(
 		n.AlertID, n.CaseID, string(n.Reason), n.PolicyID, n.StateVersion,
 		n.IdempotencyKey, string(n.Status), suppressed,
 		n.DigestWindowStart, n.DigestCount,
-		n.DigestCoveredFrom, n.DigestCoveredTo, n.CreatedAt,
+		n.DigestCoveredFrom, n.DigestCoveredTo, sequence, n.CreatedAt,
 		finding, remedy,
 	).Scan(row.scanInto()...)
 	switch {

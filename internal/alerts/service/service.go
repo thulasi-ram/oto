@@ -39,6 +39,11 @@ type Deps struct {
 	OccBatch      CaseBatchReader
 	OccSources    CaseSourceResolver
 	SnoozeHistory SnoozeHistoryReader
+	// CaseCover reads, for display, who can still speak for a Case and how many
+	// open Cases a source's cluster holds (ADR 0056 §1). ⭐ UNWIRED MEANS THE
+	// SCREENS SAY NOTHING ABOUT EXPIRY, never that a Case can expire: the two
+	// reads answer "unknown", and nothing the reaper decides depends on them.
+	CaseCover CaseCoverReader
 	// CasePolicies reads `case_policy_config` — the case retention window W
 	// (migration 00057). ⭐ UNWIRED MEANS W=0 FOR EVERY ALERT, which is the
 	// pre-00057 close path exactly: a case closes on the resolve. Nothing degrades
@@ -80,6 +85,14 @@ type Deps struct {
 	// before Correlators existed.
 	CaseOpenings CaseOpenings
 
+	// ExpireSilentAndRemoved turns on the reaper's two ADR 0056 passes, `silent`
+	// and `source_removed` (config `jobs.expire_silent_and_removed`, env
+	// OTO_JOBS_EXPIRE_SILENT_AND_REMOVED). ⭐ OFF BY DEFAULT, AND THAT IS THE
+	// ROLLOUT: migration 00094 and the readers that understand its two reasons ship
+	// first, and nothing writes either reason until an operator turns this on. Off,
+	// `case.reap` is exactly the `timeout` sweep it was before 00094.
+	ExpireSilentAndRemoved bool
+
 	Clock  clock.Clock
 	Logger *slog.Logger
 }
@@ -101,6 +114,7 @@ type Service struct {
 	cases       CaseRepository
 	occBatch    CaseBatchReader
 	occSources  CaseSourceResolver
+	cover       CaseCoverReader
 	casePolicy  CasePolicyRepository
 	casePolicyW CasePolicyConfigStore
 	events      EventRepository
@@ -117,6 +131,9 @@ type Service struct {
 	notifications NotificationReader
 	caseEndings   CaseEndings
 	caseOpenings  CaseOpenings
+
+	// expireUnheard is Deps.ExpireSilentAndRemoved.
+	expireUnheard bool
 
 	clock clock.Clock
 	log   *slog.Logger
@@ -153,6 +170,7 @@ func New(d Deps) (*Service, error) {
 		cases:         d.Cases,
 		occBatch:      d.OccBatch,
 		occSources:    d.OccSources,
+		cover:         d.CaseCover,
 		casePolicy:    d.CasePolicies,
 		casePolicyW:   d.CasePolicyConfig,
 		events:        d.Events,
@@ -168,6 +186,7 @@ func New(d Deps) (*Service, error) {
 		notifications: d.Notifications,
 		caseEndings:   d.CaseEndings,
 		caseOpenings:  d.CaseOpenings,
+		expireUnheard: d.ExpireSilentAndRemoved,
 		clock:         clk,
 		log:           logger,
 	}, nil

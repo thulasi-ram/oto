@@ -39,8 +39,9 @@
  * ⛔ THE RECEIPT HERE HAS ITS WAY BACK, and that is a rule rather than a
  * coincidence. A gesture that writes a record and cannot unwrite it leaves the
  * operator with nothing to do but be wrong in public — so the receipt is a
- * TOGGLE: one control, reading `Acknowledge` while this firing carries none and
- * the withdrawal's own words once it does.
+ * TOGGLE: one control, reading `Ack` while this firing carries none and `Unack`
+ * once it does — the same two words as the row on `/cases`, so the verb an
+ * operator presses there is the verb they press here.
  *
  * The same timeline component the alert detail uses, reading this episode's own
  * events (`GET /cases/{id}/events`) rather than the identity's whole history:
@@ -75,6 +76,7 @@ import { absoluteTime, idempotencyKey } from "~/lib/format";
 import { createKeysetFeed, keepPrevious, type KeysetFeed } from "~/lib/keysetFeed";
 import { EnrichmentPanel } from "~/features/alerts/detail/EnrichmentPanel";
 import { InvestigationPanel } from "~/features/investigations/InvestigationPanel";
+import { ExpiryNote, LastHeard } from "~/features/alerts/Staleness";
 import { PANEL_CODE_BLOCK } from "~/features/alerts/detail/rhythm";
 import { Timeline } from "~/features/alerts/detail/Timeline";
 import { typesForCategories, type EventCategory } from "~/features/alerts/detail/eventKinds";
@@ -298,6 +300,9 @@ export default function CaseDetailRoute() {
                           </span>
                         )}
                       </Show>
+                      {/* ADR 0056 §1: how long since upstream last said anything
+                          about this firing — the fact a stale Case is made of. */}
+                      <LastHeard at={c().last_observed_at} />
                       <Show when={c().alert}>
                         {(a) => (
                           <>
@@ -317,6 +322,13 @@ export default function CaseDetailRoute() {
                         )}
                       </Show>
                     </div>
+
+                    {/* ⭐ WHETHER THIS FIRING CAN EXPIRE, AND WHY NOT (ADR 0056 §1).
+                        A Case that upstream stopped speaking about used to sit
+                        open with nothing on screen to say whether it ever would
+                        end. This says so in the reaper's own terms. It is facts
+                        only: nothing here ends a Case. */}
+                    <ExpiryNote case={c()} class="mt-1.5" />
 
                     <Show when={c().ack_note}>
                       {(note) => (
@@ -354,7 +366,7 @@ export default function CaseDetailRoute() {
                             : "Record that a human has seen this firing. It stays firing, at the same severity."
                       }
                     >
-                      {acked() ? "Withdraw acknowledgement" : "Acknowledge"}
+                      {acked() ? "Unack" : "Ack"}
                     </Button>
                     {/* ⭐ THE MEMBERSHIP CONTROLS FOLLOW WHICH INCIDENT THIS CASE
                         IS IN, and wait for the answer. Offered on an ended firing

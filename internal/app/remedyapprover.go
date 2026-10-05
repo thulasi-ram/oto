@@ -19,7 +19,7 @@ import (
 	"github.com/thulasiram/oto/internal/platform/errs"
 )
 
-// ⭐⭐ THE ONLY WAY A REMEDY APPROVER IS GRANTED OR REVOKED (ADR 0054 §4, migration 00099,
+// ⭐⭐ THE ONLY WAY A REMEDY APPROVER IS GRANTED OR REVOKED (ADR 0054 §4, migration 00103,
 // git-bug 47f67c8). `oto grant remedy-approver` and `oto revoke remedy-approver` call these
 // two functions, and nothing else in the product writes `remedy_approver_grants`.
 //

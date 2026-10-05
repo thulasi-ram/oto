@@ -421,6 +421,7 @@ func (a incidentAnnouncer) Announce(
 			IncidentID: f.IncidentID,
 			Reason:     string(reason),
 			OccasionID: f.Occasion,
+			Sequence:   f.Sequence,
 		}})
 	}
 	if len(reqs) == 0 {
@@ -440,6 +441,9 @@ func (a incidentAnnouncer) Announce(
 // positive false statement.
 type incidentFacts struct {
 	svc incidentDetails
+	// orgs names the tenant for the envelope's `org`. Bound at construction:
+	// identity is built before notification, unlike incidents.
+	orgs *identityservice.Service
 	// investigations reads the Incident's latest Finding for its card (ADR 0053 §4,
 	// git-bug 74ea849). Late-bound too: investigator is built after incidents. An
 	// unfilled one answers "no Finding" rather than an error, for caseEndings' reason:
@@ -507,6 +511,13 @@ func (r *incidentFacts) Incident(
 			ExternalURL: o.ExternalURL,
 			ExternalID:  o.ExternalID,
 		})
+	}
+	if r.orgs != nil {
+		org, err := r.orgs.GetOrg(ctx, s)
+		if err != nil {
+			return notifdomain.IncidentFacts{}, err
+		}
+		out.Org = notifdomain.OrgFacts{ID: org.ID, Slug: org.Slug, Name: org.Name}
 	}
 	if r.investigations != nil {
 		// ⛔ A FINDING THAT CANNOT BE READ IS NO FINDING, NOT A FAILED INCIDENT (review B2,
@@ -801,6 +812,10 @@ func (l subjectLoader) LoadSubject(
 
 // caseSourceReader answers "which AlertSource did this episode come from",
 // through the batch port `alerts/service` already declares for the reaper guard.
+// That port answers with every live source on the cluster; only a cluster with
+// exactly ONE has an answer to "which", so an HA cluster reads as unresolved and
+// the enrichers that call upstream fall back to their generatorURL-only path
+// rather than querying a replica picked at random.
 type caseSourceReader struct {
 	resolver alertsservice.CaseSourceResolver
 }
@@ -815,8 +830,11 @@ func (r *caseSourceReader) SourceID(
 	if err != nil {
 		return uuid.Nil, false
 	}
-	src, ok := m[caseID]
-	return src, ok && src != uuid.Nil
+	srcs := m[caseID]
+	if len(srcs) != 1 || srcs[0] == uuid.Nil {
+		return uuid.Nil, false
+	}
+	return srcs[0], true
 }
 
 // enrichmentReader is `alerts/service.EnrichmentReader` over the enrichment
@@ -1186,6 +1204,31 @@ func (l orgLister) LiveScope(ctx context.Context, orgID uuid.UUID) (db.TenantSco
 		return db.TenantScope{}, err
 	}
 	return db.NewTenantScope(found)
+}
+
+// sourceCases is `sources/api.CaseCounts` over `alerts/service` (ADR 0056 §1).
+// `sources` may not import `alerts/domain` beyond the kernel rule, and the count
+// is the alerts module's — it owns the reaper whose holds are being counted — so
+// the numbers cross as plain ints.
+type sourceCases struct {
+	svc *alertsservice.Service
+}
+
+func (c sourceCases) OpenCasesBySource(
+	ctx context.Context, s db.TenantScope, sourceIDs []uuid.UUID,
+) (map[uuid.UUID]sourcesapi.CaseCount, error) {
+	if c.svc == nil {
+		return nil, nil
+	}
+	counts, err := c.svc.OpenCasesBySource(ctx, s, sourceIDs)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[uuid.UUID]sourcesapi.CaseCount, len(counts))
+	for id, n := range counts {
+		out[id] = sourcesapi.CaseCount{Open: n.Open, Held: n.Held}
+	}
+	return out, nil
 }
 
 // ---------------------------------------------------------------- ingestion

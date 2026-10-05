@@ -57,7 +57,7 @@ type settingsJSON struct {
 	// the shipped default — a finite ceiling, never "unlimited".
 	InvestigationDailyTokens *int `json:"investigation_daily_tokens,omitempty"`
 	InvestigationConcurrency *int `json:"investigation_concurrency,omitempty"`
-	// The Remedy approval window (ADR 0054 §2, migration 00100). Absent reads as the
+	// The Remedy approval window (ADR 0054 §2, migration 00104). Absent reads as the
 	// shipped hour.
 	RemedyApprovalWindowS *int `json:"remedy_approval_window_s,omitempty"`
 

@@ -1,6 +1,6 @@
 package repository_test
 
-// INVESTIGATORS, INVESTIGATIONS AND STEPS AGAINST A REAL POSTGRES (migration 00092,
+// INVESTIGATORS, INVESTIGATIONS AND STEPS AGAINST A REAL POSTGRES (migration 00096,
 // git-bug 180a525). Every claim here is one the SQL makes on its own, whatever the Go
 // above it does: a Step is append-only, an ended run is frozen, a reason belongs to its
 // status, a version number is taken once, and another org's rows are a 404.
@@ -171,7 +171,7 @@ func TestAnEndedRunIsFrozenAndItsReasonBelongsToItsStatus(t *testing.T) {
 	require.Contains(t, err.Error(), "frozen")
 }
 
-// TestADigestRunItsWindowOutlivedIsSkippedOnTheRecord — owner ruling O4, migration 00102:
+// TestADigestRunItsWindowOutlivedIsSkippedOnTheRecord — owner ruling O4, migration 00106:
 // `investigations_reason_ck` admits `skipped`/`window_closed`, and only on `skipped`.
 func TestADigestRunItsWindowOutlivedIsSkippedOnTheRecord(t *testing.T) {
 	t.Parallel()
@@ -258,7 +258,7 @@ func TestASubjectsRunsAreLatestFirstAndPriorFindingsStayInTheirKey(t *testing.T)
 // ------------------------------------------------------------------ ADR 0053 §6
 //
 // git-bug bf172fe: the org's daily budget, its concurrency, and an Investigator's
-// minimum interval, as the SQL holds them (migration 00094).
+// minimum interval, as the SQL holds them (migration 00098).
 
 func TestASkippedBudgetRunIsAdmittedAndADisabledReasonStaysSkippedOnly(t *testing.T) {
 	t.Parallel()
@@ -433,7 +433,7 @@ func TestAnInvestigatorsMinimumIntervalIsStoredAndBounded(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestAnIncidentIsInvestigatedAsAWholeAtTheRow — git-bug 74ea849, migration 00095: an
+// TestAnIncidentIsInvestigatedAsAWholeAtTheRow — git-bug 74ea849, migration 00099: an
 // Investigator opts in to Incidents and the flag is not a version; an Investigation's
 // subject may be an Incident and nothing else new; and the read an Incident's run
 // makes of its member Cases' earlier Findings — and of its own — is one query over
@@ -493,14 +493,14 @@ func TestAnIncidentIsInvestigatedAsAWholeAtTheRow(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, none, "another org reads none of them")
 
-	// ⛔ `investigations_subjkind_ck` admits `case`, `incident` and (00098) `digest` —
+	// ⛔ `investigations_subjkind_ck` admits `case`, `incident` and (00102) `digest` —
 	// and not `policy`, which has no run path.
 	waiting := w.queued(t, "k", at)
 	_, err = w.h.Pool.Exec(w.h.Ctx, `UPDATE investigations SET subject_kind = 'policy' WHERE id = $1`, waiting.ID)
 	require.Error(t, err)
 }
 
-// TestADigestWindowIsOneRunAndItsWindowRoundTrips — git-bug 3e96f5a, migration 00098: a
+// TestADigestWindowIsOneRunAndItsWindowRoundTrips — git-bug 3e96f5a, migration 00102: a
 // digest run names its policy AND its window; the window round-trips; DigestRun finds it
 // by both halves and never another org's or another window's; the database holds one run
 // per policy per window; and a digest without a window, or a Case with one, is refused.

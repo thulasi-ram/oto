@@ -714,7 +714,7 @@ func assertOrdinals(t *testing.T, d domain.Digest, w time.Duration, starts []tim
 	}
 }
 
-// TestAnInvestigatorSummarisesOnlyADigestThatIsSent — migration 00098's
+// TestAnInvestigatorSummarisesOnlyADigestThatIsSent — migration 00102's
 // `policies_digest_investigator_ck`, said as a field the settings form can point at: a
 // policy may name an Investigator for its digest only while it has a window, and a merge
 // that keeps the Investigator without the window is refused. (A PATCH that merely omits

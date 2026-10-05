@@ -21,9 +21,16 @@
  * ⭐ THE ROW LEADS WITH `number`, for the reason `/cases` does: it is the
  * per-org name somebody reads out, and it is what `/incidents/:number` addresses.
  *
+ * ⭐ AN EMPTY INCIDENT IS HIDDEN, NOT GONE (owner ruling 2026-10-04). One whose
+ * every Case was removed or moved away is kept as a record and still opens at
+ * `/incidents/:number`, but it is not a story anybody is following, so the server
+ * leaves it off the list unless `include_empty=true` asks. "Show empty Incidents"
+ * is that ask, and nothing else: it filters which rows are listed and says nothing
+ * about any Incident's state.
+ *
  * Pagination is keyset and append-only, the same bargain `/cases` makes.
  */
-import { For, Match, Show, Switch } from "solid-js";
+import { createSignal, For, Match, Show, Switch } from "solid-js";
 import { A } from "@solidjs/router";
 import { useQuery } from "@tanstack/solid-query";
 
@@ -32,6 +39,7 @@ import { qk } from "~/api/keys";
 import type { Incident, IncidentListQuery } from "~/api/types";
 import { RelativeTime } from "~/components/Time";
 import { Button } from "~/components/ui/Button";
+import { Checkbox } from "~/components/ui/Checkbox";
 import { ErrorState, PageEmptyState, TableSkeleton } from "~/components/ui/states";
 import { IncidentStateChip, describeAttribution } from "~/features/incidents/parts";
 import { cn } from "~/lib/cn";
@@ -41,16 +49,26 @@ import { createKeysetFeed, keepPrevious, type KeysetFeed } from "~/lib/keysetFee
 const PAGE_SIZE = 50;
 
 export default function IncidentsRoute() {
+  const [showEmpty, setShowEmpty] = createSignal(false);
+
   // The annotation cuts the inference loop, exactly as on `/cases`: the feed
   // reads the query's envelope and the query's key carries the feed's cursor.
+  //
+  // ⚠️ THE TOGGLE IS A FILTER AXIS, so it is the feed's fingerprint: the server
+  // binds a cursor to `include_empty`, and a position held across the toggle would
+  // be answered with `cursor_filter_mismatch`.
   const feed: KeysetFeed<Incident> = createKeysetFeed({
     envelope: () => incidents.data,
     isPlaceholder: () => incidents.isPlaceholderData,
     keyOf: (i) => i.id,
+    fingerprint: () => (showEmpty() ? "include_empty" : ""),
   });
 
   const query = (): IncidentListQuery => {
     const q: Record<string, unknown> = { limit: PAGE_SIZE };
+    // Sent only when asked: the default list IS the one without empty Incidents,
+    // and an explicit `false` would only be a second spelling of it.
+    if (showEmpty()) q["include_empty"] = true;
     if (feed.cursor() !== null) q["cursor"] = feed.cursor();
     return q as IncidentListQuery;
   };
@@ -77,8 +95,22 @@ export default function IncidentsRoute() {
         aria-live="polite"
       >
         <span class="text-body tabular-nums text-ink-muted">{status()}</span>
-        <span class="text-meta text-ink-subtle">
+        <span class="min-w-0 flex-1 truncate text-meta text-ink-subtle">
           Each one is a set of Cases drawn together as one story. Its state is read off its Cases.
+        </span>
+        <span class="flex shrink-0 items-center gap-xs">
+          <Checkbox
+            id="incidents-show-empty"
+            checked={showEmpty()}
+            onChange={(checked: boolean) => setShowEmpty(checked)}
+          />
+          <label
+            for="incidents-show-empty-input"
+            class="cursor-pointer select-none text-meta text-ink-muted"
+            title="An Incident whose every Case was removed or moved away is kept as a record and still opens by its number. It is left off this list unless you ask for it."
+          >
+            Show empty Incidents
+          </label>
         </span>
       </header>
 
@@ -98,10 +130,18 @@ export default function IncidentsRoute() {
               Incident exists until a Correlator or a person draws one; telling the
               operator that the Cases screen is where a person does it is the whole
               of the onboarding this needs. */}
+          {/* With empty Incidents hidden, "none have been drawn" could be false:
+              some may have been drawn and emptied. The title says only what the
+              list knows, and the body says where the rest are. */}
           <PageEmptyState
             motif="kumo"
-            title="No Incidents have been drawn."
-            body="An Incident is a set of Cases drawn together as one story. A Correlator draws one as Cases open, or a person draws one by selecting Cases on the Cases screen."
+            title={showEmpty() ? "No Incidents have been drawn." : "No Incidents with Cases in them."}
+            body={
+              "An Incident is a set of Cases drawn together as one story. A Correlator draws one as Cases open, or a person draws one by selecting Cases on the Cases screen." +
+              (showEmpty()
+                ? ""
+                : " An Incident whose Cases were all removed or moved away is hidden; Show empty Incidents lists it.")
+            }
           />
         </Match>
 

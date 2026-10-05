@@ -4,13 +4,14 @@
   "mode": "post_root",
   "delivered_at": "2026-08-07T17:57:29Z",
   "org": {
-    "id": "",
-    "slug": "",
-    "name": ""
+    "id": "o1",
+    "slug": "acme",
+    "name": "Acme"
   },
   "incident": {
     "id": "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
     "number": 4,
+    "sequence": 3,
     "state": "active",
     "drawn_at": "2026-08-07T17:37:29Z",
     "drawn_by": {

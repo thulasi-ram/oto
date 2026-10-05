@@ -32,7 +32,7 @@ package domain
 //     which; a mixed server is configured as `write`, and so is never read through.
 //
 // ⭐ A TOOL IS NAMED `<toolserver>__<tool>` TO A MODEL AND IN AN ALLOWLIST. The model
-// protocol's function-name alphabet is `[A-Za-z0-9_-]{1,64}` and 00092's allowlist CHECK
+// protocol's function-name alphabet is `[A-Za-z0-9_-]{1,64}` and 00096's allowlist CHECK
 // is the same alphabet, so neither `/` nor `.` can separate the two halves. A ToolServer
 // name has no underscore at all, so the FIRST `__` in a qualified name is always the
 // separator, whatever the Tool's own name contains — and oto's built-in Tools
@@ -53,7 +53,7 @@ import (
 	"github.com/thulasiram/oto/internal/platform/errs"
 )
 
-// Bounds mirroring migration 00093's CHECKs; the API DTO tags are the third copy.
+// Bounds mirroring migration 00097's CHECKs; the API DTO tags are the third copy.
 const (
 	// MaxToolServerNameLength is `tool_servers_name_ck`. Short, because the name is
 	// half of every qualified Tool name and the whole is capped at 64.
@@ -241,7 +241,7 @@ type CallLimits struct {
 	MaxResultBytes int
 }
 
-// NewCallLimits builds the limits inside 00093's bounds. Zero takes the default.
+// NewCallLimits builds the limits inside 00097's bounds. Zero takes the default.
 func NewCallLimits(timeoutSeconds, maxResultBytes int) (CallLimits, error) {
 	if timeoutSeconds == 0 {
 		timeoutSeconds = DefaultCallTimeoutSeconds

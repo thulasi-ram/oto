@@ -2,7 +2,7 @@ package service
 
 // git-bug 4148256's "Done when", for proposal, approval, decline and expiry, against the
 // scripted model, the real MCP adapter over an in-process ToolServer, and in-memory ports
-// that keep 00100's rules (ADR 0054 §1, §2, §4, §5): an Investigator proposes a Remedy and
+// that keep 00104's rules (ADR 0054 §1, §2, §4, §5): an Investigator proposes a Remedy and
 // never holds the write Tool; a Remedy with no Tool says so, is refused on approve, is
 // declinable and expires; a Remedy runs only after two DIFFERENT holders of the grant on its
 // ToolServer approve it, the same one twice counts once, and a non-holder is refused; a Remedy
@@ -32,7 +32,7 @@ import (
 
 // ------------------------------------------------------------------- fakes
 
-// memRemedies is the Remedy tables, keeping 00100's rules where a test depends on them: a
+// memRemedies is the Remedy tables, keeping 00104's rules where a test depends on them: a
 // Remedy is inserted proposed; a terminal one is frozen; every move is one of the legal
 // transitions from the state the caller read; one person approves once.
 type memRemedies struct {

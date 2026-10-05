@@ -11,7 +11,7 @@
 -- `subject_gone` (the policy is still there). The Go constant is
 -- `investigator/domain.ReasonWindowClosed`; the CHECK below is what lets its write land.
 --
--- The table comment is restated with the new reason, and now says what 00098 made true and
+-- The table comment is restated with the new reason, and now says what 00102 made true and
 -- never wrote down: a digest window's Finding is NOT an Enrichment — it stays on its run and
 -- is copied onto the digest it was ready for.
 --
@@ -36,7 +36,7 @@ COMMENT ON TABLE investigations IS
 -- +goose Down
 
 -- ⛔ A `skipped`/`window_closed` ROW HAS NO HOME BELOW THIS MIGRATION, AND IT IS DELETED
--- RATHER THAN RELABELLED, for 00094's reason: calling it `disabled` or `budget` would put a
+-- RATHER THAN RELABELLED, for 00098's reason: calling it `disabled` or `budget` would put a
 -- reason on the record that is not why it did not run. It never started, so it has no Steps
 -- and no Finding; the delete takes only the record that a window outlived its run.
 -- (`investigations_frozen` guards UPDATE, not DELETE.)

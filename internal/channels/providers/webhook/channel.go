@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/thulasiram/oto/internal/channels/domain"
 	"github.com/thulasiram/oto/internal/channels/template"
 	"github.com/thulasiram/oto/internal/platform/clock"
@@ -106,7 +108,17 @@ func (c *Channel) Capabilities() domain.Capability { return capabilities }
 // message to amend, so a "reply" and an "update" are just another POST carrying
 // the current state — which is exactly what a stateless receiver wants.
 func (c *Channel) Deliver(ctx context.Context, req domain.DeliverRequest) (domain.DeliverResult, error) {
-	return c.send(ctx, req.Message, req.DeliveryID.String())
+	res, err := c.send(ctx, req.Message, req.DeliveryID.String())
+	if err == nil && req.DeliveryID != uuid.Nil {
+		// ⛔ MessageID MUST BE SET, NOT ONLY ProviderKey. A sent delivery must
+		// carry a provider handle (deliveries_sent_ck), so MarkSent refuses an
+		// empty one: with ProviderKey alone every webhook delivery landed, then
+		// failed to record, stayed `sending` and was sent again, and an incident
+		// tool's echo — recorded in the same transaction — was never kept. A
+		// channel test has no delivery, so it has no message id either.
+		res.Ref.MessageID = res.Ref.ProviderKey
+	}
+	return res, err
 }
 
 // Amend re-posts. A webhook cannot edit, and pretending otherwise would make the
@@ -215,8 +227,9 @@ func (c *Channel) send(
 	return domain.DeliverResult{
 		Ref: domain.MessageRef{
 			// A webhook returns no message identity, so there is nothing to
-			// thread from and nothing to amend. ProviderKey carries the delivery
-			// id purely so a Deliveries row has something to show a human.
+			// thread from and nothing to amend. The delivery id — the
+			// X-Oto-Delivery-Id the receiver was handed — stands in for one;
+			// Deliver makes it the message id.
 			ProviderKey: deliveryID,
 		},
 		DeliveredAt: c.clock.Now().UTC(),

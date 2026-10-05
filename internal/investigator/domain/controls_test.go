@@ -176,7 +176,7 @@ func TestAnIncidentCoversItsMemberCasesOnlyAutomatically(t *testing.T) {
 }
 
 // TestAnIncidentIsASubjectAndItsCurrentCasesAreItsMembers — `investigations_subjkind_ck`
-// admits `case` and `incident` (00095); an Incident's member Cases are its current
+// admits `case` and `incident` (00099); an Incident's member Cases are its current
 // spells, not the ones that left.
 func TestAnIncidentIsASubjectAndItsCurrentCasesAreItsMembers(t *testing.T) {
 	for _, k := range []string{"case", "incident"} {

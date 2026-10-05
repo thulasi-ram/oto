@@ -21,6 +21,10 @@ import (
 type IncidentFacts struct {
 	ID     uuid.UUID
 	Number int64
+	// Org is the tenant the Incident belongs to, for the envelope's `org`, which
+	// docs/setup/webhook.md §3 promises on every message. A Case fact reads it
+	// through its snapshot; an Incident fact has no snapshot, so it travels here.
+	Org OrgFacts
 	// Active is true while any CURRENT member Case is open (ADR 0052 §3).
 	Active  bool
 	DrawnAt time.Time
@@ -67,7 +71,7 @@ type IncidentFinding struct {
 }
 
 // IncidentRemedy is one Remedy transition as an Incident fact declares it (ADR 0054 §2,
-// migration 00100): the Remedy as it stood once the transition was made, and the transition
+// migration 00104): the Remedy as it stood once the transition was made, and the transition
 // — what, by whom, when. A SNAPSHOT copied onto the fact's row in the transaction that made
 // the transition, never re-read: a retried delivery renders the same fact.
 //

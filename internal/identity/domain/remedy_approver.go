@@ -1,6 +1,6 @@
 package domain
 
-// THE REMEDY APPROVER GRANT (ADR 0054 §4, migration 00099, git-bug 47f67c8): the one
+// THE REMEDY APPROVER GRANT (ADR 0054 §4, migration 00103, git-bug 47f67c8): the one
 // permission oto has. A user holding it on a write ToolServer may approve a Remedy that
 // ToolServer would carry out; double approval means two DIFFERENT holders.
 //

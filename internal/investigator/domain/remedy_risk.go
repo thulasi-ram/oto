@@ -51,7 +51,7 @@ import (
 	"github.com/thulasiram/oto/internal/platform/errs"
 )
 
-// Bounds mirroring migration 00103's CHECKs.
+// Bounds mirroring migration 00107's CHECKs.
 const (
 	// MaxRiskRules bounds an org's rules (`remedy_risk_rules_position_ck`).
 	MaxRiskRules = 100

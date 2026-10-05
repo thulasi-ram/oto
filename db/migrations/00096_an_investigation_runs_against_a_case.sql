@@ -14,7 +14,7 @@
 -- not what produced a Finding, and every Investigation copies the budgets it ran under
 -- onto its own row, so "what was it allowed to spend?" is still a fact about that run.
 --
--- ⭐ THE PIN IS (base_url, model), COPIED, NOT ONLY THE ENDPOINT ROW'S ID (00091's header).
+-- ⭐ THE PIN IS (base_url, model), COPIED, NOT ONLY THE ENDPOINT ROW'S ID (00095's header).
 -- A run re-reads the endpoint row and refuses to start when its identity no longer equals
 -- the version's pin (`model_changed`), so a Finding can never name a model it was not
 -- produced by.
@@ -45,7 +45,7 @@
 -- status `skipped` and reason `disabled` — nothing called a model and nothing was spent,
 -- and the timeline of a Case still says somebody asked.
 --
--- ⛔ NO API KEY CAN REACH A STEP. The key lives sealed in `channel_credentials` (00091);
+-- ⛔ NO API KEY CAN REACH A STEP. The key lives sealed in `channel_credentials` (00095);
 -- the run loop holds a ModelProvider that already carries it and never sees the string,
 -- so no column below is a place it could be written from.
 --

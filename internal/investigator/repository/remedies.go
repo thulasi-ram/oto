@@ -13,7 +13,7 @@ import (
 )
 
 // RemedyRepository is every statement against `remedies`, `remedy_approvals` and
-// `remedy_transitions` (migration 00100, git-bug 4148256).
+// `remedy_transitions` (migration 00104, git-bug 4148256).
 //
 // ⛔ A PROPOSAL IS INSERTED ONCE AND NEVER REWRITTEN; EVERY LATER CHANGE IS A TRANSITION. The
 // one UPDATE in this file moves `state` from the state the caller read to the next one, with
@@ -74,7 +74,7 @@ func (r *RemedyRepository) InsertRemedy(ctx context.Context, s db.TenantScope, r
 		toolServerName, toolName = nullable(rem.Tool.ToolServerName), nullable(rem.Tool.Tool)
 		args, hash = nullable(rem.Arguments), nullable(rem.ArgumentsSHA256)
 	}
-	// ⭐ How the tier was set (migration 00103): all six together, or none for a Remedy with
+	// ⭐ How the tier was set (migration 00107): all six together, or none for a Remedy with
 	// no Tool. Tokens are kept only when a model was asked.
 	var basis, rule, detail, check, model *string
 	var tokens *int64

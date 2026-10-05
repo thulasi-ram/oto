@@ -1,6 +1,6 @@
 package repository_test
 
-// TOOLSERVERS AGAINST A REAL POSTGRES (migration 00093, git-bug 2e9a086): the token sealed
+// TOOLSERVERS AGAINST A REAL POSTGRES (migration 00097, git-bug 2e9a086): the token sealed
 // in `channel_credentials` and unsealed only as a `tool_server_token`, the tenant
 // predicate, the per-org name index, the CHECKs that keep a token off plaintext and a
 // secret out of the URL, and a discovery that replaces the last list whole — or, when it

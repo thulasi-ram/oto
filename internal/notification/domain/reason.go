@@ -130,7 +130,7 @@ const (
 	// about a firing.
 	ReasonDigest Reason = "digest"
 
-	// ⭐⭐ THE SIX INCIDENT FACTS (ADR 0052 §5, migrations 00084 and 00095). Declaring an
+	// ⭐⭐ THE SIX INCIDENT FACTS (ADR 0052 §5, migrations 00084 and 00099). Declaring an
 	// Incident is a notification, so each thing oto observes about one is a Reason
 	// whose subject is the Incident — `SubjectIncident` below — and "every Incident
 	// goes to incident.io" is one catch-all policy over these five.
@@ -162,13 +162,13 @@ const (
 	// open Case added or moved in — never by a closed member reopening.
 	ReasonActiveAgain Reason = "active_again"
 	// ReasonFinding is an Investigation of the Incident reaching a new Finding (ADR
-	// 0052 §5: oto sends "new Finding"; ADR 0053 §4, migration 00095). The sixth
+	// 0052 §5: oto sends "new Finding"; ADR 0053 §4, migration 00099). The sixth
 	// Incident fact, and a FACT like the other five: the Finding is what the card
 	// carries, never an input to whether anything about any signal is sent (ADR 0053
 	// §2). Its occasion is the Investigation, so one run is declared once.
 	ReasonFinding Reason = "finding"
 
-	// The six Remedy facts (ADR 0054 §2, migration 00100, git-bug 4148256): every
+	// The six Remedy facts (ADR 0054 §2, migration 00104, git-bug 4148256): every
 	// transition of a Remedy on the Incident — or on a Case it holds — is declared to it,
 	// "each by a named actor". FACTS like the rest: a Remedy's approval happens in oto, and
 	// nothing here asks the incident tool for one or reads its answer back (§2: "oto cannot
@@ -240,10 +240,10 @@ var allReasons = []Reason{
 	// `notifications_reason_ck` hold this order, and inserting them anywhere else
 	// re-orders a published enum for nothing.
 	ReasonDrawn, ReasonCaseAdded, ReasonCaseRemoved, ReasonQuiet, ReasonActiveAgain,
-	// `finding` is APPENDED after them, for the same reason (migration 00095).
+	// `finding` is APPENDED after them, for the same reason (migration 00099).
 	ReasonFinding,
 	// The six Remedy facts are APPENDED after `finding`, for the same reason (migration
-	// 00100).
+	// 00104).
 	ReasonRemedyProposed, ReasonRemedyApproved, ReasonRemedyDeclined,
 	ReasonRemedyExpired, ReasonRemedyExecuted, ReasonRemedyFailed,
 }

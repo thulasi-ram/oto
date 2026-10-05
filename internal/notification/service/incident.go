@@ -55,6 +55,14 @@ type IncidentIntent struct {
 	// OccasionID is WHICH TIME this fact happened, and for an Incident it is the
 	// whole discriminator: an Incident has no `state_version`. Required.
 	OccasionID uuid.UUID
+	// Sequence is the fact's per-Incident order (migration 00093), allocated by the
+	// transaction that made it true. Frozen onto the row and rendered on every
+	// delivery as `incident.sequence`. 0 only for a job enqueued before 00093.
+	//
+	// ⛔ IT IS NOT IN THE §C.7 KEY. The occasion already makes the fact unique, and a
+	// redelivered job carries the same sequence anyway; keying on it would only add a
+	// second way for one fact to be two notifications.
+	Sequence int64
 	// Remedy is the Remedy transition a `remedy_*` fact declares (ADR 0054 §2), copied by
 	// its producer in the transaction that made it. Required on exactly those six Reasons.
 	Remedy *domain.IncidentRemedy
@@ -155,7 +163,11 @@ func (s *NotificationService) evaluateIncident(
 		// discriminator, and the version is the constant `notifications_sver_ck`
 		// admits.
 		StateVersion: 1,
-		Status:       domain.StatusPending,
+		// ⭐ FROZEN HERE, ONCE. A redelivered job meets the key below and reads back
+		// the row the first run wrote, so the number a receiver sees never changes
+		// between attempts (migration 00093).
+		IncidentSequence: in.Sequence,
+		Status:           domain.StatusPending,
 		// The Remedy transition a `remedy_*` fact declares, copied onto its row.
 		Remedy:    in.Remedy,
 		CreatedAt: now,
@@ -496,6 +508,15 @@ func (v *ViewService) incidentCard(
 		// "" except on the pointer posted into a member Case's own thread.
 		PointsFrom: pointsFrom,
 	}
+	// ⭐ THE SEQUENCE IS THE FACT'S, READ OFF THE ROW, AND ONLY AN INCIDENT FACT HAS ONE.
+	// The Incident itself is read live (C11) — its members and state are what it is
+	// NOW — but its sequence is where THIS fact falls in its story, frozen when the
+	// fact was recorded, so a retry renders the number the first attempt did. A Case
+	// fact amending the Incident's root card, and the pointer into a member Case's
+	// thread, are not Incident facts and carry none.
+	if n.Incident() && !n.IncidentPointer() {
+		iv.Sequence = n.IncidentSequence
+	}
 	if v.baseURL != "" {
 		iv.Link = v.baseURL + "/incidents/" + strconv.FormatInt(f.Number, 10)
 	}
@@ -545,11 +566,17 @@ func (v *ViewService) incidentCard(
 		// transition as it was made, whatever the Remedy has done since.
 		iv.Remedy = incidentRemedyView(*rm)
 	}
-	return &NotificationView{
+	view := &NotificationView{
 		Reason:     string(n.Reason),
 		Incident:   iv,
 		RenderedAt: v.clk.Now().UTC(),
-	}, nil
+	}
+	// The envelope's `org` is on every message but a digest's (see `digest`); an
+	// Incident fact has no snapshot to carry it, so the reader does.
+	if f.Org.ID != uuid.Nil {
+		view.Org = OrgRef{ID: f.Org.ID.String(), Slug: f.Org.Slug, Name: f.Org.Name}
+	}
+	return view, nil
 }
 
 // incidentRemedyView is a Remedy fact's snapshot as a card carries it.

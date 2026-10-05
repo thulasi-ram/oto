@@ -17,7 +17,7 @@ import (
 )
 
 // InvestigationRepository is every statement against `investigations` and
-// `investigation_steps` (migration 00092).
+// `investigation_steps` (migration 00096).
 //
 // ⛔⛔ A STEP IS ONLY EVER INSERTED. There is no UPDATE or DELETE of
 // `investigation_steps` anywhere in this file — and if one were added,
@@ -223,7 +223,7 @@ func (r *InvestigationRepository) CountRunning(ctx context.Context, s db.TenantS
 // SpentSince sums the input + output tokens of every model turn the org's runs have
 // recorded at or after `since`, served by `investigation_steps_spend_idx`, and of every
 // Remedy risk-model question asked about a Remedy proposed at or after it, served by
-// `remedies_risk_spend_idx` (00104).
+// `remedies_risk_spend_idx` (00108).
 //
 // ⭐ STEPS, NOT RUNS: a turn's tokens are on its Step the moment it happens, so a run
 // still going is counted, and a run that crossed midnight counts in each day it spent

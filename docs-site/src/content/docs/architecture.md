@@ -170,7 +170,7 @@ alert is still firing and must still be rendered as firing** — colouring it ca
 `open | closed` and nothing else (ADR 0040): an episode's only fact about itself is whether it is
 still running. The four-way reading of a Case is derived and total — open + no `suppression_reason` is
 `firing`, open + one is `suppressed`, closed + `resolve_reason='upstream'` is `resolved`, closed +
-`'timeout'` is `expired`. Say **an episode is open or closed**, and **an alert is firing, suppressed,
+`'timeout'`, `'silent'` or `'source_removed'` (ADR 0056) is `expired`. Say **an episode is open or closed**, and **an alert is firing, suppressed,
 resolved or expired**; the two vocabularies are not interchangeable and swapping them is how the
 column acquired four values in the first place.
 
@@ -197,8 +197,13 @@ Rules you must not get wrong:
   release, validating a number nothing read.
 - **`ended_at` is clamped to `started_at`.** A backward-skewed upstream clock must never abort an
   ingest transaction. Clamp, flag `clamped: true`, measure the skew — never reject.
-- **Losing sight of an alert is not the alert resolving.** The reaper is *blocked* while
-  `source_health.status != 'healthy'`.
+- **Losing sight of an alert is not the alert resolving.** The reaper is *blocked* unless the
+  case's cluster has a live source and **every** live source's `source_health.status = 'healthy'`
+  — for `timeout` and `silent` alike, so one unhealthy HA replica holds the whole cluster (ADR 0056
+  Amendment 1). `source_removed` is the one expiry it does not ask, because there is no source left
+  to be blind to: it fires only when no live source has fed the case's cluster for a resolve grace,
+  so deleting one HA replica ends nothing. `silent` and `source_removed` ship behind
+  `jobs.expire_silent_and_removed`, off by default (ADR 0056).
 
 ---
 
@@ -291,6 +296,7 @@ No import exists in either direction, and nothing enforces the arrow:
 | `silences/service.SilenceSource`, `silences/api.SourceBaseURLs` | `sources` | `app/silencesource.go` |
 | `alerts/service.CaseOpenings` | the outbox (`incidents.correlate`) — never `incidents` itself | `app.caseOpenings` (adapters.go) |
 | `incidents/service.Announcer` | the outbox (`notify.incident`, and `investigations.incident` for a draw or a membership change) — never `notification` or `investigator` itself | `app.incidentAnnouncers` (adapters.go) |
+| `sources/api.CaseCounts` — open and held Cases per source (ADR 0056 §1) | `alerts` | `app.sourceCases` (adapters.go) |
 
 **3. River job enqueues — a STRING in `internal/platform/jobs/kinds.go`, not a call.** The
 producer never names the consumer, so there is nothing to enforce at all:
@@ -301,12 +307,18 @@ producer never names the consumer, so there is nothing to enforce at all:
 | `alerts`, `enrichment` | `enrich.run` | `enrichment` |
 | `alerts` (through `CaseOpenings`) | `incidents.correlate` — on `lifecycle`, never `notify` | `incidents` (the Correlators) |
 | `incidents` (through `Announcer`) | `investigations.incident` — on `lifecycle`, never `notify` or `investigate`; not on quiet (ADR 0053 §4) | `investigator` |
-| `investigator` (through `FindingDeclarer`) | `notify.incident` with Reason `finding` — an Incident's new Finding, declared, never a decision about delivery | `notification` |
+| `investigator` (through `FindingDeclarer`, `RemedyDeclarer`) | `notify.incident` with Reason `finding` or `remedy_*` — an Incident's new Finding or a Remedy transition, declared, never a decision about delivery. Numbered like every Incident fact: the adapter takes the Incident's next `sequence` from `incidents/service.NextFactSequence` in the same transaction (migration 00093) | `notification` |
 
 **4. Table names in SQL — no Go edge whatsoever.** `drill` reads five other modules' tables by
 name (see its row above); `notification/repository/snapshot.go` joins `alert_sources` to learn a
 source's kind so it can decide whether an Alertmanager silence URL is one oto can vouch for.
-No compiler, no depguard rule and no import graph can see either one — `test/arch/arch_test.go`
+`alerts/repository/case.go` reads `sources`' `alert_sources` and `source_health` by name too: the
+reaper's guarded scans pre-filter on "every live source on the cluster has a `healthy` row"
+(`liveSourcesHealthySQL`, ADR 0056 Amendment 1), and the case-sources reads join `alert_sources` for
+the live set and its max silence. ⚠️ **The pre-filter is not the verdict** — the §B.4 guard is still
+asked through the `SourceHealth` port and that answer decides — but a rename of either table or of
+`source_health.status`'s `'healthy'` breaks the reaper at runtime, not at build time.
+No compiler, no depguard rule and no import graph can see any of these — `test/arch/arch_test.go`
 says so itself: *"COMPILE-TIME EDGES ONLY."*
 
 `test/arch/sqltables_test.go` is the gate that reads the SQL instead, and it covers **`drill`
@@ -318,8 +330,8 @@ the drill path. It also holds `dispose.go`'s two stated invariants — every DEL
 and not merely by `org_id` and a predicate, and `AND synthetic` still on `alerts` — which were argued in a comment on a file nothing in the build system knew was
 special.
 
-⚠️ `notification`'s `alert_sources` join and `stats`' ten borrowed tables are **not** declared
-anywhere. For those a rename still breaks at runtime, and gating them means writing their claims.
+⚠️ `notification`'s `alert_sources` join, `alerts`' `alert_sources`/`source_health` reads and
+`stats`' ten borrowed tables are **not** declared anywhere. For those a rename still breaks at runtime, and gating them means writing their claims.
 
 ⛔ `notification ──► silences` used to be drawn and is **not a relationship**: `notification`
 neither imports `silences`, nor declares a port onto it, nor enqueues to it. The silence links it

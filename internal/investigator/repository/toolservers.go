@@ -16,7 +16,7 @@ import (
 )
 
 // ToolServerRepository is every statement against `tool_servers` and
-// `tool_server_tools` (migration 00093, git-bug 2e9a086).
+// `tool_server_tools` (migration 00097, git-bug 2e9a086).
 //
 // ⛔ IT NEVER SEES THE TOKEN. The row holds `credential_id`; sealing goes through the
 // CredentialWriter port inside the same transaction as the INSERT, and the one reader of

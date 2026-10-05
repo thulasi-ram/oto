@@ -14,7 +14,7 @@ import (
 )
 
 // SuggestionRepository is every statement against `investigation_suggestions` (migration
-// 00097, git-bug 8327c00).
+// 00101, git-bug 8327c00).
 //
 // ⛔ A PROPOSAL IS ONLY EVER INSERTED, AND APPLIED ONCE. The one UPDATE in this file sets
 // the three `applied_*` columns of a row that has none — and if any other were added,

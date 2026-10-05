@@ -12,7 +12,7 @@ import (
 	"github.com/thulasiram/oto/internal/platform/db"
 )
 
-// RemedyRiskRepository reads `remedy_risk_rules` and `remedy_risk_settings` (migration 00103):
+// RemedyRiskRepository reads `remedy_risk_rules` and `remedy_risk_settings` (migration 00107):
 // an org's Remedy risk rules, its risk model, and who last wrote them (ADR 0054 §3, git-bug
 // eb4f21b).
 //

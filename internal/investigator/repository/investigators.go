@@ -15,7 +15,7 @@ import (
 )
 
 // InvestigatorRepository is every statement against `investigators` and
-// `investigator_versions` (migration 00092).
+// `investigator_versions` (migration 00096).
 //
 // ⛔ A VERSION IS NEVER UPDATED. There is no UPDATE of `investigator_versions` in this
 // file: a change to what produces a Finding is an INSERT of version N+1, and the

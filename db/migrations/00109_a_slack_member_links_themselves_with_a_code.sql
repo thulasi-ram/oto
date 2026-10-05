@@ -43,7 +43,7 @@ CREATE TABLE slack_link_codes (
 
 -- +goose StatementBegin
 COMMENT ON TABLE slack_link_codes IS
-  'git-bug a556a5c (00105): the one live link code per Slack identity, minted when an UNLINKED member presses a Remedy button and shown once, in an ephemeral only that member sees. Stored ONLY as the sha256 of the normalised code. Lives ten minutes (expires_at, application clock), dies on first use (consumed_at) and after five presentations; a new code for the same identity REPLACES this row, so the previous code dies. A code is a credential: whoever enters it in their own oto session links the member to THEMSELVES.';
+  'git-bug a556a5c (00109): the one live link code per Slack identity, minted when an UNLINKED member presses a Remedy button and shown once, in an ephemeral only that member sees. Stored ONLY as the sha256 of the normalised code. Lives ten minutes (expires_at, application clock), dies on first use (consumed_at) and after five presentations; a new code for the same identity REPLACES this row, so the previous code dies. A code is a credential: whoever enters it in their own oto session links the member to THEMSELVES.';
 -- +goose StatementEnd
 
 CREATE TABLE slack_link_attempts (
@@ -58,7 +58,7 @@ CREATE INDEX slack_link_attempts_user_idx ON slack_link_attempts (org_id, user_i
 
 -- +goose StatementBegin
 COMMENT ON TABLE slack_link_attempts IS
-  'git-bug a556a5c (00105): one row per wrong, used or expired link code a signed-in user presented. Five inside fifteen minutes and that user''s further attempts are refused with 429. Rows older than the window are pruned when the user next presents a wrong code.';
+  'git-bug a556a5c (00109): one row per wrong, used or expired link code a signed-in user presented. Five inside fifteen minutes and that user''s further attempts are refused with 429. Rows older than the window are pruned when the user next presents a wrong code.';
 -- +goose StatementEnd
 
 CREATE TABLE slack_identity_links (
@@ -81,7 +81,7 @@ CREATE INDEX slack_identity_links_identity_idx ON slack_identity_links (org_id, 
 
 -- +goose StatementBegin
 COMMENT ON TABLE slack_identity_links IS
-  'git-bug a556a5c (00105): the recorded fact of every Slack link and unlink. change linked: user_id is who the member now resolves to, displaced_user_id the SHADOW member that link retired (NULL when none). change unlinked: user_id is who it no longer resolves to. actor_id is the signed-in user who did it — on this path always the same person as user_id, because no route links or unlinks anybody else. team_id and slack_user_id are copied so the fact reads without a join.';
+  'git-bug a556a5c (00109): the recorded fact of every Slack link and unlink. change linked: user_id is who the member now resolves to, displaced_user_id the SHADOW member that link retired (NULL when none). change unlinked: user_id is who it no longer resolves to. actor_id is the signed-in user who did it — on this path always the same person as user_id, because no route links or unlinks anybody else. team_id and slack_user_id are copied so the fact reads without a join.';
 -- +goose StatementEnd
 
 -- +goose Down

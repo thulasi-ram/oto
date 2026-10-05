@@ -15,7 +15,7 @@ import (
 	"github.com/thulasiram/oto/internal/platform/id"
 )
 
-// ProviderRepository is every statement against `model_providers` (migration 00091).
+// ProviderRepository is every statement against `model_providers` (migration 00095).
 //
 // ⛔ IT NEVER SEES THE KEY. The row holds `credential_id`, and the only statement here
 // that touches `channel_credentials` is KeyStore's narrowed read below; sealing goes
@@ -57,7 +57,7 @@ func mapErr(err error, what string) error {
 
 const providerColumns = `id, org_id, name, base_url, model, credential_id, created_at, updated_at`
 
-// ⭐ BOTH TIMESTAMPS ARE PASSED, never defaulted — 00091 gave neither column a default
+// ⭐ BOTH TIMESTAMPS ARE PASSED, never defaulted — 00095 gave neither column a default
 // — and they are the SAME instant on insert, so `model_providers_time_ck` holds by
 // construction rather than by two clocks agreeing.
 const insertProviderSQL = `

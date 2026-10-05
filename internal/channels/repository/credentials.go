@@ -45,12 +45,12 @@ var CredentialKinds = []string{
 	// (migration 00090). channels/api seals it from `mapping_secrets`, never from a
 	// `credential` input, whose `kind` enum does not list it.
 	domain.MappingSecretsKind,
-	// A model endpoint's API key (migration 00091, ADR 0053 §3). Sealed through this
+	// A model endpoint's API key (migration 00095, ADR 0053 §3). Sealed through this
 	// repository by `investigator/service`'s CredentialWriter port and unsealed only by
 	// `investigator/repository`; no channel ever names one. Spelled as a literal because
 	// `channels` may not import `investigator/domain.CredentialKind`, which says the same.
 	"model_api_key",
-	// A ToolServer's access token (migration 00093, git-bug 2e9a086), on the same terms
+	// A ToolServer's access token (migration 00097, git-bug 2e9a086), on the same terms
 	// as a model key: sealed through the CredentialWriter port, unsealed only by
 	// `investigator/repository` as a `tool_server_token`. Literal for the same reason.
 	"tool_server_token",

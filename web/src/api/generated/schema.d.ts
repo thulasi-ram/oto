@@ -579,7 +579,8 @@ export interface paths {
          *     **A case's `state` is `open` or `closed`, and it is the only liveness axis here.** The four
          *     words `firing | suppressed | resolved | expired` describe the ALERT, and every alert-shaped
          *     object in this contract carries them. What an episode adds is `resolve_reason` — `upstream`
-         *     for a resolution the source asserted, `timeout` for one oto never heard — and
+         *     for a resolution the source asserted, and `timeout`, `silent` or `source_removed` for the
+         *     three ways oto stops being able to say it is firing — and
          *     `suppression_reason`, which names the silence that muted that firing. A client wanting the
          *     four-word reading composes it from those fields exactly as the server does.
          *
@@ -840,6 +841,12 @@ export interface paths {
          *     With `case_id`, the answer is the Incident that Case is in **now** — none or exactly one, because a
          *     Case is in at most one — so a screen can say a Case would be moved before a draw or an add is
          *     refused for it. A Case in no Incident, or one this org does not have, is the same empty list.
+         *
+         *     **An empty Incident is left out unless `include_empty=true`.** An Incident whose every Case was
+         *     removed or moved away (`member_count: 0`) is kept — it is a record of what the story held — and
+         *     `GET /incidents/{number}` always serves it, but it is not a story anybody is following, so the
+         *     default list does not lead with it. A quiet Incident whose Cases all closed still holds them and
+         *     is listed.
          */
         get: operations["listIncidents"];
         put?: never;
@@ -881,6 +888,9 @@ export interface paths {
          * @description One Incident addressed by the `number` a human quotes, with every Case that has ever been in it:
          *     the current members, and the removed ones as tombstones carrying who removed them and, for a
          *     move, which Incident they went to. A removed Case stays recorded as removed.
+         *
+         *     An Incident with no Case left in it is served here like any other: the list hides it unless
+         *     `include_empty=true`, but its number always resolves.
          *
          *     A number naming no Incident in this org is a `404`, indistinguishable from one another org drew.
          */
@@ -1804,6 +1814,13 @@ export interface paths {
          * Soft-delete a source
          * @description Stops ingestion and reconciliation and revokes the ingest token. **Alert history is retained** —
          *     deleting a source must never erase the record of what it once reported.
+         *
+         *     **Deleting a cluster's last live source ends its open cases.** With nothing left that could
+         *     say they ended, each open case on that cluster expires with `resolve_reason:
+         *     source_removed` (ADR 0056 §2) once the resolve grace has passed since the deletion — while
+         *     the reaper's ADR 0056 expiries are turned on (`jobs.expire_silent_and_removed`). A source
+         *     registered on the cluster inside that grace stands the expiry down. Deleting one replica of
+         *     an HA pair ends nothing: the other still speaks for every case they shared.
          */
         delete: operations["deleteSource"];
         options?: never;
@@ -1815,6 +1832,13 @@ export interface paths {
          *     Be deliberate about `ignore_labels`: it feeds the alert-identity hash, and changing it does
          *     **not** re-key existing alerts. New identities are created from that point forward, which is
          *     documented behaviour rather than a defect.
+         *
+         *     **`kind` and `cluster_id` are immutable** and are refused by name with a `422`
+         *     (`additionalProperties: false`). A source's cluster is which cases it speaks for: the
+         *     reaper's health guard, the `silent` threshold and `source_removed` are all questions about
+         *     the live sources on a case's cluster, so moving a source would orphan one cluster's cases
+         *     and hand another a witness to alerts it never carried. Delete the source and register it
+         *     again on the right cluster.
          */
         patch: operations["updateSource"];
         trace?: never;
@@ -3470,7 +3494,8 @@ export interface components {
          *     - `open` — the episode is live. `ended_at` is null, guaranteed by the `case_terminal_ended`
          *       CHECK.
          *     - `closed` *(terminal, and terminal means terminal)* — the episode ended. `resolve_reason`
-         *       says whether upstream resolved it (`upstream`) or oto stopped hearing about it (`timeout`),
+         *       says whether upstream resolved it (`upstream`) or how oto stopped hearing about it
+         *       (`timeout`, `silent`, `source_removed`),
          *       and a closed case is never reopened: a re-fire opens the NEXT episode at `seq + 1`,
          *       unacknowledged.
          *
@@ -3504,12 +3529,22 @@ export interface components {
          */
         SuppressionReason: "silence" | "inhibition" | "mute_time_interval" | "active_time_interval" | null;
         /**
-         * @description Why a case ended. Non-null **if and only if** the state is terminal, and the two agree:
-         *     `resolved` always pairs with `upstream`, `expired` always pairs with `timeout`.
+         * @description Why a case ended. Non-null **if and only if** the case is closed. `upstream` is the only
+         *     resolution — an explicit `status="resolved"` arrived — and it alone reads as `resolved`.
+         *     The other three all read as `expired` (ADR 0056 §4), and say why:
+         *
+         *     - `timeout` — upstream's `endsAt` plus `resolve_grace` passed while every live source on the
+         *       case's cluster was healthy.
+         *     - `silent` — every live source on the case's cluster was healthy and none said anything
+         *       about the case for longer than the longest `max_silence_seconds` among them.
+         *     - `source_removed` — no live source has fed the case's cluster for a `resolve_grace`, so
+         *       nothing is left that could say it ended.
+         *
+         *     None of them is a person's decision: no human ends a case.
          * @example upstream
          * @enum {string|null}
          */
-        ResolveReason: "upstream" | "timeout" | null;
+        ResolveReason: "upstream" | "timeout" | "silent" | "source_removed" | null;
         /**
          * @description `open` while at least one member case is `firing` or `suppressed`; `closed` once no live
          *     member is left.
@@ -4245,6 +4280,81 @@ export interface components {
             rule?: components["schemas"]["RuleSnapshotDTO"] | null;
             enrichments: components["schemas"]["EnrichmentDTO"][];
             delivery_summary: components["schemas"]["DeliverySummaryDTO"];
+            /**
+             * @description Who can still speak for this episode, so a screen can say whether it can expire and,
+             *     when it cannot, why (ADR 0056 §1). `null` means oto could not read it, which is **not**
+             *     the same as "no source".
+             */
+            sources: components["schemas"]["CaseSourcesDTO"] | null;
+        };
+        /**
+         * @description What an episode's cluster says about who can still speak for it (ADR 0056 §1). It is the
+         *     reaper's own reading, shown — the same live set, threshold and §B.4 health verdicts its
+         *     passes rest on. It is read for display and decides nothing.
+         */
+        CaseSourcesDTO: {
+            /**
+             * Format: int32
+             * @description How many live sources feed the episode's cluster. The reaper expires a case as `timeout`
+             *     or `silent` only when there is **at least one** and **every one** is healthy
+             *     (`all_healthy`): an HA pair is two witnesses, and either one oto cannot see might be the
+             *     one still carrying the alert.
+             * @example 2
+             */
+            live: number;
+            /**
+             * Format: int32
+             * @description How many sources were removed from the cluster. With `live == 0` and `removed > 0` the
+             *     episode expires as `source_removed` once the last removal is a resolve grace old, while
+             *     the reaper's ADR 0056 expiries are turned on.
+             * @example 0
+             */
+            removed: number;
+            /**
+             * @description `true` when `live >= 1` and the §B.4 guard vouches for every live source — the
+             *     condition under which the reaper may expire the episode as `timeout` or `silent` at all.
+             *     `false` holds it: some live source is not `healthy` (or oto could not read its health),
+             *     or there is no live source.
+             */
+            all_healthy: boolean;
+            /**
+             * Format: int32
+             * @description The cluster's `silent` threshold (ADR 0056 §3): the **longest** `max_silence_seconds`
+             *     among its live sources. An open episode none of them has said anything about for this
+             *     long expires as `silent`, while `all_healthy`. `null` when **any** live source turned
+             *     the expiry off — which turns it off for the whole cluster — or when none is live.
+             * @example 86400
+             */
+            max_silence_seconds: number | null;
+            /**
+             * @description The live sources, in name order, each with its own health verdict and max silence — at
+             *     most ten; `live` says how many there are in all.
+             */
+            live_sources: components["schemas"]["CaseSourceDTO"][];
+            /**
+             * @description The one live source when `live == 1`, and `null` otherwise. It is `live_sources[0]` in
+             *     that case; `live_sources`, `all_healthy` and `max_silence_seconds` carry the rule for
+             *     any number of sources.
+             */
+            source: components["schemas"]["CaseSourceDTO"] | null;
+        };
+        /** @description One live source an episode's expiry waits on. */
+        CaseSourceDTO: {
+            id: components["schemas"]["Uuid"];
+            /** @example alertmanager-prod-eu */
+            name: string;
+            /**
+             * @description The §B.4 guard's verdict on this source. `false` — any status but `healthy`, or one oto
+             *     could not read — holds every open case on its cluster: they can expire only once it
+             *     recovers.
+             */
+            healthy: boolean;
+            /**
+             * Format: int32
+             * @description This source's own max silence (ADR 0056 §3). `null` turns the `silent` expiry off — for
+             *     every case on its cluster, whatever the other sources there say.
+             */
+            max_silence_seconds: number | null;
         };
         /**
          * @description One row of `GET /api/v1/cases`: a firing episode, plus the identity it belongs to.
@@ -4258,6 +4368,11 @@ export interface components {
          */
         CaseListItemDTO: components["schemas"]["CaseDTO"] & {
             alert: components["schemas"]["AlertRefDTO"];
+            /**
+             * @description Who can still speak for this episode (ADR 0056 §1), read for the whole page in one
+             *     query. `null` means it was not read, never "no source".
+             */
+            sources: components["schemas"]["CaseSourcesDTO"] | null;
         };
         /**
          * @description What an Incident's member Cases say about it, and nothing else (ADR 0052 §3). **Derived on every
@@ -5343,11 +5458,43 @@ export interface components {
              */
             reconcile_interval_seconds: number;
             /**
+             * Format: int32
+             * @description How long, in seconds, this source may say nothing about an open case before oto expires
+             *     it with `resolve_reason=silent` (ADR 0056 §3). `null` turns that expiry off — for every
+             *     case on this source's cluster, since an HA pair expires on the longest threshold among
+             *     its live sources and not at all while any of them is off. Asked only while every live
+             *     source on the cluster is `healthy`: under an unhealthy one oto cannot tell silence from an
+             *     outage, so the case is held. A source registered before this field existed reads `null`
+             *     until an operator sets it.
+             *
+             *     ⚠️ It must exceed the Alertmanager's `repeat_interval` (4h unless set). Alertmanager
+             *     re-sends a firing alert once per repeat, so a shorter value expires long-firing cases
+             *     while they are still firing.
+             */
+            max_silence_seconds: number | null;
+            /**
              * @description The exact path to configure in this source's Alertmanager `webhook_config`.
              * @example /api/v1/ingest/alertmanager/0198f3c1-6a2e-7c31-9b4d-2f5a1c8e0b77
              */
             ingest_path: string;
             health?: components["schemas"]["SourceHealthDTO"] | null;
+            /**
+             * Format: int32
+             * @description How many cases are open on this source's cluster (ADR 0056 §1). Served on the list;
+             *     absent means not counted, never zero.
+             * @example 12
+             */
+            open_case_count?: number;
+            /**
+             * Format: int32
+             * @description How many of those open cases the reaper is **holding** because of this source (§B.4):
+             *     all of them while it is not `healthy`, and none while it is. The reaper asks every live
+             *     source on a cluster, so an HA sibling that is not `healthy` holds the cases too — and
+             *     it is that sibling's count that says so. A held case ends only when upstream resolves it
+             *     or the hold lifts. Absent exactly when `open_case_count` is.
+             * @example 12
+             */
+            held_case_count?: number;
             created_at: components["schemas"]["Timestamp"];
             updated_at: components["schemas"]["Timestamp"];
         };
@@ -7368,6 +7515,14 @@ export interface components {
              * @default 30
              */
             reconcile_interval_seconds: number;
+            /**
+             * Format: int32
+             * @description How long this source may say nothing about an open case before it expires as `silent`
+             *     (ADR 0056 §3). Omitted, it is a day; `null` turns the expiry off. ⚠️ It must exceed the
+             *     Alertmanager's `repeat_interval`, or long-firing cases expire while still firing.
+             * @default 86400
+             */
+            max_silence_seconds: number | null;
             credential?: components["schemas"]["CredentialInput"];
         };
         /**
@@ -7380,7 +7535,6 @@ export interface components {
          */
         UpdateSourceRequest: {
             name?: string;
-            cluster_id?: components["schemas"]["Uuid"];
             /** Format: uri */
             base_url?: string;
             /** Format: uri */
@@ -7403,6 +7557,13 @@ export interface components {
              *     polls is tunable here; whether it polls is not.
              */
             reconcile_interval_seconds?: number;
+            /**
+             * Format: int32
+             * @description How long this source may say nothing about an open case before it expires as `silent`
+             *     (ADR 0056 §3). Omitted leaves it; `null` turns the expiry off. ⚠️ It must exceed the
+             *     Alertmanager's `repeat_interval`, or long-firing cases expire while still firing.
+             */
+            max_silence_seconds?: number | null;
             credential?: components["schemas"]["CredentialInput"];
         };
         /**
@@ -11520,6 +11681,13 @@ export interface operations {
                 cursor?: components["parameters"]["CursorParam"];
                 /** @description Only the Incident this Case is a current member of (at most one). Nothing to page. */
                 case_id?: components["schemas"]["Uuid"];
+                /**
+                 * @description List the Incidents with no current member as well — every Case removed or moved away. Off by
+                 *     default: such an Incident is kept and served by number, and hidden from the list. A cursor is
+                 *     bound to this setting, so one minted with it cannot page the list without it. It changes
+                 *     nothing alongside `case_id`, whose answer is never empty.
+                 */
+                include_empty?: boolean;
             };
             header?: never;
             path?: never;
@@ -13391,7 +13559,20 @@ export interface operations {
             409: components["responses"]["Conflict"];
             413: components["responses"]["PayloadTooLarge"];
             415: components["responses"]["UnsupportedMediaType"];
-            422: components["responses"]["UnprocessableContent"];
+            /**
+             * @description `422 validation_failed` — the body parsed but is semantically invalid, or carries an
+             *     unknown field. Always carries `violations[]`. **An attempt to change an immutable field
+             *     lands here**: `{"cluster_id": …}` or `{"kind": …}` is refused with a violation naming the
+             *     field and `code: unknown_field`, and nothing is written.
+             */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             429: components["responses"]["RateLimited"];
             500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];

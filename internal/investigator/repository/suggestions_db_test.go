@@ -1,6 +1,6 @@
 package repository_test
 
-// A FINDING'S SUGGESTIONS AGAINST A REAL POSTGRES (migration 00097, git-bug 8327c00). Every
+// A FINDING'S SUGGESTIONS AGAINST A REAL POSTGRES (migration 00101, git-bug 8327c00). Every
 // claim here is one the SQL makes on its own: a lapsed Suggestion is not read, an applied
 // one stays readable with who applied it, it is applied once, a proposal is never
 // rewritten, a row cannot say half of two changes, and another org's Suggestion is a 404.
@@ -109,7 +109,7 @@ VALUES ($1, $2, $3, 'policy_count_condition', $4, 'p', 3, 600, $5, 9, 'x', $6, $
 	require.Error(t, err)
 }
 
-// TestAUserWhoAskedOrAppliedCanBeDeleted — review B5, migration 00101. `requested_by` and
+// TestAUserWhoAskedOrAppliedCanBeDeleted — review B5, migration 00105. `requested_by` and
 // `applied_by` are `ON DELETE SET NULL`, and that SET NULL is an UPDATE of a frozen row. The
 // freeze lets exactly that through — nested in the foreign key's own trigger, the actor
 // going NULL and nothing else — so deleting the user succeeds, the labels stay, and a

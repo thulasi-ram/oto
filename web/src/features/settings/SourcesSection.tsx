@@ -14,7 +14,7 @@ import { For, Match, Show, Switch, createMemo, createSignal, type Component } fr
 import { useMutation, useQuery, useQueryClient } from "@tanstack/solid-query";
 import * as v from "valibot";
 
-import { maxLengthOf, patternOf } from "~/api/bounds";
+import { maxLengthOf, maxValueOf, minValueOf, patternOf } from "~/api/bounds";
 import { violationsByField } from "~/api/client";
 import {
   createCluster,
@@ -23,7 +23,11 @@ import {
   testSource,
   updateSource,
 } from "~/api/endpoints";
-import { CreateSourceRequestSchema, SourceKindSchema } from "~/api/generated/validators";
+import {
+  CreateSourceRequestSchema,
+  SourceKindSchema,
+  UpdateSourceRequestSchema,
+} from "~/api/generated/validators";
 import { qk } from "~/api/keys";
 import { clustersQuery, sourcesQuery } from "~/api/queries";
 import type {
@@ -33,7 +37,7 @@ import type {
   SourceHealthStatus,
   SourceKind,
 } from "~/api/types";
-import { RelativeTime } from "~/components/Time";
+import { Ago } from "~/components/Time";
 import { Button } from "~/components/ui/Button";
 import { Checkbox } from "~/components/ui/Checkbox";
 import {
@@ -64,7 +68,7 @@ import {
 } from "~/components/ui/TextField";
 import { EmptyState, ErrorBanner, ErrorState, LoadingLine } from "~/components/ui/states";
 import { cn } from "~/lib/cn";
-import { idempotencyKey } from "~/lib/format";
+import { duration, idempotencyKey } from "~/lib/format";
 
 import { DrillPanel } from "./DrillPanel";
 import { OneTimeSecret } from "./OneTimeSecret";
@@ -94,13 +98,48 @@ import {
  * look rather than being told not to.
  */
 const HEALTH_NOTE: Record<SourceHealthStatus, string> = {
-  healthy: "Reachable, and reconciling on schedule. Alerts oto stops hearing about can expire.",
+  healthy:
+    "Reachable, and reconciling on schedule. Alerts oto stops hearing about can expire, once every live source on this cluster is healthy.",
+  // ⛔ NOT "SOME RECONCILES ARE FAILING". `degraded` is either of two things
+  // (sources/service ApplyProbe): one or two probes in a row failed — the third
+  // makes it `unreachable` — or the probe reached it and its HA cluster reported
+  // not ready, which can return an incomplete alert set. Both are said.
   degraded:
-    "Reachable but not entirely well — some reconciles are failing. Nothing from this source will be expired until it recovers.",
+    "The last probe failed (three in a row makes it unreachable), or this Alertmanager's HA cluster is not ready, so the alerts it reports may be incomplete. Nothing on its cluster will be expired until it recovers.",
   unreachable:
-    "oto cannot reach this Alertmanager. Alerts pushed by webhook may still arrive; state reconciliation will not, so oto cannot see a silence here and will not expire anything from this source.",
+    "oto cannot reach this Alertmanager. Alerts pushed by webhook may still arrive; state reconciliation will not, so oto cannot see a silence here and will not expire anything on its cluster.",
   unknown:
-    "oto has not checked this source yet, so nothing from it will be expired until a reconcile pass succeeds.",
+    "oto has not checked this source yet, so nothing on its cluster will be expired until a reconcile pass succeeds.",
+};
+
+/**
+ * A standing warning's headline, keyed by the stable `code` the server records
+ * (`internal/sources/domain` Warn*). The server's own `message` follows it, so
+ * a code this map does not know yet is still shown, under its code.
+ *
+ * ⭐ ADR 0006: these are warned LOUDLY. `send_resolved_false` above all — it
+ * means this receiver will never tell oto an alert resolved, so every alert it
+ * carries can only ever expire — and nothing else on any screen says so.
+ */
+const WARNING_HEADLINE: Readonly<Record<string, string>> = {
+  send_resolved_false: "Resolves will never arrive",
+  alertmanager_cluster_not_ready: "HA cluster not ready",
+  alertmanager_config_unparseable: "Configuration unreadable",
+  alertmanager_unreachable: "Alertmanager not answering",
+  alertmanager_malformed_response: "Not an Alertmanager answer",
+  clock_skew: "Clock skew",
+  prometheus_not_configured: "No Prometheus",
+  prometheus_unreachable: "Prometheus not answering",
+};
+
+/** The server writes a warning's message as a clause; on screen it follows a headline. */
+const sentence = (message: string): string =>
+  message.length === 0 ? message : message.charAt(0).toUpperCase() + message.slice(1);
+
+/** What a warning's `subject` names, where the code says what kind of thing it is. */
+const WARNING_SUBJECT: Readonly<Record<string, string>> = {
+  send_resolved_false: "receiver",
+  alertmanager_cluster_not_ready: "cluster status",
 };
 
 /**
@@ -352,10 +391,25 @@ const SourceRow: Component<{
         <Show when={s().health?.last_reconcile_at}>
           {(at) => (
             <span class="text-meta text-ink-subtle">
-              reconciled <RelativeTime value={at()} label="Last reconcile" /> ago
+              reconciled <Ago value={at()} label="Last reconcile" />
             </span>
           )}
         </Show>
+        {/* The other half of "is this Alertmanager still telling oto anything":
+            the last webhook batch accepted from it (efdac6b writes it). */}
+        <span
+          class="text-meta text-ink-subtle"
+          title="When oto last accepted a webhook batch from this source. Stamped at most every 15 seconds."
+        >
+          <Show when={s().health?.last_push_at} fallback="no webhook received yet">
+            {(at) => (
+              <>
+                last push <Ago value={at()} label="Last push" />
+              </>
+            )}
+          </Show>
+        </span>
+        <OpenCases source={s()} />
         {/*
           The cadence is shown beside the last pass because it is the only
           reconciliation setting there is. There is no on/off switch here and
@@ -407,6 +461,10 @@ const SourceRow: Component<{
       </div>
 
       <p class="break-all font-mono text-meta text-ink-subtle">{s().base_url}</p>
+
+      <MaxSilenceField source={s()} />
+
+      <SourceWarnings source={s()} />
 
       <Show when={s().health?.last_error}>
         {(err) => (
@@ -467,6 +525,212 @@ const SourceRow: Component<{
         onConfirm={() => rotate.mutate()}
       />
     </li>
+  );
+};
+
+/**
+ * The open Cases on this source's cluster, and how many of them the reaper is
+ * holding because of it (ADR 0056 §1) — the per-source form of the `held` count
+ * the sweep used to report only to a log line.
+ *
+ * Held is every open Case on the cluster while this source is not healthy, and
+ * none while it is (owner ruling R1): the reaper expires a Case only while every
+ * live source on its cluster is healthy, so one unhealthy replica of an HA pair
+ * holds them all, and a healthy one holds nothing on its own account — a
+ * sibling's row says so for itself. Absent counts render nothing — "not
+ * counted" is not "none".
+ */
+const OpenCases: Component<{ readonly source: Source }> = (props) => {
+  const open = (): number | undefined => props.source.open_case_count;
+  const held = (): number => props.source.held_case_count ?? 0;
+  const status = (): SourceHealthStatus => props.source.health?.status ?? "unknown";
+  const why = (): string =>
+    status() !== "healthy"
+      ? `None of them can expire while this source is ${status()}: oto expires a case only while every live source on its cluster is healthy. Upstream can still resolve them.`
+      : "None of them can expire until oto has confirmed this source is healthy again: oto expires a case only while every live source on its cluster is healthy. Upstream can still resolve them.";
+  const plural = (n: number): string => (n === 1 ? "case" : "cases");
+
+  return (
+    <Show when={open() !== undefined}>
+      <span class="text-meta text-ink-subtle">
+        {open()} open {plural(open() ?? 0)}
+      </span>
+      <Show when={held() > 0}>
+        <span
+          data-held-cases
+          class="rounded-chip border border-line-strong bg-raised px-1.5 text-meta font-medium leading-5 text-ink"
+          title={why()}
+        >
+          {held()} held
+        </span>
+      </Show>
+    </Show>
+  );
+};
+
+/**
+ * `source_health.warnings`, every one of them, said loudly (ADR 0006): a strong
+ * left rule, ink one tier up, the headline in bold. Tier A — a warning about an
+ * upstream is not an alert's state, so it spends no state hue (§M.2).
+ */
+const SourceWarnings: Component<{ readonly source: Source }> = (props) => (
+  <Show when={(props.source.health?.warnings.length ?? 0) > 0}>
+    <ul class="flex flex-col gap-xs" aria-label="Warnings">
+      <For each={props.source.health?.warnings ?? []}>
+        {(w) => (
+          <li
+            data-warning={w.code}
+            class="border-l-2 border-line-strong pl-sm text-meta leading-snug text-ink"
+          >
+            <strong class="font-semibold">{WARNING_HEADLINE[w.code] ?? w.code}.</strong>{" "}
+            {sentence(w.message)}
+            <Show when={w.subject}>
+              {(subject) => (
+                <>
+                  {" — "}
+                  <Show when={WARNING_SUBJECT[w.code]}>{(kind) => <>{kind()} </>}</Show>
+                  <code class="font-mono">{subject()}</code>
+                </>
+              )}
+            </Show>
+          </li>
+        )}
+      </For>
+    </ul>
+  </Show>
+);
+
+/*
+ * The contract's bounds on `max_silence_seconds`, read rather than repeated. The
+ * field is edited in hours because that is the unit Alertmanager's
+ * `repeat_interval` is usually written in, and the comparison the warning below
+ * asks an operator to make is against that number.
+ */
+const SILENCE_MIN_S = minValueOf(UpdateSourceRequestSchema, "max_silence_seconds");
+const SILENCE_MAX_S = maxValueOf(UpdateSourceRequestSchema, "max_silence_seconds");
+const HOUR_S = 3600;
+/** The column default for a newly registered source, offered when turning it on. */
+const DEFAULT_SILENCE_S = 86_400;
+
+/**
+ * Max silence (ADR 0056 §3): how long this source may say nothing about an open
+ * case before oto expires it as `silent`.
+ *
+ * ⚠️ THE WARNING IS NEXT TO THE FIELD BECAUSE THE FAILURE IS SILENT. Alertmanager
+ * re-sends a firing alert once per `repeat_interval`; a max silence shorter than
+ * that ends long-firing cases while they are still firing, and nothing else on
+ * any screen would say why (ADR 0056 Consequences). When oto has read this
+ * source's own `repeat_interval` off its config and it is the longer of the two,
+ * the row says so in those numbers rather than leaving the arithmetic to the
+ * operator.
+ *
+ * ⛔ IT IS NOT A WAY TO END A CASE. Nothing here closes anything a person picks:
+ * it is configuration the reaper reads, and only while every live source on the
+ * cluster is healthy.
+ *
+ * ⭐ THE DEFAULT IS STATED, NOT BACKFILLED (owner ruling R2). A source registered
+ * after migration 00094 starts at one day; one that existed before it starts
+ * off, so the expiry never acts on a number nobody wrote (ADR 0044 §3). The box
+ * offers the day to an operator turning it on, and the help says both.
+ */
+const MaxSilenceField: Component<{ readonly source: Source }> = (props) => {
+  const client = useQueryClient();
+  const saved = (): number | null => props.source.max_silence_seconds ?? null;
+  const [hours, setHours] = createSignal(String((saved() ?? DEFAULT_SILENCE_S) / HOUR_S));
+  const [on, setOn] = createSignal(saved() !== null);
+
+  const save = useMutation(() => ({
+    mutationFn: (seconds: number | null) =>
+      updateSource(props.source.id, { max_silence_seconds: seconds }),
+    onSuccess: () => void client.invalidateQueries({ queryKey: qk.settings.sources() }),
+  }));
+
+  const seconds = (): number | null => (on() ? Math.round(Number(hours()) * HOUR_S) : null);
+  const invalid = (): string | undefined => {
+    const value = seconds();
+    if (value === null) return undefined;
+    if (!Number.isFinite(value) || value < SILENCE_MIN_S || value > SILENCE_MAX_S) {
+      return `Between ${SILENCE_MIN_S / HOUR_S} and ${SILENCE_MAX_S / HOUR_S} hours.`;
+    }
+    return undefined;
+  };
+  const error = (): string | undefined =>
+    invalid() ?? violationsByField(save.error).get("max_silence_seconds");
+  const dirty = (): boolean => seconds() !== saved();
+
+  /** This source's own `repeat_interval`, when oto has read it off the config. */
+  const repeatS = (): number | null => {
+    const ms = props.source.health?.route_timings.repeat_interval.value_ms;
+    return ms === null || ms === undefined ? null : ms / 1000;
+  };
+  const outlived = (): boolean => {
+    const silence = saved();
+    const repeat = repeatS();
+    return silence !== null && repeat !== null && repeat > silence;
+  };
+
+  const id = (): string => `source-${props.source.id}-silence`;
+
+  return (
+    <div class={cn(FIELD, "border-t border-line pt-sm")}>
+      <div class={FIELD_ROW}>
+        <TextField
+          class={cn(FIELD, "w-36")}
+          value={hours()}
+          disabled={!on()}
+          validationState={error() ? "invalid" : "valid"}
+          onChange={setHours}
+        >
+          <TextFieldLabel>Max silence (hours)</TextFieldLabel>
+          <TextFieldInput
+            id={id()}
+            type="number"
+            min={SILENCE_MIN_S / HOUR_S}
+            max={SILENCE_MAX_S / HOUR_S}
+            step={1}
+          />
+          <TextFieldErrorMessage role="alert">{error()}</TextFieldErrorMessage>
+        </TextField>
+        <div class={cn(CHECK_ROW, "mt-6")}>
+          <Checkbox id={`${id()}-on`} checked={on()} onChange={setOn} />
+          <label for={`${id()}-on-input`} class={CHECK_LABEL}>
+            expire cases this source stops speaking about
+          </label>
+        </div>
+        <Button
+          class="mt-5"
+          size="sm"
+          variant="secondary"
+          disabled={!dirty() || invalid() !== undefined}
+          busy={save.isPending}
+          onClick={() => save.mutate(seconds())}
+        >
+          Save
+        </Button>
+      </div>
+      <p class={HELP}>
+        An open case its cluster has said nothing about for this long expires as <em>silent</em> —
+        only while every live source on the cluster is healthy. Under an HA pair the longest max
+        silence applies, and off on any one source turns it off for the whole cluster. A source
+        registered now starts at 1 day; a source registered before this setting existed starts
+        with it off, until someone sets it here. The expiry itself runs only where the deployment
+        has turned it on (<code class="font-mono">jobs.expire_silent_and_removed</code>, off by
+        default in this release). Raise it if this Alertmanager's{" "}
+        <code class="font-mono">repeat_interval</code> is longer: Alertmanager re-sends a firing
+        alert once per repeat, so a shorter max silence ends long-firing cases while they are still
+        firing.
+      </p>
+      <Show when={outlived()}>
+        <p class="border-l-2 border-line-strong pl-sm text-meta font-medium leading-snug text-ink">
+          This Alertmanager's <code class="font-mono">repeat_interval</code> is{" "}
+          {duration(repeatS())}, longer than its max silence of {duration(saved())}. Its long-firing
+          cases will expire while they are still firing.
+        </p>
+      </Show>
+      <Show when={save.error !== null && error() === undefined}>
+        <ErrorBanner error={save.error} />
+      </Show>
+    </div>
   );
 };
 

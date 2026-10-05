@@ -1,6 +1,6 @@
 package repository_test
 
-// A FINDING'S REMEDIES AGAINST A REAL POSTGRES (migration 00100, git-bug 4148256). Every claim
+// A FINDING'S REMEDIES AGAINST A REAL POSTGRES (migration 00104, git-bug 4148256). Every claim
 // here is one the SQL makes on its own: the hash IS the hash of the arguments; a proposal is
 // never rewritten; a Remedy moves only along its transitions, from the state its writer read;
 // a terminal one is frozen; a Remedy with no Tool can never be approved; one person approves

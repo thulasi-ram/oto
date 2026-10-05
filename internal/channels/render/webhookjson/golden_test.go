@@ -256,20 +256,23 @@ func TestADigestAssertsNoGroup(t *testing.T) {
 }
 
 // incidentView is what `notification/service.ViewService.incidentCard` builds, field
-// for field: a Reason, an `IncidentView` and a render time, and NOTHING else (ADR
-// 0052 §5). Two current members — one open, one closed — and one tombstone that was
-// moved away, so every member key, set and absent, is on the wire.
+// for field: a Reason, the Org, an `IncidentView` and a render time, and NOTHING else
+// (ADR 0052 §5). Two current members — one open, one closed — and one tombstone that was
+// moved away, so every member key, set and absent, is on the wire. It is the third fact
+// of the story — drawn, a Case added, then this — so `sequence` is not the trivial 1.
 func incidentView(reason string) *domain.NotificationView {
 	drawn := renderedAt.Add(-20 * time.Minute)
 	return &domain.NotificationView{
+		Org:    domain.OrgRef{ID: "o1", Slug: "acme", Name: "Acme"},
 		Reason: reason,
 		Incident: &domain.IncidentView{
-			ID:      "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
-			Number:  4,
-			State:   "active",
-			DrawnAt: drawn,
-			DrawnBy: domain.IncidentAuthorView{Label: "Priya R."},
-			Link:    "http://localhost:8080/incidents/4",
+			ID:       "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
+			Number:   4,
+			Sequence: 3,
+			State:    "active",
+			DrawnAt:  drawn,
+			DrawnBy:  domain.IncidentAuthorView{Label: "Priya R."},
+			Link:     "http://localhost:8080/incidents/4",
 			Members: []domain.IncidentMemberView{
 				{
 					CaseID: "0199a1b2-0000-7000-8000-000000000412", CaseNumber: 412, CaseState: "open",
@@ -312,6 +315,7 @@ func TestTheIncidentEnvelopeIsFrozen(t *testing.T) {
 func TestTheQuietIncidentEnvelopeIsFrozen(t *testing.T) {
 	t.Parallel()
 	v := incidentView("quiet")
+	v.Incident.Sequence = 4
 	v.Incident.State = "quiet"
 	v.Incident.Members[0].CaseState = "closed"
 	golden(t, "incident_quiet.golden.json", render(t, v).Payload)
@@ -367,6 +371,34 @@ func TestAFindingsClassificationTravelsOutboundOnlyWhenOneWasAsked(t *testing.T)
 	v.Incident.Finding.Classification = ""
 	if got, ok := finding(v)["classification"]; ok {
 		t.Errorf("a Finding with no classification sent one: %s", got)
+	}
+}
+
+// TestAnIncidentFactCarriesItsSequenceOrNone — ADR 0052 §5, migration 00093. The
+// `sequence` is how a receiver orders facts that arrive out of order, so it is on the
+// wire exactly as the view carries it; and a fact declared before 00093, which nobody
+// numbered, omits the key rather than claiming to be fact zero.
+func TestAnIncidentFactCarriesItsSequenceOrNone(t *testing.T) {
+	t.Parallel()
+	read := func(v *domain.NotificationView) (json.RawMessage, bool) {
+		t.Helper()
+		var envelope struct {
+			Incident map[string]json.RawMessage `json:"incident"`
+		}
+		if err := json.Unmarshal(render(t, v).Payload, &envelope); err != nil {
+			t.Fatalf("unmarshal envelope: %v", err)
+		}
+		raw, ok := envelope.Incident["sequence"]
+		return raw, ok
+	}
+
+	if raw, ok := read(incidentView("case_added")); !ok || string(raw) != "3" {
+		t.Fatalf("incident.sequence is %s (present %v), want 3", raw, ok)
+	}
+	unnumbered := incidentView("case_added")
+	unnumbered.Incident.Sequence = 0
+	if raw, ok := read(unnumbered); ok {
+		t.Fatalf("a fact nobody numbered carries incident.sequence = %s; it must omit the key", raw)
 	}
 }
 

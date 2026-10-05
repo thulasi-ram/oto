@@ -1,6 +1,6 @@
 package repository_test
 
-// THE CLASSIFICATION SET AND A FINDING'S CLASS AGAINST A REAL POSTGRES (migration 00096,
+// THE CLASSIFICATION SET AND A FINDING'S CLASS AGAINST A REAL POSTGRES (migration 00100,
 // git-bug 4298aa0). What the SQL holds on its own: a fresh org has no classes, the set
 // is replaced whole in its operator's order, `unclassified` and a name outside the
 // alphabet cannot be a row, a class needs a Finding — and replacing the set leaves every

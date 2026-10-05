@@ -65,6 +65,8 @@ type fakeIncidents struct {
 	by      []domain.Attribution
 	moves   []int64
 	holding []uuid.UUID
+	// listed is the filter every unfiltered list read reached the service with.
+	listed []domain.ListFilter
 }
 
 func (f *fakeIncidents) record(call string, by domain.Attribution) {
@@ -124,7 +126,12 @@ func contractDetail() domain.Detail {
 	}
 }
 
-func (f *fakeIncidents) List(_ context.Context, s db.TenantScope, _ db.Keyset) ([]domain.Incident, db.Cursor, error) {
+func (f *fakeIncidents) List(
+	_ context.Context, s db.TenantScope, _ db.Keyset, lf domain.ListFilter,
+) ([]domain.Incident, db.Cursor, error) {
+	f.mu.Lock()
+	f.listed = append(f.listed, lf)
+	f.mu.Unlock()
 	if s.OrgID() != apitest.OrgID {
 		return nil, db.Cursor{}, nil
 	}
@@ -489,4 +496,42 @@ func TestTheListAnswersWhichIncidentACaseIsIn(t *testing.T) {
 	}
 
 	c.GET("/incidents?case_id=banana").MustViolate(t, "case_id")
+}
+
+// TestTheListHidesEmptyIncidentsUnlessAsked — owner ruling 2026-10-04. An Incident
+// whose every Case was removed or moved away is a record, kept and served by
+// number, but the list a human scans leaves it out unless `include_empty=true`
+// asks for it.
+//
+// ⭐ THE DEFAULT IS THE HIDING, AND THE HANDLER — NOT THE CLIENT — OWNS IT. A list
+// call that says nothing must reach the service asking for non-empty Incidents
+// only; an explicit `false` is the same request.
+func TestTheListHidesEmptyIncidentsUnlessAsked(t *testing.T) {
+	t.Parallel()
+
+	f, c := newIncidentClient(t)
+
+	for _, path := range []string{"/incidents", "/incidents?include_empty=false", "/incidents?include_empty=true"} {
+		resp := c.GET(path).MustStatus(t, http.StatusOK)
+		schema.Assert(t, "listIncidents", http.StatusOK, resp.Body())
+	}
+
+	f.mu.Lock()
+	got := append([]domain.ListFilter(nil), f.listed...)
+	f.mu.Unlock()
+	want := []domain.ListFilter{{IncludeEmpty: false}, {IncludeEmpty: false}, {IncludeEmpty: true}}
+	if len(got) != len(want) {
+		t.Fatalf("the service was listed %d time(s), want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("list call %d reached the service as %+v, want %+v", i, got[i], want[i])
+		}
+	}
+
+	// The record is never hidden from its address: `getIncident` takes no filter.
+	resp := c.GET("/incidents/4").MustStatus(t, http.StatusOK)
+	schema.Assert(t, "getIncident", http.StatusOK, resp.Body())
+
+	c.GET("/incidents?include_empty=banana").MustViolate(t, "include_empty")
 }

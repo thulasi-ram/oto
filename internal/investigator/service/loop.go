@@ -97,7 +97,7 @@ type Limits struct {
 }
 
 // DefaultLimits are the built-in Tools' per-call controls; a ToolServer's Tools run
-// under the ToolServer's own (domain.CallLimits, migration 00093). Fifteen seconds is
+// under the ToolServer's own (domain.CallLimits, migration 00097). Fifteen seconds is
 // long for a read of oto's own tables and short against a run's wall budget; sixteen
 // KiB is a long timeline and a fraction of any model's context.
 func DefaultLimits() Limits { return Limits{ToolTimeout: 15 * time.Second, MaxToolResult: 16 << 10} }

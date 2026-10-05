@@ -723,7 +723,7 @@ func (s *Service) finish(ctx context.Context, scope db.TenantScope, inv domain.I
 		}
 		if inv.SubjectKind == domain.SubjectDigest {
 			// ⛔ A DIGEST WINDOW'S FINDING IS NOT PUBLISHED AS AN ENRICHMENT, AND IT IS NOT
-			// DECLARED (git-bug 3e96f5a, migration 00098). An Enrichment is keyed by its
+			// DECLARED (git-bug 3e96f5a, migration 00102). An Enrichment is keyed by its
 			// subject alone and replaced by the next run, so it could not name the window;
 			// and nothing is sent because of it. It stays on this row, and the digest tick
 			// copies it onto the digest IF it is here when the window closes — the run

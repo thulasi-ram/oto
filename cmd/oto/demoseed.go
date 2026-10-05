@@ -1334,7 +1334,7 @@ SELECT a.org_id,
        coalesce(sum(n.d), 0)::int,
        count(*) FILTER (WHERE c.ack_state = 'acked')::int,
        count(*) FILTER (WHERE c.resolve_reason = 'upstream')::int,
-       count(*) FILTER (WHERE c.resolve_reason = 'timeout')::int,
+       count(*) FILTER (WHERE c.resolve_reason <> 'upstream')::int,
        coalesce(sum(EXTRACT(EPOCH FROM (coalesce(c.ended_at, now()) - c.started_at))), 0)::bigint,
        0
   FROM alert_cases c

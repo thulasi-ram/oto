@@ -327,7 +327,7 @@ const (
 	// SubjectIncident is a set of Cases drawn as one story (ADR 0052). Only an
 	// Investigator writes one: an Incident's Finding is published as the
 	// Enrichment `investigator.<name>` on the Incident, exactly as a Case's is on
-	// the Case (ADR 0053 §3, §4; migration 00095 widened `enrichments_subjkind_ck`
+	// the Case (ADR 0053 §3, §4; migration 00099 widened `enrichments_subjkind_ck`
 	// to admit it). No enricher of the pipeline runs against an Incident.
 	SubjectIncident = "incident"
 
@@ -348,7 +348,7 @@ const (
 	//
 	// ⭐ `enrichments_subjkind_ck` NO LONGER ADMITS `'group'`. 00069's Up narrowed
 	// it to `('alert','case')` (its line 342; the `'group'` at its line 640 is the
-	// DOWN), and 00095 widened it by exactly `'incident'`. The CHECK and the switch
+	// DOWN), and 00099 widened it by exactly `'incident'`. The CHECK and the switch
 	// below are the same set again, three values each (git-bug 74ea849 checked).
 )
 

@@ -430,6 +430,9 @@ type contractStack struct {
 	clusters  *contractClusters
 	reconcile *contractReconciler
 	feeds     *contractFeeds
+	// cases is the open/held Case count per source (ADR 0056 §1). nil leaves
+	// the port unwired, which is what every test that does not ask for it gets.
+	cases CaseCounts
 
 	dropRegistry  bool
 	dropClusters  bool
@@ -478,6 +481,7 @@ func (s *contractStack) router() *Router {
 	if !s.dropFeeds {
 		o.Feeds = s.feeds
 	}
+	o.Cases = s.cases
 	return NewRouter(o)
 }
 

@@ -73,7 +73,7 @@ type Digest struct {
 	// empty. It counts CASES rather than alerts or notifications; migration 00058
 	// carries the argument.
 	Floor int
-	// InvestigatorID is `digest_investigator_id` (migration 00098, ADR 0053 §4): the
+	// InvestigatorID is `digest_investigator_id` (migration 00102, ADR 0053 §4): the
 	// Investigator this policy ASKED to summarise its windows, uuid.Nil for none — the
 	// default. Its run for a window is armed ahead of the close; the tick carries the
 	// run's Finding if it has ended with one when the window closes, and sends the

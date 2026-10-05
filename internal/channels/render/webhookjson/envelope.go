@@ -207,6 +207,16 @@ type Digest struct {
 type Incident struct {
 	ID     string `json:"id"`
 	Number int64  `json:"number"`
+	// Sequence orders this Incident's facts: 1 for `drawn`, one more for each fact
+	// after, allocated in the transaction that recorded the fact (migration 00093)
+	// and the same on every retry of it. Facts are delivered independently and can
+	// arrive out of order — a `quiet` before the `case_removed` that caused it — so a
+	// receiver keeps the highest sequence it has seen per `id` and drops a fact
+	// below it. Increasing, NOT gapless: a fact routed elsewhere still took a number.
+	//
+	// ⛔ ADDITIVE, `omitempty`, for `incident`'s own reason above: v1 admits a new key.
+	// It is absent only on a fact declared before 00093, which nobody numbered.
+	Sequence int64 `json:"sequence,omitempty"`
 	// State is `active` while any current member Case is open and `quiet` otherwise.
 	// Derived by oto from its Cases and never set by anyone.
 	State   string         `json:"state"`
@@ -348,15 +358,19 @@ type Alert struct {
 
 // Case is one firing episode.
 type Case struct {
-	ID                string     `json:"id"`
-	Seq               int        `json:"seq"`
-	State             string     `json:"state"`
-	AckState          string     `json:"ack_state"`
-	SuppressionReason string     `json:"suppression_reason,omitempty"`
-	ResolveReason     string     `json:"resolve_reason,omitempty"`
-	StartedAt         time.Time  `json:"started_at"`
-	EndedAt           *time.Time `json:"ended_at,omitempty"`
-	DurationSeconds   float64    `json:"duration_seconds"`
+	ID                string `json:"id"`
+	Seq               int    `json:"seq"`
+	State             string `json:"state"`
+	AckState          string `json:"ack_state"`
+	SuppressionReason string `json:"suppression_reason,omitempty"`
+	// ResolveReason is why a closed case ended: `upstream` is the only resolution,
+	// and `timeout`, `silent` and `source_removed` are the three expiries (ADR
+	// 0056 §4). An expired case's `expired` notification carries the specific one,
+	// so a receiver can tell "the source went silent" from "the source was removed".
+	ResolveReason   string     `json:"resolve_reason,omitempty"`
+	StartedAt       time.Time  `json:"started_at"`
+	EndedAt         *time.Time `json:"ended_at,omitempty"`
+	DurationSeconds float64    `json:"duration_seconds"`
 	// ⛔ FROZEN AT ZERO, NOT REMOVED. ADR 0040 made a Case strictly terminal, so
 	// nothing can ever count a reopen again — but this envelope is frozen at
 	// oto.notification.v1 (§H.10, SCOPE-BOUNDARY H-2) and DELETING a key is as

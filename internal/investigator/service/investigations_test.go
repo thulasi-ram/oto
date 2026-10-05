@@ -6,7 +6,7 @@ package service
 // per-run budget ends a run `exhausted` with its partial Finding and the reason; the
 // kill switch stops new runs; tokens spent are recorded; changing the model, prompt or
 // allowlist makes a new version and the Finding names it. The SQL that holds the same
-// rules (00092's triggers and CHECKs) is `repository/investigations_db_test.go`'s.
+// rules (00096's triggers and CHECKs) is `repository/investigations_db_test.go`'s.
 
 import (
 	"context"

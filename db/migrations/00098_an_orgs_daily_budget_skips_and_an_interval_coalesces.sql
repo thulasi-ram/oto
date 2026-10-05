@@ -1,5 +1,5 @@
 -- ADR 0053 §6: AN ORG'S DAILY BUDGET SKIPS ON THE RECORD, ITS CONCURRENCY WAITS, AND AN
--- INVESTIGATOR'S MINIMUM INTERVAL COALESCES (git-bug bf172fe). 00092 enforced the per-run
+-- INVESTIGATOR'S MINIMUM INTERVAL COALESCES (git-bug bf172fe). 00096 enforced the per-run
 -- budgets and the kill switch; this is the rest of §6's table:
 --
 --   Daily token budget  org             New Investigations are recorded as `skipped` with
@@ -90,7 +90,7 @@ COMMENT ON COLUMN orgs.settings IS
 
 -- +goose Down
 
--- Byte-identical to what 00092 shipped. A row that wrote either key keeps it in the
+-- Byte-identical to what 00096 shipped. A row that wrote either key keeps it in the
 -- document, which the release below reads past: an unknown JSONB key is not a column it
 -- can fail on.
 -- +goose StatementBegin

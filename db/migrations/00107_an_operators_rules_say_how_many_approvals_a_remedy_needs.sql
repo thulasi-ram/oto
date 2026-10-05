@@ -72,7 +72,7 @@ CREATE UNIQUE INDEX remedy_risk_rules_position_uniq ON remedy_risk_rules (org_id
 
 -- +goose StatementBegin
 COMMENT ON TABLE remedy_risk_rules IS
-  'ADR 0054 §3 (00103, git-bug eb4f21b): the operator''s rules over a Remedy''s command — its write Tool, verb, resource kind, namespace and whether its verb is known reversible — each saying 1 or 2 approvals. The MOST SEVERE matching rule wins and is named after the first such in position order; no match is 2; a command the rules cannot parse (sh -c, a pipe, a redirect, a quote, an unknown flag…) is 2 whatever they say. A risk model may then raise 1 to 2, never lower. Replaced whole by the settings API. A Remedy copies the NAME of the rule that set its tier, so replacing the rules re-tiers no Remedy already proposed. oto ships no rule.';
+  'ADR 0054 §3 (00107, git-bug eb4f21b): the operator''s rules over a Remedy''s command — its write Tool, verb, resource kind, namespace and whether its verb is known reversible — each saying 1 or 2 approvals. The MOST SEVERE matching rule wins and is named after the first such in position order; no match is 2; a command the rules cannot parse (sh -c, a pipe, a redirect, a quote, an unknown flag…) is 2 whatever they say. A risk model may then raise 1 to 2, never lower. Replaced whole by the settings API. A Remedy copies the NAME of the rule that set its tier, so replacing the rules re-tiers no Remedy already proposed. oto ships no rule.';
 -- +goose StatementEnd
 
 CREATE TABLE remedy_risk_settings (
@@ -93,7 +93,7 @@ CREATE INDEX remedy_risk_settings_user_idx ON remedy_risk_settings (written_by) 
 
 -- +goose StatementBegin
 COMMENT ON TABLE remedy_risk_settings IS
-  'ADR 0054 §3 (00103, git-bug eb4f21b): per org, the model endpoint asked whether a Remedy the rules said needs ONE approval should need two (NULL: no model is asked, and the rules'' tier stands), and who last replaced the risk rules and when. The model sees only the command, its target and the rules'' verdict — never an Investigation, Step, Finding, log line or Tool answer — and may only raise. Absent row: no rules were ever written.';
+  'ADR 0054 §3 (00107, git-bug eb4f21b): per org, the model endpoint asked whether a Remedy the rules said needs ONE approval should need two (NULL: no model is asked, and the rules'' tier stands), and who last replaced the risk rules and when. The model sees only the command, its target and the rules'' verdict — never an Investigation, Step, Finding, log line or Tool answer — and may only raise. Absent row: no rules were ever written.';
 -- +goose StatementEnd
 
 ALTER TABLE remedies
@@ -135,12 +135,12 @@ ALTER TABLE remedies
 
 -- +goose StatementBegin
 COMMENT ON COLUMN remedies.required_approvals IS
-  'How many DIFFERENT grant holders must approve before it runs, set at proposal from the org''s risk rules (00103, git-bug eb4f21b): 1 only when a rule said so and the risk model, if one is configured, kept it; 2 when a rule said 2, no rule matched, the command could not be parsed, or the model raised it or failed. risk_basis, risk_rule and risk_model_check say which. A Remedy with no Tool, and one proposed before 00103, needs 2 and has no risk record. A model may only ever raise it (ADR 0054 §3).';
+  'How many DIFFERENT grant holders must approve before it runs, set at proposal from the org''s risk rules (00107, git-bug eb4f21b): 1 only when a rule said so and the risk model, if one is configured, kept it; 2 when a rule said 2, no rule matched, the command could not be parsed, or the model raised it or failed. risk_basis, risk_rule and risk_model_check say which. A Remedy with no Tool, and one proposed before 00107, needs 2 and has no risk record. A model may only ever raise it (ADR 0054 §3).';
 -- +goose StatementEnd
 
 -- +goose StatementBegin
 COMMENT ON COLUMN remedies.risk_basis IS
-  'What set the baseline tier (00103): rule (risk_rule names it, as the rules stood at proposal — a copy of the NAME, never a foreign key), no_rule (2), or unparseable (2 whatever the rules say; risk_detail says why). NULL for a Remedy with no Tool or one proposed before 00103. risk_model_check says what the risk model then did: unset (none configured), not_asked (the baseline was already 2), kept, raised (risk_detail is its reason) or failed (2; risk_detail says why).';
+  'What set the baseline tier (00107): rule (risk_rule names it, as the rules stood at proposal — a copy of the NAME, never a foreign key), no_rule (2), or unparseable (2 whatever the rules say; risk_detail says why). NULL for a Remedy with no Tool or one proposed before 00107. risk_model_check says what the risk model then did: unset (none configured), not_asked (the baseline was already 2), kept, raised (risk_detail is its reason) or failed (2; risk_detail says why).';
 -- +goose StatementEnd
 
 -- +goose StatementBegin
@@ -156,7 +156,7 @@ BEGIN
   IF OLD.state IN ('executed','failed','declined','expired') THEN
     RAISE EXCEPTION 'remedy % is % and is frozen: a Remedy that ended is never rewritten, and a failed one is never retried', OLD.id, OLD.state;
   END IF;
-  -- ⭐ 00103: how the tier was set is part of the proposal, frozen with it.
+  -- ⭐ 00107: how the tier was set is part of the proposal, frozen with it.
   IF (NEW.id, NEW.org_id, NEW.investigation_id, NEW.subject_kind, NEW.subject_id, NEW.proposed_by_label,
       NEW.tool_server_id, NEW.tool_server_name, NEW.tool_name, NEW.arguments, NEW.arguments_sha256,
       NEW.target, NEW.description, NEW.required_approvals, NEW.proposed_at,
@@ -180,7 +180,7 @@ $$;
 
 -- +goose Down
 
--- Byte-identical to 00100's body.
+-- Byte-identical to 00104's body.
 -- +goose StatementBegin
 CREATE OR REPLACE FUNCTION remedies_refuse_rewrite() RETURNS trigger
 LANGUAGE plpgsql AS $$
@@ -213,14 +213,14 @@ END
 $$;
 -- +goose StatementEnd
 
--- Byte-identical to what 00100 shipped.
+-- Byte-identical to what 00104 shipped.
 -- +goose StatementBegin
 COMMENT ON COLUMN remedies.required_approvals IS
   'How many DIFFERENT grant holders must approve before it runs, set at proposal. 2 for every Remedy until operator-written risk rules exist (git-bug eb4f21b), which may lower it per Remedy; a model may only ever raise it (ADR 0054 §3).';
 -- +goose StatementEnd
 
 -- ⛔ A REMEDY'S RISK RECORD GOES WITH ITS COLUMNS. The release below reads no tier but 2's
--- column; a Remedy a rule lowered to 1 keeps required_approvals = 1, which 00100's CHECK
+-- column; a Remedy a rule lowered to 1 keeps required_approvals = 1, which 00104's CHECK
 -- admits and its executor honours — the rule that set it is what is lost.
 ALTER TABLE remedies
   DROP CONSTRAINT remedies_risk_tier_ck,

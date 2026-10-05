@@ -92,7 +92,7 @@ export const AckStateSchema = v.picklist(["unacked", "acked"]);
 
 export const SuppressionReasonSchema = v.nullable(v.picklist(["silence", "inhibition", "mute_time_interval", "active_time_interval"]));
 
-export const ResolveReasonSchema = v.nullable(v.picklist(["upstream", "timeout"]));
+export const ResolveReasonSchema = v.nullable(v.picklist(["upstream", "timeout", "silent", "source_removed"]));
 
 export const GroupStateSchema = v.picklist(["open", "closed"]);
 
@@ -569,6 +569,47 @@ export const RuleSnapshotDTOSchema = v.looseObject({
   "captured_at": TimestampSchema,
 });
 
+export const CaseSourceDTOSchema = v.looseObject({
+  "id": UuidSchema,
+  "name": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(120),
+  ),
+  "healthy": v.boolean(),
+  "max_silence_seconds": v.nullable(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(3600),
+    v.maxValue(2592000),
+  )),
+});
+
+export const CaseSourcesDTOSchema = v.looseObject({
+  "live": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+  ),
+  "removed": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+  ),
+  "all_healthy": v.boolean(),
+  "max_silence_seconds": v.nullable(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(3600),
+    v.maxValue(2592000),
+  )),
+  "live_sources": v.pipe(
+    v.array(CaseSourceDTOSchema),
+    v.maxLength(10),
+  ),
+  "source": v.nullable(CaseSourceDTOSchema),
+});
+
 export const CaseDetailDTOSchema = v.intersect([
   CaseDTOSchema,
   v.looseObject({
@@ -580,6 +621,7 @@ export const CaseDetailDTOSchema = v.intersect([
       v.maxLength(32),
     ),
     "delivery_summary": DeliverySummaryDTOSchema,
+    "sources": v.nullable(CaseSourcesDTOSchema),
   }),
 ]);
 
@@ -587,6 +629,7 @@ export const CaseListItemDTOSchema = v.intersect([
   CaseDTOSchema,
   v.looseObject({
     "alert": AlertRefDTOSchema,
+    "sources": v.nullable(CaseSourcesDTOSchema),
   }),
 ]);
 
@@ -1357,8 +1400,24 @@ export const SourceDTOSchema = v.looseObject({
     v.minValue(10),
     v.maxValue(3600),
   ),
+  "max_silence_seconds": v.nullable(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(3600),
+    v.maxValue(2592000),
+  )),
   "ingest_path": v.string(),
   "health": v.exactOptional(v.nullable(SourceHealthDTOSchema)),
+  "open_case_count": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+  )),
+  "held_case_count": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+  )),
   "created_at": TimestampSchema,
   "updated_at": TimestampSchema,
 });
@@ -2636,6 +2695,12 @@ export const CreateSourceRequestSchema = v.strictObject({
     v.minValue(10),
     v.maxValue(3600),
   ), 30),
+  "max_silence_seconds": v.exactOptional(v.nullable(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(3600),
+    v.maxValue(2592000),
+  )), 86400),
   "credential": v.exactOptional(CredentialInputSchema),
 });
 
@@ -2646,7 +2711,6 @@ export const UpdateSourceRequestSchema = v.pipe(
       v.minLength(1),
       v.maxLength(120),
     )),
-    "cluster_id": v.exactOptional(UuidSchema),
     "base_url": v.exactOptional(v.pipe(
       v.string(),
       v.url(),
@@ -2687,6 +2751,12 @@ export const UpdateSourceRequestSchema = v.pipe(
       v.minValue(10),
       v.maxValue(3600),
     )),
+    "max_silence_seconds": v.exactOptional(v.nullable(v.pipe(
+      v.number(),
+      v.integer(),
+      v.minValue(3600),
+      v.maxValue(2592000),
+    ))),
     "credential": v.exactOptional(CredentialInputSchema),
   }),
   v.check((value) => Object.keys(value).length >= 1, "at least 1 property required"),

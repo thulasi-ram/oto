@@ -11,7 +11,7 @@ import (
 	"github.com/thulasiram/oto/internal/platform/errs"
 )
 
-// RemedyApproverRepository READS `remedy_approver_grants` (migration 00099, ADR 0054 §4,
+// RemedyApproverRepository READS `remedy_approver_grants` (migration 00103, ADR 0054 §4,
 // git-bug 47f67c8).
 //
 // ⛔⛔ IT HAS NO WRITE METHOD, AND THAT IS THE DESIGN. A grant is written and deleted by

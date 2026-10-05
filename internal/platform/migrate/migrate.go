@@ -91,6 +91,23 @@ func Up(ctx context.Context, dsn string) error {
 	return nil
 }
 
+// UpByOne applies exactly the next pending migration — `Down`'s mirror. A test
+// that rolls a migration back to read what its Up does to rows written BEFORE it
+// re-applies that one migration and no more; `Up` would carry on through every
+// migration above it, and the test's next `Down` would undo the wrong one.
+func UpByOne(ctx context.Context, dsn string) error {
+	p, db, err := provider(dsn)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = db.Close() }()
+
+	if _, err := p.UpByOne(ctx); err != nil {
+		return fmt.Errorf("migrate: up by one: %w", err)
+	}
+	return nil
+}
+
 // Down rolls back exactly one migration.
 func Down(ctx context.Context, dsn string) error {
 	p, db, err := provider(dsn)

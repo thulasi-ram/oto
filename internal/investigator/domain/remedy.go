@@ -57,7 +57,7 @@ import (
 // shown — the API, the UI and the fact sent outbound.
 const NoToolCanCarryItOut = "no configured Tool can carry this out"
 
-// Bounds mirroring migration 00100's CHECKs.
+// Bounds mirroring migration 00104's CHECKs.
 const (
 	// MaxRemediesPerRun bounds what one Investigation may propose. A proposal past it is
 	// refused on the record.

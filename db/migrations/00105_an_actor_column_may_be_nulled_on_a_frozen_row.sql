@@ -1,8 +1,8 @@
 -- A FROZEN INVESTIGATION, OR AN APPLIED SUGGESTION, LETS ITS ACTOR GO WHEN THE USER DOES
 -- (review B5). Two rows in ADR 0053's record are frozen by a BEFORE UPDATE trigger:
 --
---   investigations_frozen            an Investigation that ended (00092) is never rewritten
---   investigation_suggestions_once   an applied Suggestion (00097) is applied once
+--   investigations_frozen            an Investigation that ended (00096) is never rewritten
+--   investigation_suggestions_once   an applied Suggestion (00101) is applied once
 --
 -- and each carries an ACTOR column in the acked_by mould — `investigations.requested_by`
 -- and `investigation_suggestions.applied_by`, both `REFERENCES users(id) ON DELETE SET
@@ -13,18 +13,18 @@
 --
 -- ⭐ THE FREEZE NOW LETS THROUGH THAT ONE UPDATE AND NOTHING ELSE. Both functions admit an
 -- UPDATE only when (a) it arrives nested inside another trigger — `pg_trigger_depth() > 1`,
--- which is what a foreign key's own action is, and what 00100's `remedy_record_refuse_change`
+-- which is what a foreign key's own action is, and what 00104's `remedy_record_refuse_change`
 -- already reads the same way; (b) the actor column goes NULL; and (c) every OTHER column is
 -- unchanged. A statement issued against the table directly is depth 1 and is refused as
 -- before, whatever it changes — including a hand-written `SET requested_by = NULL`.
 --
 -- ⭐ (c) COMPARES THE WHOLE ROW AS jsonb WITH THE ACTOR KEY REMOVED, rather than spelling
--- the columns out as 00097's proposal guard does. A column a later migration adds is then
+-- the columns out as 00101's proposal guard does. A column a later migration adds is then
 -- covered without this function being touched again — a spelled-out list is a freeze with
 -- a hole the day somebody forgets it. The label column is in the comparison, so it stays
 -- exactly as it was: the name is the record, the id is only who it was.
 --
--- 00097's second guard — a proposal is never rewritten, applied or not — is kept verbatim
+-- 00101's second guard — a proposal is never rewritten, applied or not — is kept verbatim
 -- below the first, so an UNapplied Suggestion is as frozen in its proposal as it was.
 --
 -- EXPAND/CONTRACT (CONTEXT.md §6). Two function bodies replaced in place; no table, column
@@ -78,7 +78,7 @@ $$;
 
 -- +goose Down
 
--- The two bodies exactly as 00092 and 00097 wrote them. A user deletion that would null an
+-- The two bodies exactly as 00096 and 00101 wrote them. A user deletion that would null an
 -- actor on a frozen row aborts again below this migration, which is what release N-1 did.
 
 -- +goose StatementBegin

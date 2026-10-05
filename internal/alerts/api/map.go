@@ -112,11 +112,53 @@ func caseDTO(o domain.Case, now time.Time) CaseDTO {
 // caller's org before returning it — and `alertRefDTO` of a zero value would
 // still marshal, so the honest thing is to render what was handed over rather
 // than to invent a fallback for a state the query cannot produce.
-func caseListItemDTO(o domain.Case, a domain.Alert, now time.Time) CaseListItemDTO {
+func caseListItemDTO(o domain.Case, a domain.Alert, cover map[uuid.UUID]domain.CaseCover, now time.Time) CaseListItemDTO {
 	return CaseListItemDTO{
 		CaseDTO: caseDTO(o, now),
 		Alert:   alertRefDTO(a),
+		Sources: caseSourcesDTO(cover, o.ID()),
 	}
+}
+
+// caseSourcesDTO renders one Case's cover, or nil when it was not read — an
+// unwired reader, a failed read, or a Case the read did not reach. nil is
+// rendered as `null`, which the screen reads as "unknown" and says nothing about
+// expiry; it is never "no source".
+func caseSourcesDTO(cover map[uuid.UUID]domain.CaseCover, caseID uuid.UUID) *CaseSourcesDTO {
+	c, ok := cover[caseID]
+	if !ok {
+		return nil
+	}
+	out := &CaseSourcesDTO{
+		Live:              int32(c.Live),    //nolint:gosec // a count of rows in one org
+		Removed:           int32(c.Removed), //nolint:gosec // a count of rows in one org
+		AllHealthy:        c.AllHealthy,
+		MaxSilenceSeconds: silenceSeconds(c.MaxSilence),
+		LiveSources:       make([]CaseSourceDTO, 0, min(len(c.Sources), maxListedCaseSources)),
+	}
+	for i, src := range c.Sources {
+		if i == maxListedCaseSources {
+			break
+		}
+		out.LiveSources = append(out.LiveSources, CaseSourceDTO{
+			ID: src.ID, Name: src.Name, Healthy: src.Healthy,
+			MaxSilenceSeconds: silenceSeconds(src.MaxSilence),
+		})
+	}
+	if c.Live == 1 && len(out.LiveSources) == 1 {
+		one := out.LiveSources[0]
+		out.Source = &one
+	}
+	return out
+}
+
+// silenceSeconds renders a max silence as `integer | null`, zero being "off".
+func silenceSeconds(d time.Duration) *int32 {
+	if d <= 0 {
+		return nil
+	}
+	secs := int32(d / time.Second) //nolint:gosec // bounded by alert_sources_silence_ck
+	return &secs
 }
 
 func eventDTO(e domain.Event) AlertEventDTO {

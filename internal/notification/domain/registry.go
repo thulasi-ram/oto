@@ -87,7 +87,7 @@ type PolicyDraft struct {
 	// (digest.go's binding block); it has no timezone and never will.
 	DigestWindow *time.Duration
 	DigestFloor  *int
-	// DigestInvestigatorID is `digest_investigator_id` (migration 00098): the
+	// DigestInvestigatorID is `digest_investigator_id` (migration 00102): the
 	// Investigator the policy asks to summarise its digest windows. Nil is none.
 	DigestInvestigatorID *uuid.UUID
 }

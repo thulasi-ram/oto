@@ -15,7 +15,6 @@ import (
 	"github.com/thulasiram/oto/internal/alerts/domain"
 	"github.com/thulasiram/oto/internal/alerts/repository"
 	"github.com/thulasiram/oto/internal/platform/db"
-	"github.com/thulasiram/oto/internal/platform/id"
 	"github.com/thulasiram/oto/test/harness"
 )
 
@@ -24,26 +23,6 @@ import (
 // properties under test end in rows — what expired and what was held.
 
 // ------------------------------------------------------------------ reap fakes
-
-// fakeOccSources maps cases onto sources from a fixed table, standing in
-// for the group-membership join the production resolver walks. A case
-// absent from the table is absent from the answer, which the sweep must read as
-// "cannot prove healthy".
-type fakeOccSources struct {
-	bySource map[uuid.UUID]uuid.UUID
-}
-
-func (f fakeOccSources) SourceIDs(
-	_ context.Context, _ db.TenantScope, caseIDs []uuid.UUID,
-) (map[uuid.UUID]uuid.UUID, error) {
-	out := make(map[uuid.UUID]uuid.UUID, len(caseIDs))
-	for _, caseID := range caseIDs {
-		if src, ok := f.bySource[caseID]; ok {
-			out[caseID] = src
-		}
-	}
-	return out, nil
-}
 
 // fakeHealth records HOW the sweep asks, so a test can pin the shape of the
 // asking — once per tick, with the distinct sources — and not just the verdict.
@@ -66,9 +45,17 @@ func (f *fakeHealth) HealthyFor(
 }
 
 // sweepService builds a service over the fixture's pool with the ports the
-// sweeps use: the reaper's resolver and health guard. The nil-port degradations
-// are covered by using nil here too.
+// sweeps use: the reaper's resolver and health guard, and the ADR 0056 expiries
+// turned ON. The nil-port degradations are covered by using nil here too.
 func (f *fixture) sweepService(occSources CaseSourceResolver, health SourceHealth) *Service {
+	f.t.Helper()
+	return f.sweepServiceWith(occSources, health, true)
+}
+
+// sweepServiceWith is sweepService with `jobs.expire_silent_and_removed` stated.
+func (f *fixture) sweepServiceWith(
+	occSources CaseSourceResolver, health SourceHealth, expireUnheard bool,
+) *Service {
 	f.t.Helper()
 	svc, err := New(Deps{
 		Alerts:     repository.NewAlertRepository(f.pool, f.clk, false),
@@ -82,11 +69,38 @@ func (f *fixture) sweepService(occSources CaseSourceResolver, health SourceHealt
 		Health:     health,
 		Clock:      f.clk,
 		Logger:     slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
+
+		ExpireSilentAndRemoved: expireUnheard,
 	})
 	if err != nil {
 		f.t.Fatalf("build sweep service: %v", err)
 	}
 	return svc
+}
+
+// markHealth writes `status` into `source_health` for each source — the table the
+// candidate scans' §B.4 pre-filter reads. A source with no row reads as not
+// healthy, exactly as it does to the guard. `degraded` is the unhealthy status
+// that needs no `last_error`.
+func (f *fixture) markHealth(status string, sourceIDs ...uuid.UUID) {
+	f.t.Helper()
+	for _, src := range sourceIDs {
+		f.h.Exec(`INSERT INTO source_health (source_id, org_id, status, updated_at)
+		          VALUES ($1, $2, $3, $4)
+		          ON CONFLICT (source_id) DO UPDATE
+		            SET status = EXCLUDED.status, updated_at = EXCLUDED.updated_at`,
+			src, f.orgID, status, f.clk.Now())
+	}
+}
+
+// healthySource registers a live source on the fixture's cluster whose
+// `source_health` row says healthy, so the scans' pre-filter lets its Cases
+// through to the guard.
+func (f *fixture) healthySource() harness.Source {
+	f.t.Helper()
+	src := f.h.Source(f.org, f.cluster)
+	f.markHealth("healthy", src.ID)
+	return src
 }
 
 // openSecondFiring opens a case on a SECOND alert in the same tenant, so
@@ -157,8 +171,8 @@ func (f *fixture) alertStateOf(caseID uuid.UUID) string {
 		`SELECT CASE
 		          WHEN state = 'open' AND suppression_reason IS NOT NULL THEN 'suppressed'
 		          WHEN state = 'open'                                    THEN 'firing'
-		          WHEN resolve_reason = 'timeout'                        THEN 'expired'
-		          ELSE 'resolved'
+		          WHEN resolve_reason = 'upstream'                       THEN 'resolved'
+		          ELSE 'expired'
 		        END
 		   FROM alert_cases WHERE org_id = $1 AND id = $2`,
 		f.orgID, caseID).Scan(&state); err != nil {
@@ -177,16 +191,13 @@ func TestReapAsksForHealthOncePerTickNotPerCase(t *testing.T) {
 	f := newFixture(t, now)
 	ctx := t.Context()
 
+	src := f.healthySource()
 	startsAt := now.Add(-2 * time.Hour)
 	occ1 := f.openFiring(startsAt, now.Add(-30*time.Minute))
 	occ2 := f.openSecondFiring(startsAt, now.Add(-30*time.Minute))
 
-	srcID := id.New()
-	health := &fakeHealth{result: map[uuid.UUID]bool{srcID: true}}
-	svc := f.sweepService(fakeOccSources{bySource: map[uuid.UUID]uuid.UUID{
-		occ1.ID(): srcID,
-		occ2.ID(): srcID,
-	}}, health)
+	health := &fakeHealth{result: map[uuid.UUID]bool{src.ID: true}}
+	svc := f.sweepService(repository.NewCaseRepository(f.pool), health)
 
 	res, err := svc.Reap(ctx, f.scope, 10)
 	require.NoError(t, err)
@@ -197,44 +208,49 @@ func TestReapAsksForHealthOncePerTickNotPerCase(t *testing.T) {
 	require.Equal(t, 1, health.calls,
 		"health is resolved ONCE per tick: per-case lookups made a source outage cost "+
 			"two queries per candidate per minute, worst exactly when the source was down")
-	require.Equal(t, []uuid.UUID{srcID}, health.asked[0],
+	require.Equal(t, []uuid.UUID{src.ID}, health.asked[0],
 		"two candidates over one source must ask about that one source, deduped")
 
 	assert.Equal(t, domain.StateExpired.String(), f.alertStateOf(occ1.ID()))
 	assert.Equal(t, domain.StateExpired.String(), f.alertStateOf(occ2.ID()))
 }
 
-// TestReapHoldsWhatTheBatchCannotVouchFor is §B.4 over the batch result: a
-// source ABSENT from the returned map is not proven healthy, and every
-// case it owns is held in place — absence and false are the same verdict.
+// TestReapHoldsWhatTheBatchCannotVouchFor is §B.4 over the batch result, on an
+// HA pair (owner ruling R1): a source ABSENT from the returned map is not proven
+// healthy, and because the guard asks EVERY live source on the cluster, one
+// replica it cannot vouch for holds every Case the pair shares — absence and false
+// are the same verdict.
+//
+// ⭐ AND ONLY THAT REPLICA IS NAMED. The healthy one is not why anything is held,
+// and naming it would raise a `source.unreachable` banner over a source that is
+// fine.
 func TestReapHoldsWhatTheBatchCannotVouchFor(t *testing.T) {
 	now := harness.Epoch
 	f := newFixture(t, now)
 	ctx := t.Context()
 
+	// Both rows say healthy, so both Cases reach the guard; the port is what
+	// disagrees about one of them.
+	srcHealthy, srcUnknown := f.healthySource(), f.healthySource()
 	startsAt := now.Add(-2 * time.Hour)
 	occ1 := f.openFiring(startsAt, now.Add(-30*time.Minute))
 	occ2 := f.openSecondFiring(startsAt, now.Add(-30*time.Minute))
 
-	srcHealthy, srcUnknown := id.New(), id.New()
-	health := &fakeHealth{result: map[uuid.UUID]bool{srcHealthy: true}}
-	svc := f.sweepService(fakeOccSources{bySource: map[uuid.UUID]uuid.UUID{
-		occ1.ID(): srcHealthy,
-		occ2.ID(): srcUnknown, // resolved, but the health batch says nothing about it
-	}}, health)
+	health := &fakeHealth{result: map[uuid.UUID]bool{srcHealthy.ID: true}}
+	svc := f.sweepService(repository.NewCaseRepository(f.pool), health)
 
 	res, err := svc.Reap(ctx, f.scope, 10)
 	require.NoError(t, err)
 	assert.Equal(t, 2, res.Considered)
-	assert.Equal(t, 1, res.Expired)
-	assert.Equal(t, 1, res.Held,
-		"a source the batch did not return is a source oto cannot prove healthy")
-	assert.Equal(t, []uuid.UUID{srcUnknown}, res.HeldSources,
-		"the held source is named, so one source.unreachable banner can be raised for it")
+	assert.Zero(t, res.Expired, "one replica oto cannot vouch for holds every Case the pair shares")
+	assert.Equal(t, 2, res.Held)
+	assert.Equal(t, []uuid.UUID{srcUnknown.ID}, res.HeldSources,
+		"only the source the batch did not vouch for is named, so one source.unreachable "+
+			"banner is raised for it and none for its healthy sibling")
 
-	assert.Equal(t, domain.StateExpired.String(), f.alertStateOf(occ1.ID()))
-	assert.Equal(t, domain.StateFiring.String(), f.alertStateOf(occ2.ID()),
+	assert.Equal(t, domain.StateFiring.String(), f.alertStateOf(occ1.ID()),
 		"the held case must be left exactly as it was")
+	assert.Equal(t, domain.StateFiring.String(), f.alertStateOf(occ2.ID()))
 }
 
 // TestReapHoldsEveryCandidateWhenTheHealthLookupFails: a failed batch lookup is
@@ -246,23 +262,20 @@ func TestReapHoldsEveryCandidateWhenTheHealthLookupFails(t *testing.T) {
 	f := newFixture(t, now)
 	ctx := t.Context()
 
+	srcA, srcB := f.healthySource(), f.healthySource()
 	startsAt := now.Add(-2 * time.Hour)
 	occ1 := f.openFiring(startsAt, now.Add(-30*time.Minute))
 	occ2 := f.openSecondFiring(startsAt, now.Add(-30*time.Minute))
 
-	srcA, srcB := id.New(), id.New()
 	health := &fakeHealth{err: errors.New("sources service unreachable")}
-	svc := f.sweepService(fakeOccSources{bySource: map[uuid.UUID]uuid.UUID{
-		occ1.ID(): srcA,
-		occ2.ID(): srcB,
-	}}, health)
+	svc := f.sweepService(repository.NewCaseRepository(f.pool), health)
 
 	res, err := svc.Reap(ctx, f.scope, 10)
 	require.NoError(t, err, "not knowing holds candidates; it must never abort the sweep")
 	assert.Equal(t, 2, res.Considered)
 	assert.Zero(t, res.Expired)
 	assert.Equal(t, 2, res.Held)
-	assert.ElementsMatch(t, []uuid.UUID{srcA, srcB}, res.HeldSources)
+	assert.ElementsMatch(t, []uuid.UUID{srcA.ID, srcB.ID}, res.HeldSources)
 
 	assert.Equal(t, domain.StateFiring.String(), f.alertStateOf(occ1.ID()))
 	assert.Equal(t, domain.StateFiring.String(), f.alertStateOf(occ2.ID()))

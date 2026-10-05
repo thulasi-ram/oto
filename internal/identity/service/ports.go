@@ -139,7 +139,7 @@ type SlackIdentityStore interface {
 	Unlink(ctx context.Context, s db.TenantScope, id, userID uuid.UUID) (domain.SlackIdentity, error)
 }
 
-// SlackLinkStore is the self-service link's own state (git-bug a556a5c, migration 00105): the one
+// SlackLinkStore is the self-service link's own state (git-bug a556a5c, migration 00109): the one
 // live code per identity (stored as a sha256 only), the per-user count of wrong codes, and the
 // recorded fact of every link and unlink.
 type SlackLinkStore interface {
@@ -154,7 +154,7 @@ type SlackLinkStore interface {
 	RecordFact(ctx context.Context, s db.TenantScope, f domain.SlackLinkFact) error
 }
 
-// RemedyApproverReader reads `remedy_approver_grants` (ADR 0054 §4, migration 00099,
+// RemedyApproverReader reads `remedy_approver_grants` (ADR 0054 §4, migration 00103,
 // git-bug 47f67c8), satisfied by `identity/repository.RemedyApproverRepository`.
 //
 // ⛔⛔ IT HAS NO WRITE METHOD AND MUST NEVER GROW ONE. A grant is given and taken by `oto

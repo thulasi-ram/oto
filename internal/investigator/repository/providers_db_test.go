@@ -1,6 +1,6 @@
 package repository_test
 
-// MODEL ENDPOINTS AGAINST A REAL POSTGRES (migration 00091, git-bug 8f1f071). Every
+// MODEL ENDPOINTS AGAINST A REAL POSTGRES (migration 00095, git-bug 8f1f071). Every
 // claim here is a claim about SQL as much as Go: the key sealed in `channel_credentials`
 // and unsealed only as a `model_api_key`, the tenant predicate, the per-org name index,
 // and the CHECK that a key never rides plaintext.

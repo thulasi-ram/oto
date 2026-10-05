@@ -99,7 +99,7 @@ func TestAnIncidentsFindingIsDeclaredAsTheFactFinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	incident, run := uuid.New(), uuid.New()
-	if err := (findingDeclarer{enq: enq}).DeclareIncidentFinding(context.Background(), scope, incident, run); err != nil {
+	if err := (findingDeclarer{enq: enq, seq: fixedSequence(7)}).DeclareIncidentFinding(context.Background(), scope, incident, run); err != nil {
 		t.Fatal(err)
 	}
 	if len(enq.jobs) != 1 {
@@ -112,4 +112,16 @@ func TestAnIncidentsFindingIsDeclaredAsTheFactFinding(t *testing.T) {
 	if r := notifdomain.Reason(a.Reason); !r.Valid() || r.Subject() != notifdomain.SubjectIncident {
 		t.Fatalf("%q is not an Incident notification reason", a.Reason)
 	}
+	// ⭐ Numbered like every other Incident fact (migration 00093): a `finding` without a
+	// sequence is one a receiver cannot order against the membership facts around it.
+	if a.Sequence != 7 {
+		t.Fatalf("the finding fact carries sequence %d, want the Incident's next (7)", a.Sequence)
+	}
+}
+
+// fixedSequence is an incidentFactSequencer that always hands out the same number.
+type fixedSequence int64
+
+func (f fixedSequence) NextFactSequence(context.Context, db.TenantScope, uuid.UUID) (int64, error) {
+	return int64(f), nil
 }

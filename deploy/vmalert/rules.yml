@@ -1,0 +1,51 @@
+# Dev-only vmalert rules for the optional `vm` compose profile (`just vm`).
+#
+# vmalert evaluates these against the VictoriaMetrics single-node in the same
+# compose project and sends what fires to the SAME Alertmanager the Prometheus
+# rules use, so a VictoriaMetrics alert reaches oto on the ordinary webhook
+# path. Pair a source's `prometheus_url` with vmalert (http://localhost:8880)
+# and the rule snapshot oto records for these comes from vmalert's
+# /api/v1/rules — which is the point of this file: it carries a `for` and a
+# `keep_firing_for`, the two fields whose spelling and decoding differ between
+# vmalert and Prometheus (docs/setup/victoriametrics.md §2).
+
+groups:
+  - name: oto-vm-demo
+    interval: 15s
+    rules:
+      # Always true, like OtoStackSmokeTest on the Prometheus side: it fires on
+      # the first evaluation after `for` elapses, well inside a minute.
+      - alert: VmStackSmokeTest
+        expr: vector(1) > 0
+        for: 15s
+        labels:
+          severity: info
+          namespace: oto
+          service: vmalert
+        annotations:
+          summary: "vmalert is wired to oto through Alertmanager"
+          description: >-
+            Always true on purpose. In Alertmanager at http://localhost:9093 it
+            proves vmalert evaluates and notifies; in oto it proves the receiver
+            reaches the ingest endpoint.
+
+      # A switch you flip by writing one sample into VictoriaMetrics:
+      #
+      #   just vm-toggle 1   # fires after 30 s pending
+      #   just vm-toggle 0   # keeps firing 2 m more, then resolves
+      #
+      # The `keep_firing_for` is what makes the resolve visibly late, and what
+      # oto must record as 2m rather than 0. `last_over_time` holds the one
+      # sample for an hour: a bare `oto_dev_toggle` goes stale minutes after it
+      # is written, and the alert would resolve on its own.
+      - alert: VmDevToggle
+        expr: last_over_time(oto_dev_toggle[1h]) > 0
+        for: 30s
+        keep_firing_for: 2m
+        labels:
+          severity: warning
+          namespace: oto
+          service: vmalert
+        annotations:
+          summary: "oto_dev_toggle is {{ $value }}"
+          description: "Set by `just vm-toggle`. Resolves 2 m after it goes back to 0."

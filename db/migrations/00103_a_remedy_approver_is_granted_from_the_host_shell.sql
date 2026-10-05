@@ -69,7 +69,7 @@ CREATE INDEX remedy_approver_grants_user_idx ON remedy_approver_grants (org_id, 
 
 -- +goose StatementBegin
 COMMENT ON TABLE remedy_approver_grants IS
-  'ADR 0054 §4 (00099, git-bug 47f67c8): who may approve a Remedy on a write ToolServer. Written ONLY by `oto grant remedy-approver` and deleted ONLY by `oto revoke remedy-approver`, from the host shell — no HTTP route writes it, so one holder can never mint a second approver and defeat double approval. A disabled user''s grant does not count; a shadow member can never be named. A permission, never an obligation: it routes nothing and creates no queue.';
+  'ADR 0054 §4 (00103, git-bug 47f67c8): who may approve a Remedy on a write ToolServer. Written ONLY by `oto grant remedy-approver` and deleted ONLY by `oto revoke remedy-approver`, from the host shell — no HTTP route writes it, so one holder can never mint a second approver and defeat double approval. A disabled user''s grant does not count; a shadow member can never be named. A permission, never an obligation: it routes nothing and creates no queue.';
 -- +goose StatementEnd
 
 -- +goose StatementBegin

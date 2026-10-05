@@ -179,15 +179,32 @@ func incidentSubject(d incidentsdomain.Detail) investigatordomain.IncidentSubjec
 //
 // ⛔ WHETHER IT GOES ANYWHERE IS A POLICY'S QUESTION. An org with no policy naming
 // `finding` records the intent `no_policy` and sends nothing.
+//
+// ⭐ IT IS NUMBERED LIKE EVERY OTHER INCIDENT FACT (migration 00093): the Incident's
+// next `sequence` is taken in this same transaction, under the Incident's row lock, so
+// a receiver orders a Finding against the membership facts around it.
 type findingDeclarer struct {
 	enq db.Enqueuer
+	seq incidentFactSequencer
 }
 
-func (d findingDeclarer) DeclareIncidentFinding(ctx context.Context, _ db.TenantScope, incidentID, investigationID uuid.UUID) error {
-	_, err := d.enq.Enqueue(ctx, jobs.NotifyIncidentArgs{
+// incidentFactSequencer is the half of `*incidents/service.Service` a fact declared
+// from outside `incidents` needs: the Incident's next fact sequence, allocated in the
+// caller's transaction.
+type incidentFactSequencer interface {
+	NextFactSequence(ctx context.Context, s db.TenantScope, incidentID uuid.UUID) (int64, error)
+}
+
+func (d findingDeclarer) DeclareIncidentFinding(ctx context.Context, s db.TenantScope, incidentID, investigationID uuid.UUID) error {
+	seq, err := d.seq.NextFactSequence(ctx, s, incidentID)
+	if err != nil {
+		return err
+	}
+	_, err = d.enq.Enqueue(ctx, jobs.NotifyIncidentArgs{
 		IncidentID: incidentID,
 		Reason:     string(notifdomain.ReasonFinding),
 		OccasionID: investigationID,
+		Sequence:   seq,
 	})
 	return err
 }
@@ -236,7 +253,7 @@ type findingPublisher struct {
 func (p findingPublisher) PublishFinding(ctx context.Context, s db.TenantScope, f investigatordomain.PublishedFinding) error {
 	subjectKind := enrichdomain.SubjectCase
 	if f.SubjectKind == investigatordomain.SubjectIncident {
-		// ⭐ ON THE INCIDENT, NOT ON ANY OF ITS CASES (migration 00095): the run looked
+		// ⭐ ON THE INCIDENT, NOT ON ANY OF ITS CASES (migration 00099): the run looked
 		// at the story, and its Finding is about the story.
 		subjectKind = enrichdomain.SubjectIncident
 	}
@@ -775,11 +792,15 @@ func (c *Container) armDigestInvestigations(ctx context.Context, job *jobs.Job[j
 // ⛔ WHETHER IT GOES ANYWHERE IS A POLICY'S QUESTION, as for every Incident fact: an org with
 // no policy naming the Reason records the intent `no_policy` and sends nothing. It is a
 // fact, never a command — nothing reads an answer back.
+//
+// ⭐ NUMBERED LIKE EVERY OTHER INCIDENT FACT (migration 00093), in this transaction, as
+// findingDeclarer is.
 type remedyDeclarer struct {
 	enq db.Enqueuer
+	seq incidentFactSequencer
 }
 
-func (d remedyDeclarer) DeclareRemedy(ctx context.Context, _ db.TenantScope, incidentID uuid.UUID, f investigatordomain.RemedyFact) error {
+func (d remedyDeclarer) DeclareRemedy(ctx context.Context, s db.TenantScope, incidentID uuid.UUID, f investigatordomain.RemedyFact) error {
 	r, t := f.Remedy, f.Transition
 	fact := &jobs.RemedyFact{
 		RemedyID:          r.ID,
@@ -810,10 +831,15 @@ func (d remedyDeclarer) DeclareRemedy(ctx context.Context, _ db.TenantScope, inc
 	for _, a := range r.Approvals {
 		fact.Approvals = append(fact.Approvals, jobs.RemedyFactApproval{Label: a.Label, ApprovedAt: a.ApprovedAt.UTC()})
 	}
-	_, err := d.enq.Enqueue(ctx, jobs.NotifyIncidentArgs{
+	seq, err := d.seq.NextFactSequence(ctx, s, incidentID)
+	if err != nil {
+		return err
+	}
+	_, err = d.enq.Enqueue(ctx, jobs.NotifyIncidentArgs{
 		IncidentID: incidentID,
 		Reason:     t.To.FactReason(),
 		OccasionID: t.ID,
+		Sequence:   seq,
 		Remedy:     fact,
 	})
 	return err

@@ -182,8 +182,10 @@ WITH candidates AS (
          -- 'firing' throughout a silence, which is what every COUNT needed.
          CASE WHEN o.state = 'open' AND a.suppression_reason IS NOT NULL THEN 'suppressed'
               WHEN o.state = 'open' THEN a.state
-              WHEN o.resolve_reason = 'timeout' THEN 'expired'
-              ELSE 'resolved' END              AS state,
+              -- ADR 0056 §4: only upstream is a resolution; timeout, silent and
+              -- source_removed are all expired, so the default is the safe word.
+              WHEN o.resolve_reason = 'upstream' THEN 'resolved'
+              ELSE 'expired' END              AS state,
          o.started_at   AS started_at,
          a.alert_key    AS alert_key,
          a.alertname    AS alertname,

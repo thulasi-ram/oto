@@ -275,17 +275,25 @@ type Notification struct {
 	DigestCoveredFrom *time.Time
 	DigestCoveredTo   *time.Time
 	// DigestFinding is the Investigator's Finding this digest carried as its body
-	// (migration 00098, ADR 0053 §4), COPIED when the digest was sent — nil for the
+	// (migration 00102, ADR 0053 §4), COPIED when the digest was sent — nil for the
 	// built-in body. It is set once, by the tick that mints the row, from whatever usable
 	// Finding the window's run had at that moment, and never afterwards: a digest never
 	// waits for a Finding and is never amended with a later one. A COPY, so a retried
 	// delivery renders the same body and the card is drawn without a read (ViewService.
 	// digest).
 	DigestFinding *DigestFinding
-	// Remedy is the Remedy transition a `remedy_*` Incident fact declares (migration 00100,
+	// Remedy is the Remedy transition a `remedy_*` Incident fact declares (migration 00104,
 	// ADR 0054 §2), COPIED in the transaction that made it — nil on every other Reason
 	// (`notifications_remedy_ck`). The card reads it off the row, never off the Remedy.
 	Remedy *IncidentRemedy
+
+	// IncidentSequence is the per-Incident order of the Incident fact this row
+	// declares (migration 00093): 1 for `drawn`, one more per fact after, allocated
+	// in the transaction that made the fact true and frozen here when the fact is
+	// evaluated, so every delivery attempt renders the same number. 0 — NULL in the
+	// row — on every non-Incident row, on the pointer into a member Case's thread,
+	// and on an Incident fact enqueued before 00093 (`notifications_incident_seq_ck`).
+	IncidentSequence int64
 
 	CreatedAt time.Time
 	UpdatedAt time.Time

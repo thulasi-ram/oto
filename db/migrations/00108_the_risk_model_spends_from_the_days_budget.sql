@@ -20,7 +20,7 @@
 -- Release N-1 never writes `budget`; it reads the column as text.
 --
 -- ⚠️ THE INDEX IS BUILT IN THE MIGRATION'S TRANSACTION, not CONCURRENTLY: `remedies` holds one row
--- per proposed cluster change (00100), a table measured in hundreds, and the lock is momentary.
+-- per proposed cluster change (00104), a table measured in hundreds, and the lock is momentary.
 
 -- +goose Up
 
@@ -46,17 +46,17 @@ CREATE INDEX remedies_risk_spend_idx ON remedies (org_id, proposed_at)
 
 -- +goose StatementBegin
 COMMENT ON TABLE remedy_risk_rules IS
-  'ADR 0054 §3 (00103, git-bug eb4f21b): the operator''s rules over a Remedy''s command — its write Tool, verb, resource kind, namespace and whether its verb is known reversible — each saying 1 or 2 approvals. The MOST SEVERE matching rule wins and is named after the first such in position order; no match is 2; a command the rules cannot parse (sh -c, a pipe, a redirect, a quote, an unknown flag…) is 2 whatever they say. A risk model may then raise 1 to 2, never lower. Replaced whole by `oto remedy-rules apply` from the host shell ONLY (00104, the ruling of 2026-10-05 on git-bug eb4f21b): a rule saying 1 lets one grant holder approve alone, so no HTTP route writes one. A Remedy copies the NAME of the rule that set its tier, so replacing the rules re-tiers no Remedy already proposed. oto ships no rule.';
+  'ADR 0054 §3 (00107, git-bug eb4f21b): the operator''s rules over a Remedy''s command — its write Tool, verb, resource kind, namespace and whether its verb is known reversible — each saying 1 or 2 approvals. The MOST SEVERE matching rule wins and is named after the first such in position order; no match is 2; a command the rules cannot parse (sh -c, a pipe, a redirect, a quote, an unknown flag…) is 2 whatever they say. A risk model may then raise 1 to 2, never lower. Replaced whole by `oto remedy-rules apply` from the host shell ONLY (00108, the ruling of 2026-10-05 on git-bug eb4f21b): a rule saying 1 lets one grant holder approve alone, so no HTTP route writes one. A Remedy copies the NAME of the rule that set its tier, so replacing the rules re-tiers no Remedy already proposed. oto ships no rule.';
 -- +goose StatementEnd
 
 -- +goose StatementBegin
 COMMENT ON TABLE remedy_risk_settings IS
-  'ADR 0054 §3 (00103, git-bug eb4f21b): per org, the model endpoint asked whether a Remedy the rules said needs ONE approval should need two (NULL: no model is asked, and the rules'' tier stands), and who last replaced the risk rules and when — `oto remedy-rules apply`, from the host shell (00104), with written_by NULL. The model sees only the command, its target and the rules'' verdict — never an Investigation, Step, Finding, log line or Tool answer — and may only raise. Its tokens count against the org''s daily token budget; when that is spent it is not asked and the Remedy needs two (risk_model_check = budget). Absent row: no rules were ever written.';
+  'ADR 0054 §3 (00107, git-bug eb4f21b): per org, the model endpoint asked whether a Remedy the rules said needs ONE approval should need two (NULL: no model is asked, and the rules'' tier stands), and who last replaced the risk rules and when — `oto remedy-rules apply`, from the host shell (00108), with written_by NULL. The model sees only the command, its target and the rules'' verdict — never an Investigation, Step, Finding, log line or Tool answer — and may only raise. Its tokens count against the org''s daily token budget; when that is spent it is not asked and the Remedy needs two (risk_model_check = budget). Absent row: no rules were ever written.';
 -- +goose StatementEnd
 
 -- +goose StatementBegin
 COMMENT ON COLUMN remedies.risk_basis IS
-  'What set the baseline tier (00103): rule (risk_rule names it, as the rules stood at proposal — a copy of the NAME, never a foreign key), no_rule (2), or unparseable (2 whatever the rules say; risk_detail says why). NULL for a Remedy with no Tool or one proposed before 00103. risk_model_check says what the risk model then did: unset (none configured), not_asked (the baseline was already 2), kept, raised (risk_detail is its reason), failed (2; risk_detail says why) or budget (00104: the org''s daily token budget was spent, so it was not asked: 2; risk_detail says so). risk_model_tokens count against that budget from proposed_at.';
+  'What set the baseline tier (00107): rule (risk_rule names it, as the rules stood at proposal — a copy of the NAME, never a foreign key), no_rule (2), or unparseable (2 whatever the rules say; risk_detail says why). NULL for a Remedy with no Tool or one proposed before 00107. risk_model_check says what the risk model then did: unset (none configured), not_asked (the baseline was already 2), kept, raised (risk_detail is its reason), failed (2; risk_detail says why) or budget (00108: the org''s daily token budget was spent, so it was not asked: 2; risk_detail says so). risk_model_tokens count against that budget from proposed_at.';
 -- +goose StatementEnd
 
 -- +goose Down
@@ -64,27 +64,27 @@ COMMENT ON COLUMN remedies.risk_basis IS
 -- ⛔ A `budget` row cannot survive a CHECK that does not know the word. It needed two approvals
 -- because nothing was asked; the release below records that as `failed` — two, the model gave
 -- no answer oto could take — which is true of it and keeps its tier, so no approval it holds is
--- re-read. risk_model_check is frozen with the proposal, so `remedies_frozen` (00100) is stepped
+-- re-read. risk_model_check is frozen with the proposal, so `remedies_frozen` (00104) is stepped
 -- around for this one rewrite, inside the Down's own transaction: nothing else can write a
 -- Remedy between the two ALTERs.
 ALTER TABLE remedies DISABLE TRIGGER remedies_frozen;
 UPDATE remedies SET risk_model_check = 'failed' WHERE risk_model_check = 'budget';
 ALTER TABLE remedies ENABLE TRIGGER remedies_frozen;
 
--- Byte-identical to what 00103 shipped.
+-- Byte-identical to what 00107 shipped.
 -- +goose StatementBegin
 COMMENT ON COLUMN remedies.risk_basis IS
-  'What set the baseline tier (00103): rule (risk_rule names it, as the rules stood at proposal — a copy of the NAME, never a foreign key), no_rule (2), or unparseable (2 whatever the rules say; risk_detail says why). NULL for a Remedy with no Tool or one proposed before 00103. risk_model_check says what the risk model then did: unset (none configured), not_asked (the baseline was already 2), kept, raised (risk_detail is its reason) or failed (2; risk_detail says why).';
+  'What set the baseline tier (00107): rule (risk_rule names it, as the rules stood at proposal — a copy of the NAME, never a foreign key), no_rule (2), or unparseable (2 whatever the rules say; risk_detail says why). NULL for a Remedy with no Tool or one proposed before 00107. risk_model_check says what the risk model then did: unset (none configured), not_asked (the baseline was already 2), kept, raised (risk_detail is its reason) or failed (2; risk_detail says why).';
 -- +goose StatementEnd
 
 -- +goose StatementBegin
 COMMENT ON TABLE remedy_risk_settings IS
-  'ADR 0054 §3 (00103, git-bug eb4f21b): per org, the model endpoint asked whether a Remedy the rules said needs ONE approval should need two (NULL: no model is asked, and the rules'' tier stands), and who last replaced the risk rules and when. The model sees only the command, its target and the rules'' verdict — never an Investigation, Step, Finding, log line or Tool answer — and may only raise. Absent row: no rules were ever written.';
+  'ADR 0054 §3 (00107, git-bug eb4f21b): per org, the model endpoint asked whether a Remedy the rules said needs ONE approval should need two (NULL: no model is asked, and the rules'' tier stands), and who last replaced the risk rules and when. The model sees only the command, its target and the rules'' verdict — never an Investigation, Step, Finding, log line or Tool answer — and may only raise. Absent row: no rules were ever written.';
 -- +goose StatementEnd
 
 -- +goose StatementBegin
 COMMENT ON TABLE remedy_risk_rules IS
-  'ADR 0054 §3 (00103, git-bug eb4f21b): the operator''s rules over a Remedy''s command — its write Tool, verb, resource kind, namespace and whether its verb is known reversible — each saying 1 or 2 approvals. The MOST SEVERE matching rule wins and is named after the first such in position order; no match is 2; a command the rules cannot parse (sh -c, a pipe, a redirect, a quote, an unknown flag…) is 2 whatever they say. A risk model may then raise 1 to 2, never lower. Replaced whole by the settings API. A Remedy copies the NAME of the rule that set its tier, so replacing the rules re-tiers no Remedy already proposed. oto ships no rule.';
+  'ADR 0054 §3 (00107, git-bug eb4f21b): the operator''s rules over a Remedy''s command — its write Tool, verb, resource kind, namespace and whether its verb is known reversible — each saying 1 or 2 approvals. The MOST SEVERE matching rule wins and is named after the first such in position order; no match is 2; a command the rules cannot parse (sh -c, a pipe, a redirect, a quote, an unknown flag…) is 2 whatever they say. A risk model may then raise 1 to 2, never lower. Replaced whole by the settings API. A Remedy copies the NAME of the rule that set its tier, so replacing the rules re-tiers no Remedy already proposed. oto ships no rule.';
 -- +goose StatementEnd
 
 DROP INDEX remedies_risk_spend_idx;

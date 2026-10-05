@@ -25,7 +25,7 @@ import (
 // SubjectKind is what an Investigation is about. ADR 0053 §4 names four subjects —
 // `case | incident | digest | policy` — and a Case, an Incident and a digest window have
 // run paths, so the set is closed at three and `investigations_subjkind_ck` admits
-// exactly them (00092, widened by 00095 and 00098). Adding a kind is a constant here, an
+// exactly them (00096, widened by 00099 and 00102). Adding a kind is a constant here, an
 // arm in ParseSubjectKind, a widened CHECK, and a run path that can read the subject.
 type SubjectKind string
 

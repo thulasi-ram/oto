@@ -19,17 +19,27 @@ const DefaultSweepLimit = 200
 
 // ReapResult is the audit of one `case.reap` tick.
 type ReapResult struct {
-	// Considered is how many open episodes were past source_ends_at +
-	// resolve_grace.
+	// Considered is how many candidates the tick's scans returned, each counted
+	// once.
 	Considered int
 	// Expired is how many were moved to `expired` — which is NOT `resolved`.
 	Expired int
-	// Held is how many were left exactly as they were because their AlertSource
-	// could not be proven healthy. THIS NUMBER IS A FEATURE: it is the
-	// `source_degraded_holds` counter of §B.4, and it should be exported.
+	// Held is how many were left exactly as they were because some live source on
+	// their cluster could not be proven healthy (or none is live). THIS NUMBER IS A
+	// FEATURE: it is the `source_degraded_holds` counter of §B.4, and it should be
+	// exported.
+	//
+	// ⚠️ IT COUNTS ONLY WHAT REACHED THE GUARD. The scans pre-filter on
+	// `source_health` (a cluster whose live sources are not all `healthy` is never
+	// a candidate), so a source that is plainly down holds its Cases without
+	// appearing here; what lands here is the guard's port disagreeing with the
+	// table — a lookup that failed, or a verdict that changed between the two.
+	// The per-source held count on the sources screen is the complete one.
 	Held int
-	// HeldSources names the sources responsible, so one `source.unreachable`
-	// banner can be raised per source rather than one per case.
+	// HeldSources names the sources responsible — only the ones the guard could
+	// not vouch for, never a healthy replica beside them — so one
+	// `source.unreachable` banner can be raised per source rather than one per
+	// case.
 	HeldSources []uuid.UUID
 	// Superseded is how many candidates were ABANDONED because the row had moved
 	// since the sweep read it: somebody else ended the episode, or a fresh
@@ -40,6 +50,11 @@ type ReapResult struct {
 	// been fabricated over a row that disproved it, and a sustained non-zero value
 	// says the sweep is racing ingest hard enough to be worth looking at.
 	Superseded int
+	// Silent and SourceRemoved say how many of Expired were the two ADR 0056
+	// expiries; the rest were `timeout`. They are counted apart because a burst of
+	// either one is a different fact for an operator than a burst of the other.
+	Silent        int
+	SourceRemoved int
 }
 
 // Reap is the `case.reap` sweep — SPEC §B.3 T6.
@@ -52,14 +67,25 @@ type ReapResult struct {
 //     HEARING about the alert. There is no code path in this file that can
 //     produce `resolved`: the only state it writes comes back from domain.Apply
 //     under TriggerReap, which the §B.3 table maps exclusively to `expired` with
-//     `resolve_reason='timeout'`, and the assertion below refuses anything else.
+//     one of the three expiry reasons — `timeout`, `silent`, `source_removed`
+//     (ADR 0056) — and the assertion below refuses anything else.
 //
-//  2. THE REAPER IS BLOCKED WHILE THE SOURCE IS NOT HEALTHY (§B.4). Losing sight
-//     of an alert is not the same as the alert resolving. A case whose
-//     AlertSource cannot be PROVEN healthy is HELD in its current state —
-//     including when the health port is not wired at all, when the source cannot
-//     be resolved, and when the health lookup itself fails. Every one of those is
-//     "oto does not know", and "oto does not know" must never end an episode.
+//  2. THE REAPER IS BLOCKED WHILE THE SOURCES ARE NOT HEALTHY (§B.4). Losing
+//     sight of an alert is not the same as the alert resolving. A case is HELD
+//     in its current state unless its cluster has at least one live source and
+//     EVERY live source is PROVEN healthy (owner ruling R1: an HA pair is two
+//     witnesses, and either one oto cannot see might be carrying the alert) —
+//     including when the health port is not wired at all, when no live source
+//     can be resolved, and when the health lookup itself fails. Every one of
+//     those is "oto does not know", and "oto does not know" must never end an
+//     episode. Both `timeout` and `silent` pass through this guard.
+//
+//     ⚠️ `source_removed` IS THE ONE EXPIRY THAT DOES NOT, AND IT IS NOT A HOLE IN
+//     THE RULE. The guard protects a source oto cannot see; a Case whose cluster
+//     has no live source left has no source to be blind to. The one thing that
+//     could have said the alert ended is gone, and holding the Case open would be
+//     a promise nobody can keep (ADR 0056 §2). The pass is a question about the
+//     CLUSTER, so an HA replica deleted beside a live one ends nothing.
 //
 // ⭐ THE CANDIDATE SCAN IS NOT A DECISION, AND IT DELIBERATELY TAKES NO LOCKS.
 // `ReapCandidates` runs outside any transaction and its result is several round
@@ -78,50 +104,56 @@ func (s *Service) Reap(ctx context.Context, scope db.TenantScope, limit int) (Re
 	now := s.Now()
 	before := now.Add(-cfg.ResolveGrace)
 
+	t := newReapTally()
+
+	// ⭐ THE TWO ADR 0056 PASSES RUN ONLY WHILE THE OPERATOR HAS TURNED THEM ON
+	// (`jobs.expire_silent_and_removed`, off by default). Off, this tick is the
+	// `timeout` sweep it was before 00094, and neither new reason is ever written
+	// — which is what lets 00094 and its readers ship ahead of the writer.
+	if s.expireUnheard {
+		// ⭐ `source_removed` GOES FIRST (ADR 0056 §2). Its candidates resolve to
+		// no source at all, so the guarded passes below would count every one of
+		// them as HELD and log a §B.4 hold for a source that does not exist.
+		// Ending them first takes them out of both scans, which read only open
+		// episodes. `before` is also its cutoff: a removal younger than a resolve
+		// grace ends nothing, so a source deleted and re-created in between leaves
+		// its cluster's Cases exactly as they were.
+		removed, err := s.cases.SourceRemovedCandidates(ctx, scope, before, limit)
+		if err != nil {
+			return ReapResult{}, err
+		}
+		for _, ac := range removed {
+			t.consider(ac.ID())
+			t.record(s.tryExpire(ctx, scope, ac, now, cfg, domain.ResolveSourceRemoved, nil))
+		}
+	}
+
 	candidates, err := s.cases.ReapCandidates(ctx, scope, before, limit)
 	if err != nil {
 		return ReapResult{}, err
 	}
-	if len(candidates) == 0 {
-		return ReapResult{}, nil
+	// `silent` is the same guarded pass over a different scan (ADR 0056 §3): the
+	// §B.4 guard is asked of the same sources in the same way, because silence
+	// under a source oto cannot see proves nothing. Both scans are read before the
+	// guard runs, so health is still asked ONCE per tick, over both.
+	var silent []domain.Case
+	if s.expireUnheard {
+		if silent, err = s.cases.SilentCandidates(ctx, scope, now, limit); err != nil {
+			return ReapResult{}, err
+		}
 	}
-
-	sources, err := s.resolveSources(ctx, scope, candidates)
-	if err != nil {
+	guarded := make([]reapCandidate, 0, len(candidates)+len(silent))
+	for _, ac := range candidates {
+		guarded = append(guarded, reapCandidate{ac, domain.ResolveTimeout})
+	}
+	for _, ac := range silent {
+		guarded = append(guarded, reapCandidate{ac, domain.ResolveSilent})
+	}
+	if err := s.reapGuarded(ctx, scope, guarded, now, cfg, t); err != nil {
 		return ReapResult{}, err
 	}
-	healthy := s.healthBySource(ctx, scope, sources)
 
-	res := ReapResult{Considered: len(candidates)}
-	heldSources := map[uuid.UUID]struct{}{}
-
-	for _, ac := range candidates {
-		sourceID, known := sources[ac.ID()]
-		if !known || !healthy[sourceID] {
-			res.Held++
-			if known {
-				heldSources[sourceID] = struct{}{}
-			}
-			continue
-		}
-		expired, err := s.expire(ctx, scope, ac, now, cfg)
-		if err != nil {
-			// One case failing must not cost the rest of the sweep; the
-			// next tick will see it again in sixty seconds.
-			s.log.WarnContext(ctx, "alerts: could not expire case",
-				"case_id", ac.ID(), "error", err)
-			continue
-		}
-		if expired {
-			res.Expired++
-		} else {
-			res.Superseded++
-		}
-	}
-
-	for src := range heldSources {
-		res.HeldSources = append(res.HeldSources, src)
-	}
+	res := t.result()
 	if res.Held > 0 {
 		s.log.InfoContext(ctx, "alerts: reaper held cases, source not proven healthy",
 			"org_id", scope.OrgID(), "held", res.Held, "sources", len(res.HeldSources))
@@ -129,14 +161,137 @@ func (s *Service) Reap(ctx context.Context, scope db.TenantScope, limit int) (Re
 	return res, nil
 }
 
-// resolveSources maps every candidate onto its owning AlertSource. A case
-// absent from the result is one whose source could not be determined, and the
-// caller reads that as "cannot prove healthy".
+// reapTally is one tick's audit across the three passes. A case can be a
+// candidate of both guarded passes — past `source_ends_at` AND silent — so each
+// case is decided once per tick: the first pass that considers it owns it, and a
+// later pass skips it rather than counting a second hold, or a "superseded" for
+// a row this same tick just expired.
+type reapTally struct {
+	res         ReapResult
+	seen        map[uuid.UUID]struct{}
+	heldSources map[uuid.UUID]struct{}
+}
+
+func newReapTally() *reapTally {
+	return &reapTally{seen: map[uuid.UUID]struct{}{}, heldSources: map[uuid.UUID]struct{}{}}
+}
+
+// consider claims a case for the pass about to decide it, and reports false
+// when an earlier pass of this tick already did.
+func (t *reapTally) consider(caseID uuid.UUID) bool {
+	if _, dup := t.seen[caseID]; dup {
+		return false
+	}
+	t.seen[caseID] = struct{}{}
+	t.res.Considered++
+	return true
+}
+
+// hold counts one held case and names the sources responsible: the ones the
+// guard could not vouch for, and ONLY those. A healthy replica beside an
+// unhealthy one is not the reason anything is held, and naming it would raise a
+// `source.unreachable` banner about a source that is fine. Nil `blind` is a case
+// with no live source at all, which no source is responsible for.
+func (t *reapTally) hold(blind []uuid.UUID) {
+	t.res.Held++
+	for _, src := range blind {
+		t.heldSources[src] = struct{}{}
+	}
+}
+
+// record counts one expire attempt. An error was already logged by tryExpire
+// and costs nothing else: the next tick sees the case again.
+func (t *reapTally) record(reason domain.ResolveReason, expired bool, err error) {
+	switch {
+	case err != nil:
+	case !expired:
+		t.res.Superseded++
+	default:
+		t.res.Expired++
+		switch reason {
+		case domain.ResolveSilent:
+			t.res.Silent++
+		case domain.ResolveSourceRemoved:
+			t.res.SourceRemoved++
+		}
+	}
+}
+
+func (t *reapTally) result() ReapResult {
+	out := t.res
+	for src := range t.heldSources {
+		out.HeldSources = append(out.HeldSources, src)
+	}
+	return out
+}
+
+// reapCandidate is one case and the expiry it was scanned for.
+type reapCandidate struct {
+	c      domain.Case
+	reason domain.ResolveReason
+}
+
+// reapGuarded is the §B.4-guarded pass shared by `timeout` and `silent`: resolve
+// every candidate's live sources, ask health once per distinct source, hold what
+// cannot be vouched for, and expire the rest as the reason each was scanned for.
+// A case both scans returned is decided once, as `timeout`, which comes first.
+//
+// ⭐ A CASE IS VOUCHED FOR ONLY WHEN EVERY LIVE SOURCE ON ITS CLUSTER IS HEALTHY
+// (owner ruling R1). An HA pair is two witnesses; either one oto cannot see might
+// be the one still carrying the alert, so one unhealthy replica holds the Case.
+func (s *Service) reapGuarded(
+	ctx context.Context, scope db.TenantScope, guarded []reapCandidate, now time.Time,
+	cfg Settings, t *reapTally,
+) error {
+	if len(guarded) == 0 {
+		return nil
+	}
+	cases := make([]domain.Case, len(guarded))
+	for i, g := range guarded {
+		cases[i] = g.c
+	}
+	sources, err := s.resolveSources(ctx, scope, cases)
+	if err != nil {
+		return err
+	}
+	all := make([]uuid.UUID, 0, len(sources))
+	for _, srcs := range sources {
+		all = append(all, srcs...)
+	}
+	healthy := s.healthBySource(ctx, scope, all)
+
+	for _, g := range guarded {
+		if !t.consider(g.c.ID()) {
+			continue
+		}
+		srcs := sources[g.c.ID()]
+		if len(srcs) == 0 {
+			t.hold(nil)
+			continue
+		}
+		var blind []uuid.UUID
+		for _, src := range srcs {
+			if !healthy[src] {
+				blind = append(blind, src)
+			}
+		}
+		if len(blind) > 0 {
+			t.hold(blind)
+			continue
+		}
+		t.record(s.tryExpire(ctx, scope, g.c, now, cfg, g.reason, srcs))
+	}
+	return nil
+}
+
+// resolveSources maps every candidate onto the live AlertSources of its cluster.
+// A case absent from the result is one with no live source, and the caller reads
+// that as "cannot prove healthy".
 func (s *Service) resolveSources(
 	ctx context.Context, scope db.TenantScope, candidates []domain.Case,
-) (map[uuid.UUID]uuid.UUID, error) {
+) (map[uuid.UUID][]uuid.UUID, error) {
 	if s.occSources == nil {
-		return map[uuid.UUID]uuid.UUID{}, nil
+		return map[uuid.UUID][]uuid.UUID{}, nil
 	}
 	ids := make([]uuid.UUID, len(candidates))
 	for i, o := range candidates {
@@ -145,12 +300,11 @@ func (s *Service) resolveSources(
 	return s.occSources.SourceIDs(ctx, scope, ids)
 }
 
-// healthBySource answers the §B.4 guard for every DISTINCT source the tick's
-// candidates resolved to, in one round trip. The guard is per source, so its
-// cost must be per source: 500 candidates over 3 sources is 3 health rows, not
-// 500 lookups — and the worst case for the per-candidate version was exactly the
-// §B.4 case, a source outage, when nothing expires and every candidate returns
-// next tick.
+// healthBySource answers the §B.4 guard for every DISTINCT source in `sources`,
+// in one round trip. The guard is per source, so its cost must be per source: 500
+// candidates over 3 sources is 3 health rows, not 500 lookups — and the worst case
+// for the per-candidate version was exactly the §B.4 case, a source outage, when
+// nothing expires and every candidate returns next tick.
 //
 // ABSENCE FROM THE RESULT IS "NO". An unwired port, a nil source id, a failed
 // lookup and a source the batch simply did not return are all the same answer —
@@ -158,7 +312,7 @@ func (s *Service) resolveSources(
 // why a failed lookup is reported by returning nothing rather than by an error:
 // not knowing holds candidates, it must never abort the sweep.
 func (s *Service) healthBySource(
-	ctx context.Context, scope db.TenantScope, sources map[uuid.UUID]uuid.UUID,
+	ctx context.Context, scope db.TenantScope, sources []uuid.UUID,
 ) map[uuid.UUID]bool {
 	if s.health == nil || len(sources) == 0 {
 		return nil
@@ -187,6 +341,21 @@ func (s *Service) healthBySource(
 	return healthy
 }
 
+// tryExpire is expire as the sweep calls it. ⛔ AN ERROR IS LOGGED HERE AND THE
+// SWEEP DOES NOT STOP FOR IT: one case failing must not cost the rest of the
+// sweep, and the next tick will see it again in sixty seconds.
+func (s *Service) tryExpire(
+	ctx context.Context, scope db.TenantScope, candidate domain.Case, now time.Time, cfg Settings,
+	reason domain.ResolveReason, proven []uuid.UUID,
+) (domain.ResolveReason, bool, error) {
+	ok, err := s.expire(ctx, scope, candidate, now, cfg, reason, proven)
+	if err != nil {
+		s.log.WarnContext(ctx, "alerts: could not expire case",
+			"case_id", candidate.ID(), "resolve_reason", reason.String(), "error", err)
+	}
+	return reason, ok, err
+}
+
 // expire moves ONE case through T6, in its own transaction so that a
 // single failure cannot roll back a whole sweep.
 //
@@ -212,8 +381,17 @@ func (s *Service) healthBySource(
 // one, make both sites take the two tables in the SAME order first, and say so in
 // both comments. The correctness of this file rests on the compare-and-set above,
 // not on a lock, precisely so that no lock has to be held across the sweep.
+//
+// ⭐ `reason` IS WHICH EXPIRY THE CANDIDATE WAS SCANNED FOR (ADR 0056), and
+// `proven` is the set of live sources whose health was proven for it — empty for
+// `source_removed`, which asks no health because there is no source to ask. Every
+// expiry re-reads the Case's cluster inside the transaction too, because a source
+// can be registered, deleted or re-tuned between the scan and the write, and the
+// health that was asked must still be the health of every live source (owner
+// ruling R1).
 func (s *Service) expire(
 	ctx context.Context, scope db.TenantScope, candidate domain.Case, now time.Time, cfg Settings,
+	reason domain.ResolveReason, proven []uuid.UUID,
 ) (bool, error) {
 	actor, err := domain.SystemActor(domain.ActorReaper)
 	if err != nil {
@@ -244,9 +422,26 @@ func (s *Service) expire(
 		// guarded nothing at all: the machine had been fed a stale case,
 		// answered honestly about it, and the assertion nodded at an answer to the
 		// wrong question while `expired`/`timeout` went over a firing alert.
-		if reason := unreapable(fresh, now, cfg.ResolveGrace); reason != "" {
+		if why := unreapable(fresh, now, cfg.ResolveGrace); reason == domain.ResolveTimeout && why != "" {
 			s.log.InfoContext(ctx, "alerts: reaper stood down, the row disproved the expiry",
-				"case_id", fresh.ID(), "reason", reason)
+				"case_id", fresh.ID(), "reason", why)
+			return nil
+		}
+
+		// ⭐ THE CLUSTER RE-READ. Every expiry rests on the Case's CLUSTER as well
+		// as its row — `timeout` and `silent` on the live set being the one whose
+		// health was proven, `source_removed` on there being none — so it is asked
+		// again here rather than trusted from the scan.
+		cluster, err := s.cases.Sources(ctx, scope, fresh.ID())
+		if err != nil {
+			if errs.IsKind(err, errs.KindNotFound) {
+				return nil
+			}
+			return err
+		}
+		if why := unexpirable(fresh, now, cfg.ResolveGrace, reason, cluster, proven); why != "" {
+			s.log.InfoContext(ctx, "alerts: reaper stood down, the row disproved the expiry",
+				"case_id", fresh.ID(), "resolve_reason", reason.String(), "reason", why)
 			return nil
 		}
 
@@ -261,7 +456,11 @@ func (s *Service) expire(
 			ResolveGrace: cfg.ResolveGrace,
 			// The guard has already been answered above; the machine re-checks it
 			// because a state machine that trusts its caller is not a guard.
-			SourceHealthy: true,
+			// `source_removed` answered no health question, so it claims none.
+			SourceHealthy: reason != domain.ResolveSourceRemoved,
+			ExpireAs:      reason,
+			MaxSilence:    cluster.MaxSilence,
+			NoLiveSource:  cluster.Live == 0 && cluster.Removed > 0,
 		})
 		if err != nil {
 			if errs.IsKind(err, errs.KindPrecondition) {
@@ -269,9 +468,10 @@ func (s *Service) expire(
 			}
 			return err
 		}
-		if r.To != domain.StateExpired || r.Case.ResolveReason() != domain.ResolveTimeout {
+		if r.To != domain.StateExpired || r.Case.ResolveReason() != reason || !reason.IsExpiry() {
 			return errs.Internal("reaper_would_fabricate_resolution",
-				errsInvariant("the reaper produced "+r.To.String()+"; only expired/timeout is permitted"))
+				errsInvariant("the reaper produced "+r.To.String()+"/"+r.Case.ResolveReason().String()+
+					"; only expired as "+reason.String()+" is permitted"))
 		}
 
 		// No witnesses: the reaper has no observation, and an expiry names no
@@ -369,6 +569,61 @@ func unreapable(row domain.Case, now time.Time, grace time.Duration) string {
 	default:
 		return ""
 	}
+}
+
+// unexpirable is unreapable's twin for the CLUSTER: it re-proves T6's
+// preconditions for every expiry against the FRESH row and the cluster as re-read
+// inside the same transaction, and names the one that failed. An empty string
+// means the expiry stands.
+//
+// ⭐ `timeout` AND `silent` NEED THE LIVE SET TO BE EXACTLY `proven` (owner ruling
+// R1). The guard vouched for those sources; a replica that joined since was never
+// asked, and one that left takes its health verdict with it.
+func unexpirable(
+	row domain.Case, now time.Time, grace time.Duration, reason domain.ResolveReason,
+	cluster domain.CaseSources, proven []uuid.UUID,
+) string {
+	switch {
+	case row.ClosePending():
+		// unreapable's first refusal, for its reason: a held upstream resolve
+		// outranks every expiry.
+		return "case holds an upstream resolve"
+	case !row.IsOpen():
+		return "case is already " + row.AlertState().String()
+	}
+	switch reason {
+	case domain.ResolveTimeout:
+		if !cluster.SameLiveSet(proven) {
+			return "the sources proven healthy are no longer the cluster's live sources"
+		}
+	case domain.ResolveSilent:
+		switch {
+		case !cluster.SameLiveSet(proven):
+			// The health that was proven belongs to a set that no longer speaks for
+			// this case: a replica joined, or one was deleted.
+			return "the sources proven healthy are no longer the cluster's live sources"
+		case cluster.MaxSilence <= 0:
+			return "a live source turned max_silence_s off"
+		case !now.After(row.LastObservedAt().Add(cluster.MaxSilence)):
+			return "heard about within max_silence_s"
+		}
+	case domain.ResolveSourceRemoved:
+		switch {
+		case cluster.Live > 0:
+			// A source was registered for the cluster since the scan. It can say
+			// when this episode ends, so oto waits for it to.
+			return "a live source feeds the cluster again"
+		case cluster.Removed == 0:
+			return "no source was ever removed from the cluster"
+		case !cluster.LastRemovedAt.Before(now.Add(-grace)):
+			// The scan's own cutoff, re-asked: a source removed within a resolve
+			// grace may be on its way back, and a delete-then-register ends nothing.
+			return "a source was removed from the cluster within resolve_grace"
+		}
+	default:
+		return "not an expiry: " + reason.String()
+	}
+	return ""
 }
 
 // ------------------------------------------------------- the delayed close (W)

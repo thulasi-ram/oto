@@ -395,7 +395,7 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		// is written by `oto grant` from the host shell (remedyapprover.go), never here.
 		RemedyApprovers: identityrepo.NewRemedyApproverRepository(general),
 		// The self-service Slack link's codes, wrong-attempt counts and recorded facts (git-bug
-		// a556a5c, 00105). A link is made ONLY by a signed-in session entering a code Slack showed
+		// a556a5c, 00109). A link is made ONLY by a signed-in session entering a code Slack showed
 		// the member — never by a route that names a user.
 		SlackLinks: identityrepo.NewSlackLinkRepository(general),
 		// The same runner the identity API uses: it is what makes the ingest-token
@@ -625,6 +625,7 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		AlertBatch:       alertRepo,
 		OccBatch:         caseRepo,
 		OccSources:       caseRepo,
+		CaseCover:        caseRepo,
 		CasePolicies:     casePolicyRepo,
 		CasePolicyConfig: casePolicyConfigRepo,
 		SnoozeHistory:    snoozeRepo,
@@ -640,6 +641,9 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		// which exists before any service, and it never calls `incidents` — the
 		// queue is the seam.
 		CaseOpenings: caseOpenings{enq: c.enqueuer},
+		// The reaper's `silent` and `source_removed` passes (ADR 0056), off until
+		// an operator turns them on; see config.JobsConfig.ExpireSilentAndRemoved.
+		ExpireSilentAndRemoved: o.Config.Jobs.ExpireSilentAndRemoved,
 		// `commentOnAlert` and `snoozeAlert` take their claim inside the same
 		// transaction as the write, on the store every other guarded operation
 		// claims in. A comment is the one action a retry duplicates VISIBLY —
@@ -809,7 +813,7 @@ func New(ctx context.Context, o Options) (*Container, error) {
 			policies: notifrepo.NewPolicyRepository(general),
 			cases:    notifrepo.NewDigestRepository(general),
 		},
-		Declarer:    findingDeclarer{enq: c.enqueuer},
+		Declarer:    findingDeclarer{enq: c.enqueuer, seq: c.Incidents},
 		Timeline:    investigationCases{alerts: c.Alerts},
 		Rules:       investigationRules{rules: c.Rules},
 		Findings:    findingPublisher{repo: enrichmentRepo},
@@ -820,7 +824,7 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		Queue:   c.enqueuer,
 		// The built-in Tools' per-call controls (ADR 0053 §6), stated where every
 		// other deployment number is chosen. A ToolServer's Tools run under the
-		// limits its operator set on it (migration 00093).
+		// limits its operator set on it (migration 00097).
 		Limits: investigatorservice.DefaultLimits(),
 
 		// ---- ToolServers (git-bug 2e9a086) ----------------------------------
@@ -864,7 +868,7 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		// transaction that made it, carrying the snapshot it declares. ⛔ No run reaches
 		// a write Tool: a Remedy only names one.
 		Remedies:       investigatorrepo.NewRemedyRepository(general),
-		RemedyDeclarer: remedyDeclarer{enq: c.enqueuer},
+		RemedyDeclarer: remedyDeclarer{enq: c.enqueuer, seq: c.Incidents},
 		RemedyRisk:     investigatorrepo.NewRemedyRiskRepository(general),
 	})
 	if err != nil {
@@ -1057,7 +1061,7 @@ func (c *Container) buildNotification(
 	// The Incident reader both halves need (ADR 0052 §5): the evaluation reads an
 	// Incident to route its fact, the view reads it again at claim time (C11). One
 	// late-bound holder, filled once `c.Incidents` exists.
-	c.incidentFacts = &incidentFacts{}
+	c.incidentFacts = &incidentFacts{orgs: c.Identity}
 
 	if c.Views, err = notifservice.NewViewService(notifservice.ViewConfig{
 		Snapshots: snapshots,
@@ -1290,6 +1294,10 @@ func (c *Container) buildRouters(
 			// not be read back from anywhere but `psql`. It is the SAME
 			// `ingestion/service.Service` the webhook handler writes through.
 			Feeds: ingestFeeds{svc: c.Ingestion.Service},
+			// The open Cases on each source's cluster and how many the reaper is
+			// holding because of it (ADR 0056 §1) — the per-source form of the
+			// `held` count the sweep only ever logged.
+			Cases: sourceCases{svc: c.Alerts},
 			// Configuration-time SSRF feedback. The DIALER is the control; this is
 			// so an operator who pastes a metadata-service URL sees a 422 naming the
 			// field rather than a probe that mysteriously returns someone else's data.

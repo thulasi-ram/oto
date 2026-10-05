@@ -5,7 +5,7 @@
 -- automatically — the Incident's covers it — so a forty-Case storm costs a handful of
 -- runs, not forty." Five changes, each the other half of one already on the record:
 --
---   1. `investigations_subjkind_ck` admits `incident`. 00092 shaped the column for four
+--   1. `investigations_subjkind_ck` admits `incident`. 00096 shaped the column for four
 --      subjects and admitted one; this is the widening its header promised.
 --   2. `enrichments_subjkind_ck` admits `incident`. ⚠️ THE TICKET SAID THIS CHECK STILL
 --      ADMITTED `group` (00069:640). That line is 00069's DOWN; its Up narrowed the CHECK
@@ -57,7 +57,7 @@ ALTER TABLE notifications ADD  CONSTRAINT notifications_reason_ck CHECK (reason 
 
 -- +goose StatementBegin
 COMMENT ON COLUMN notifications.reason IS
-  'The SPEC H.6 Reason enum, twenty-one values. Fifteen are facts about one signal or one window; the last six are facts about an Incident -- drawn, case_added, case_removed, quiet, active_again (00084) and finding (00095: an Investigation of the Incident reached a new Finding) -- and none of them is a resolve, a close or a status: oto declares facts to an incident tool and never commands it (ADR 0052 §5). `quiet` is every member Case closed, never "the incident is over". A Finding never decides whether anyone is told (ADR 0053 §2); `finding` declares it to wherever the org routes Incident facts.';
+  'The SPEC H.6 Reason enum, twenty-one values. Fifteen are facts about one signal or one window; the last six are facts about an Incident -- drawn, case_added, case_removed, quiet, active_again (00084) and finding (00099: an Investigation of the Incident reached a new Finding) -- and none of them is a resolve, a close or a status: oto declares facts to an incident tool and never commands it (ADR 0052 §5). `quiet` is every member Case closed, never "the incident is over". A Finding never decides whether anyone is told (ADR 0053 §2); `finding` declares it to wherever the org routes Incident facts.';
 -- +goose StatementEnd
 
 ALTER TABLE notification_policies DROP CONSTRAINT policies_reasons_ck;
@@ -68,7 +68,7 @@ ALTER TABLE notification_policies ADD  CONSTRAINT policies_reasons_ck
 
 -- +goose StatementBegin
 COMMENT ON CONSTRAINT policies_reasons_ck ON notification_policies IS
-  'reasons is a set of 1..21 SPEC H.6 Reason values. The ceiling is the enum size and moves with it -- 00058 added digest, 00060 removed storm, 00067 removed unacked_reminder, 00069 removed new_alerts and some_resolved, 00084 added the five Incident facts, 00095 added finding. ⛔ IT DOES NOT CONSTRAIN MEMBERSHIP: every narrowing of the Reason vocabulary must strip the value from this column by hand.';
+  'reasons is a set of 1..21 SPEC H.6 Reason values. The ceiling is the enum size and moves with it -- 00058 added digest, 00060 removed storm, 00067 removed unacked_reminder, 00069 removed new_alerts and some_resolved, 00084 added the five Incident facts, 00099 added finding. ⛔ IT DOES NOT CONSTRAIN MEMBERSHIP: every narrowing of the Reason vocabulary must strip the value from this column by hand.';
 -- +goose StatementEnd
 
 -- +goose Down
@@ -125,7 +125,7 @@ ALTER TABLE enrichments ADD  CONSTRAINT enrichments_subjkind_ck
 -- `investigation_steps_append_only` admits — the record going with its owner.
 DELETE FROM investigations WHERE subject_kind = 'incident';
 
--- Byte-identical to 00092's Up.
+-- Byte-identical to 00096's Up.
 ALTER TABLE investigations DROP CONSTRAINT investigations_subjkind_ck;
 ALTER TABLE investigations ADD  CONSTRAINT investigations_subjkind_ck
   CHECK (subject_kind IN ('case'));

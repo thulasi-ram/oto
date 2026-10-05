@@ -108,6 +108,7 @@ import {
   drawOver,
   type PickedCase,
 } from "~/features/incidents/membership";
+import { ExpiryMeta, LastHeard } from "~/features/alerts/Staleness";
 import { cn } from "~/lib/cn";
 import { count as fmtCount, idempotencyKey } from "~/lib/format";
 import {
@@ -1245,6 +1246,13 @@ const CaseRow = (props: {
               <Show when={c().acked_by_label}>
                 {(who) => <span>seen by {who()}</span>}
               </Show>
+              {/* ADR 0056 §1, on the open rows: when upstream last spoke about
+                  this firing, and whether it can expire. An ended row is
+                  history; its chip already names how it ended. */}
+              <Show when={open()}>
+                <LastHeard at={c().last_observed_at} />
+                <ExpiryMeta case={c()} />
+              </Show>
             </div>
           </div>
 
@@ -1279,8 +1287,9 @@ const CaseRow = (props: {
  * values, so a separate Acknowledge and Withdraw meant one of the two was always
  * dead on every row — a greyed-out button beside a live one, asking the operator
  * to read both to learn one fact. This reads what the case IS and does the other
- * thing: `Acknowledge` while the firing carries no receipt, the withdrawal's own
- * words once it does. The disabled state is now about the case having ENDED and
+ * thing: `Ack` while the firing carries no receipt, `Unack` once it does — in
+ * words, never a glyph, because a tick in both directions made the two presses
+ * indistinguishable. The disabled state is now about the case having ENDED and
  * nothing else, which is the one condition under which neither direction is
  * possible.
  *
@@ -1322,14 +1331,22 @@ const RowAck = (props: {
     acked() ? "withdraw the acknowledgement of" : "acknowledge";
 
   /**
-   * The accessible name, and it is the ONLY place the two directions are told
-   * apart: the mark is a check either way, because the check is the state of the
-   * case and the row is not the place to invent a glyph for "un-check".
+   * The button's word, and the start of its accessible name.
+   *
+   * ⛔ IT USED TO BE A CHECK GLYPH IN BOTH DIRECTIONS, told apart only by an
+   * `aria-label` a sighted operator never sees: the ack and the unack looked
+   * identical, and the tick read as "done" rather than as a thing to press. The
+   * owner asked for the verb in words. `Ack` while the firing carries no
+   * receipt, `Unack` once it does.
+   *
+   * ⭐ THE ACCESSIBLE NAME STARTS WITH THE PRINTED WORD AND THEN SAYS WHICH ROW.
+   * A list of fifty buttons all named "Ack" is fifty identical stops in a
+   * screen reader's control list. `Ack HighErrorRate #412` contains the visible
+   * text, at the start (WCAG 2.5.3, label in name), so a voice-control user who
+   * says "click Ack" still reaches it; the `title` says what the press does.
    */
-  const label = (): string =>
-    acked()
-      ? `Withdraw the acknowledgement of ${props.item.alert.alertname}`
-      : `Acknowledge ${props.item.alert.alertname}`;
+  const label = (): string => (acked() ? "Unack" : "Ack");
+  const name = (): string => `${label()} ${props.item.alert.alertname} #${props.item.number}`;
 
   const title = (): string => {
     const failed = failure();
@@ -1345,23 +1362,23 @@ const RowAck = (props: {
 
   return (
     <>
-      {/* ⛔ THE "ON" STATE IS TIER A INK, NOT THE ACK HUE. §M.7 lets a state
-          colour onto a state badge, a row status or a timeline marker, and a
-          control is none of the three — `AckChip` two columns to the left is the
-          badge, and it is already wearing that colour on this very row. The
-          button says the same thing by going from `ink-muted` to full ink, which
-          is the ghost variant's own hover tone held on. */}
+      {/* ⛔ NO ACK HUE ON THE CONTROL. §M.7 lets a state colour onto a state
+          badge, a row status or a timeline marker, and a control is none of the
+          three — `AckChip` two columns to the left is the badge, and it is
+          already wearing that colour on this very row. The button's WORD is
+          what changes; its fixed width keeps `Ack` and `Unack` from nudging the
+          row's right edge when the state flips under SSE. */}
       <Button
-        variant="ghost"
+        variant="outline"
         size="sm"
-        class={cn("size-6 shrink-0 px-0", acked() && "text-ink")}
+        class="w-16 shrink-0"
         disabled={props.disabled || receipt.isPending}
         aria-busy={receipt.isPending ? "true" : undefined}
-        aria-label={label()}
+        aria-label={name()}
         title={title()}
         onClick={() => receipt.mutate()}
       >
-        <StateGlyph state="acked" tone="inherit" />
+        {label()}
       </Button>
 
       {/* A failure with no dialog to land in still has to be *said*: silence

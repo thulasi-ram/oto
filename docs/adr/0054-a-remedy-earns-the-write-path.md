@@ -70,7 +70,7 @@ tokens were recorded on the Remedy but not budgeted.
 2. **The risk model's tokens count against the org's daily token budget** (ADR 0053 §6), summed
    into the day's spend beside every Investigation's model turns. When the budget is spent the risk
    check does not run, and a Remedy the rules said needs one needs **two**, recorded with that
-   reason (`approvals_set_by = risk_model_budget`, migration 00104) — fail closed: a question nobody
+   reason (`approvals_set_by = risk_model_budget`, migration 00108) — fail closed: a question nobody
    paid for never lets one approval stand.
 
 ### 4. Who may approve
@@ -92,7 +92,7 @@ The reason is double approval itself: an in-app grant would let one holder mint 
 (an alt account) and approve alone. A test walks the mounted router to hold this. An earlier
 ruling the same day, a declarative grant in the deployment's configuration, is superseded.
 
-The shape (migration 00099, git-bug 47f67c8): a grant is a row `(org, ToolServer, user)`, unique
+The shape (migration 00103, git-bug 47f67c8): a grant is a row `(org, ToolServer, user)`, unique
 per ToolServer and user, stamped with the CLI's clock and `granted_by = cli`. The user is resolved
 by email, so a shadow member (no address) can never hold one; a disabled user's grant stays on the
 record and stops counting; revoking deletes the row. The ToolServer must exist and must be declared

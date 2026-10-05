@@ -79,13 +79,17 @@ func New(d Deps) (*Service, error) {
 func (s *Service) now() time.Time { return s.clock.Now().UTC() }
 
 // List returns a page of the org's Incidents, newest first, each with its derived
-// state.
-func (s *Service) List(ctx context.Context, scope db.TenantScope, p db.Keyset) ([]domain.Incident, db.Cursor, error) {
-	return s.incidents.List(ctx, scope, p)
+// state. An Incident with no current member is left out unless f includes it
+// (domain.ListFilter).
+func (s *Service) List(
+	ctx context.Context, scope db.TenantScope, p db.Keyset, f domain.ListFilter,
+) ([]domain.Incident, db.Cursor, error) {
+	return s.incidents.List(ctx, scope, p, f)
 }
 
 // Get returns one Incident by the number a human quotes, with every spell of
-// every Case that has been in it.
+// every Case that has been in it — an empty one included, which the list hides by
+// default and this never does.
 func (s *Service) Get(ctx context.Context, scope db.TenantScope, number int64) (domain.Detail, error) {
 	return s.incidents.Get(ctx, scope, number)
 }
@@ -465,10 +469,35 @@ func (s *Service) announceMembership(
 // announce declares one fact, minting its occasion here — in the transaction that
 // made it true — so a redelivered job is the same fact and a second happening never
 // is.
+//
+// ⭐ AND ITS SEQUENCE, IN THE SAME TRANSACTION (owner ruling, migration 00093). The
+// Incident's counter is bumped beside the outbox job that declares the fact, so the
+// fact and its number commit together or not at all, and the bump's row lock orders
+// it after every fact committed before it. A `quiet` is therefore always numbered
+// after the `case_removed` that caused it, which is what lets a receiver that gets the
+// two the other way round put them back.
 func (s *Service) announce(ctx context.Context, scope db.TenantScope, incidentID uuid.UUID, fact domain.Fact) error {
+	seq, err := s.incidents.NextSequence(ctx, scope, incidentID)
+	if err != nil {
+		return err
+	}
 	return s.announcer.Announce(ctx, scope, []Announcement{{
-		IncidentID: incidentID, Fact: fact, Occasion: id.New(),
+		IncidentID: incidentID, Fact: fact, Occasion: id.New(), Sequence: seq,
 	}})
+}
+
+// NextFactSequence allocates the next fact sequence of one Incident for a fact
+// ANOTHER module declares about it — the Investigator's `finding` and `remedy_*` —
+// inside the caller's transaction, beside the outbox job that carries the fact
+// (ADR 0052 §5, migration 00093). It is `announce`'s numbering, lent out: the same
+// counter and the same row lock, so a fact declared from outside this module is
+// ordered against the module's own facts in commit order, never beside them.
+//
+// ⛔ CALL IT ONLY IN THE TRANSACTION THAT ENQUEUES THE FACT. A number taken in one
+// transaction and enqueued in another would be a number the counter gave away to a
+// fact that may never commit.
+func (s *Service) NextFactSequence(ctx context.Context, scope db.TenantScope, incidentID uuid.UUID) (int64, error) {
+	return s.incidents.NextSequence(ctx, scope, incidentID)
 }
 
 // resolveCases reads the named Cases inside the org, in the order asked, and

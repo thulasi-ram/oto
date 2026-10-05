@@ -48,6 +48,13 @@ const (
 	MaxIgnoreLabels = 64
 	// MaxRedactPatterns mirrors alert_sources_redactl_ck / _redacta_ck.
 	MaxRedactPatterns = 64
+	// DefaultMaxSilence mirrors the alert_sources.max_silence_s DDL default
+	// (migration 00094, ADR 0056 §3): a day, against Alertmanager's 4h default
+	// repeat_interval.
+	DefaultMaxSilence = 24 * time.Hour
+	// MaxSilenceFloor and MaxSilenceCeiling mirror alert_sources_silence_ck.
+	MaxSilenceFloor   = time.Hour
+	MaxSilenceCeiling = 30 * 24 * time.Hour
 )
 
 // Credential is a resolved, UNSEALED outbound credential.
@@ -112,6 +119,15 @@ type Source struct {
 	// hour; a deployment oto cannot reach at all is `unreachable`, which blocks the
 	// reaper, which is the honest answer rather than a silent one.
 	ReconcileInterval time.Duration
+	// MaxSilence is how long this source may say nothing about an open Case
+	// before the reaper expires it as `silent` (ADR 0056 §3). nil turns the
+	// expiry off. It is asked only while the source is healthy: under an
+	// unhealthy one oto cannot tell silence from an outage, and §B.4 holds.
+	//
+	// ⚠️ IT MUST EXCEED UPSTREAM'S `repeat_interval`. Alertmanager re-sends a
+	// firing alert once per repeat, so a MaxSilence shorter than that expires
+	// long-firing Cases while they are still firing.
+	MaxSilence *time.Duration
 
 	CreatedAt time.Time
 	UpdatedAt time.Time

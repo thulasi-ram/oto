@@ -44,6 +44,21 @@ export function relativeTime(ts: string | null | undefined, now: number = Date.n
   return future ? `in ${out}` : out;
 }
 
+/**
+ * `3h ago`, or `just now` — never `now ago`, and never `in 2m ago`.
+ *
+ * Every instant this is used for is one the server already recorded, so it is
+ * in the past by construction; one that reads as in the future is this
+ * browser's clock running behind the server's, and the honest rendering of
+ * "the server stamped it a moment ago" is `just now`. The absolute value stays
+ * one hover away wherever this is shown (`<Ago>`).
+ */
+export function ago(ts: string | null | undefined, now: number = Date.now()): string {
+  const rel = relativeTime(ts, now);
+  if (rel === "—") return rel;
+  return rel === "now" || rel.startsWith("in ") ? "just now" : `${rel} ago`;
+}
+
 /** The absolute value, always available behind a `title`. Local zone, with offset. */
 export function absoluteTime(ts: string | null | undefined): string {
   const d = parseTs(ts);

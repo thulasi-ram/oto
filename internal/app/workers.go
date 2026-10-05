@@ -341,6 +341,11 @@ func (c *Container) reapOneTenant(ctx context.Context, scope db.TenantScope) err
 			slog.String("org_id", scope.OrgID().String()),
 			slog.Int("considered", res.Considered),
 			slog.Int("expired", res.Expired),
+			// The two ADR 0056 expiries, apart from `timeout`: a burst of
+			// `source_removed` follows a deleted source, a burst of `silent`
+			// follows a `max_silence_s` shorter than upstream's repeat_interval.
+			slog.Int("silent", res.Silent),
+			slog.Int("source_removed", res.SourceRemoved),
 			// Held is the §B.4 `source_degraded_holds` counter and is a FEATURE,
 			// not noise: it is how an operator learns that oto is deliberately
 			// saying nothing about a source it cannot see.

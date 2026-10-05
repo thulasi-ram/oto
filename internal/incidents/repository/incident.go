@@ -143,17 +143,29 @@ func (r summaryRow) toDomain() (domain.Incident, error) {
 // and `incidents_number_uniq (org_id, number)` already serves it backwards; the
 // generic cursor's timestamp slot has nothing better to carry, and a forged cursor
 // naming another org's id finds no row and therefore no position.
+//
+// ⭐ AN EMPTY INCIDENT IS LEFT OUT BY AN EXISTS, NOT BY A `HAVING count(c.id) > 0`
+// (domain.ListFilter). The HAVING would have to aggregate every husk before it could
+// discard it; the EXISTS is one probe of `incident_members_incident_idx` per
+// candidate row, and it reads the same `removed_at IS NULL` the summary counts, so
+// "empty" here and `member_count = 0` on the row cannot mean two different things.
+// The cursor's position is the Incident's number either way, so a page boundary
+// that falls on a hidden Incident moves past it exactly as past a shown one.
 const listSQL = summarySelect + `
  WHERE i.org_id = $1
    AND ($2::uuid IS NULL
         OR i.number < (SELECT number FROM incidents WHERE org_id = $1 AND id = $2))
+   AND ($4::bool
+        OR EXISTS (SELECT 1 FROM incident_members e
+                    WHERE e.org_id = $1 AND e.incident_id = i.id AND e.removed_at IS NULL))
  GROUP BY i.id
  ORDER BY i.number DESC
  LIMIT $3`
 
-// List returns a keyset page of one org's Incidents, newest first.
+// List returns a keyset page of one org's Incidents, newest first. An Incident
+// with no current member is on it only when f asks (domain.ListFilter).
 func (r *IncidentRepository) List(
-	ctx context.Context, s db.TenantScope, p db.Keyset,
+	ctx context.Context, s db.TenantScope, p db.Keyset, f domain.ListFilter,
 ) ([]domain.Incident, db.Cursor, error) {
 	if err := db.RequireScope(s); err != nil {
 		return nil, db.Cursor{}, err
@@ -168,7 +180,7 @@ func (r *IncidentRepository) List(
 		after = &v
 	}
 
-	rows, err := r.db(ctx).Query(ctx, listSQL, s.OrgID(), after, limit+1)
+	rows, err := r.db(ctx).Query(ctx, listSQL, s.OrgID(), after, limit+1, f.IncludeEmpty)
 	if err != nil {
 		return nil, db.Cursor{}, mapErr(err, "list incidents")
 	}
@@ -407,6 +419,33 @@ func (r *IncidentRepository) Lock(ctx context.Context, s db.TenantScope, ids []u
 	}
 	rows.Close()
 	return mapErr(rows.Err(), "lock incidents")
+}
+
+// ⭐ THE SEQUENCE IS THE INCIDENT ROW'S OWN COUNTER, BUMPED WHERE THE FACT IS RECORDED
+// (migration 00093). The UPDATE takes the row lock — already held by every caller that
+// locked before counting, and taken here by the draw, whose row this transaction just
+// inserted — and keeps it to COMMIT, so two transactions declaring facts about one
+// Incident are numbered in the order they commit. A database SEQUENCE could not say
+// that: nextval() is handed out when it is called, and the later call can commit first.
+const nextSequenceSQL = `
+UPDATE incidents SET fact_sequence = fact_sequence + 1
+ WHERE org_id = $1 AND id = $2
+RETURNING fact_sequence`
+
+// NextSequence allocates the next fact sequence of one Incident, inside the caller's
+// transaction: 1 for its first fact, `drawn`, and one more for each fact after.
+func (r *IncidentRepository) NextSequence(ctx context.Context, s db.TenantScope, incidentID uuid.UUID) (int64, error) {
+	if err := db.RequireScope(s); err != nil {
+		return 0, err
+	}
+	var seq int64
+	if err := r.db(ctx).QueryRow(ctx, nextSequenceSQL, s.OrgID(), incidentID).Scan(&seq); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, domain.NotFound()
+		}
+		return 0, mapErr(err, "number an incident fact")
+	}
+	return seq, nil
 }
 
 const openMembersSQL = `

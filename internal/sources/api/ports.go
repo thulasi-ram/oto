@@ -183,6 +183,25 @@ type BatchFailure struct {
 	TruncatedAlerts int
 }
 
+// CaseCounts is the alerts module's answer to "what is this source holding open"
+// (ADR 0056 §1): the open Cases on each source's cluster, and how many of them
+// the reaper's §B.4 guard is holding because of that source. Satisfied in the
+// composition root over `alerts/service`, which owns the rule — the count is
+// the reaper's own reading, not a second copy of it written here.
+type CaseCounts interface {
+	OpenCasesBySource(ctx context.Context, s db.TenantScope, sourceIDs []uuid.UUID) (map[uuid.UUID]CaseCount, error)
+}
+
+// CaseCount is one source's row of CaseCounts.
+type CaseCount struct {
+	// Open is how many Cases on the source's cluster are open.
+	Open int
+	// Held is how many of those cannot expire because of this source: all of
+	// them while it is not healthy, none while it is (owner ruling R1 — an HA
+	// sibling that is not healthy holds them too, and its own row says so).
+	Held int
+}
+
 // AddressGuard is the SSRF control, satisfied by `*platform/netguard.Guard`.
 //
 // ⚠️ The check this layer performs is CONFIGURATION-TIME FEEDBACK, so an operator

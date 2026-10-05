@@ -27,7 +27,7 @@ import (
 	"github.com/thulasiram/oto/test/toolserverfake"
 )
 
-// memRemedyRisk is the org's risk rules and model, keeping 00103's shape: replaced whole.
+// memRemedyRisk is the org's risk rules and model, keeping 00107's shape: replaced whole.
 type memRemedyRisk struct {
 	mu  sync.Mutex
 	set domain.RemedyRiskSettings

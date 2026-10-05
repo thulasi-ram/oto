@@ -94,8 +94,8 @@ func TestThePolicyReasonsCheckBoundsTheColumnAtTheEnum(t *testing.T) {
 
 	all := domain.AllReasons()
 	// Twenty-seven: fourteen signal Reasons, `digest`, the five Incident facts 00084
-	// added (ADR 0052 §5), `finding`, which 00095 added (ADR 0053 §4), and the six
-	// Remedy transitions 00100 added (ADR 0054 §2). Twenty-one before 00100, fifteen
+	// added (ADR 0052 §5), `finding`, which 00099 added (ADR 0053 §4), and the six
+	// Remedy transitions 00104 added (ADR 0054 §2). Twenty-one before 00104, fifteen
 	// before 00084. It was nineteen until 00060
 	// dropped `storm` from `notifications_reason_ck` and from `allReasons` together,
 	// eighteen until 00067 dropped `unacked_reminder` the same way, and seventeen

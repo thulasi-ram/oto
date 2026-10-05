@@ -12,7 +12,7 @@ package domain
 // change in place, and every Investigation copies the Budgets it ran under, so a run is
 // still readable after the numbers move.
 //
-// Bounds below mirror migration 00092's CHECKs; the API DTO tags are the third copy
+// Bounds below mirror migration 00096's CHECKs; the API DTO tags are the third copy
 // (CONTEXT.md §5b, R9).
 
 import (
@@ -27,7 +27,7 @@ import (
 	"github.com/thulasiram/oto/internal/platform/errs"
 )
 
-// Bounds mirroring migration 00092.
+// Bounds mirroring migration 00096.
 const (
 	// MaxInvestigatorNameLength is `investigators_name_ck`'s `{0,62}` plus its first
 	// letter.
@@ -95,7 +95,7 @@ type Budgets struct {
 	MaxWall time.Duration
 }
 
-// NewBudgets builds a Budgets inside 00092's bounds.
+// NewBudgets builds a Budgets inside 00096's bounds.
 func NewBudgets(maxSteps int, maxTokens int64, maxWallSeconds int) (Budgets, error) {
 	var v []errs.Violation
 	if maxSteps < MinStepBudget || maxSteps > MaxStepBudget {
@@ -251,7 +251,7 @@ type Investigator struct {
 	// lives on this mutable half beside the kill switch and the budgets.
 	MinInterval time.Duration
 	// InvestigatesIncidents is whether an Incident being drawn, and its membership
-	// changing, starts a run of this Investigator on it (ADR 0053 §4; migration 00095).
+	// changing, starts a run of this Investigator on it (ADR 0053 §4; migration 00099).
 	// ⭐ AN OPERATOR OPTS IN: automatic runs cost money, and an Investigator written for
 	// "a human asks" must not start paying for every storm because Incidents arrived.
 	// Not versioned, for MinInterval's reason.

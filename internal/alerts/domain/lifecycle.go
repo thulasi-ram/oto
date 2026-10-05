@@ -335,6 +335,24 @@ type TransitionCommand struct {
 	// not healthy is held in its current state and never expired.
 	SourceHealthy bool
 
+	// ExpireAs is WHICH of the three expiries T6 is being asked to perform
+	// (ADR 0056), and it is read by T6 and nothing else. Zero means
+	// ResolveTimeout, the only one there was before 00094, so a caller that never
+	// names it gets the edge it always got. Each reason carries its own
+	// preconditions below; naming `upstream` here is refused, because T6 cannot
+	// produce a resolution under any spelling.
+	ExpireAs ResolveReason
+	// MaxSilence is the Case's cluster's effective `max_silence_s` — the longest
+	// among its live sources, or zero when any of them turned the expiry off
+	// (owner ruling R1) — read by T6 under ResolveSilent only. Zero means off, and
+	// T6 refuses.
+	MaxSilence time.Duration
+	// NoLiveSource reports that the caller proved, inside the transaction
+	// that writes the row, that no live source feeds this Case's cluster. It is
+	// read by T6 under ResolveSourceRemoved only, which is the one expiry that
+	// does NOT ask SourceHealthy: there is no source left to be healthy.
+	NoLiveSource bool
+
 	// MaterialChange reports whether a repeat observation changed severity, an
 	// annotation, the generator URL or the bound rule fingerprint. Only then does
 	// T2 append `alert.mutated` (§B.3).
@@ -642,20 +660,19 @@ func Apply(o Case, cmd TransitionCommand) (TransitionResult, error) {
 			return TransitionResult{}, errs.New(errs.KindPrecondition, "close_pending",
 				"a case holding an upstream resolve closes as resolved, never expired")
 		}
-		if !cmd.SourceHealthy {
-			return TransitionResult{}, errs.New(errs.KindPrecondition, "source_not_healthy",
-				"a case is held, never expired, while its AlertSource is not healthy")
+		reason := cmd.ExpireAs
+		if reason.IsZero() {
+			reason = ResolveTimeout
 		}
-		if o.sourceEndsAt.IsZero() {
-			return TransitionResult{}, errs.New(errs.KindPrecondition, "no_source_ends_at",
-				"a case with no upstream end time cannot expire")
-		}
-		if !cmd.At.RecordedAt().After(o.sourceEndsAt.Add(resolveGrace(cmd))) {
-			return TransitionResult{}, errs.New(errs.KindPrecondition, "resolve_grace_not_elapsed",
-				"resolve_grace has not elapsed since source_ends_at")
+		if err := expiryAdmits(o, cmd, reason); err != nil {
+			return TransitionResult{}, err
 		}
 		next.state = CaseClosed
-		next.resolveReason = ResolveTimeout
+		next.resolveReason = reason
+		// The timeline says WHICH expiry, because "ended because the source went
+		// silent for a day" is not the same fact as "ended because the source was
+		// removed" (ADR 0056 §4), and the event outlives the row's projection.
+		extra["resolve_reason"] = reason.String()
 		next.suppressionReason = SuppressionReason{}
 		next.suppressedBy = SuppressedBy{}
 		next.endedAt, clampDelta = clampEnd(cmd.At.RecordedAt(), o.startedAt)
@@ -732,7 +749,7 @@ func Apply(o Case, cmd TransitionCommand) (TransitionResult, error) {
 		Type:      eventType,
 		At:        cmd.At,
 		Actor:     cmd.Actor,
-		Summary:   summaryOr(cmd.Summary, defaultSummary(rule.id, from, next.lifecyclePhase())),
+		Summary:   summaryOr(cmd.Summary, defaultSummary(rule.id, from, next.lifecyclePhase(), next.resolveReason)),
 		Payload:   mergePayload(cmd.Payload, extra),
 		DedupeKey: dedupeKeyFor(rule.id, next),
 	})
@@ -848,6 +865,57 @@ func resolveGrace(cmd TransitionCommand) time.Duration {
 	return cmd.ResolveGrace
 }
 
+// expiryAdmits is T6's precondition, per expiry (ADR 0056). Each reason is a
+// different claim about why oto can no longer say the alert is firing, and each
+// is refused unless the row and the caller's proofs make that claim true.
+//
+// ⛔ `timeout` AND `silent` BOTH ASK SourceHealthy, AND THAT IS §B.4 UNCHANGED.
+// Under an unhealthy source oto cannot tell "upstream stopped speaking about it"
+// from "Alertmanager is down", so silence proves nothing and the Case is held.
+// `source_removed` alone does not ask: the guard protects a source oto cannot
+// see, and here there is no source at all — the one thing that could have said
+// the alert ended is gone, and holding the Case open would be a promise nobody
+// can keep.
+func expiryAdmits(o Case, cmd TransitionCommand, reason ResolveReason) error {
+	switch reason {
+	case ResolveTimeout:
+		if !cmd.SourceHealthy {
+			return errs.New(errs.KindPrecondition, "source_not_healthy",
+				"a case is held, never expired, while its AlertSource is not healthy")
+		}
+		if o.sourceEndsAt.IsZero() {
+			return errs.New(errs.KindPrecondition, "no_source_ends_at",
+				"a case with no upstream end time cannot expire")
+		}
+		if !cmd.At.RecordedAt().After(o.sourceEndsAt.Add(resolveGrace(cmd))) {
+			return errs.New(errs.KindPrecondition, "resolve_grace_not_elapsed",
+				"resolve_grace has not elapsed since source_ends_at")
+		}
+	case ResolveSilent:
+		if !cmd.SourceHealthy {
+			return errs.New(errs.KindPrecondition, "source_not_healthy",
+				"a case is held, never expired, while its AlertSource is not healthy")
+		}
+		if cmd.MaxSilence <= 0 {
+			return errs.New(errs.KindPrecondition, "max_silence_off",
+				"the source sets no max_silence_s, so silence ends nothing")
+		}
+		if !cmd.At.RecordedAt().After(o.lastObservedAt.Add(cmd.MaxSilence)) {
+			return errs.New(errs.KindPrecondition, "max_silence_not_elapsed",
+				"max_silence_s has not elapsed since last_observed_at")
+		}
+	case ResolveSourceRemoved:
+		if !cmd.NoLiveSource {
+			return errs.New(errs.KindPrecondition, "live_source_remains",
+				"a live source still feeds this case's cluster")
+		}
+	default:
+		return errs.Newf(errs.KindInternal, "expiry_reason_invalid",
+			"T6 expires; %q is not an expiry", reason.String())
+	}
+	return nil
+}
+
 func permits(actors []ActorKind, actor ActorKind) bool {
 	for _, a := range actors {
 		if a == actor {
@@ -955,7 +1023,7 @@ func summaryOr(s, fallback string) string {
 	return fallback
 }
 
-func defaultSummary(id TransitionID, from, to State) string {
+func defaultSummary(id TransitionID, from, to State, reason ResolveReason) string {
 	switch id {
 	case TransitionT1, TransitionT7:
 		return "Case opened"
@@ -968,7 +1036,14 @@ func defaultSummary(id TransitionID, from, to State) string {
 	case TransitionT5:
 		return "Case resolved upstream"
 	case TransitionT6:
-		return "Case expired: oto stopped hearing about it"
+		switch reason {
+		case ResolveSilent:
+			return "Case expired: its source went silent about it"
+		case ResolveSourceRemoved:
+			return "Case expired: its source was removed"
+		default:
+			return "Case expired: oto stopped hearing about it"
+		}
 	default:
 		return "Case moved from " + from.String() + " to " + to.String()
 	}
@@ -1099,7 +1174,7 @@ func OpenNewCase(p OpenCaseParams) (Case, []Event, error) {
 		Type:      EventCaseOpened,
 		At:        p.At,
 		Actor:     p.Actor,
-		Summary:   summaryOr(p.Summary, defaultSummary(id, StateNone, StateFiring)),
+		Summary:   summaryOr(p.Summary, defaultSummary(id, StateNone, StateFiring, ResolveReason{})),
 		Payload:   p.Payload,
 		DedupeKey: dedupeKeyFor(id, o),
 	})

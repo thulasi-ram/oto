@@ -247,7 +247,7 @@ func (r *ConfigRepository) CreatePolicy(
 		in.CountMin, secondsPtr(in.CountWindow),
 		in.TemplateID,
 		r.clock.Now().UTC(),
-		// NULL is "no Investigator asked" (00098): the built-in digest body.
+		// NULL is "no Investigator asked" (00102): the built-in digest body.
 		in.DigestInvestigatorID,
 	).Scan(&stored)
 	if err != nil {
@@ -283,7 +283,7 @@ UPDATE notification_policies SET
     -- the template is a real operation — it is how an operator puts a policy back
     -- on oto's built-in card — and COALESCE cannot express "set this to NULL".
     template_id     = CASE WHEN $20 THEN $21 ELSE template_id END,
-    -- A CASE for the template's reason: clearing it (00098) is how an operator puts a
+    -- A CASE for the template's reason: clearing it (00102) is how an operator puts a
     -- policy's digest back on the built-in body.
     digest_investigator_id = CASE WHEN $23 THEN $24 ELSE digest_investigator_id END,
     updated_at  = GREATEST(updated_at, $22)

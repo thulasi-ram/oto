@@ -117,8 +117,9 @@ type RuleSnapshotRef struct {
 //
 // ⭐ `state` IS `open | closed` AND NOTHING ELSE (ADR 0040). The four §B.2 words
 // describe the ALERT and are on every alert-shaped DTO; what this episode adds is
-// `resolve_reason` — `upstream` for a resolution upstream asserted, `timeout` for
-// one oto never heard — and `suppression_reason`, which names the silence that
+// `resolve_reason` — `upstream` for a resolution upstream asserted, `timeout`,
+// `silent` or `source_removed` for the three ways oto stops being able to say it
+// is firing (ADR 0056) — and `suppression_reason`, which names the silence that
 // muted THIS firing. A client that wants the four-way reading composes it from
 // those three fields exactly as the server does.
 //
@@ -178,6 +179,54 @@ type CaseDetailDTO struct {
 	// DeliverySummary is a value type for the same reason as on AlertDetailDTO:
 	// an optional field that nothing emitted is a contract that lies quietly.
 	DeliverySummary DeliverySummaryDTO `json:"delivery_summary"`
+	// Sources says who can still speak for this Case, so the screen can say
+	// whether it can expire and why not (ADR 0056 §1). null means oto could not
+	// read it, which is not the same as "no source".
+	Sources *CaseSourcesDTO `json:"sources"`
+}
+
+// CaseSourcesDTO renders `CaseSourcesDTO`: what a Case's cluster says about who
+// can still speak for it (ADR 0056 §1). It is the reaper's own reading, shown —
+// the same live set, threshold and §B.4 health verdicts its passes rest on — and
+// it decides nothing.
+//
+// ⭐ THE RULE IT SHOWS IS OWNER RULING R1: `timeout` and `silent` act only when
+// `live >= 1` and `all_healthy`, and `silent`'s threshold is the cluster's
+// `max_silence_seconds` — null when any live source turned it off.
+type CaseSourcesDTO struct {
+	// Live is how many live sources feed the Case's cluster.
+	Live int32 `json:"live"`
+	// Removed is how many sources were removed from the cluster.
+	Removed int32 `json:"removed"`
+	// AllHealthy is true when Live >= 1 and the §B.4 guard vouches for every
+	// live source — the condition under which the reaper may act at all.
+	AllHealthy bool `json:"all_healthy"`
+	// MaxSilenceSeconds is the cluster's effective `silent` threshold: the
+	// longest live `max_silence_s`, or null when any live source (or none) turned
+	// it off.
+	MaxSilenceSeconds *int32 `json:"max_silence_seconds"`
+	// LiveSources is the live sources in name order, at most
+	// maxListedCaseSources of them; Live says how many there are in all.
+	LiveSources []CaseSourceDTO `json:"live_sources"`
+	// Source is the one live source when Live == 1, and null otherwise. It is
+	// LiveSources[0] in that case, kept for the readers that predate the list.
+	Source *CaseSourceDTO `json:"source"`
+}
+
+// maxListedCaseSources bounds CaseSourcesDTO.LiveSources. A cluster is fed by one
+// Alertmanager or an HA set of two or three; the bound exists so a misconfigured
+// cluster with dozens of sources cannot balloon every row of the case list.
+const maxListedCaseSources = 10
+
+// CaseSourceDTO renders `CaseSourceDTO`: one live source a Case's expiry waits on.
+type CaseSourceDTO struct {
+	ID   uuid.UUID `json:"id"`
+	Name string    `json:"name"`
+	// Healthy is the §B.4 guard's verdict: false holds every Case on the cluster.
+	Healthy bool `json:"healthy"`
+	// MaxSilenceSeconds is the source's own `max_silence_s`; null turns `silent`
+	// off for the whole cluster.
+	MaxSilenceSeconds *int32 `json:"max_silence_seconds"`
 }
 
 // CaseListItemDTO renders `CaseListItemDTO`: one row of `GET /api/v1/cases`.
@@ -196,6 +245,8 @@ type CaseDetailDTO struct {
 type CaseListItemDTO struct {
 	CaseDTO
 	Alert AlertRefDTO `json:"alert"`
+	// Sources is CaseDetailDTO's, batch-read for the whole page in one query.
+	Sources *CaseSourcesDTO `json:"sources"`
 }
 
 // AlertRefDTO renders `AlertRefDTO`: a compact Alert reference.

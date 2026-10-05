@@ -13,7 +13,7 @@ import (
 )
 
 // ClassRepository is every statement against `investigation_classes` (migration
-// 00096): the org's Classification set (ADR 0053 §5, git-bug 4298aa0).
+// 00100): the org's Classification set (ADR 0053 §5, git-bug 4298aa0).
 //
 // ⛔ NOTHING HERE TOUCHES `investigations`. A Finding copied the class NAME it was given
 // onto its own row; replacing the set is a write to this table alone, so a renamed or

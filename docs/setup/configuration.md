@@ -174,6 +174,7 @@ is told.
 | `OTO_JOBS_QUEUE_DELIVERY` | int, ≥ 0 | `0` = unset | no | Overrides the delivery queue width. |
 | `OTO_JOBS_QUEUE_RECONCILE` | int, ≥ 0 | `0` = unset | no | Overrides the `reconcile` queue width. |
 | `OTO_JOBS_QUEUE_INVESTIGATE` | int, ≥ 0 | `0` = unset | no | Overrides the `investigate` queue width: how many Investigations (and approved Remedies' write calls) the whole deployment runs at once. Each org's `investigation_concurrency` narrows its own share under it. See [Investigators](investigators.md). |
+| `OTO_JOBS_EXPIRE_SILENT_AND_REMOVED` | bool | `false` | has a default | Turns on the reaper's `silent` and `source_removed` expiries (ADR 0056). File key `jobs.expire_silent_and_removed`; chart value `config.jobs.expire_silent_and_removed`. See below. |
 
 **Zero means unset, not "no workers".** Each width is applied only when it is greater than zero, so
 leaving all five alone is what lets `jobs.DefaultQueueWorkers()` — the SPEC §G.3 table — be the
@@ -188,6 +189,33 @@ the published number, and the deployment answers for its own width.
 (roughly 120), not a throughput preference. Below the width SPEC §G.3.1's arithmetic requires,
 `source.reconcile` falls permanently behind its own 30-second cadence rather than merely running
 slower.
+
+### `OTO_JOBS_EXPIRE_SILENT_AND_REMOVED`
+
+**Off by default in this release, and that is the rollout order.** With it off, `case.reap` is the
+`timeout` sweep it always was. With it on, the reaper also ends an open Case as:
+
+- **`silent`** — every live source on its cluster is healthy and none has said anything about it for
+  longer than the cluster's max silence (the longest `max_silence_seconds` among its live sources;
+  off when any of them has it off). Sources that existed before migration `00094` start with max
+  silence **off**; a source registered afterwards defaults to one day.
+- **`source_removed`** — its cluster's last live source was deleted, and the org's resolve grace has
+  passed since. A source registered on the cluster inside the grace stands it down.
+
+Both read as **expired**, never resolved
+([ADR 0056](../adr/0056-a-case-the-upstream-stopped-speaking-about-expires-and-says-why.md)).
+`timeout` is not behind this flag.
+
+Roll it out in two phases: ship the release carrying migration `00094` with the flag off, so every
+reader that can spell the two new `resolve_reason` values is running before anything writes one;
+then turn it on once every replica runs that release and any webhook receiver has been checked
+against the widened set ([webhook §3](webhook.md#occurrenceresolve_reason--how-a-case-ended)).
+
+⚠️ **Once it has been on, rolling back below this release needs `goose down 00094` first.** An older
+release cannot read `silent` or `source_removed`; the migration's Down rewrites them to `timeout`
+(still expired) before narrowing the CHECK. With the flag never turned on, a rollback needs nothing.
+
+The web UI cannot see this flag, so its `silent` and `source_removed` forecasts say "if enabled".
 
 ## Observability
 
@@ -285,7 +313,7 @@ not exist.
 | CORS origins | `OTO_HTTP_CORS_ORIGINS=http://localhost:5173` (line 15) | `CORSOrigins: []string{}` (`config.go:317`) — the shipped default disables CORS entirely. The example's own comment says so; the line is a dev convenience that a production `.env` must remove. |
 | `OTO_RETENTION_UI_EVENTS` | absent | Exists, default `24h` (`config.go:388`). |
 | `OTO_BOOTSTRAP_PASSWORD` | absent | Required by `oto bootstrap` (`cmd/oto/bootstrap.go:60-62`). |
-| Whole sections | no `OTO_JOBS_*`, no `OTO_HTTP_*` timeouts, no `OTO_DB_*` connection lifetimes, no `OTO_SECURITY_SESSION_*`, no `OTO_TELEMETRY_METRICS_PATH` / `_OTLP_INSECURE` / `_TRACE_SAMPLE_RATE`, no `OTO_SLACK_APP_TOKEN` | All exist with the defaults tabulated above. |
+| Whole sections | no `OTO_JOBS_*` (except `OTO_JOBS_EXPIRE_SILENT_AND_REMOVED`), no `OTO_HTTP_*` timeouts, no `OTO_DB_*` connection lifetimes, no `OTO_SECURITY_SESSION_*`, no `OTO_TELEMETRY_METRICS_PATH` / `_OTLP_INSECURE` / `_TRACE_SAMPLE_RATE`, no `OTO_SLACK_APP_TOKEN` | All exist with the defaults tabulated above. |
 
 Two further names appear in source comments and are read by nothing.
 `OTO_ALLOW_PRIVATE_WEBHOOK_TARGETS` is named in `internal/channels/providers/webhook/provider.go:57`

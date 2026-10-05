@@ -124,7 +124,7 @@ DROP TABLE tool_server_tools;
 DROP TABLE tool_servers;
 DELETE FROM channel_credentials WHERE kind = 'tool_server_token';
 
--- Byte-identical to what 00091 shipped.
+-- Byte-identical to what 00095 shipped.
 ALTER TABLE channel_credentials DROP CONSTRAINT channel_credentials_kind_ck;
 ALTER TABLE channel_credentials ADD CONSTRAINT channel_credentials_kind_ck CHECK (kind IN
   ('slack_bot_token','slack_app_token','slack_signing_secret','basic','bearer','webhook_signing_secret',

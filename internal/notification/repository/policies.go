@@ -42,7 +42,7 @@ type policyRow struct {
 	countMin         *int
 	countWindowSecs  *int
 	templateID       *uuid.UUID
-	// digestInvestigatorID is `digest_investigator_id` (00098): NULL for none.
+	// digestInvestigatorID is `digest_investigator_id` (00102): NULL for none.
 	digestInvestigatorID *uuid.UUID
 	createdAt            time.Time
 	updatedAt            time.Time

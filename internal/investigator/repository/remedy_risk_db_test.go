@@ -1,11 +1,11 @@
 package repository_test
 
-// THE REMEDY RISK RULES AND A REMEDY'S RISK RECORD AGAINST A REAL POSTGRES (migration 00103,
+// THE REMEDY RISK RULES AND A REMEDY'S RISK RECORD AGAINST A REAL POSTGRES (migration 00107,
 // git-bug eb4f21b). What the SQL holds on its own: a fresh org has no rules; the rules read in
 // the operator's order, with who wrote them (`oto remedy-rules apply` — the repository only
 // reads); a rule with no condition cannot be a row; a Remedy's risk record round-trips, is
 // frozen with its proposal, and ONE approval stands only on a rule the model, if asked, kept —
-// never on one whose question the day's budget could not pay for (00104), whose tokens count in
+// never on one whose question the day's budget could not pay for (00108), whose tokens count in
 // the day's spend.
 
 import (
@@ -110,7 +110,7 @@ func TestARemedysRiskRecordRoundTripsIsFrozenAndOneApprovalStandsOnlyOnARule(t *
 	}
 }
 
-// TestASpentBudgetsRemedyRoundTripsAtTwo — 00104 (owner ruling 2026-10-05 on git-bug eb4f21b):
+// TestASpentBudgetsRemedyRoundTripsAtTwo — 00108 (owner ruling 2026-10-05 on git-bug eb4f21b):
 // a Remedy whose risk question the day's budget could not pay for is a row at TWO approvals,
 // recorded `budget`, asking no model and costing nothing.
 func TestASpentBudgetsRemedyRoundTripsAtTwo(t *testing.T) {

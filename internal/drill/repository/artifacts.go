@@ -168,8 +168,10 @@ SELECT o.id, o.seq,
        -- while a silence is in force still reads the word a human expects.
        CASE WHEN o.state = 'open' AND a.suppression_reason IS NOT NULL THEN 'suppressed'
             WHEN o.state = 'open' THEN a.state
-            WHEN o.resolve_reason = 'timeout' THEN 'expired'
-            ELSE 'resolved' END,
+            -- ADR 0056 §4: only upstream is a resolution; timeout, silent and
+            -- source_removed are all expired, so the default is the safe word.
+            WHEN o.resolve_reason = 'upstream' THEN 'resolved'
+            ELSE 'expired' END,
        o.rule_snapshot_id, rs.rule_name
   FROM alert_cases o
   JOIN alerts a ON a.id = o.alert_id AND a.org_id = o.org_id

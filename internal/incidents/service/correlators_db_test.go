@@ -118,7 +118,7 @@ func TestACountedCorrelatorDrawsOnTheFifthAndAddsLaterMatchesWhileActive(t *test
 		assert.Equal(t, VerdictBelowCount, r.correlate(c).Verdict, "Case %d of 5 draws nothing", i+1)
 		r.h.Advance(time.Minute)
 	}
-	incs, _, err := r.svc.List(context.Background(), r.scope, db.Keyset{Limit: 10})
+	incs, _, err := r.svc.List(context.Background(), r.scope, db.Keyset{Limit: 10}, domain.ListFilter{})
 	require.NoError(t, err)
 	assert.Empty(t, incs, "four below a count of five is no Incident")
 

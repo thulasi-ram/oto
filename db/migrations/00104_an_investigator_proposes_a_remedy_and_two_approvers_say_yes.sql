@@ -157,7 +157,7 @@ CREATE INDEX remedies_open_idx ON remedies (org_id, expires_at)
 
 -- +goose StatementBegin
 COMMENT ON TABLE remedies IS
-  'ADR 0054 (00100, git-bug 4148256): a change to a cluster an Investigator proposed with its Finding, which oto executes through the named write Tool only after the required approvals from DIFFERENT holders of the grant on that Tool''s ToolServer (remedy_approver_grants). proposed -> approved -> executing -> executed | failed, or declined, or expired, each transition recorded in remedy_transitions by a named actor and declared to the Incident as a fact. A Remedy with no Tool says no configured Tool can carry it out and can never be approved. The proposal (Tool, arguments and their SHA-256, target, description, required approvals) is frozen by remedies_frozen; terminal states are frozen; a failed Remedy is never retried.';
+  'ADR 0054 (00104, git-bug 4148256): a change to a cluster an Investigator proposed with its Finding, which oto executes through the named write Tool only after the required approvals from DIFFERENT holders of the grant on that Tool''s ToolServer (remedy_approver_grants). proposed -> approved -> executing -> executed | failed, or declined, or expired, each transition recorded in remedy_transitions by a named actor and declared to the Incident as a fact. A Remedy with no Tool says no configured Tool can carry it out and can never be approved. The proposal (Tool, arguments and their SHA-256, target, description, required approvals) is frozen by remedies_frozen; terminal states are frozen; a failed Remedy is never retried.';
 -- +goose StatementEnd
 
 -- +goose StatementBegin
@@ -327,7 +327,7 @@ ALTER TABLE notifications ADD  CONSTRAINT notifications_reason_ck CHECK (reason 
 
 -- +goose StatementBegin
 COMMENT ON COLUMN notifications.reason IS
-  'The SPEC H.6 Reason enum, twenty-seven values. Fifteen are facts about one signal or one window; the last twelve are facts about an Incident -- drawn, case_added, case_removed, quiet, active_again (00084), finding (00095: an Investigation of the Incident reached a new Finding) and the six Remedy transitions remedy_proposed, remedy_approved, remedy_declined, remedy_expired, remedy_executed and remedy_failed (00100, ADR 0054 §2) -- and none of them is a resolve, a close or a status: oto declares facts to an incident tool and never commands it (ADR 0052 §5). `quiet` is every member Case closed, never "the incident is over". A Finding never decides whether anyone is told (ADR 0053 §2); `finding` declares it to wherever the org routes Incident facts.';
+  'The SPEC H.6 Reason enum, twenty-seven values. Fifteen are facts about one signal or one window; the last twelve are facts about an Incident -- drawn, case_added, case_removed, quiet, active_again (00084), finding (00099: an Investigation of the Incident reached a new Finding) and the six Remedy transitions remedy_proposed, remedy_approved, remedy_declined, remedy_expired, remedy_executed and remedy_failed (00104, ADR 0054 §2) -- and none of them is a resolve, a close or a status: oto declares facts to an incident tool and never commands it (ADR 0052 §5). `quiet` is every member Case closed, never "the incident is over". A Finding never decides whether anyone is told (ADR 0053 §2); `finding` declares it to wherever the org routes Incident facts.';
 -- +goose StatementEnd
 
 ALTER TABLE notifications ADD COLUMN remedy JSONB;
@@ -340,7 +340,7 @@ ALTER TABLE notifications ADD CONSTRAINT notifications_remedy_ck CHECK (
 
 -- +goose StatementBegin
 COMMENT ON COLUMN notifications.remedy IS
-  'ADR 0054 §2 (00100): the Remedy transition this Incident fact declares, COPIED in the transaction that made it -- the Remedy, its Tool and exact arguments or "no configured Tool can carry this out", its target and description, its approvals so far, the transition, its actor and instant, and why it failed. Set exactly on the six remedy_* reasons. A snapshot, never re-read: a retried delivery renders the same fact.';
+  'ADR 0054 §2 (00104): the Remedy transition this Incident fact declares, COPIED in the transaction that made it -- the Remedy, its Tool and exact arguments or "no configured Tool can carry this out", its target and description, its approvals so far, the transition, its actor and instant, and why it failed. Set exactly on the six remedy_* reasons. A snapshot, never re-read: a retried delivery renders the same fact.';
 -- +goose StatementEnd
 
 ALTER TABLE notification_policies DROP CONSTRAINT policies_reasons_ck;
@@ -351,7 +351,7 @@ ALTER TABLE notification_policies ADD  CONSTRAINT policies_reasons_ck
 
 -- +goose StatementBegin
 COMMENT ON CONSTRAINT policies_reasons_ck ON notification_policies IS
-  'reasons is a set of 1..27 SPEC H.6 Reason values. The ceiling is the enum size and moves with it -- 00058 added digest, 00060 removed storm, 00067 removed unacked_reminder, 00069 removed new_alerts and some_resolved, 00084 added the five Incident facts, 00095 added finding, 00100 added the six Remedy transitions. ⛔ IT DOES NOT CONSTRAIN MEMBERSHIP: every narrowing of the Reason vocabulary must strip the value from this column by hand.';
+  'reasons is a set of 1..27 SPEC H.6 Reason values. The ceiling is the enum size and moves with it -- 00058 added digest, 00060 removed storm, 00067 removed unacked_reminder, 00069 removed new_alerts and some_resolved, 00084 added the five Incident facts, 00099 added finding, 00104 added the six Remedy transitions. ⛔ IT DOES NOT CONSTRAIN MEMBERSHIP: every narrowing of the Reason vocabulary must strip the value from this column by hand.';
 -- +goose StatementEnd
 
 -- ------------------------------------------------------------ orgs.settings
@@ -363,7 +363,7 @@ COMMENT ON COLUMN orgs.settings IS
 
 -- +goose Down
 
--- Byte-identical to what 00094 shipped. A row that wrote `remedy_approval_window_s` keeps it
+-- Byte-identical to what 00098 shipped. A row that wrote `remedy_approval_window_s` keeps it
 -- in the document, which the release below reads past: an unknown JSONB key is not a column
 -- it can fail on.
 -- +goose StatementBegin
@@ -371,7 +371,7 @@ COMMENT ON COLUMN orgs.settings IS
   'Per-org tuning for the lifecycle machine, retention and Investigations, as a partial document: an ABSENT key means "this org never wrote it" and is a different fact from a written value that happens to equal the shipped default -- which is what makes the settings screen able to report an origin. The ten keys are resolve_grace_s, flap_threshold, flap_window_s, flap_digest_interval_s, raw_retention_days, event_retention_months, default_verbosity, investigations_enabled (ADR 0053 §6, boolean, default true: the org''s Investigation kill switch; absent means enabled), investigation_daily_tokens (ADR 0053 §6, integer 1000..1000000000, default 2000000: input + output tokens per UTC day; past it a new Investigation is recorded skipped with reason budget) and investigation_concurrency (ADR 0053 §6, integer 1..32, default 2: the most Investigations running at once; one past it waits queued). ⛔ NARROWING THIS SET IS THIS COMMENT''S JOB TOO: refire_grace_s and group_close_delay_s left in 00071, the four unacked_reminder_* keys in 00068, broadcast_on_resolved in 00069, and the three storm_* keys in 00059.';
 -- +goose StatementEnd
 
--- ⛔ THE SIX FACTS GO WITH THE VOCABULARY THE RELEASE BELOW CANNOT NAME, for 00095's reason:
+-- ⛔ THE SIX FACTS GO WITH THE VOCABULARY THE RELEASE BELOW CANNOT NAME, for 00099's reason:
 -- their notifications are deleted (their deliveries by the cascade), and the six values are
 -- stripped from every policy by hand — a policy that named nothing else is deleted, since an
 -- empty reason set is not a policy.
@@ -384,7 +384,7 @@ UPDATE notification_policies
                  'remedy_proposed'), 'remedy_approved'), 'remedy_declined'), 'remedy_expired'), 'remedy_executed'), 'remedy_failed')
  WHERE reasons && ARRAY['remedy_proposed','remedy_approved','remedy_declined','remedy_expired','remedy_executed','remedy_failed']::text[];
 
--- Byte-identical to 00095's Up.
+-- Byte-identical to 00099's Up.
 ALTER TABLE notification_policies DROP CONSTRAINT policies_reasons_ck;
 ALTER TABLE notification_policies ADD  CONSTRAINT policies_reasons_ck
   CHECK (cardinality(reasons) BETWEEN 1 AND 21
@@ -393,7 +393,7 @@ ALTER TABLE notification_policies ADD  CONSTRAINT policies_reasons_ck
 
 -- +goose StatementBegin
 COMMENT ON CONSTRAINT policies_reasons_ck ON notification_policies IS
-  'reasons is a set of 1..21 SPEC H.6 Reason values. The ceiling is the enum size and moves with it -- 00058 added digest, 00060 removed storm, 00067 removed unacked_reminder, 00069 removed new_alerts and some_resolved, 00084 added the five Incident facts, 00095 added finding. ⛔ IT DOES NOT CONSTRAIN MEMBERSHIP: every narrowing of the Reason vocabulary must strip the value from this column by hand.';
+  'reasons is a set of 1..21 SPEC H.6 Reason values. The ceiling is the enum size and moves with it -- 00058 added digest, 00060 removed storm, 00067 removed unacked_reminder, 00069 removed new_alerts and some_resolved, 00084 added the five Incident facts, 00099 added finding. ⛔ IT DOES NOT CONSTRAIN MEMBERSHIP: every narrowing of the Reason vocabulary must strip the value from this column by hand.';
 -- +goose StatementEnd
 
 ALTER TABLE notifications DROP CONSTRAINT notifications_remedy_ck;
@@ -407,7 +407,7 @@ ALTER TABLE notifications ADD  CONSTRAINT notifications_reason_ck CHECK (reason 
 
 -- +goose StatementBegin
 COMMENT ON COLUMN notifications.reason IS
-  'The SPEC H.6 Reason enum, twenty-one values. Fifteen are facts about one signal or one window; the last six are facts about an Incident -- drawn, case_added, case_removed, quiet, active_again (00084) and finding (00095: an Investigation of the Incident reached a new Finding) -- and none of them is a resolve, a close or a status: oto declares facts to an incident tool and never commands it (ADR 0052 §5). `quiet` is every member Case closed, never "the incident is over". A Finding never decides whether anyone is told (ADR 0053 §2); `finding` declares it to wherever the org routes Incident facts.';
+  'The SPEC H.6 Reason enum, twenty-one values. Fifteen are facts about one signal or one window; the last six are facts about an Incident -- drawn, case_added, case_removed, quiet, active_again (00084) and finding (00099: an Investigation of the Incident reached a new Finding) -- and none of them is a resolve, a close or a status: oto declares facts to an incident tool and never commands it (ADR 0052 §5). `quiet` is every member Case closed, never "the incident is over". A Finding never decides whether anyone is told (ADR 0053 §2); `finding` declares it to wherever the org routes Incident facts.';
 -- +goose StatementEnd
 
 -- ⛔ THE REMEDIES GO WITH THEIR TABLES. The release below has no Remedy; one that was executed

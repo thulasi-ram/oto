@@ -137,7 +137,7 @@ owner ruled on 2026-10-05 (O1–O4). Each item names the section it amends.
 
 **A1. The `finding` Incident fact is a subscription, not an extra send.** 0052 §5 lists "new
 Finding" as an Incident fact. It reaches only notification policies whose `reasons` name `finding`,
-and migration 00095 added it to no existing policy. An operator choosing to be told that a Finding
+and migration 00099 added it to no existing policy. An operator choosing to be told that a Finding
 arrived is a routing decision the operator made. The Investigator did not decide a send.
 
 ### §3 — Where it runs
@@ -209,7 +209,7 @@ Investigation that is still `queued` when its window closes ends `skipped` with 
 `window_closed`, without calling a model. It may have been held behind the org's concurrency or an
 interval. Its Finding would be read by nothing: the window's digest has already gone out with the
 built-in body, and a digest is never amended. The skipped row keeps it recorded, never silent, and
-no tokens are spent for nothing. Migration 00102 adds the reason. A policy's digest runs are
+no tokens are spent for nothing. Migration 00106 adds the reason. A policy's digest runs are
 listed by `GET /api/v1/notification-policies/{id}/investigations`.
 
 **A11. What a version does not pin.** A version pins the model endpoint and model, the prompt and

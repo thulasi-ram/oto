@@ -36,7 +36,7 @@
 -- nowhere. A Finding is never an input to WHETHER a digest is sent (ADR 0053 §2).
 --
 -- ⛔ `enrichments_subjkind_ck` IS NOT WIDENED, AND THE TICKET ASKED FOR IT. An Enrichment is
--- keyed by (subject_kind, subject_id, enricher) and REPLACED by the next run (00092's
+-- keyed by (subject_kind, subject_id, enricher) and REPLACED by the next run (00096's
 -- header), so a digest Enrichment would be keyed by the policy alone and every window would
 -- overwrite the last — it cannot name the window the digest needs. And nothing reads it: a
 -- digest has no card, no API and no SSE stream that shows Enrichments. The Finding lives on
@@ -79,12 +79,12 @@ CREATE UNIQUE INDEX investigations_digest_window_uniq
 
 -- +goose StatementBegin
 COMMENT ON COLUMN investigations.digest_window_start IS
-  'For a digest subject (00098), the INCLUSIVE start of the window it summarises; subject_id is the notification policy. NULL for every other subject. One run per policy per window (investigations_digest_window_uniq). Its Finding is NOT published as an Enrichment: an Enrichment is keyed by subject alone and would be overwritten every window. The digest sent when the window closed copies the Finding onto its own row (notifications.digest_finding) if, and only if, the run had ended with one by then.';
+  'For a digest subject (00102), the INCLUSIVE start of the window it summarises; subject_id is the notification policy. NULL for every other subject. One run per policy per window (investigations_digest_window_uniq). Its Finding is NOT published as an Enrichment: an Enrichment is keyed by subject alone and would be overwritten every window. The digest sent when the window closed copies the Finding onto its own row (notifications.digest_finding) if, and only if, the run had ended with one by then.';
 -- +goose StatementEnd
 
 -- +goose StatementBegin
 COMMENT ON COLUMN investigations.digest_window_end IS
-  'For a digest subject (00098), the EXCLUSIVE end of the window it summarises — the instant the digest is sent at. The run is armed ahead of it by investigator/domain.DigestLead; the digest never waits past it for the run.';
+  'For a digest subject (00102), the EXCLUSIVE end of the window it summarises — the instant the digest is sent at. The run is armed ahead of it by investigator/domain.DigestLead; the digest never waits past it for the run.';
 -- +goose StatementEnd
 
 CREATE UNIQUE INDEX investigators_org_id_uniq ON investigators (org_id, id);
@@ -100,7 +100,7 @@ ALTER TABLE notification_policies ADD CONSTRAINT policies_digest_investigator_ck
 
 -- +goose StatementBegin
 COMMENT ON COLUMN notification_policies.digest_investigator_id IS
-  'ADR 0053 §4 (00098): the Investigator that summarises this policy''s digest windows. Its run is armed ahead of each window''s close; if it has ended with a Finding when the window closes, the digest carries it as its body, and otherwise the digest is sent on time with the built-in body. NULL, the default, is a policy that did not ask. It never decides WHETHER a digest is sent (ADR 0053 §2). Requires digest_window_s; the same org''s Investigator only (composite FK); cleared when the Investigator goes.';
+  'ADR 0053 §4 (00102): the Investigator that summarises this policy''s digest windows. Its run is armed ahead of each window''s close; if it has ended with a Finding when the window closes, the digest carries it as its body, and otherwise the digest is sent on time with the built-in body. NULL, the default, is a policy that did not ask. It never decides WHETHER a digest is sent (ADR 0053 §2). Requires digest_window_s; the same org''s Investigator only (composite FK); cleared when the Investigator goes.';
 -- +goose StatementEnd
 
 ALTER TABLE notifications ADD COLUMN digest_finding JSONB;
@@ -111,7 +111,7 @@ ALTER TABLE notifications ADD CONSTRAINT notifications_digest_finding_ck CHECK (
 
 -- +goose StatementBegin
 COMMENT ON COLUMN notifications.digest_finding IS
-  'ADR 0053 §4 (00098): the Investigator''s Finding this digest carried as its body, COPIED when the digest was sent — investigation id, Investigator name and version, the Finding, its class, whether it was partial, and when it was concluded. NULL is the built-in body: the window''s run had not ended with a Finding when the window closed, or the policy asked for none. A digest never waits for a Finding and is never amended with a later one.';
+  'ADR 0053 §4 (00102): the Investigator''s Finding this digest carried as its body, COPIED when the digest was sent — investigation id, Investigator name and version, the Finding, its class, whether it was partial, and when it was concluded. NULL is the built-in body: the window''s run had not ended with a Finding when the window closed, or the policy asked for none. A digest never waits for a Finding and is never amended with a later one.';
 -- +goose StatementEnd
 
 -- +goose Down
@@ -127,7 +127,7 @@ ALTER TABLE notification_policies DROP COLUMN digest_investigator_id;
 
 DROP INDEX investigators_org_id_uniq;
 
--- ⛔ THE DIGEST RUNS GO WITH THE SUBJECT THE RELEASE BELOW CANNOT NAME, for 00095's reason:
+-- ⛔ THE DIGEST RUNS GO WITH THE SUBJECT THE RELEASE BELOW CANNOT NAME, for 00099's reason:
 -- `investigations_frozen` guards UPDATE, not DELETE, and their Steps and Suggestions go by
 -- the cascade — the record going with its owner.
 DELETE FROM investigations WHERE subject_kind = 'digest';
@@ -137,7 +137,7 @@ ALTER TABLE investigations DROP CONSTRAINT investigations_digest_window_ck;
 ALTER TABLE investigations DROP COLUMN digest_window_end;
 ALTER TABLE investigations DROP COLUMN digest_window_start;
 
--- Byte-identical to 00095's Up.
+-- Byte-identical to 00099's Up.
 ALTER TABLE investigations DROP CONSTRAINT investigations_subjkind_ck;
 ALTER TABLE investigations ADD  CONSTRAINT investigations_subjkind_ck
   CHECK (subject_kind IN ('case','incident'));

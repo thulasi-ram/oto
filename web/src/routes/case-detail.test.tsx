@@ -8,9 +8,10 @@
  * firing the receipt landed on could differ.
  *
  * ⛔ AND IT IS ONE CONTROL WITH TWO WORDS. `ack_state` has two values, so a
- * separate Acknowledge and Withdraw left one of the two dead on every paint. The
- * toggle reads what the case IS and does the other thing — which is why the tests
- * below assert the WORD as much as the request.
+ * separate Ack and Unack left one of the two dead on every paint. The toggle
+ * reads what the case IS and does the other thing — `Ack` or `Unack`, in words
+ * rather than a glyph — which is why the tests below assert the WORD as much as
+ * the request.
  *
  * ⛔ SNOOZE IS NOT ON THIS SCREEN AT ALL, AND THE LAST DESCRIBE GUARDS THAT. A
  * snooze holds oto's notifications for the IDENTITY: it outlives this case and
@@ -27,7 +28,15 @@ import { describe, expect, it } from "vitest";
 
 import CaseDetailRoute from "./case-detail";
 import type { Incident } from "~/api/types";
-import { alertRef, caseDetail, incident, incidentDetail } from "~/test/fixtures";
+import {
+  alertRef,
+  caseDetail,
+  caseSource,
+  caseSources,
+  clusterSources,
+  incident,
+  incidentDetail,
+} from "~/test/fixtures";
 import {
   item,
   list,
@@ -99,7 +108,7 @@ describe("acknowledging the case", () => {
     const net = mount();
     net.on(`POST ${PATH}/ack`, () => ({ json: item(caseDetail({ ack_state: "acked" })) }));
 
-    fireEvent.click(await ready("Acknowledge"));
+    fireEvent.click(await ready("Ack"));
     fireEvent.input(openDialog().getByLabelText("Note (optional)"), {
       target: { value: "  known deploy, rolling back  " },
     });
@@ -117,7 +126,7 @@ describe("acknowledging the case", () => {
 
   it("says a receipt does not change the signal, at the moment of committing", async () => {
     mount();
-    fireEvent.click(await ready("Acknowledge"));
+    fireEvent.click(await ready("Ack"));
     expect(openDialog().getByText(/it stays firing until the upstream says otherwise/i)).toBeTruthy();
   });
 
@@ -125,7 +134,7 @@ describe("acknowledging the case", () => {
     const net = mount();
     net.on(`POST ${PATH}/ack`, () => problem(500, "internal"));
 
-    fireEvent.click(await ready("Acknowledge"));
+    fireEvent.click(await ready("Ack"));
     fireEvent.click(openDialog().getByRole("button", { name: "Acknowledge" }));
     await until(() => expect(net.to("/ack")).toHaveLength(1));
 
@@ -135,10 +144,10 @@ describe("acknowledging the case", () => {
 
   it("refuses to offer the receipt on a case that has already ended", async () => {
     mount({ ended_at: "2026-08-09T09:30:00.000Z", state: "resolved" });
-    await until(() => expect(barButtons("Acknowledge")).toHaveLength(1));
+    await until(() => expect(barButtons("Ack")).toHaveLength(1));
     // Acking an ended case is a 412 by contract; saying so first is kinder than
     // sending a request whose only possible answer is a refusal.
-    expect(barButton("Acknowledge")).toBeDisabled();
+    expect(barButton("Ack")).toBeDisabled();
   });
 });
 
@@ -151,7 +160,7 @@ describe("withdrawing the acknowledgement", () => {
     const net = mount({ ack_state: "acked" });
     net.on(`POST ${PATH}/unack`, () => problem(412, "no_open_case"));
 
-    fireEvent.click(await ready("Withdraw acknowledgement"));
+    fireEvent.click(await ready("Unack"));
     fireEvent.click(openDialog().getByRole("button", { name: "Withdraw" }));
 
     await until(() => expect(net.to("/unack")).toHaveLength(1));
@@ -162,20 +171,30 @@ describe("withdrawing the acknowledgement", () => {
     await until(() => expect(openDialog().getByText(/no receipt left to withdraw/i)).toBeTruthy());
   });
 
-  it("⛔ is the SAME control, so an unacked case offers no withdrawal at all", async () => {
-    // One control with two words: a `Withdraw` sitting permanently beside an
-    // `Acknowledge` meant one of the two was dead on every paint, and a dead
+  it("⛔ is the SAME control, so an unacked case offers no Unack at all", async () => {
+    // One control with two words: an `Unack` sitting permanently beside an
+    // `Ack` meant one of the two was dead on every paint, and a dead
     // control is one an operator has to read to discard. The way back is not
     // hidden — it IS this button, the moment there is a receipt to take back.
     mount({ ack_state: "unacked" });
-    await ready("Acknowledge");
-    expect(barButtons("Withdraw acknowledgement")).toHaveLength(0);
+    await ready("Ack");
+    expect(barButtons("Unack")).toHaveLength(0);
   });
 
-  it("⛔ and an acked case offers no second Acknowledge", async () => {
+  it("⛔ and an acked case offers no second Ack", async () => {
     mount({ ack_state: "acked" });
-    await ready("Withdraw acknowledgement");
-    expect(barButtons("Acknowledge")).toHaveLength(0);
+    await ready("Unack");
+    expect(barButtons("Ack")).toHaveLength(0);
+  });
+
+  it("⭐ says its verb in words, and the word IS its accessible name", async () => {
+    // The owner's report: a tick in both directions made ack and unack the same
+    // picture. The label is the verb, and no `aria-label` says anything else.
+    mount({ ack_state: "unacked" });
+    const ack = await ready("Ack");
+    expect(ack.textContent?.trim()).toBe("Ack");
+    expect(ack.getAttribute("aria-label")).toBeNull();
+    expect(ack.querySelector("svg")).toBeNull();
   });
 });
 
@@ -186,7 +205,7 @@ describe("withdrawing the acknowledgement", () => {
 describe("holding the alert's notifications", () => {
   it("⛔ is offered nowhere on this screen, and posts nothing to the alert", async () => {
     const net = mount();
-    await ready("Acknowledge");
+    await ready("Ack");
 
     // A snooze outlives this case and covers whatever fires next under the same
     // labels, so its subject is the identity — offered from the alert's own
@@ -199,7 +218,7 @@ describe("holding the alert's notifications", () => {
 
   it("⭐ still points at the identity, so the hold is one hop away", async () => {
     mount();
-    await ready("Acknowledge");
+    await ready("Ack");
     // Removing the control must not strand the operator: the panel naming the
     // alert links out to the screen that does offer it.
     expect(
@@ -366,7 +385,7 @@ describe("the Incident this Case is in", () => {
 describe("the word on screen", () => {
   it("⛔ never calls this firing an incident, a correlation or a group", async () => {
     mount({ alert: alertRef() });
-    await ready("Acknowledge");
+    await ready("Ack");
     // The membership controls mount once the screen knows which Incident this
     // Case is in, and the scan below has to see them to take them out.
     await ready("Draw Incident");
@@ -390,5 +409,70 @@ describe("the word on screen", () => {
     }
     expect(withoutMembership).not.toMatch(/\bincident\b/i);
     expect(text).not.toMatch(/\bcorrelat/i);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Whether this firing can expire (ADR 0056 §1)                               */
+/* -------------------------------------------------------------------------- */
+
+describe("whether this firing can expire", () => {
+  it("says when upstream last spoke about it", async () => {
+    mount();
+    await ready("Ack");
+    expect(document.body.textContent).toMatch(/last heard from upstream/);
+  });
+
+  it("says when it expires as silent, from its source's max silence — if enabled", async () => {
+    mount();
+    await ready("Ack");
+    const note = document.querySelector('[data-expiry="can_expire"]');
+    // The deployment flag is not on the wire, so the forecast never promises.
+    expect(note?.textContent).toMatch(/^If this deployment has turned on the silent and source-removed expiries/);
+    expect(note?.textContent).toMatch(/it expires as silent after 1d without word/);
+  });
+
+  it("⭐ under an HA pair, names only the replica that holds it", async () => {
+    mount({
+      sources: clusterSources([
+        caseSource({ id: "a0", name: "am-0" }),
+        caseSource({ id: "a1", name: "am-1", healthy: false }),
+      ]),
+    });
+    await ready("Ack");
+    const note = document.querySelector('[data-expiry="not_healthy"]');
+    expect(note?.textContent).toMatch(/^Held: am-1 is not healthy\./);
+    expect(note?.textContent).not.toMatch(/am-0/);
+  });
+
+  it("says plainly that it is held while its source is not healthy", async () => {
+    mount({ sources: caseSources({}, { healthy: false, name: "am-eu" }) });
+    await ready("Ack");
+    const note = document.querySelector('[data-expiry="not_healthy"]');
+    expect(note?.textContent).toMatch(/^Held: its source am-eu is not healthy/);
+  });
+
+  it("⛔ says it of an acked firing too: a receipt does not change whether upstream speaks", async () => {
+    mount({
+      ack_state: "acked",
+      acked_by_label: "Ada",
+      sources: caseSources({}, { max_silence_seconds: null }),
+    });
+    await ready("Unack");
+    const note = document.querySelector('[data-expiry="no_end_time"]');
+    expect(note?.textContent).toMatch(/^Cannot expire: upstream gave no end time/);
+  });
+
+  it("says nothing about expiry when oto could not read its sources", async () => {
+    mount({ sources: null });
+    await ready("Ack");
+    expect(document.querySelector("[data-expiry]")).toBeNull();
+  });
+
+  it("names which expiry ended an expired firing, next to the word", async () => {
+    mount({ state: "closed", ended_at: "2026-08-10T09:00:00.000Z", resolve_reason: "silent" });
+    await until(() => expect(screen.getByText("Ended · expired: silent")).toBeTruthy());
+    // An ended firing has no forecast; the chip says how it ended.
+    expect(document.querySelector("[data-expiry]")).toBeNull();
   });
 });

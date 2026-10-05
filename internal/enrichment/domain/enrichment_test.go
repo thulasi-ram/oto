@@ -260,7 +260,7 @@ func TestNewEnrichmentRefusesWhatTheTableWouldRefuse(t *testing.T) {
 		// subject_kind — enrichments_subjkind_ck.
 		{name: "subject alert", with: func(p *domain.EnrichmentParams) { p.SubjectKind = domain.SubjectAlert }},
 		{name: "subject case", with: func(p *domain.EnrichmentParams) { p.SubjectKind = domain.SubjectCase }},
-		// An Incident's Finding is an Enrichment on the Incident (00095, git-bug 74ea849).
+		// An Incident's Finding is an Enrichment on the Incident (00099, git-bug 74ea849).
 		{name: "subject incident", with: func(p *domain.EnrichmentParams) { p.SubjectKind = domain.SubjectIncident }},
 		// ⛔ `{name: "subject group", ... p.SubjectKind = domain.SubjectGroup}` WAS THE
 		// THIRD ACCEPTED KIND AND IS DELETED (git-bug `7570090`). It is replaced by the

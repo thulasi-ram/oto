@@ -73,6 +73,19 @@ type IncidentOutboundDTO struct {
 	RecordedAt  time.Time `json:"recorded_at"`
 }
 
+// ListIncidentsQuery is the validated form of the `listIncidents` query string.
+// Gate G1 diffs it against the operation's parameters.
+type ListIncidentsQuery struct {
+	// CaseID asks for the one Incident this Case is a current member of.
+	CaseID uuid.UUID `json:"case_id"`
+	// IncludeEmpty lists the Incidents with no current member as well — every Case
+	// removed or moved away. Off by default (domain.ListFilter): an empty Incident is
+	// kept as a record and served by number, and hidden from the scan.
+	IncludeEmpty bool   `json:"include_empty"`
+	Limit        int    `json:"limit"  validate:"min=1,max=200"`
+	Cursor       string `json:"cursor" validate:"omitempty,cursor"`
+}
+
 // CreateIncidentRequest is the body of `POST /api/v1/incidents`.
 type CreateIncidentRequest struct {
 	// CaseIDs names the Cases to draw the Incident over: at least one, because an

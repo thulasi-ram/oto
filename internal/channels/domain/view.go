@@ -201,6 +201,14 @@ type FindingView = IncidentFindingView
 type IncidentView struct {
 	ID     string
 	Number int64
+	// Sequence is where THIS fact falls in the Incident's story: 1 for `drawn` and
+	// one more for each fact after, allocated in the transaction that made the fact
+	// true (ADR 0052 §5, migration 00093). Unlike the rest of the view it is not read
+	// live: it is the fact's, frozen on its notification, so a retried delivery
+	// carries the number the first attempt did. 0 when the delivery is not an
+	// Incident fact — a Case fact amending the Incident's card, the pointer into a
+	// member Case's thread — or the fact was declared before 00093.
+	Sequence int64
 	// State is `active` (some current member Case is open) or `quiet` (none is).
 	// Derived, never set (ADR 0052 §3).
 	State   string

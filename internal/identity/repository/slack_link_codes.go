@@ -1,6 +1,6 @@
 package repository
 
-// THE SLACK LINK CODE STORE (git-bug a556a5c, migration 00105): one live code per Slack identity,
+// THE SLACK LINK CODE STORE (git-bug a556a5c, migration 00109): one live code per Slack identity,
 // stored only as a sha256; the per-user count of wrong codes; and the recorded fact of every link
 // and unlink. See `identity/domain/slack_link_code.go` for why each exists.
 //

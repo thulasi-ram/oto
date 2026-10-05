@@ -3,7 +3,7 @@ package service
 // IN-MEMORY PORTS FOR THE INVESTIGATION TESTS. They keep the rules the SQL keeps where a
 // test depends on them — a Step can only be appended, an ended run cannot be finished
 // twice, a version number cannot be taken twice — so a loop that tried to rewrite its
-// transcript fails here as it would against 00092's triggers. The SQL itself is
+// transcript fails here as it would against 00096's triggers. The SQL itself is
 // `repository/investigations_db_test.go`'s.
 
 import (

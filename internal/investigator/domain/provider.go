@@ -1,7 +1,7 @@
 package domain
 
 // ONE CONFIGURED MODEL ENDPOINT (git-bug 8f1f071 comment #1): a base URL, a model name
-// and a sealed API key, stored per org in `model_providers` (migration 00091) and
+// and a sealed API key, stored per org in `model_providers` (migration 00095) and
 // reached through the one Chat Completions adapter. Hosted APIs, gateways and
 // self-hosted model servers are all this one shape; nothing here knows which.
 //
@@ -23,7 +23,7 @@ import (
 	"github.com/thulasiram/oto/internal/platform/errs"
 )
 
-// Bounds mirroring migration 00091's CHECKs — R9's copies. There is no request DTO
+// Bounds mirroring migration 00095's CHECKs — R9's copies. There is no request DTO
 // yet (the settings API is a follow-up), so the domain and the DDL are the two.
 const (
 	// MaxProviderNameLength is `model_providers_name_ck`.

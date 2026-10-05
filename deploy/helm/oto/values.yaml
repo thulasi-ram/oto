@@ -555,6 +555,14 @@ config:
     # How long a job may sit `running` before the rescuer reclaims it — the
     # backstop for a worker pod that was killed mid-job.
     rescue_after: 1h
+    # The reaper's two ADR 0056 expiries: `silent` (an open case its healthy
+    # sources have said nothing about for longer than their max silence) and
+    # `source_removed` (an open case whose cluster's last source was deleted, a
+    # resolve grace ago). OFF BY DEFAULT: migration 00094 and its readers ship
+    # first, and nothing writes either reason until this is on.
+    # ⚠️ Once it has been on, a rollback below this release needs
+    # `goose down 00094` first, which rewrites both reasons to `timeout`.
+    expire_silent_and_removed: false
 
   ingest:
     # The Retry-After sent with a 503. Never 429, never any other 4xx (C4).

@@ -100,6 +100,10 @@ var bindings = []binding{
 	{"alerts", "CaseDTO", alertsapi.CaseDTO{}},
 	{"alerts", "CaseDetailDTO", alertsapi.CaseDetailDTO{}},
 	{"alerts", "CaseListItemDTO", alertsapi.CaseListItemDTO{}},
+	// ADR 0056 §1: who can still speak for a Case, so its screen can say whether
+	// it can expire and why not. Carried by both case shapes above.
+	{"alerts", "CaseSourcesDTO", alertsapi.CaseSourcesDTO{}},
+	{"alerts", "CaseSourceDTO", alertsapi.CaseSourceDTO{}},
 	// The CASE RETENTION WINDOW W (migration 00057). It is bound in the alerts tag
 	// rather than a settings one because the module that owns the Case owns the rule
 	// that shapes it.
@@ -1087,6 +1091,7 @@ var queryBindings = []queryBinding{
 	{pkg: "stats", opIDs: []string{"getStatsOverview"}, v: statsapi.OverviewQuery{}},
 	{pkg: "stats", opIDs: []string{"getAlertQualityStats"}, v: statsapi.AlertQualityQuery{}},
 	{pkg: "identity", opIDs: []string{"listApiTokens"}, v: identityapi.PageQuery{}},
+	{pkg: "incidents", opIDs: []string{"listIncidents"}, v: incidentsapi.ListIncidentsQuery{}},
 }
 
 // TestQueryParamsMatchContract is the half of G1 that covers `*Query` structs.

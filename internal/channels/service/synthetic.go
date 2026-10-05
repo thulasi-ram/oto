@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/thulasiram/oto/internal/channels/domain"
+	"github.com/thulasiram/oto/internal/platform/id"
 )
 
 // SyntheticAlertName is the alertname the test card carries. It is deliberately
@@ -176,6 +177,9 @@ func syntheticLinks(base string) domain.Links {
 // one; an Incident fact is a synthetic Incident whose one member is the synthetic
 // Case, shaped the way `ViewService.incidentCard` builds one (a Reason, an
 // IncidentView and a render time, and nothing else).
+//
+// ⚠️ UNLIKE SyntheticView IT IS NOT PURE FOR AN INCIDENT FACT: the Incident's id is
+// minted fresh on every call, so no two test sends name the same Incident.
 func SyntheticFactView(inst domain.Instance, now time.Time, baseURL, fact string) *domain.NotificationView {
 	v := SyntheticView(inst, now, baseURL)
 	v.Reason = fact
@@ -203,12 +207,22 @@ func SyntheticFactView(inst domain.Instance, now time.Time, baseURL, fact string
 			member.RemovedAt, member.RemovedByLabel = now, "oto channel test"
 		}
 		incident := &domain.IncidentView{
-			ID:      "00000000-0000-7000-8000-000000000005",
-			Number:  1,
-			State:   state,
-			DrawnAt: drawn,
-			DrawnBy: domain.IncidentAuthorView{Label: "oto channel test"},
-			Members: []domain.IncidentMemberView{member},
+			// ⭐ A FRESH ID FOR EVERY TEST. A receiver orders an Incident's facts by
+			// (id, sequence), and one that drops a fact at or below the highest it
+			// has seen FOR THAT INCIDENT would drop every test after the first if
+			// they all named one fixed Incident at sequence 1. Each test is its own
+			// one-fact story, so each one names its own Incident.
+			ID:     id.New().String(),
+			Number: 1,
+			// ⚠️ EVERY TEST FACT IS SEQUENCE 1, whichever one the operator sends. A
+			// test is one fact about a story that has no other, and a receiver that
+			// drops a fact BELOW the highest it has seen must not start dropping the
+			// second test it is sent because the first was numbered higher.
+			Sequence: 1,
+			State:    state,
+			DrawnAt:  drawn,
+			DrawnBy:  domain.IncidentAuthorView{Label: "oto channel test"},
+			Members:  []domain.IncidentMemberView{member},
 		}
 		if base != "" {
 			incident.Link = base + "/incidents/1"
