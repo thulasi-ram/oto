@@ -422,13 +422,17 @@ In parallel, off the same transactions, never blocking a delivery:
 - **`suppressed` can only be *entered* by the reconciler**, because MuteStage drops muted alerts
   before the webhook fires. Either the reconciler *or* ingest can leave it, since a webhook arrival is
   positive proof of non-suppression. The asymmetry is deliberate.
-- **Losing sight of an alert is not it resolving.** The reaper writing `expired` is blocked while the
-  source's health is not `healthy`.
+- **Losing sight of an alert is not it resolving.** The reaper writing `expired` is blocked unless
+  **every** live source on the case's cluster is `healthy` — one unhealthy replica of an HA pair
+  holds them all.
 - **An expiry says which one it was** (ADR 0056). `timeout`: upstream's `endsAt` plus
-  `resolve_grace` passed. `silent`: a healthy source said nothing about the case for longer than its
-  `max_silence_s` (a day unless set). `source_removed`: no live source feeds the case's cluster any
-  more — deleting one HA replica while another still feeds the cluster ends nothing. None of them is
-  a resolution, and none is a person's decision.
+  `resolve_grace` passed. `silent`: no live source on the cluster said anything about the case for
+  longer than the cluster's max silence — the longest `max_silence_s` among them, off if any one has
+  it off (a day on a new source; off on one that existed before migration `00094`, until set).
+  `source_removed`: no live source has fed the case's cluster for a `resolve_grace` since the last
+  was deleted — deleting one HA replica while another still feeds the cluster ends nothing. `silent`
+  and `source_removed` run only once the deployment turns on `jobs.expire_silent_and_removed` (off
+  by default in this release). None of them is a resolution, and none is a person's decision.
 
 ### AlertCase
 
