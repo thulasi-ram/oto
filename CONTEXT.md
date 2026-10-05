@@ -163,7 +163,7 @@ alert is still firing and must still be rendered as firing** — colouring it ca
 `open | closed` and nothing else (ADR 0040): an episode's only fact about itself is whether it is
 still running. The four-way reading of a Case is derived and total — open + no `suppression_reason` is
 `firing`, open + one is `suppressed`, closed + `resolve_reason='upstream'` is `resolved`, closed +
-`'timeout'` is `expired`. Say **an episode is open or closed**, and **an alert is firing, suppressed,
+`'timeout'`, `'silent'` or `'source_removed'` (ADR 0056) is `expired`. Say **an episode is open or closed**, and **an alert is firing, suppressed,
 resolved or expired**; the two vocabularies are not interchangeable and swapping them is how the
 column acquired four values in the first place.
 
