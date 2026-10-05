@@ -4,13 +4,15 @@ package service
 // a53c8b0). "An executed Remedy triggers a follow-up Investigation of its Incident, so the
 // timeline shows whether it helped."
 //
-// ⭐⭐ RAISED IN THE TRANSACTION THAT RECORDS `executed`, AND ONLY THERE. The run's row and its
-// `investigations.run` job are written beside the transition (the queue's insert joins the
-// transaction in the context), so the Remedy is recorded executed AND its follow-up is asked
-// for, or neither. A redelivered `remedies.execute` finds the Remedy no longer `executing` and
-// records nothing — so it raises nothing: one execution, one follow-up. A Remedy that FAILED
-// raises nothing: nothing changed that a look could judge, and a failure is already a fact on
-// the Incident. Nothing here is on the notification path: the Finding the follow-up reaches is
+// ⭐⭐ ASKED FOR RIGHT AFTER THE RECORD OF `executed` COMMITS, IN ITS OWN TRANSACTION (judgment
+// 2, C6). The run's row and its `investigations.run` job are written together (the queue's insert
+// joins that transaction), but NOT beside the transition: a follow-up that cannot be asked for —
+// an error, or the lock on the subject's runs outlasting the timeout — is logged and never costs
+// the record of what the Tool answered. One execution asks at most once: a redelivered
+// `remedies.execute` finds the Remedy no longer `executing`, records nothing, and so asks for
+// nothing; a crash between the two transactions loses the follow-up, never the record. A
+// Remedy that FAILED raises nothing: nothing changed that a look could judge, and a failure is
+// already a fact on the Incident. Nothing here is on the notification path: the Finding the follow-up reaches is
 // published and declared like any other (`finish`), and what a policy does with it is the
 // notification layer's question.
 //
@@ -43,7 +45,7 @@ import (
 )
 
 // followUpExecutedRemedy asks for the follow-up Investigation of a Remedy just recorded
-// `executed`, in the caller's transaction. Anything it cannot follow up — its run, its
+// `executed`, in the caller's transaction — one of its own, opened after that record committed. Anything it cannot follow up — its run, its
 // Investigator or its subject gone, a switch off — is nothing to do, never a failure: the
 // Remedy's own record must not be lost to its follow-up.
 func (s *Service) followUpExecutedRemedy(ctx context.Context, scope db.TenantScope, r domain.Remedy) error {

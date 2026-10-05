@@ -37,13 +37,18 @@ package service
 // ⛔ NOTHING RETRIES A FAILED REMEDY. `failed` is terminal and frozen (`remedies_frozen`); a
 // retry is a new Remedy and a new approval.
 //
-// ⭐ AN EXECUTED ONE IS FOLLOWED UP (§6, git-bug a53c8b0): the transaction that records it
-// `executed` also asks for one Investigation of its Incident (remedy_followup.go).
+// ⭐⭐ WHAT THE TOOL ANSWERED IS RECORDED FIRST, IN ITS OWN TRANSACTION (judgment 2, C6). The
+// record — the transition, its result and its outbound fact — commits alone, retried a few times
+// inside recordTimeout. Only then is the follow-up Investigation of an `executed` one asked for
+// (§6, git-bug a53c8b0; remedy_followup.go), in a second transaction whose failure is logged and
+// never returned: a follow-up that cannot be asked for must not roll back the record of a write
+// that was MADE, which the sweep would otherwise turn into `outcome_unknown`.
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -56,8 +61,16 @@ import (
 )
 
 // recordTimeout bounds recording what the write Tool answered, on a context its own job's
-// cancellation cannot reach: a call that was made must be recorded if it can be.
+// cancellation cannot reach: a call that was made must be recorded if it can be. The follow-up
+// gets a timeout of its own, so it never spends the record's.
 const recordTimeout = 10 * time.Second
+
+// recordAttempts is how many times the record of a call is tried before the job gives up and
+// the sweep's `outcome_unknown` is all that is left; recordBackoff is the wait after each.
+const (
+	recordAttempts = 3
+	recordBackoff  = 250 * time.Millisecond
+)
 
 // enqueueExecution enqueues `remedies.execute` for a Remedy that just became `approved`, in
 // the approval's transaction: approved and enqueued, or neither.
@@ -110,25 +123,63 @@ func (s *Service) ExecuteRemedy(ctx context.Context, scope db.TenantScope, remed
 	// ⛔ FROM HERE THE CALL IS MADE AT MOST ONCE. The claim is committed; nothing below
 	// returns the Remedy to `approved`.
 	outcome := s.callWriteTool(ctx, scope, c, redact)
+	moved, err := s.recordOutcome(ctx, scope, remedyID, outcome)
+	if err != nil || moved.State != domain.RemedyExecuted {
+		return err
+	}
+
+	// ⭐ THE FOLLOW-UP, AFTER THE RECORD COMMITTED (ADR 0054 §6, git-bug a53c8b0; judgment 2, C6).
+	// A redelivered job finds the Remedy no longer `executing` and records nothing, so it reaches
+	// none: still at most one follow-up per execution. A crash between the two transactions loses
+	// the follow-up, never the record.
+	follow, cancelFollow := context.WithTimeout(context.WithoutCancel(ctx), recordTimeout)
+	defer cancelFollow()
+	if err := s.tx.InTx(follow, func(ctx context.Context) error {
+		return s.followUpExecutedRemedy(ctx, scope, moved)
+	}); err != nil {
+		slog.WarnContext(ctx, "investigator: an executed Remedy's follow-up Investigation could not be asked for",
+			slog.String("org_id", scope.OrgID().String()),
+			slog.String("remedy_id", remedyID.String()),
+			slog.String("error", safeMessage(err)))
+	}
+	return nil
+}
+
+// recordOutcome records how the call ended — the transition, its result and its outbound fact,
+// in ONE transaction and nothing else — on a context the job's cancellation cannot reach, tried
+// up to recordAttempts times within recordTimeout. It returns the Remedy as recorded, or the zero
+// Remedy when the sweep recorded it first (its record stands).
+func (s *Service) recordOutcome(ctx context.Context, scope db.TenantScope, remedyID uuid.UUID, outcome callOutcome) (domain.Remedy, error) {
 	rec, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordTimeout)
 	defer cancel()
-	return s.tx.InTx(rec, func(ctx context.Context) error {
-		cur, err := s.remedies.LockRemedy(ctx, scope, remedyID)
-		if err != nil {
+	var moved domain.Remedy
+	var err error
+	for attempt := 1; ; attempt++ {
+		moved = domain.Remedy{}
+		err = s.tx.InTx(rec, func(ctx context.Context) error {
+			cur, err := s.remedies.LockRemedy(ctx, scope, remedyID)
+			if err != nil {
+				return err
+			}
+			if cur.State != domain.RemedyExecuting {
+				return nil // the sweep recorded it meanwhile; its record stands.
+			}
+			moved, err = s.moveRemedy(ctx, scope, cur, outcome.to, domain.SystemActor(), s.now(), outcome.failure,
+				outcome.detail, time.Time{}, outcome.result)
 			return err
+		})
+		if err == nil || attempt >= recordAttempts || rec.Err() != nil {
+			break
 		}
-		if cur.State != domain.RemedyExecuting {
-			return nil // the sweep recorded it meanwhile; its record stands.
+		select {
+		case <-rec.Done():
+		case <-time.After(time.Duration(attempt) * recordBackoff):
 		}
-		moved, err := s.moveRemedy(ctx, scope, cur, outcome.to, domain.SystemActor(), s.now(), outcome.failure,
-			outcome.detail, time.Time{}, outcome.result)
-		if err != nil {
-			return err
-		}
-		// ⭐ EXECUTED, AND ITS FOLLOW-UP ASKED FOR, IN THIS ONE TRANSACTION (ADR 0054 §6, git-bug
-		// a53c8b0). A failure raises none (remedy_followup.go).
-		return s.followUpExecutedRemedy(ctx, scope, moved)
-	})
+	}
+	if err != nil {
+		return domain.Remedy{}, err
+	}
+	return moved, nil
 }
 
 // claimRemedy re-checks a Remedy under its row lock and claims it — or records why it will

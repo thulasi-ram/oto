@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/thulasiram/oto/internal/investigator/domain"
+	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/jobs"
 )
 
@@ -82,6 +83,36 @@ func TestAnExecutedRemedyIsFollowedByOneInvestigationOfItsIncident(t *testing.T)
 	}
 	if n := len(r.runsOn(domain.SubjectIncident, incident.IncidentID)); n != 1 || r.runJobs(follow.ID) != 1 || rc.calls() != 1 {
 		t.Fatalf("redelivery: %d runs, %d jobs, %d calls", n, r.runJobs(follow.ID), rc.calls())
+	}
+}
+
+// TestAFollowUpThatCannotBeAskedForNeverCostsTheRecord — judgment 2, C6: the record of what the
+// write Tool answered commits in its own transaction, so a follow-up that fails leaves the Remedy
+// `executed` with its result, the job answers nil (a retry would find it executed anyway), and
+// the Tool was called once.
+func TestAFollowUpThatCannotBeAskedForNeverCostsTheRecord(t *testing.T) {
+	r := newRig(t)
+	rc := &recorder{}
+	rem, _, incident, _ := r.approvedRemedy(t, rc.tool("restarted", false))
+	r.orgControls.err = errs.New(errs.KindUnavailable, "db_down", "the database is not answering")
+
+	if err := r.svc.ExecuteRemedy(context.Background(), r.scope, rem.ID); err != nil {
+		t.Fatalf("a failed follow-up failed the execution job: %v", err)
+	}
+	got := r.remedyNow(t, rem.ID)
+	if got.State != domain.RemedyExecuted || !strings.Contains(got.Result, "restarted") {
+		t.Fatalf("the record of a write that was made was lost: state %s, result %q", got.State, got.Result)
+	}
+	if n := len(r.runsOn(domain.SubjectIncident, incident.IncidentID)); n != 0 || rc.calls() != 1 {
+		t.Fatalf("%d follow-up runs, %d calls", n, rc.calls())
+	}
+	// ⛔ Redelivered, it neither calls again nor asks again.
+	r.orgControls.err = nil
+	if err := r.svc.ExecuteRemedy(context.Background(), r.scope, rem.ID); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(r.runsOn(domain.SubjectIncident, incident.IncidentID)); n != 0 || rc.calls() != 1 {
+		t.Fatalf("redelivery: %d follow-up runs, %d calls", n, rc.calls())
 	}
 }
 

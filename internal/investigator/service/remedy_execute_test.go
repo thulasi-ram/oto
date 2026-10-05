@@ -156,6 +156,21 @@ func TestAnApprovedRemedyRunsOnceWithTheArgumentsApproved(t *testing.T) {
 	}
 }
 
+// TestARecordThatFailsOnceIsTriedAgain — judgment 2, C6: a record that fails once is tried
+// again inside recordTimeout, and the answer the Tool gave is kept, not left to the sweep.
+func TestARecordThatFailsOnceIsTriedAgain(t *testing.T) {
+	r := newRig(t)
+	rc := &recorder{}
+	rem, _, _, _ := r.approvedRemedy(t, rc.tool("restarted", false))
+	r.remedies.failMove = domain.RemedyExecuted
+	if err := r.svc.ExecuteRemedy(context.Background(), r.scope, rem.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.remedyNow(t, rem.ID); got.State != domain.RemedyExecuted || rc.calls() != 1 {
+		t.Fatalf("state %s after %d calls", got.State, rc.calls())
+	}
+}
+
 // TestARemedyIsSentAtMostOnceUnderAJobRetry — the worker calls the Tool and dies before it can
 // record the answer: the job fails and River retries it. The retry finds the Remedy claimed and
 // sends nothing; the sweep records it `failed` with `outcome_unknown` once the deadline passes,
@@ -166,7 +181,8 @@ func TestARemedyIsSentAtMostOnceUnderAJobRetry(t *testing.T) {
 	rem, _, _, _ := r.approvedRemedy(t, rc.tool("restarted", false))
 	ctx := context.Background()
 
-	r.remedies.failMove = domain.RemedyExecuted
+	// Every attempt at the record fails, as a worker that died would: C6's retries are spent.
+	r.remedies.failMove, r.remedies.failMoveTimes = domain.RemedyExecuted, recordAttempts
 	if err := r.svc.ExecuteRemedy(ctx, r.scope, rem.ID); err == nil {
 		t.Fatal("a record that could not be written was not returned for a retry")
 	}

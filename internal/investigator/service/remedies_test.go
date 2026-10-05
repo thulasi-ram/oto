@@ -40,8 +40,10 @@ type memRemedies struct {
 	rows  map[uuid.UUID]domain.Remedy
 	order []uuid.UUID
 	// failMove, when set, fails the next transition into that state — a worker dying
-	// between the call and its record, for the at-most-once test.
-	failMove domain.RemedyState
+	// between the call and its record, for the at-most-once test — failMoveTimes times in a
+	// row (once when 0): the executor tries its record more than once (C6).
+	failMove      domain.RemedyState
+	failMoveTimes int
 }
 
 func newMemRemedies() *memRemedies { return &memRemedies{rows: map[uuid.UUID]domain.Remedy{}} }
@@ -126,7 +128,9 @@ func (m *memRemedies) Transition(
 		return errs.New(errs.KindInternal, "remedies_frozen", "a Remedy that ended is never rewritten")
 	}
 	if m.failMove != "" && m.failMove == t.To {
-		m.failMove = ""
+		if m.failMoveTimes--; m.failMoveTimes <= 0 {
+			m.failMove = ""
+		}
 		return errs.New(errs.KindInternal, "investigator_query_failed", "the worker died before it could record this")
 	}
 	if r.State != t.From {

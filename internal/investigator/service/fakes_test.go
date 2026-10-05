@@ -490,9 +490,14 @@ type memControls struct {
 	on          bool
 	dailyTokens int64
 	concurrency int
+	// err, when set, is what reading them answers: a database that cannot.
+	err error
 }
 
 func (m *memControls) InvestigationControls(context.Context, db.TenantScope) (domain.OrgControls, error) {
+	if m.err != nil {
+		return domain.OrgControls{}, m.err
+	}
 	return domain.OrgControls{Enabled: m.on, DailyTokens: m.dailyTokens, Concurrency: m.concurrency}, nil
 }
 
