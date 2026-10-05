@@ -206,9 +206,7 @@ func (r *Renderer) replyBody(v *domain.NotificationView) (body, extra, colour st
 
 	case reasonExpired:
 		colour = CardExpired.Colour()
-		body = ":grey_question: *Expired* — oto has not heard about this since " +
-			slackDate(v.Group.LastActivityAt) + ". This is NOT a resolution."
-		extra = "_oto stopped receiving this alert. It may still be happening._"
+		body, extra = expiredReply(v)
 
 	case reasonSuppressed:
 		colour = CardSuppressed.Colour()
@@ -818,6 +816,14 @@ func replyFacts(v *domain.NotificationView) string {
 		}
 	case reasonExpired:
 		facts = append(facts, "last seen at "+plainClock(v.Group.LastActivityAt))
+		// The specific expiry, when it is not the plain `timeout` "last seen"
+		// already says (ADR 0056 §4).
+		switch caseResolveReason(v) {
+		case resolveSilent:
+			facts = append(facts, "its source went silent about it")
+		case resolveSourceRemoved:
+			facts = append(facts, "its source was removed")
+		}
 	case reasonSnoozed:
 		// ⛔⛔ THIS CLAUSE IS THE WHOLE POINT OF THE TICKET. The `default:` arm below
 		// appends `stateClause`, so the string that reached a locked phone read
@@ -881,5 +887,55 @@ func replyLead(reason string) string {
 		return ":arrow_right: Continued in a new message:"
 	default:
 		return ":bell: Update on:"
+	}
+}
+
+// The two ADR 0056 resolve reasons, as `alert_cases.resolve_reason` spells them.
+// `timeout` needs no constant: it is the reading every expiry had before them, and
+// every arm below falls back to its words.
+const (
+	resolveSilent        = "silent"
+	resolveSourceRemoved = "source_removed"
+)
+
+func caseResolveReason(v *domain.NotificationView) string {
+	if v.Case == nil {
+		return ""
+	}
+	return v.Case.ResolveReason
+}
+
+// expiredReply is the `expired` reply's body and footnote, per expiry (ADR 0056
+// §4). All three say the same thing first — this is NOT a resolution — and then
+// say WHY oto can no longer report the alert, because "the source went silent for
+// a day" and "the source was removed" are different facts with different fixes.
+// `timeout` keeps the words it always had.
+func expiredReply(v *domain.NotificationView) (body, extra string) {
+	switch caseResolveReason(v) {
+	case resolveSilent:
+		return ":grey_question: *Expired* — its source has said nothing about this since " +
+				slackDate(v.Group.LastActivityAt) + ". This is NOT a resolution.",
+			"_The source is healthy and went silent about this alert. It may still be happening._"
+	case resolveSourceRemoved:
+		return ":grey_question: *Expired* — its source was removed, so nothing is left that can " +
+				"say when this ended. This is NOT a resolution.",
+			"_Last heard about " + slackDate(v.Group.LastActivityAt) + ". It may still be happening._"
+	default:
+		return ":grey_question: *Expired* — oto has not heard about this since " +
+				slackDate(v.Group.LastActivityAt) + ". This is NOT a resolution.",
+			"_oto stopped receiving this alert. It may still be happening._"
+	}
+}
+
+// expiryClause is the root card's state line for an expired case: why oto can no
+// longer say the alert is firing (ADR 0056 §4).
+func expiryClause(v *domain.NotificationView) string {
+	switch caseResolveReason(v) {
+	case resolveSilent:
+		return "its source went silent about this"
+	case resolveSourceRemoved:
+		return "its source was removed"
+	default:
+		return "oto stopped hearing about this"
 	}
 }
