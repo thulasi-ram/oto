@@ -123,17 +123,6 @@ SELECT count(*)
   FROM slack_link_attempts a
  WHERE a.org_id = $1 AND a.user_id = $2 AND a.attempted_at > $3`
 
-// CountWrongAttempts counts the wrong codes one user presented after `since`.
-func (r *SlackLinkRepository) CountWrongAttempts(
-	ctx context.Context, s db.TenantScope, userID uuid.UUID, since time.Time,
-) (int, error) {
-	var n int
-	if err := r.db(ctx).QueryRow(ctx, countSlackLinkAttemptsSQL, s.OrgID(), userID, since.UTC()).Scan(&n); err != nil {
-		return 0, mapErr(err, "user_not_found", "user")
-	}
-	return n, nil
-}
-
 const pruneSlackLinkAttemptsSQL = `
 DELETE FROM slack_link_attempts
  WHERE org_id = $1 AND user_id = $2 AND attempted_at <= $3`
@@ -142,15 +131,49 @@ const insertSlackLinkAttemptSQL = `
 INSERT INTO slack_link_attempts (id, org_id, user_id, attempted_at)
 VALUES ($1, $2, $3, $4)`
 
-// RecordWrongAttempt counts one wrong code against a user, first pruning that user's attempts that
-// have left the window — so the table holds at most a window's worth of rows per user.
-func (r *SlackLinkRepository) RecordWrongAttempt(
-	ctx context.Context, s db.TenantScope, id, userID uuid.UUID, at, pruneBefore time.Time,
-) error {
-	if _, err := r.db(ctx).Exec(ctx, pruneSlackLinkAttemptsSQL, s.OrgID(), userID, pruneBefore.UTC()); err != nil {
-		return mapErr(err, "user_not_found", "user")
+// ReserveAttempt is the per-user wrong-code limit as ONE serialised step (review E2): under a
+// transaction-scoped advisory lock on (org, user) it prunes the user's attempts that have left the
+// window, counts the rest, and — below `limit` — records THIS attempt before the code is even
+// read. It reports whether the attempt may go ahead.
+//
+// ⛔⛔ IT USED TO BE COUNT, THEN EVALUATE, THEN RECORD A WRONG ONE, with nothing serialising the
+// three: twenty parallel previews all counted four and all were evaluated. Recording first, under
+// the lock, makes the count include every attempt in flight; the caller gives back (ReleaseAttempt)
+// the one attempt a RIGHT code proves was not a guess.
+//
+// ⚠️ THE CALLER MUST HOLD A TRANSACTION (`db.AdvisoryXactLock` refuses otherwise), and must commit
+// it before the code is evaluated, so the attempt is on record whatever the evaluation does.
+func (r *SlackLinkRepository) ReserveAttempt(
+	ctx context.Context, s db.TenantScope, id, userID uuid.UUID, at, since time.Time, limit int,
+) (bool, error) {
+	q := r.db(ctx)
+	key := db.AdvisoryKey(db.LockNamespaceSlackLinkAttempts, s.OrgID().String()+":"+userID.String())
+	if err := db.AdvisoryXactLock(ctx, q, key); err != nil {
+		return false, err
 	}
-	if _, err := r.db(ctx).Exec(ctx, insertSlackLinkAttemptSQL, id, s.OrgID(), userID, at.UTC()); err != nil {
+	if _, err := q.Exec(ctx, pruneSlackLinkAttemptsSQL, s.OrgID(), userID, since.UTC()); err != nil {
+		return false, mapErr(err, "user_not_found", "user")
+	}
+	var n int
+	if err := q.QueryRow(ctx, countSlackLinkAttemptsSQL, s.OrgID(), userID, since.UTC()).Scan(&n); err != nil {
+		return false, mapErr(err, "user_not_found", "user")
+	}
+	if n >= limit {
+		return false, nil
+	}
+	if _, err := q.Exec(ctx, insertSlackLinkAttemptSQL, id, s.OrgID(), userID, at.UTC()); err != nil {
+		return false, mapErr(err, "user_not_found", "user")
+	}
+	return true, nil
+}
+
+const releaseSlackLinkAttemptSQL = `
+DELETE FROM slack_link_attempts WHERE org_id = $1 AND id = $2`
+
+// ReleaseAttempt gives back one reserved attempt: the code it carried proved right, or the
+// evaluation failed for a reason that was not the user's guess. Deleting nothing is not an error.
+func (r *SlackLinkRepository) ReleaseAttempt(ctx context.Context, s db.TenantScope, id uuid.UUID) error {
+	if _, err := r.db(ctx).Exec(ctx, releaseSlackLinkAttemptSQL, s.OrgID(), id); err != nil {
 		return mapErr(err, "user_not_found", "user")
 	}
 	return nil

@@ -9,7 +9,8 @@ package domain
 // the path that uses it fails closed.
 //
 // ⭐ THE FLOW STARTS IN SLACK BECAUSE ONLY SLACK CAN PROVE A SLACK IDENTITY. oto verifies the HMAC on
-// every interaction payload; when an UNLINKED member presses a Remedy button, the ephemeral reply —
+// every interaction payload; when an UNLINKED member presses a Remedy button, or Ack or Un-ack (owner
+// ruling F7), the ephemeral reply —
 // seen only by that member — carries a code bound to the verified `(org, team_id, user_id)`. The
 // member then signs in to oto and enters it on their own Account page, which only ever links the
 // SIGNED-IN user. oto therefore learns both halves from the side that can prove each: Slack proves
@@ -64,7 +65,7 @@ const SlackLinkCodeInvalidCode = "slack_link_code_invalid"
 // SlackLinkCodeInvalid is that refusal.
 func SlackLinkCodeInvalid() error {
 	return errs.Validation(SlackLinkCodeInvalidCode,
-		"that link code is wrong, already used or expired; press the Remedy button in Slack again for a new one")
+		"that link code is wrong, already used or expired; press an Ack or a Remedy button in Slack again for a new one")
 }
 
 // SlackIdentityLinkedElsewhereCode is the refusal of a link whose Slack member already resolves

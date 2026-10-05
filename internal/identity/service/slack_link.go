@@ -16,8 +16,9 @@ package service
 //
 // ⭐ EVERY REFUSAL IS FAIL-CLOSED. No store: 503. A code that is not live, for any reason: one 422,
 // counted against the user. Five of those in fifteen minutes: 429 before the code is even read. A
-// Slack identity that already resolves to another real user: 409, never moved — on preview so the
-// screen says so before anybody confirms, and again on confirm under a row lock.
+// Slack identity that already resolves to another ENABLED person: 409, never moved — on preview so
+// the screen says so before anybody confirms, and again on confirm under a row lock. One linked to
+// a DISABLED person moves to the member's own code, and the fact names who was displaced (F6).
 
 import (
 	"context"
@@ -58,11 +59,13 @@ func slackLinksUnavailable() error {
 // IssueSlackLinkCode mints the one live code for a Slack member, replacing any code they had.
 //
 // ⚠️ ITS CALLER MUST ALREADY HAVE VERIFIED SLACK'S SIGNATURE: it is how the code comes to be bound
-// to a member that member proved they are. Its one caller is the Remedy press, behind the
-// interaction transport's HMAC check, with the org resolved from the CHANNEL.
+// to a member that member proved they are. Its callers are an unlinked member's Remedy press and
+// Ack/Un-ack press (owner ruling F7), behind the interaction transport's HMAC check, with the org
+// resolved from the CHANNEL.
 //
-// A member who already resolves to a REAL user gets no code — `slack_identity_linked_elsewhere` —
-// because entering one could only be refused; a member linked to a shadow, or to nothing, gets one.
+// A member who already resolves to an ENABLED person gets no code — `slack_identity_linked_elsewhere`
+// — because entering one could only be refused; a member linked to a shadow, to a DISABLED person
+// (owner ruling F6), or to nothing, gets one.
 func (s *Service) IssueSlackLinkCode(
 	ctx context.Context, scope db.TenantScope, rawTeam, rawMember string,
 ) (IssuedSlackLinkCode, error) {
@@ -81,9 +84,9 @@ func (s *Service) IssueSlackLinkCode(
 	if err != nil {
 		return IssuedSlackLinkCode{}, err
 	}
-	if real, err := s.linkedToARealUser(ctx, scope, si); err != nil {
+	if held, err := s.heldByAnActiveUser(ctx, scope, si); err != nil {
 		return IssuedSlackLinkCode{}, err
-	} else if real {
+	} else if held {
 		return IssuedSlackLinkCode{}, domain.SlackIdentityLinkedElsewhere()
 	}
 
@@ -116,13 +119,20 @@ func (s *Service) PreviewSlackLink(
 	if err != nil {
 		return SlackLinkPreview{}, err
 	}
-	hash, err := s.presentedCode(ctx, scope, userID, rawCode)
+	hash, attempt, err := s.presentedCode(ctx, scope, userID, rawCode)
 	if err != nil {
 		return SlackLinkPreview{}, err
 	}
+	preview, err := s.previewSlackLink(ctx, scope, userID, hash)
+	return preview, s.settleAttempt(ctx, scope, userID, attempt, err)
+}
+
+func (s *Service) previewSlackLink(
+	ctx context.Context, scope db.TenantScope, userID uuid.UUID, hash domain.TokenHash,
+) (SlackLinkPreview, error) {
 	identityID, expires, err := s.links.PresentCode(ctx, scope, hash, s.clk.Now())
 	if err != nil {
-		return SlackLinkPreview{}, s.wrongCode(ctx, scope, userID, err)
+		return SlackLinkPreview{}, err
 	}
 	si, err := s.slack.GetByID(ctx, scope, identityID)
 	if err != nil {
@@ -131,9 +141,9 @@ func (s *Service) PreviewSlackLink(
 	if si.UserID == userID {
 		return SlackLinkPreview{Identity: si, ExpiresAt: expires, AlreadyYours: true}, nil
 	}
-	if real, err := s.linkedToARealUser(ctx, scope, si); err != nil {
+	if held, err := s.heldByAnActiveUser(ctx, scope, si); err != nil {
 		return SlackLinkPreview{}, err
-	} else if real {
+	} else if held {
 		return SlackLinkPreview{}, domain.SlackIdentityLinkedElsewhere()
 	}
 	return SlackLinkPreview{Identity: si, ExpiresAt: expires}, nil
@@ -152,7 +162,7 @@ func (s *Service) ConfirmSlackLink(
 	if err != nil {
 		return domain.SlackIdentity{}, err
 	}
-	hash, err := s.presentedCode(ctx, scope, userID, rawCode)
+	hash, attempt, err := s.presentedCode(ctx, scope, userID, rawCode)
 	if err != nil {
 		return domain.SlackIdentity{}, err
 	}
@@ -174,11 +184,14 @@ func (s *Service) ConfirmSlackLink(
 			linked = incumbent
 			return nil
 		}
-		if real, err := s.linkedToARealUser(ctx, scope, incumbent); err != nil {
+		if held, err := s.heldByAnActiveUser(ctx, scope, incumbent); err != nil {
 			return err
-		} else if real {
+		} else if held {
 			return domain.SlackIdentityLinkedElsewhere()
 		}
+		// ⭐ THE INCUMBENT MAY BE A DISABLED PERSON (owner ruling F6): the code proves the Slack
+		// identity is the presser's, a disabled user cannot sign in to unlink it, and the fact
+		// below names them as `displaced_user_id` — so the move is on the record, never silent.
 		linked, err = s.linkSlackIdentity(ctx, scope, incumbent.ID, userID)
 		if err != nil {
 			return err
@@ -193,10 +206,7 @@ func (s *Service) ConfirmSlackLink(
 		}
 		return s.links.RecordFact(ctx, scope, fact)
 	})
-	if err != nil {
-		if errs.CodeOf(err) == domain.SlackLinkCodeInvalidCode {
-			return domain.SlackIdentity{}, s.wrongCode(ctx, scope, userID, err)
-		}
+	if err := s.settleAttempt(ctx, scope, userID, attempt, err); err != nil {
 		return domain.SlackIdentity{}, err
 	}
 	s.log.InfoContext(ctx, "identity: a user linked a Slack member to themselves",
@@ -264,53 +274,80 @@ func (s *Service) slackLinkSubject(ctx context.Context, scope db.TenantScope, p 
 	return p.UserID, nil
 }
 
-// presentedCode refuses a user who has spent their wrong-code budget BEFORE reading what they sent,
-// then parses it. A malformed code is a wrong code and is counted as one.
+// presentedCode spends one attempt of the user's wrong-code budget BEFORE reading what they sent,
+// then parses it. A malformed code is a wrong code: its attempt is already on record.
+//
+// ⛔⛔ THE BUDGET IS RESERVED, NOT COUNTED (review E2). It used to count, evaluate, and record a
+// wrong code afterwards, outside any lock, so twenty parallel previews all counted under the limit
+// and all were evaluated. `ReserveAttempt` now counts and records under a lock on the user, in a
+// transaction committed BEFORE the code is evaluated — so the attempt is on record whatever the
+// evaluation does, and an attempt oto cannot record is never evaluated (fail closed). A code that
+// proves right gives its attempt back (`settleAttempt`).
 func (s *Service) presentedCode(
 	ctx context.Context, scope db.TenantScope, userID uuid.UUID, rawCode string,
-) (domain.TokenHash, error) {
+) (domain.TokenHash, uuid.UUID, error) {
 	now := s.clk.Now()
-	n, err := s.links.CountWrongAttempts(ctx, scope, userID, now.Add(-domain.SlackLinkWrongAttemptWindow))
+	attempt := id.New()
+	var allowed bool
+	err := s.inTx(ctx, func(ctx context.Context) error {
+		var err error
+		allowed, err = s.links.ReserveAttempt(ctx, scope, attempt, userID, now,
+			now.Add(-domain.SlackLinkWrongAttemptWindow), domain.SlackLinkWrongAttemptLimit)
+		return err
+	})
 	if err != nil {
-		return domain.TokenHash{}, err
+		return domain.TokenHash{}, uuid.Nil, err
 	}
-	if n >= domain.SlackLinkWrongAttemptLimit {
-		return domain.TokenHash{}, errs.RateLimited(domain.SlackLinkAttemptsExhaustedCode,
-			"too many wrong link codes; wait a few minutes, then press the Remedy button in Slack again for a new one",
+	if !allowed {
+		return domain.TokenHash{}, uuid.Nil, errs.RateLimited(domain.SlackLinkAttemptsExhaustedCode,
+			"too many wrong link codes; wait a few minutes, then press an Ack or a Remedy button in Slack again for a new one",
 			domain.SlackLinkWrongAttemptWindow)
 	}
 	code, err := domain.ParseSlackLinkCode(rawCode)
 	if err != nil {
-		return domain.TokenHash{}, s.wrongCode(ctx, scope, userID, err)
+		s.logWrongCode(ctx, scope, userID)
+		return domain.TokenHash{}, uuid.Nil, err
 	}
-	return code.Hash()
+	hash, err := code.Hash()
+	if err != nil {
+		return domain.TokenHash{}, uuid.Nil, s.settleAttempt(ctx, scope, userID, attempt, err)
+	}
+	return hash, attempt, nil
 }
 
-// wrongCode counts a refused code against the user and returns the refusal. Any error that is not
-// the code refusal passes through uncounted: a database that is down is not the user's guess.
-//
-// ⚠️ IT RUNS OUTSIDE ANY TRANSACTION THE REFUSAL CAME FROM — ConfirmSlackLink calls it after its
-// own has rolled back — because a count written inside a transaction that then rolls back is a
-// count that never happened, and a limit that forgets is not one.
-func (s *Service) wrongCode(ctx context.Context, scope db.TenantScope, userID uuid.UUID, refusal error) error {
-	if errs.CodeOf(refusal) != domain.SlackLinkCodeInvalidCode {
-		return refusal
+// settleAttempt decides what a reserved attempt was once the code has been evaluated: a WRONG code
+// (`slack_link_code_invalid`) keeps it on the budget; anything else — the code proved right, or the
+// evaluation failed for a reason that is not the user's guess — gives it back. The release is best
+// effort and logged: an attempt left on the budget by a failed release costs the user one guess,
+// never the guarantee. It returns `outcome` unchanged.
+func (s *Service) settleAttempt(ctx context.Context, scope db.TenantScope, userID, attempt uuid.UUID, outcome error) error {
+	if errs.CodeOf(outcome) == domain.SlackLinkCodeInvalidCode {
+		s.logWrongCode(ctx, scope, userID)
+		return outcome
 	}
-	now := s.clk.Now()
-	if err := s.links.RecordWrongAttempt(ctx, scope, id.New(), userID, now,
-		now.Add(-domain.SlackLinkWrongAttemptWindow)); err != nil {
-		// ⛔ FAIL CLOSED: an attempt oto could not count is not answered as a mere wrong code,
-		// because a guesser who can make the count fail would otherwise guess for free.
-		return err
+	if attempt == uuid.Nil {
+		return outcome
 	}
+	if err := s.links.ReleaseAttempt(ctx, scope, attempt); err != nil {
+		s.log.WarnContext(ctx, "identity: could not give back a Slack link attempt that was not a wrong code",
+			"org_id", scope.OrgID(), "user_id", userID, "error", err.Error())
+	}
+	return outcome
+}
+
+func (s *Service) logWrongCode(ctx context.Context, scope db.TenantScope, userID uuid.UUID) {
 	s.log.InfoContext(ctx, "identity: a wrong Slack link code was presented",
 		"org_id", scope.OrgID(), "user_id", userID)
-	return refusal
 }
 
-// linkedToARealUser reports whether an identity resolves to a user who is NOT a shadow member —
-// a person, disabled or not, whose link this path must never move.
-func (s *Service) linkedToARealUser(ctx context.Context, scope db.TenantScope, si domain.SlackIdentity) (bool, error) {
+// heldByAnActiveUser reports whether an identity resolves to a user who is a PERSON (not a shadow
+// member) and ENABLED — the one link this path must never move.
+//
+// ⭐ A DISABLED PERSON'S LINK MAY MOVE (owner ruling F6, 2026-10-05; review E3). It used to count
+// as "real" too, and then a member linked to a disabled user could never relink: no code was
+// issued, the disabled user cannot sign in to unlink, and there is no CLI. The member's own code
+// proves the Slack identity is theirs; the confirm records the disabled user as displaced.
+func (s *Service) heldByAnActiveUser(ctx context.Context, scope db.TenantScope, si domain.SlackIdentity) (bool, error) {
 	if !si.Linked() {
 		return false, nil
 	}
@@ -322,5 +359,5 @@ func (s *Service) linkedToARealUser(ctx context.Context, scope db.TenantScope, s
 		}
 		return false, err
 	}
-	return !u.IsShadow(), nil
+	return !u.IsShadow() && u.Active(), nil
 }

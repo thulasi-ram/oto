@@ -12,6 +12,7 @@ package app
 // `channels/service.TestALinkedMemberIsNeverIssuedACode` and `TestALinkedHolderApprovesAndDeclinesFromSlack`.
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -194,6 +195,75 @@ func TestALinkToAnotherRealUserIsNeverMovedAndOnlyTheirOwnUnlinkDropsIt(t *testi
 	mine, err := r.identity.ListMySlackIdentities(r.h.Ctx, r.org.Scope, r.session(ada))
 	require.NoError(t, err)
 	require.Empty(t, mine)
+}
+
+// ⛔⛔ REVIEW E2, IN SQL: twenty concurrent wrong previews — the advisory lock on the user makes
+// the count include every attempt in flight, so exactly five are evaluated and fifteen refused.
+func TestParallelWrongCodesAreEvaluatedOnlyUpToTheLimitInTheDatabase(t *testing.T) {
+	r := newLinkRig(t)
+	me := r.h.User(r.org)
+	r.press(t, "U024BE7LH")
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	got := map[string]int{}
+	for range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := r.identity.PreviewSlackLink(r.h.Ctx, r.org.Scope, r.session(me), "ZZZZZ-ZZZZZ")
+			mu.Lock()
+			got[errs.CodeOf(err)]++
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	require.Equal(t, identitydomain.SlackLinkWrongAttemptLimit, got[identitydomain.SlackLinkCodeInvalidCode], "%v", got)
+	require.Equal(t, 20-identitydomain.SlackLinkWrongAttemptLimit, got[identitydomain.SlackLinkAttemptsExhaustedCode], "%v", got)
+}
+
+// A right code gives its reserved attempt back: after four wrong ones it still links, and the
+// database holds four attempts.
+func TestARightCodeAfterFourWrongOnesLinksAndLeavesTheCountAtFour(t *testing.T) {
+	r := newLinkRig(t)
+	me := r.h.User(r.org)
+	code := r.press(t, "U024BE7LH")
+	for range identitydomain.SlackLinkWrongAttemptLimit - 1 {
+		_, err := r.identity.PreviewSlackLink(r.h.Ctx, r.org.Scope, r.session(me), "ZZZZZ-ZZZZZ")
+		require.Equal(t, identitydomain.SlackLinkCodeInvalidCode, errs.CodeOf(err))
+	}
+	_, err := r.identity.ConfirmSlackLink(r.h.Ctx, r.org.Scope, r.session(me), code)
+	require.NoError(t, err)
+	var n int
+	require.NoError(t, r.h.Pool.QueryRow(r.h.Ctx,
+		`SELECT count(*) FROM slack_link_attempts WHERE user_id = $1`, me.ID).Scan(&n))
+	require.Equal(t, identitydomain.SlackLinkWrongAttemptLimit-1, n)
+}
+
+// ⭐ OWNER RULING F6: a member linked to a DISABLED person is issued a code and relinks with it;
+// `slack_identity_links` names the disabled user as displaced.
+func TestAMemberLinkedToADisabledPersonRelinksAndTheDisplacementIsRecorded(t *testing.T) {
+	r := newLinkRig(t)
+	ada := r.h.User(r.org)
+	bea := r.h.User(r.org)
+	code := r.press(t, "U024BE7LH")
+	_, err := r.identity.ConfirmSlackLink(r.h.Ctx, r.org.Scope, r.session(ada), code)
+	require.NoError(t, err)
+
+	_, err = r.h.Pool.Exec(r.h.Ctx, `UPDATE users SET disabled_at = $2 WHERE id = $1`, ada.ID, r.h.Clock.Now())
+	require.NoError(t, err)
+
+	fresh, err := r.codes.IssueSlackLinkCode(r.h.Ctx, r.org.Scope, harnessTeamID, "U024BE7LH")
+	require.NoError(t, err, "a member linked to a disabled person is issued a code")
+	linked, err := r.identity.ConfirmSlackLink(r.h.Ctx, r.org.Scope, r.session(bea), fresh.Code)
+	require.NoError(t, err)
+	require.Equal(t, bea.ID, linked.UserID)
+
+	var displaced uuid.UUID
+	require.NoError(t, r.h.Pool.QueryRow(r.h.Ctx,
+		`SELECT displaced_user_id FROM slack_identity_links WHERE user_id = $1 AND change = 'linked'`, bea.ID).
+		Scan(&displaced))
+	require.Equal(t, ada.ID, displaced)
 }
 
 // fixedEntropy is a reader of ones, so a test can mint a known code.

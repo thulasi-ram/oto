@@ -149,8 +149,12 @@ type SlackLinkStore interface {
 	// ConsumeCode uses a live code up. Both answer `slack_link_code_invalid` for any code that is
 	// not live, whatever the reason.
 	ConsumeCode(ctx context.Context, s db.TenantScope, hash domain.TokenHash, userID uuid.UUID, now time.Time) (uuid.UUID, error)
-	CountWrongAttempts(ctx context.Context, s db.TenantScope, userID uuid.UUID, since time.Time) (int, error)
-	RecordWrongAttempt(ctx context.Context, s db.TenantScope, id, userID uuid.UUID, at, pruneBefore time.Time) error
+	// ReserveAttempt records one attempt against the user's wrong-code budget BEFORE the code is
+	// read, under a lock on that user, and reports false (recording nothing) once the budget for
+	// the window since `since` is spent. It needs the caller's transaction.
+	ReserveAttempt(ctx context.Context, s db.TenantScope, id, userID uuid.UUID, at, since time.Time, limit int) (bool, error)
+	// ReleaseAttempt gives back a reserved attempt that proved not to be a wrong code.
+	ReleaseAttempt(ctx context.Context, s db.TenantScope, id uuid.UUID) error
 	RecordFact(ctx context.Context, s db.TenantScope, f domain.SlackLinkFact) error
 }
 

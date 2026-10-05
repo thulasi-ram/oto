@@ -133,8 +133,8 @@ type fakeCode struct {
 
 type fakeSlackLinks struct {
 	mu       sync.Mutex
-	codes    map[uuid.UUID]*fakeCode // by identity: one live code each
-	attempts map[uuid.UUID][]time.Time
+	codes    map[uuid.UUID]*fakeCode     // by identity: one live code each
+	attempts map[uuid.UUID][]fakeAttempt // by user: the reserved attempts, in order
 	facts    []domain.SlackLinkFact
 }
 
@@ -179,22 +179,41 @@ func (f *fakeSlackLinks) ConsumeCode(_ context.Context, s db.TenantScope, hash d
 	return c.identity, nil
 }
 
-func (f *fakeSlackLinks) CountWrongAttempts(_ context.Context, _ db.TenantScope, userID uuid.UUID, since time.Time) (int, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	n := 0
-	for _, at := range f.attempts[userID] {
-		if at.After(since) {
-			n++
-		}
-	}
-	return n, nil
+type fakeAttempt struct {
+	id uuid.UUID
+	at time.Time
 }
 
-func (f *fakeSlackLinks) RecordWrongAttempt(_ context.Context, _ db.TenantScope, _, userID uuid.UUID, at, _ time.Time) error {
+// ReserveAttempt mirrors the SQL: under the (one) lock, prune, count, refuse at the limit, else
+// record.
+func (f *fakeSlackLinks) ReserveAttempt(_ context.Context, _ db.TenantScope, id, userID uuid.UUID, at, since time.Time, limit int) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.attempts[userID] = append(f.attempts[userID], at)
+	kept := f.attempts[userID][:0]
+	for _, a := range f.attempts[userID] {
+		if a.at.After(since) {
+			kept = append(kept, a)
+		}
+	}
+	f.attempts[userID] = kept
+	if len(kept) >= limit {
+		return false, nil
+	}
+	f.attempts[userID] = append(f.attempts[userID], fakeAttempt{id: id, at: at})
+	return true, nil
+}
+
+func (f *fakeSlackLinks) ReleaseAttempt(_ context.Context, _ db.TenantScope, id uuid.UUID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for user, list := range f.attempts {
+		for i, a := range list {
+			if a.id == id {
+				f.attempts[user] = append(list[:i:i], list[i+1:]...)
+				return nil
+			}
+		}
+	}
 	return nil
 }
 
@@ -236,7 +255,7 @@ func newLinkFixture(t *testing.T) *linkFixture {
 	f := &linkFixture{
 		users:      newFakeUsers(),
 		identities: &fakeSlackIdentities{byID: map[uuid.UUID]domain.SlackIdentity{}},
-		links:      &fakeSlackLinks{codes: map[uuid.UUID]*fakeCode{}, attempts: map[uuid.UUID][]time.Time{}},
+		links:      &fakeSlackLinks{codes: map[uuid.UUID]*fakeCode{}, attempts: map[uuid.UUID][]fakeAttempt{}},
 		clk:        clock.NewFake(epoch),
 		scope:      scope,
 		org:        org,
@@ -571,5 +590,81 @@ func TestNoStoreFailsClosed(t *testing.T) {
 	}
 	if _, err := svc.ConfirmSlackLink(context.Background(), f.scope, f.session(f.me), "ABCDE-FGHJK"); !errs.IsKind(err, errs.KindUnavailable) {
 		t.Fatalf("confirm: %v", err)
+	}
+}
+
+// ⭐ OWNER RULING F6 (2026-10-05): a Slack member linked to a DISABLED person — who cannot sign in
+// to unlink it — is issued a code, and their own code moves the link, naming the disabled user as
+// displaced. An ENABLED person's link still never moves (`TestAMemberLinkedToAnotherRealUserIsNeverMoved`).
+func TestAMemberLinkedToADisabledPersonRelinksWithTheirOwnCode(t *testing.T) {
+	f := newLinkFixture(t)
+	si, _ := f.identities.get(f.identity.ID).Link(f.other.ID, epoch)
+	f.identities.put(si)
+	disabled := f.other
+	at := epoch
+	disabled.DisabledAt = &at
+	f.users.add(disabled)
+
+	code := f.issue(t)
+	if _, err := f.svc.PreviewSlackLink(context.Background(), f.scope, f.session(f.me), code); err != nil {
+		t.Fatalf("preview over a disabled incumbent: %v", err)
+	}
+	linked, err := f.svc.ConfirmSlackLink(context.Background(), f.scope, f.session(f.me), code)
+	if err != nil {
+		t.Fatalf("confirm over a disabled incumbent: %v", err)
+	}
+	if linked.UserID != f.me.ID || f.identities.get(f.identity.ID).UserID != f.me.ID {
+		t.Fatalf("linked to %s, want %s", linked.UserID, f.me.ID)
+	}
+	if len(f.links.facts) != 1 || f.links.facts[0].DisplacedUserID != disabled.ID {
+		t.Fatalf("facts = %+v; the disabled user must be recorded as displaced", f.links.facts)
+	}
+	if len(f.users.retired) != 0 {
+		t.Fatalf("a person was retired as if a shadow: %v", f.users.retired)
+	}
+}
+
+// ⛔⛔ REVIEW E2: the wrong-code limit is a reservation, not a count. Twenty parallel wrong
+// previews: exactly five are evaluated, fifteen are refused before the code is read.
+func TestParallelWrongCodesAreEvaluatedOnlyUpToTheLimit(t *testing.T) {
+	f := newLinkFixture(t)
+	f.issue(t)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	got := map[string]int{}
+	for range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := f.svc.PreviewSlackLink(context.Background(), f.scope, f.session(f.me), "ZZZZZ-ZZZZZ")
+			mu.Lock()
+			got[errs.CodeOf(err)]++
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	if got[domain.SlackLinkCodeInvalidCode] != domain.SlackLinkWrongAttemptLimit ||
+		got[domain.SlackLinkAttemptsExhaustedCode] != 20-domain.SlackLinkWrongAttemptLimit {
+		t.Fatalf("outcomes = %v, want %d evaluated and the rest refused", got, domain.SlackLinkWrongAttemptLimit)
+	}
+}
+
+// A right code gives its reserved attempt back: after four wrong codes, the right one links and
+// the budget still holds four.
+func TestARightCodeAfterWrongOnesLinksAndLeavesTheCount(t *testing.T) {
+	f := newLinkFixture(t)
+	code := f.issue(t)
+	for range domain.SlackLinkWrongAttemptLimit - 1 {
+		_, err := f.svc.PreviewSlackLink(context.Background(), f.scope, f.session(f.me), "ZZZZZ-ZZZZZ")
+		requireCode(t, err, domain.SlackLinkCodeInvalidCode)
+	}
+	if _, err := f.svc.PreviewSlackLink(context.Background(), f.scope, f.session(f.me), code); err != nil {
+		t.Fatalf("preview of the right code: %v", err)
+	}
+	if _, err := f.svc.ConfirmSlackLink(context.Background(), f.scope, f.session(f.me), code); err != nil {
+		t.Fatalf("the right code after four wrong ones: %v", err)
+	}
+	if n := len(f.links.attempts[f.me.ID]); n != domain.SlackLinkWrongAttemptLimit-1 {
+		t.Fatalf("the budget holds %d attempts, want %d", n, domain.SlackLinkWrongAttemptLimit-1)
 	}
 }
