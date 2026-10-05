@@ -69,6 +69,28 @@ func plan() []probe {
 			want:    http.StatusCreated,
 			capture: map[string][]string{"token": {"data", "token", "id"}},
 		},
+		// The self-service Slack link (git-bug a556a5c). The list answers 2xx, empty: nobody in
+		// this world has pressed a Remedy button, so no code exists to link with. The three writes
+		// are session-only and are driven to their typed refusals.
+		{method: http.MethodGet, tmpl: "/api/v1/me/slack-identities", want: http.StatusOK},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/me/slack-identities/preview", auth: authSession,
+			body: map[string]any{"code": "ABCDE-FGHJK"},
+			want: http.StatusUnprocessableEntity,
+			why:  "a code exists only once a Slack member has pressed a Remedy button; this one names none",
+		},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/me/slack-identities", auth: authSession,
+			body: map[string]any{"code": "ABCDE-FGHJK"},
+			want: http.StatusUnprocessableEntity,
+			why:  "the same code, which names no live code, so nothing is linked",
+		},
+		{
+			method: http.MethodDelete, tmpl: "/api/v1/me/slack-identities/{id}",
+			url: "/api/v1/me/slack-identities/019fe2a1-5d1e-7c00-8000-00000000a556", auth: authSession,
+			want: http.StatusNotFound,
+			why:  "a Slack identity is linked to nobody in this world, so there is none of mine to unlink",
+		},
 
 		/* ------------------------------------------------------------ clusters */
 		{method: http.MethodGet, tmpl: "/api/v1/clusters", want: http.StatusOK},
@@ -363,6 +385,17 @@ func plan() []probe {
 			body: map[string]any{"priority": 200},
 			want: http.StatusOK,
 		},
+		// Review D4: a policy's digest-window runs. This world asks for none, so the page
+		// is empty — what is driven is the route, its 200 shape, and the 404 a stranger
+		// policy gets through the same read a Suggestion's apply makes.
+		{
+			method: http.MethodGet, tmpl: "/api/v1/notification-policies/{id}/investigations",
+			url: "/api/v1/notification-policies/{{policy}}/investigations", want: http.StatusOK,
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/notification-policies/{id}/investigations",
+			url: "/api/v1/notification-policies/{{stranger}}/investigations", want: http.StatusNotFound,
+		},
 
 		/* -------------------------------------------------------------- alerts */
 		{method: http.MethodGet, tmpl: "/api/v1/alerts", want: http.StatusOK},
@@ -637,6 +670,229 @@ func plan() []probe {
 			method: http.MethodPatch, tmpl: "/api/v1/correlators/{id}", url: "/api/v1/correlators/{{correlator}}",
 			body: map[string]any{"priority": 10},
 			want: http.StatusOK,
+		},
+
+		/* ------------------------------------------------------- investigators */
+		// ADR 0053 (git-bug 8f1f071, 180a525): a model endpoint, an Investigator that
+		// dials it, and one Investigation requested against the fixture Case. The
+		// order is the dependency order — the Investigator names the endpoint, the
+		// request names the Investigator, the run read names the request's answer.
+		//
+		// ⭐ THE ENDPOINT CARRIES NO KEY, AND THAT IS THE CONTAINER'S SHAPE, NOT A
+		// SHORTCUT. This world boots without `security.secret_key`, so there is no
+		// keyring to seal one with; a keyless endpoint is legal (a self-hosted model on
+		// the cluster network), and `has_key: false` is the half of the response a
+		// keyed one would not show.
+		//
+		// ⭐ NOTHING IS DIALLED. Creating an endpoint stores a row, and the request
+		// answers 202 with the run `queued`: this container enqueues jobs but works
+		// none, so no model is reached and the `.invalid` host is never resolved.
+		{method: http.MethodGet, tmpl: "/api/v1/model-providers", want: http.StatusOK},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/model-providers",
+			body: map[string]any{
+				"name":     "gate-g2-endpoint",
+				"base_url": "https://model.invalid/v1",
+				"model":    "gate-g2-model",
+			},
+			want:    http.StatusCreated,
+			capture: map[string][]string{"modelprovider": {"data", "id"}},
+		},
+		{method: http.MethodGet, tmpl: "/api/v1/investigators", want: http.StatusOK},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/investigators",
+			body: map[string]any{
+				"name":              "gateg2",
+				"model_provider_id": "{{modelprovider}}",
+				"prompt":            "Read the Case.",
+				"tools":             []any{"oto_case_timeline"},
+			},
+			want:    http.StatusCreated,
+			capture: map[string][]string{"investigator": {"data", "id"}},
+		},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/investigators",
+			body: map[string]any{
+				"name":              "gateg2wild",
+				"model_provider_id": "{{modelprovider}}",
+				"prompt":            "Read the Case.",
+				"tools":             []any{"oto_*"},
+			},
+			want: http.StatusUnprocessableEntity,
+			why:  "an allowlist names Tools exactly; a wildcard is refused, and its violations[] points at `tools`",
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/investigators/{id}", url: "/api/v1/investigators/{{investigator}}",
+			want: http.StatusOK,
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/investigators/{id}", url: "/api/v1/investigators/{{stranger}}",
+			want: http.StatusNotFound,
+		},
+		{
+			method: http.MethodPatch, tmpl: "/api/v1/investigators/{id}", url: "/api/v1/investigators/{{investigator}}",
+			body: map[string]any{"prompt": "Read the Case, then its rule."},
+			want: http.StatusOK,
+			why:  "a changed prompt writes version 2, so the response's versions[] carries two entries to validate",
+		},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/cases/{id}/investigations", url: "/api/v1/cases/{{case}}/investigations",
+			body:    map[string]any{"investigator_id": "{{investigator}}"},
+			want:    http.StatusAccepted,
+			capture: map[string][]string{"investigation": {"data", "id"}},
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/cases/{id}/investigations", url: "/api/v1/cases/{{case}}/investigations",
+			want: http.StatusOK,
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/investigations/{id}", url: "/api/v1/investigations/{{investigation}}",
+			want: http.StatusOK,
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/investigations/{id}", url: "/api/v1/investigations/{{stranger}}",
+			want: http.StatusNotFound,
+		},
+		// ADR 0053 §2 (git-bug 8327c00): a Finding's Suggestions. The run above is
+		// recorded `queued` and never worked here, so it has no Finding and its list is
+		// EMPTY — still a 2xx validated against SuggestionListResponse. Applying needs a
+		// Suggestion, and only a run's Finding makes one, so apply is driven to its typed
+		// 404: driven, not credited.
+		{
+			method: http.MethodGet, tmpl: "/api/v1/investigations/{id}/suggestions",
+			url: "/api/v1/investigations/{{investigation}}/suggestions", want: http.StatusOK,
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/investigations/{id}/suggestions",
+			url: "/api/v1/investigations/{{stranger}}/suggestions", want: http.StatusNotFound,
+		},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/suggestions/{id}/apply", url: "/api/v1/suggestions/{{stranger}}/apply",
+			body: map[string]any{}, want: http.StatusNotFound,
+			why: "a Suggestion is made only by a run's Finding, and this world works no runs; suggestion_not_found",
+		},
+		// ADR 0054 (git-bug 4148256): a Finding's Remedies. The run above has no Finding, so
+		// its list is EMPTY — still a 2xx validated against RemedyListResponse. A Remedy is
+		// made only by a run's Finding, so the read, the approve and the decline are driven
+		// to their typed 404s: driven, not credited.
+		{
+			method: http.MethodGet, tmpl: "/api/v1/investigations/{id}/remedies",
+			url: "/api/v1/investigations/{{investigation}}/remedies", want: http.StatusOK,
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/investigations/{id}/remedies",
+			url: "/api/v1/investigations/{{stranger}}/remedies", want: http.StatusNotFound,
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/remedies/{id}", url: "/api/v1/remedies/{{stranger}}",
+			want: http.StatusNotFound,
+			why:  "a Remedy is made only by a run's Finding, and this world works no runs; remedy_not_found",
+		},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/remedies/{id}/approve", url: "/api/v1/remedies/{{stranger}}/approve",
+			auth: authSession,
+			body: map[string]any{"arguments_sha256": "0000000000000000000000000000000000000000000000000000000000000000"}, want: http.StatusNotFound,
+			why: "a Remedy is made only by a run's Finding, and this world works no runs; remedy_not_found",
+		},
+		{
+			// Owner ruling F5 (2026-10-05): approving is session-only, refused before any lookup.
+			method: http.MethodPost, tmpl: "/api/v1/remedies/{id}/approve", url: "/api/v1/remedies/{{stranger}}/approve",
+			body: map[string]any{"arguments_sha256": "0000000000000000000000000000000000000000000000000000000000000000"}, want: http.StatusForbidden,
+			why: "a personal access token never approves a Remedy; remedy_approval_needs_a_session",
+		},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/remedies/{id}/decline", url: "/api/v1/remedies/{{stranger}}/decline",
+			want: http.StatusNotFound,
+			why:  "a Remedy is made only by a run's Finding, and this world works no runs; remedy_not_found",
+		},
+		// ADR 0053 §4 (git-bug 74ea849): an Incident investigated as a whole, asked
+		// about by the number the incident probes above captured. Nothing is dialled,
+		// for the Case request's reason: the run is recorded `queued` and its job is
+		// never worked here.
+		{
+			method: http.MethodPost, tmpl: "/api/v1/incidents/{number}/investigations",
+			url:  "/api/v1/incidents/{{incident}}/investigations",
+			body: map[string]any{"investigator_id": "{{investigator}}"},
+			want: http.StatusAccepted,
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/incidents/{number}/investigations",
+			url: "/api/v1/incidents/{{incident}}/investigations", want: http.StatusOK,
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/incidents/{number}/investigations",
+			url: "/api/v1/incidents/999999/investigations", want: http.StatusNotFound,
+		},
+		// ADR 0053 §5 (git-bug 4298aa0): the org's Classification set. A fresh org reads
+		// it EMPTY — oto ships no classes — then writes two, and `unclassified` is driven
+		// to its 422 because it is reserved, not the operator's to write.
+		{method: http.MethodGet, tmpl: "/api/v1/investigation-classes", want: http.StatusOK},
+		{
+			method: http.MethodPut, tmpl: "/api/v1/investigation-classes",
+			body: map[string]any{"classes": []map[string]any{
+				{"name": "deploy-regression", "description": "A change we shipped broke it."},
+				{"name": "capacity"},
+			}},
+			want: http.StatusOK,
+		},
+		{
+			method: http.MethodPut, tmpl: "/api/v1/investigation-classes",
+			body: map[string]any{"classes": []map[string]any{{"name": "unclassified"}}},
+			want: http.StatusUnprocessableEntity,
+			why:  "unclassified is always admissible and is reserved; the set it was refused against stands",
+		},
+		// ADR 0054 §3 (git-bug eb4f21b): the org's Remedy risk rules. A fresh org reads them
+		// EMPTY — oto ships no rule, and every Remedy needs two. ⛔ There is no write to probe:
+		// `oto remedy-rules apply` writes them from the host shell (owner ruling 2026-10-05).
+		{method: http.MethodGet, tmpl: "/api/v1/remedy-risk-rules", want: http.StatusOK},
+
+		/* -------------------------------------------------------- tool servers */
+		// ADR 0053 §3, 0054 §5 (git-bug 2e9a086): an operator's MCP server, configured,
+		// read back, and asked for its Tools. In dependency order — every later probe
+		// names the ToolServer the create captured.
+		//
+		// ⭐ IT CARRIES NO TOKEN, for the model endpoint's reason above: this world has
+		// no keyring to seal one with, and a ToolServer that takes no token is legal.
+		//
+		// ⚠️ DISCOVERY IS DRIVEN TO ITS 502, AND THAT IS THE ONLY HONEST ANSWER HERE.
+		// This world runs no MCP server, so asking `.invalid` for its Tools fails the
+		// way an unreachable ToolServer does — recorded on the row as
+		// `discovery_error`, answered as the contract's BadGateway Problem. The Tool
+		// list read after it is the last GOOD list, which is empty and still a 200.
+		{method: http.MethodGet, tmpl: "/api/v1/tool-servers", want: http.StatusOK},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/tool-servers",
+			body: map[string]any{
+				"name":   "gate-g2-tools",
+				"url":    "https://toolserver.invalid/mcp",
+				"access": "read",
+			},
+			want:    http.StatusCreated,
+			capture: map[string][]string{"toolserver": {"data", "id"}},
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/tool-servers/{id}", url: "/api/v1/tool-servers/{{toolserver}}",
+			want: http.StatusOK,
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/tool-servers/{id}", url: "/api/v1/tool-servers/{{stranger}}",
+			want: http.StatusNotFound,
+		},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/tool-servers/{id}/discover", url: "/api/v1/tool-servers/{{toolserver}}/discover",
+			want: http.StatusBadGateway,
+			why:  "this world runs no MCP server; an unreachable ToolServer is a 502, and the failure is recorded on it",
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/tool-servers/{id}/tools", url: "/api/v1/tool-servers/{{toolserver}}/tools",
+			want: http.StatusOK,
+		},
+		// ADR 0054 §4 (git-bug 47f67c8): who holds the Remedy approval grant. Read-only —
+		// `oto grant` on the host is the only writer, so there is no write probe to make
+		// and this world's read ToolServer lists none.
+		{
+			method: http.MethodGet, tmpl: "/api/v1/tool-servers/{id}/remedy-approvers",
+			url: "/api/v1/tool-servers/{{toolserver}}/remedy-approvers", want: http.StatusOK,
 		},
 
 		/* ------------------------------------------------------- case policies */

@@ -162,6 +162,15 @@ const SignOutItem: Component = () => {
   );
 };
 
+/**
+ * Account — the signed-in person's own page (git-bug a556a5c), where a Slack
+ * account is linked to you. A navigation, so it closes the menu like one.
+ */
+const AccountItem: Component = () => {
+  const navigate = useNavigate();
+  return <DropdownMenuItem onSelect={() => navigate("/account")}>Account</DropdownMenuItem>;
+};
+
 /* -------------------------------------------------------------------------- */
 /* The menu                                                                   */
 /* -------------------------------------------------------------------------- */
@@ -202,6 +211,8 @@ export const UserMenu: Component = () => {
         <DropdownMenuLabel class="truncate text-meta font-normal text-ink-subtle">
           {email() ?? "Signed in"}
         </DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        <AccountItem />
         <DropdownMenuSeparator />
         <ThemeItem />
         <DensityItem />

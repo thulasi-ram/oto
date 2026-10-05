@@ -1,6 +1,7 @@
 package webhookjson
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/thulasiram/oto/internal/channels/domain"
@@ -63,7 +64,7 @@ type Envelope struct {
 	Digest *Digest `json:"digest,omitempty"`
 	// Incident is an Incident fact's subject (ADR 0052 §5): the Incident, its
 	// derived state, who drew it and every Case that has been in it. It is non-nil on
-	// exactly the envelopes whose `reason` is one of the five Incident facts, and on
+	// exactly the envelopes whose `reason` is one of the six Incident facts, and on
 	// those `group`, `digest`, `occurrence` and `focus` are absent — an Incident is
 	// not a Case and names no single signal.
 	//
@@ -193,6 +194,13 @@ type Digest struct {
 	// later edit to the policy's window, and it is usually LONGER than that window
 	// because of the straggler lookback above.
 	SpanSeconds *float64 `json:"span_seconds,omitempty"`
+	// Finding is the Investigator's Finding this digest carries as its body (ADR 0053 §4,
+	// git-bug 3e96f5a), ABSENT for the built-in body. It is the one the window's run had
+	// reached when the window closed, copied then; a digest never waits for one and is
+	// never re-sent with a later one. ⛔ ADDITIVE, for the Incident's `finding`'s reason:
+	// a new `omitempty` key adds a promise and alters none. It carries no verdict on
+	// delivery — a receiver that pages on it is paging on a model's judgement.
+	Finding *IncidentFinding `json:"finding,omitempty"`
 }
 
 // Incident is one Incident as a consumer sees it: a set of Cases drawn as one story.
@@ -218,6 +226,84 @@ type Incident struct {
 	// and removed, in the order they joined. A removed spell carries `removed_at`.
 	Members []IncidentMember `json:"members"`
 	Link    string           `json:"link,omitempty"`
+	// Finding is the latest Finding an Investigation of the Incident reached (ADR 0053
+	// §4), absent when none has. ⛔ ADDITIVE, for `incident`'s own reason above: a new
+	// `omitempty` key adds a promise and alters none. It is on every Incident fact once
+	// one exists — the card is the Incident as it is now — and `finding` is the fact
+	// that says a new one arrived.
+	Finding *IncidentFinding `json:"finding,omitempty"`
+	// Remedy is the Remedy transition a `remedy_*` fact declares (ADR 0054 §2), ABSENT on
+	// every other fact. ⛔ ADDITIVE, for `finding`'s reason. A FACT, NEVER A COMMAND: it says
+	// what oto's approvers and oto did, and oto reads nothing back — a "no" said in the
+	// incident tool is not one oto can hear.
+	Remedy *IncidentRemedy `json:"remedy,omitempty"`
+}
+
+// IncidentRemedy is one Remedy transition as a consumer sees it. ⭐ THE EXACT COMMAND COMES
+// FIRST: `tool` — the write Tool and the exact arguments it would be, or was, sent, with their
+// SHA-256 — or `no_tool`, the sentence "no configured Tool can carry this out". Then what it
+// is for, then who moved it where.
+type IncidentRemedy struct {
+	ID                string                   `json:"id"`
+	Tool              *IncidentRemedyTool      `json:"tool,omitempty"`
+	NoTool            string                   `json:"no_tool,omitempty"`
+	Target            string                   `json:"target"`
+	Description       string                   `json:"description"`
+	InvestigationID   string                   `json:"investigation_id"`
+	ProposedBy        string                   `json:"proposed_by"`
+	State             string                   `json:"state"`
+	From              string                   `json:"from,omitempty"`
+	Actor             IncidentRemedyActor      `json:"actor"`
+	At                time.Time                `json:"at"`
+	ExpiresAt         time.Time                `json:"expires_at"`
+	RequiredApprovals int                      `json:"required_approvals"`
+	ApprovalsSetBy    string                   `json:"approvals_set_by,omitempty"`
+	ApprovalsRule     string                   `json:"approvals_rule,omitempty"`
+	Approvals         []IncidentRemedyApproval `json:"approvals"`
+	FailureReason     string                   `json:"failure_reason,omitempty"`
+	Detail            string                   `json:"detail,omitempty"`
+}
+
+// IncidentRemedyTool is the write Tool a Remedy names, with the exact arguments — as the JSON
+// object itself, byte for byte what is sent — and their SHA-256.
+type IncidentRemedyTool struct {
+	ToolServer      string          `json:"tool_server"`
+	Tool            string          `json:"tool"`
+	Arguments       json.RawMessage `json:"arguments"`
+	ArgumentsSHA256 string          `json:"arguments_sha256"`
+}
+
+// IncidentRemedyActor is who made the transition: `investigator`, `user` or `system`, with the
+// label frozen when they acted.
+type IncidentRemedyActor struct {
+	Kind  string `json:"kind"`
+	Label string `json:"label"`
+}
+
+// IncidentRemedyApproval is one approval the Remedy had.
+type IncidentRemedyApproval struct {
+	Label      string    `json:"label"`
+	ApprovedAt time.Time `json:"approved_at"`
+}
+
+// IncidentFinding is what an Investigation of the Incident concluded, as a consumer
+// sees it: a snapshot of what was seen at `concluded_at`, never live state, and the
+// Investigator version that saw it. ⛔ IT CARRIES NO VERDICT ON DELIVERY: a Finding
+// never decides whether anyone is told (ADR 0053 §2), and a receiver that pages on one
+// is paging on a model's judgement.
+//
+// `classification` is the class the Finding was given in the org's own vocabulary, or
+// `unclassified` (ADR 0053 §5), and is ABSENT when the org wrote no classes. ⛔ ADDITIVE,
+// for `finding`'s own reason. A receiver that pages on it is paging on a model's
+// judgement, and the docs say so in those words.
+type IncidentFinding struct {
+	InvestigationID string    `json:"investigation_id"`
+	Investigator    string    `json:"investigator"`
+	Version         int       `json:"version"`
+	Summary         string    `json:"summary"`
+	Classification  string    `json:"classification,omitempty"`
+	Partial         bool      `json:"partial"`
+	ConcludedAt     time.Time `json:"concluded_at"`
 }
 
 // IncidentAuthor is who decided: a human (`kind: human`, with the label frozen

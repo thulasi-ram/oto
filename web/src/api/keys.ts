@@ -123,6 +123,29 @@ export const qk = {
     list: (query: CaseListQuery) => ["cases", "list", query] as const,
     detail: (id: string) => ["cases", "detail", id] as const,
     timeline: (id: string, query: TimelineQuery) => ["cases", "timeline", id, query] as const,
+    /**
+     * One Case's Investigations, latest first (ADR 0053), and one run with its
+     * transcript. Under `["cases"]` rather than a root of their own because a
+     * Case is their only subject today, and because the frames that move a Case
+     * (`case.upserted`, `event.appended`) are the ones that already reach this
+     * prefix. A run that is still `queued` or `running` changes with no frame at
+     * all, so the panel that reads these polls while one is in progress — a
+     * screen's own safety net, stated there (`InvestigationPanel`).
+     */
+    investigations: (caseId: string) => ["cases", "investigations", caseId] as const,
+    investigation: (id: string) => ["cases", "investigation", id] as const,
+    /**
+     * One run's Suggestions (ADR 0053 §2, git-bug 8327c00), keyed by the run's id like
+     * its detail. Under `["cases"]` with it; applying one invalidates it, and the
+     * Incident and policy roots the edit touched.
+     */
+    suggestions: (investigationId: string) => ["cases", "suggestions", investigationId] as const,
+    /**
+     * One run's Remedies (ADR 0054, git-bug 4148256), keyed by the run's id like its
+     * Suggestions. Another approver, the expiry sweep and the executor all move one with
+     * no frame, so the panel that reads it polls while any is open.
+     */
+    remedies: (investigationId: string) => ["cases", "remedies", investigationId] as const,
   },
   /**
    * Incidents (ADR 0052) — a root of their own, beside `["cases"]` and not under
@@ -148,6 +171,14 @@ export const qk = {
      * `api/live.tsx` already sends that root — refreshes it with the rest.
      */
     holding: (caseId: string) => ["incidents", "holding", caseId] as const,
+    /**
+     * One Incident's Investigations, latest first (ADR 0053 §4, git-bug 74ea849),
+     * keyed by its NUMBER as `detail` is. Under `["incidents"]`, so the frames that
+     * move the Incident's Cases refresh it with the rest; a run in progress is polled
+     * by `InvestigationPanel`, as a Case's is. One run's detail stays
+     * `qk.cases.investigation` — a run is addressed by its own id, whatever it is about.
+     */
+    investigations: (number: string) => ["incidents", "investigations", number] as const,
   },
   labels: {
     names: () => ["labels", "names"] as const,
@@ -178,10 +209,37 @@ export const qk = {
     mappingCatalog: () => ["settings", "payload-mapping-catalog"] as const,
     policies: () => ["settings", "policies"] as const,
     /**
+     * One policy's digest Investigations (review D4). Under `policies()` on purpose:
+     * an edit to the policies invalidates the prefix, and with it this list.
+     */
+    policyInvestigations: (policyId: string) =>
+      ["settings", "policies", policyId, "investigations"] as const,
+    /**
      * The org's Correlators (ADR 0052 §2), in evaluation order. Only this
      * screen writes them, so a mutation invalidates; no frame is about one.
      */
     correlators: () => ["settings", "correlators"] as const,
+    /**
+     * The org's Investigators (ADR 0053), read by the Case screen to offer
+     * "Investigate". No screen writes one yet — they are configured through the
+     * API — so no mutation reaches this, and its staleness is bounded instead.
+     */
+    investigators: () => ["settings", "investigators"] as const,
+    /**
+     * The org's Classification set (ADR 0053 §5). Only the Classification section
+     * writes it, and its save writes the answer back with `setQueryData`.
+     */
+    investigationClasses: () => ["settings", "investigation-classes"] as const,
+    /**
+     * The org's Remedy risk rules and risk model (ADR 0054 §3), READ only: they are applied
+     * from the host shell by `oto remedy-rules apply`, and no screen writes them.
+     */
+    remedyRiskRules: () => ["settings", "remedy-risk-rules"] as const,
+    /**
+     * The org's model endpoints, read by the Remedy risk section to name the risk model.
+     * No screen writes one yet — they are configured through the API.
+     */
+    modelProviders: () => ["settings", "model-providers"] as const,
     /** The org's tuning, its origins and its bounds — one query, one screen. */
     org: () => ["settings", "org"] as const,
     /**
@@ -203,6 +261,11 @@ export const qk = {
      * to keep two operators' data apart.
      */
     apiTokens: () => ["settings", "api-tokens"] as const,
+    /**
+     * The Slack accounts linked to the signed-in user (git-bug a556a5c). Narrowed to the caller
+     * by the server for `apiTokens`' reason, and cleared with the rest of the cache on sign-out.
+     */
+    slackIdentities: () => ["settings", "slack-identities"] as const,
     /**
      * One drill, polled while it is still running.
      *

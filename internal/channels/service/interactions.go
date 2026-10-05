@@ -129,6 +129,13 @@ const (
 	// every one of them and oto must acknowledge it; there is nothing to do
 	// beyond that, and the explicit namespace is what says so out loud.
 	ActionNoopPrefix = "oto.noop."
+	// ActionRemedyApprove and ActionRemedyDecline are a proposed Remedy's two buttons
+	// (ADR 0054 §2, §4; git-bug ac9b492), and the first on this surface that do not act
+	// on a signal. ⛔ THEY ARE NOT FOR ANYBODY WHO CAN SEE THE CHANNEL: an approval is a
+	// grant holder's, so a press is applied only for a Slack member LINKED to an oto user,
+	// through the same service the UI calls — see interactions_remedy.go.
+	ActionRemedyApprove = domain.ActionRemedyApprove
+	ActionRemedyDecline = domain.ActionRemedyDecline
 )
 
 // snoozeValueSeparator joins the preset token to the alert id in a snooze
@@ -413,9 +420,16 @@ type InteractionOptions struct {
 	// `slackSnoozeActions` and pinned by a line in `app.assertions` — which that file
 	// earns here, because a nil port degrades to the ephemeral above instead of
 	// failing a build, so nothing else would notice the wiring being dropped.
-	Labels   Labels
-	Enqueuer db.Enqueuer
-	Notice   SlackNotice
+	Labels Labels
+	// Remedies is OPTIONAL for `Snoozes`' reason: a press at a deployment that has not
+	// wired it is answered with a sentence saying so (`applyRemedy`).
+	Remedies Remedies
+	// LinkCodes is OPTIONAL: an unlinked member's Remedy press is answered with a link code
+	// when it is wired (git-bug a556a5c), and with how to decide the Remedy in oto when it is
+	// not — never with a code oto could not have checked.
+	LinkCodes SlackLinkCodes
+	Enqueuer  db.Enqueuer
+	Notice    SlackNotice
 	// Metrics is optional. A nil one costs the `oto_slack_unknown_action_total`
 	// series and nothing else, which is the right trade for a test that does not
 	// want a registry.
@@ -438,6 +452,8 @@ type InteractionService struct {
 	cases         Cases
 	snoozes       Snoozes
 	labels        Labels
+	remedies      Remedies
+	linkCodes     SlackLinkCodes
 	enqueuer      db.Enqueuer
 	notice        SlackNotice
 	metrics       *InteractionMetrics
@@ -465,6 +481,8 @@ func NewInteractionService(o InteractionOptions) (*InteractionService, error) {
 		cases:         o.Cases,
 		snoozes:       o.Snoozes,
 		labels:        o.Labels,
+		remedies:      o.Remedies,
+		linkCodes:     o.LinkCodes,
 		enqueuer:      o.Enqueuer,
 		notice:        o.Notice,
 		metrics:       o.Metrics,
@@ -519,8 +537,14 @@ func (s *InteractionService) Handle(ctx context.Context, payload json.RawMessage
 		// its answer under `selected_option.value` where the three buttons send
 		// theirs under `value`, and reading only the latter would enqueue every
 		// snooze press with an empty subject.
+		//
+		// ⭐ A REMEDY'S TWO BUTTONS RIDE THE SAME ARM. The member who pressed is the one
+		// the VERIFIED envelope names (`env.User.ID`) — the transport checked Slack's
+		// signature over these exact bytes before `Handle` ran — and nothing else on the
+		// press is read as who it was.
 		case id == ActionAcknowledge, id == ActionUnacknowledge,
-			id == ActionSnooze, id == ActionUnsnooze:
+			id == ActionSnooze, id == ActionUnsnooze,
+			id == ActionRemedyApprove, id == ActionRemedyDecline:
 			reqs = append(reqs, db.JobRequest{
 				Args: jobs.SlackInteractionArgs{
 					ActionID:      id,
@@ -663,6 +687,8 @@ func (s *InteractionService) Apply(ctx context.Context, args jobs.SlackInteracti
 		return s.applySnooze(ctx, logger, scope, args)
 	case ActionUnsnooze:
 		return s.applyUnsnooze(ctx, logger, scope, args)
+	case ActionRemedyApprove, ActionRemedyDecline:
+		return s.applyRemedy(ctx, logger, scope, args)
 	case ActionOverflow:
 		// ⭐ THE ONLY READ ON THIS SWITCH. `Handle` enqueues an overflow press only
 		// when its value is a `labels|<case id>`, so an arm reached here has already
@@ -734,9 +760,14 @@ func (s *InteractionService) applyAcknowledge(
 	//
 	// ⭐ AND A SUCCESSFUL PRESS SAYS NOTHING IN SLACK, for the same reason: the CARD
 	// is the feedback. An ephemeral "done" would be oto talking about itself.
+	//
+	// ⚠️ ONE EXCEPTION, FOR AN UNLINKED MEMBER (owner ruling F7): the press is recorded against
+	// the Slack member as ever, and they are then shown a link code — `offerLinkCodeAfterAck`,
+	// which never fails the press.
 	switch err := s.cases.AcknowledgeCase(ctx, scope, caseID, kind, actorID, label); {
 	case err == nil:
 		logger.Info("channels: acknowledged from Slack")
+		s.offerLinkCodeAfterAck(ctx, logger, scope, args, kind)
 		return nil
 	case errs.IsKind(err, errs.KindNotFound):
 		// It existed a moment ago and does not now. A race, not a fault.
@@ -750,6 +781,7 @@ func (s *InteractionService) applyAcknowledge(
 		logger.Info("channels: a Slack acknowledgement applied to nothing",
 			slog.String("refusal", code))
 		s.tell(ctx, args, ackRefusalText(code))
+		s.offerLinkCodeAfterAck(ctx, logger, scope, args, kind)
 		return nil
 	default:
 		return err
@@ -819,6 +851,8 @@ func (s *InteractionService) applyUnacknowledge(
 	switch err := s.cases.UnacknowledgeCase(ctx, scope, caseID, kind, actorID, label); {
 	case err == nil:
 		logger.Info("channels: un-acknowledged from Slack")
+		// An unlinked member is shown a link code, as on the ack (owner ruling F7).
+		s.offerLinkCodeAfterAck(ctx, logger, scope, args, kind)
 		return nil
 	case errs.IsKind(err, errs.KindNotFound):
 		s.tell(ctx, args, "That alert is no longer available.")
@@ -828,6 +862,7 @@ func (s *InteractionService) applyUnacknowledge(
 		logger.Info("channels: a Slack un-acknowledgement applied to nothing",
 			slog.String("refusal", code))
 		s.tell(ctx, args, unackRefusalText(code))
+		s.offerLinkCodeAfterAck(ctx, logger, scope, args, kind)
 		return nil
 	default:
 		return err
@@ -1171,14 +1206,18 @@ func plural(n int, one, many string) string {
 // block — the renderer's V-checks do not run on a `response_url` body, so the
 // escaping cannot be inherited from them.
 func noticeCode(s string) string {
-	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "`", "'")
-	if s = r.Replace(s); s == "" {
+	if s = strings.ReplaceAll(mrkdwnText.Replace(s), "`", "'"); s == "" {
 		// An empty label value is legal upstream, and "``" renders as two literal
 		// backticks. `(empty)` says what oto actually knows.
 		return "(empty)"
 	}
 	return "`" + s + "`"
 }
+
+// mrkdwnText neutralises the three characters Slack's mrkdwn parser treats as markup, for a
+// sentence this module sends that carries text it did not write (`noticeCode`, and a refusal's
+// own message in `remedyRefusalText`): "<!channel>" in an operator-written name must not ping.
+var mrkdwnText = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
 
 // clipRunes cuts a short string on a RUNE boundary with a visible ellipsis, never
 // mid-character: a half-written rune is the mojibake that makes an operator

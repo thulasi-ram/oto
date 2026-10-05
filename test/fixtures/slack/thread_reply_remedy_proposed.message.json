@@ -1,0 +1,69 @@
+{
+  "text": ":jigsaw: A Remedy on Incident #12 was proposed by firstlook v3.",
+  "unfurl_links": false,
+  "unfurl_media": false,
+  "attachments": [
+    {
+      "color": "#6b6b6b",
+      "fallback": ":jigsaw: A Remedy on Incident #12 was proposed by firstlook v3.",
+      "blocks": [
+        {
+          "type": "section",
+          "block_id": "oto_incidentreply_c3f631edbd",
+          "text": {
+            "type": "mrkdwn",
+            "text": ":wrench: *Remedy proposed* by firstlook v3 — 0 of 2 approvals\n`k8s-write__rollout_restart`\n```{\"namespace\":\"checkout\",\"deployment\":\"api\"}```\non Deployment checkout/api  ·  <https://oto.example.com/incidents/12|open Incident #12 in oto>\n*Needs 2 approvals from different people* — no rule matched this command\n>The error rate rose when config v41 rolled out; v40 is restored in the ConfigMap but the pods still run v41. Restarting picks it up."
+          }
+        },
+        {
+          "type": "actions",
+          "block_id": "oto_remedyactions_c3f631edbd",
+          "elements": [
+            {
+              "type": "button",
+              "text": {
+                "type": "plain_text",
+                "text": "Approve",
+                "emoji": true
+              },
+              "action_id": "oto.remedy.approve",
+              "value": "019fe297-d84f-7599-b5b2-1f23174910e1",
+              "confirm": {
+                "title": {
+                  "type": "plain_text",
+                  "text": "Approve this Remedy?",
+                  "emoji": true
+                },
+                "text": {
+                  "type": "plain_text",
+                  "text": "You approve k8s-write__rollout_restart on Deployment checkout/api with exactly the arguments on this card. It runs once 2 different people have approved, you among them.",
+                  "emoji": true
+                },
+                "confirm": {
+                  "type": "plain_text",
+                  "text": "Approve",
+                  "emoji": true
+                },
+                "deny": {
+                  "type": "plain_text",
+                  "text": "Not yet",
+                  "emoji": true
+                }
+              }
+            },
+            {
+              "type": "button",
+              "text": {
+                "type": "plain_text",
+                "text": "Decline",
+                "emoji": true
+              },
+              "action_id": "oto.remedy.decline",
+              "value": "019fe297-d84f-7599-b5b2-1f23174910e1"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

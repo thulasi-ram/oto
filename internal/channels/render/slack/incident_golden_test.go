@@ -239,3 +239,69 @@ func TestTheIncidentCardLinksTheExternalIncident(t *testing.T) {
 		t.Errorf("a card with no external incident grew a link:\n%s", bare.Payload)
 	}
 }
+
+// TestAnIncidentsFindingIsDrawnAsWhatWasSeenAtT — ADR 0053 §4 (git-bug 74ea849): the
+// latest Finding on an Incident is on its card, and the `finding` fact is a reply that
+// carries it. Every time it says the Finding it says WHO concluded it and WHEN, and a
+// budget-cut one says "partial" first. A card with no Finding draws no Finding block.
+func TestAnIncidentsFindingIsDrawnAsWhatWasSeenAtT(t *testing.T) {
+	t.Parallel()
+	if body := string(renderView(t, incidentView(), domain.ModePostRoot).Payload); strings.Contains(body, "oto_incidentfinding_") {
+		t.Fatalf("an Incident with no Finding drew a Finding block:\n%s", body)
+	}
+
+	v := incidentView()
+	v.Incident.Finding = &domain.IncidentFindingView{
+		InvestigationID: "019fe297-d84f-7599-b5b2-1f23174910f1", Investigator: "firstlook", Version: 2,
+		Summary:     "The deploy at 09:00 doubled the error rate.",
+		ConcludedAt: renderedAt.Add(-time.Minute),
+	}
+	root := string(renderView(t, v, domain.ModePostRoot).Payload)
+	for _, want := range []string{"oto_incidentfinding_", "*Finding* by `firstlook v2`", "as seen at", ">The deploy at 09:00 doubled the error rate."} {
+		if !strings.Contains(root, want) {
+			t.Errorf("the card does not carry %q:\n%s", want, root)
+		}
+	}
+
+	v.Reason = "finding"
+	v.Incident.Finding.Partial = true
+	msg := renderView(t, v, domain.ModeThreadReply)
+	reply := string(msg.Payload)
+	if !strings.Contains(reply, "oto_incidentreply_") || !strings.Contains(reply, "*Partial Finding* by `firstlook v2`") {
+		t.Errorf("the finding fact is not a reply carrying the partial Finding:\n%s", reply)
+	}
+	if got := topLevelText(t, msg.Payload); !strings.Contains(got, "has a new Finding by firstlook v2") {
+		t.Errorf("the push text does not say who concluded it: %q", got)
+	}
+	if strings.Contains(root, "classified") || strings.Contains(reply, "classified") {
+		t.Errorf("a Finding with no classification (the org wrote no classes) said one:\n%s\n%s", root, reply)
+	}
+}
+
+// TestAFindingsClassificationIsSaidAsTheInvestigators — ADR 0053 §5 (git-bug 4298aa0):
+// the class a Finding was given is drawn on the line that names who concluded it, in
+// the operator's own word, on the card and on the `finding` reply alike — never as a
+// field of the Incident's, which a reader would take for a fact about the signal.
+func TestAFindingsClassificationIsSaidAsTheInvestigators(t *testing.T) {
+	t.Parallel()
+	v := incidentView()
+	v.Incident.Finding = &domain.IncidentFindingView{
+		InvestigationID: "019fe297-d84f-7599-b5b2-1f23174910f1", Investigator: "firstlook", Version: 2,
+		Summary: "The deploy at 09:00 doubled the error rate.", Classification: "deploy-regression",
+		ConcludedAt: renderedAt.Add(-time.Minute),
+	}
+	root := string(renderView(t, v, domain.ModePostRoot).Payload)
+	v.Reason = "finding"
+	reply := string(renderView(t, v, domain.ModeThreadReply).Payload)
+	for name, body := range map[string]string{"card": root, "reply": reply} {
+		if !strings.Contains(body, "*Finding* by `firstlook v2`, as seen at") ||
+			!strings.Contains(body, ", classified `deploy-regression`") {
+			t.Errorf("the %s does not say the class beside who concluded it:\n%s", name, body)
+		}
+	}
+
+	v.Incident.Finding.Classification = "unclassified"
+	if body := string(renderView(t, v, domain.ModeThreadReply).Payload); !strings.Contains(body, ", classified `unclassified`") {
+		t.Errorf("`unclassified` is an answer and is said like one:\n%s", body)
+	}
+}

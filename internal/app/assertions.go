@@ -15,6 +15,10 @@ import (
 	incidentsrepo "github.com/thulasiram/oto/internal/incidents/repository"
 	incidentsservice "github.com/thulasiram/oto/internal/incidents/service"
 	ingestservice "github.com/thulasiram/oto/internal/ingestion/service"
+	"github.com/thulasiram/oto/internal/investigator/models/openaicompat"
+	investigatorrepo "github.com/thulasiram/oto/internal/investigator/repository"
+	investigatorservice "github.com/thulasiram/oto/internal/investigator/service"
+	"github.com/thulasiram/oto/internal/investigator/toolservers/mcpclient"
 	notifapi "github.com/thulasiram/oto/internal/notification/api"
 	notifrepo "github.com/thulasiram/oto/internal/notification/repository"
 	notifservice "github.com/thulasiram/oto/internal/notification/service"
@@ -63,15 +67,57 @@ var (
 	_ alertsservice.CaseEndings        = (*caseEndings)(nil)
 	_ alertsservice.CaseOpenings       = caseOpenings{}
 	_ incidentsservice.Announcer       = incidentAnnouncer{}
+	_ incidentsservice.Announcer       = incidentInvestigationTriggers{}
+	_ incidentsservice.Announcer       = incidentAnnouncers{}
 	_ incidentsservice.CorrelatorStore = (*incidentsrepo.CorrelatorRepository)(nil)
-	_ notifservice.IncidentReader      = (*incidentFacts)(nil)
-	_ alertsservice.SourceHealth       = sourceHealth{}
-	_ alertsservice.SettingsReader     = orgSettings{}
-	_ notifservice.SettingsReader      = orgSettings{}
-	_ rulesservice.RuleLookup          = ruleLookup{}
-	_ enrichservice.SubjectLoader      = subjectLoader{}
-	_ enrichworker.ScopeResolver       = caseScopes{}
-	_ ingestservice.AlertObserver      = alertObserver{}
+	// ADR 0053 §3: the model endpoint's row, its sealed key and the one adapter.
+	_ investigatorservice.ProviderStore    = (*investigatorrepo.ProviderRepository)(nil)
+	_ investigatorservice.CredentialWriter = (*channelsrepo.CredentialRepository)(nil)
+	_ investigatorservice.KeyResolver      = (*investigatorrepo.KeyStore)(nil)
+	_ investigatorservice.ModelDialer      = openaicompat.Dialer{}
+	_ investigatorservice.TxRunner         = (*investigatorrepo.TxRunner)(nil)
+	_ investigatorrepo.Unsealer            = (*secrets.Keyring)(nil)
+	// git-bug 180a525: the Investigation stores, oto's history as built-in Tools, the
+	// Finding's way into the enrichment store, the org kill switch and the outbox.
+	_ investigatorservice.InvestigatorStore  = (*investigatorrepo.InvestigatorRepository)(nil)
+	_ investigatorservice.InvestigationStore = (*investigatorrepo.InvestigationRepository)(nil)
+	_ investigatorservice.CaseReader         = investigationCases{}
+	_ investigatorservice.IncidentReader     = investigationIncidents{}
+	_ investigatorservice.FindingDeclarer    = findingDeclarer{}
+	_ investigatorservice.TimelineReader     = investigationCases{}
+	_ investigatorservice.RuleReader         = investigationRules{}
+	_ investigatorservice.FindingPublisher   = findingPublisher{}
+	_ investigatorservice.OrgControls        = investigationControls{}
+	_ investigatorservice.JobQueue           = (*lateEnqueuer)(nil)
+
+	// Digest windows (git-bug 3e96f5a): read one way, a Finding read back the other.
+	_ investigatorservice.DigestReader = investigationDigests{}
+	_ notifservice.DigestFindings      = (*digestFindings)(nil)
+	_ digestPolicies                   = (*notifrepo.PolicyRepository)(nil)
+	_ digestCases                      = (*notifrepo.DigestRepository)(nil)
+
+	// ToolServers (git-bug 2e9a086).
+	_ investigatorservice.ToolServerStore  = (*investigatorrepo.ToolServerRepository)(nil)
+	_ investigatorservice.TokenResolver    = (*investigatorrepo.KeyStore)(nil)
+	_ investigatorservice.ToolServerDialer = mcpclient.Dialer{}
+	_ investigatorservice.RedactionRules   = toolResultRedaction{}
+
+	// Remedies (git-bug 4148256).
+	_ investigatorservice.RemedyStore    = (*investigatorrepo.RemedyRepository)(nil)
+	_ investigatorservice.RemedyDeclarer = remedyDeclarer{}
+
+	// Suggestions (git-bug 8327c00).
+	_ investigatorservice.SuggestionStore  = (*investigatorrepo.SuggestionRepository)(nil)
+	_ investigatorservice.PolicyEditor     = suggestionPolicies{}
+	_ investigatorservice.MembershipEditor = suggestedMemberships{}
+	_ notifservice.IncidentReader          = (*incidentFacts)(nil)
+	_ alertsservice.SourceHealth           = sourceHealth{}
+	_ alertsservice.SettingsReader         = orgSettings{}
+	_ notifservice.SettingsReader          = orgSettings{}
+	_ rulesservice.RuleLookup              = ruleLookup{}
+	_ enrichservice.SubjectLoader          = subjectLoader{}
+	_ enrichworker.ScopeResolver           = caseScopes{}
+	_ ingestservice.AlertObserver          = alertObserver{}
 	// The ingest-token mint moved INTO identity (relocation, not a merge with the
 	// PAT mint): the identity service satisfies the sources-side port directly,
 	// and this line is what breaks if either side of that seam drifts.
@@ -109,7 +155,13 @@ var (
 	// Optional like `Snoozes`: a nil `Labels` answers a press with an honest
 	// ephemeral rather than failing a build, so only this line catches the drift
 	// that would quietly revert `Show all labels` to that ephemeral forever.
-	_ channelsservice.Labels             = slackLabelReads{}
+	_ channelsservice.Labels = slackLabelReads{}
+	// Optional for the same reason: a nil `Remedies` answers a Remedy's Approve and Decline
+	// with "not in this deployment yet" instead of failing a build (git-bug ac9b492).
+	_ channelsservice.Remedies = slackRemedyActions{}
+	// Optional too: a nil `LinkCodes` answers an unlinked member's Remedy press with no code
+	// (git-bug a556a5c), so only this line catches the adapter drifting off the port.
+	_ channelsservice.SlackLinkCodes     = slackLinkCodes{}
 	_ channelsservice.SlackActors        = slackActors{}
 	_ channelsservice.Cases              = slackCaseActions{}
 	_ channelsservice.SlackConversations = slackConversations{}

@@ -15,6 +15,7 @@ import {
   patchItem,
   postItem,
   postVoid,
+  putItem,
   type LabelSelector,
   type QueryParams,
   type RequestOptions,
@@ -30,6 +31,9 @@ import type {
   AlertRollupQuery,
   ApiToken,
   ApiTokenCreated,
+  SlackIdentity,
+  SlackLinkCodeRequest,
+  SlackLinkPreview,
   Channel,
   ChannelConnection,
   ChannelTest,
@@ -64,6 +68,10 @@ import type {
   Incident,
   IncidentDetail,
   IncidentListQuery,
+  Investigation,
+  InvestigationClassSet,
+  InvestigationDetail,
+  Investigator,
   OrgSettingsView,
   PayloadMappingCatalogEntry,
   Policy,
@@ -72,6 +80,11 @@ import type {
   PreviewNotificationTemplateRequest,
   Rejection,
   RejectionListQuery,
+  ReplaceInvestigationClassesRequest,
+  RemedyRiskRules,
+  ModelProvider,
+  Remedy,
+  Suggestion,
   ResolvedConversation,
   ResolveConversationRequest,
   RuleHistory,
@@ -492,6 +505,193 @@ export function moveIncidentCase(
     { to_number: toNumber },
     { idempotencyKey: key },
   );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Investigations (ADR 0053)                                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Every Investigator in the org, each with the version a new Investigation would
+ * pin. The server answers the whole set (it is a settings list, never paged), and
+ * it includes the switched-off ones: whether one may be asked is the caller's to
+ * read off `enabled`, not this function's to hide.
+ */
+export function listInvestigators(c: Ctx = {}): Promise<ListEnvelope<Investigator>> {
+  return getList<Investigator>(`${V1}/investigators`, ctx(c));
+}
+
+/**
+ * A Case's Investigations, latest requested first, WITHOUT transcripts. The
+ * first row is the one a Case shows (ADR 0053 §4); the rest are its history.
+ */
+export function listCaseInvestigations(
+  caseId: Uuid,
+  query: { readonly limit?: number } = {},
+  c: Ctx = {},
+): Promise<ListEnvelope<Investigation>> {
+  return getList<Investigation>(`${V1}/cases/${caseId}/investigations`, {
+    ...ctx(c),
+    query: query as QueryParams,
+  });
+}
+
+/**
+ * Ask one Investigator to investigate one Case. Answers `202` with the run AS
+ * RECORDED — `queued`, or `skipped` with reason `disabled` when a kill switch is
+ * off, which is a request taken and refused in the open rather than dropped.
+ *
+ * ⛔ NO IDEMPOTENCY KEY, BECAUSE THE CONTRACT TAKES NONE. Two presses are two
+ * Investigations, each recorded, each with its own tokens; the screen guards the
+ * double press by disabling the control while the first is in flight.
+ */
+export function requestCaseInvestigation(
+  caseId: Uuid,
+  investigatorId: Uuid,
+): Promise<InvestigationDetail> {
+  return postItem<InvestigationDetail>(`${V1}/cases/${caseId}/investigations`, {
+    investigator_id: investigatorId,
+  });
+}
+
+/**
+ * An Incident's Investigations, latest requested first, WITHOUT transcripts — the
+ * runs that looked at the story as a whole (ADR 0053 §4, git-bug 74ea849). Addressed
+ * by the number a human quotes, like the Incident itself.
+ */
+export function listIncidentInvestigations(
+  incidentNumber: number,
+  query: { readonly limit?: number } = {},
+  c: Ctx = {},
+): Promise<ListEnvelope<Investigation>> {
+  return getList<Investigation>(`${V1}/incidents/${incidentNumber}/investigations`, {
+    ...ctx(c),
+    query: query as QueryParams,
+  });
+}
+
+/**
+ * A notification policy's digest Investigations, latest requested first, WITHOUT
+ * transcripts (review D4) — the runs its digest windows asked for, including the ones
+ * that never ran (`skipped` for the day's budget, a kill switch, or a window that closed
+ * first). A digest run has no page of its own; this is where its record is read.
+ */
+export function listPolicyDigestInvestigations(
+  policyId: string,
+  query: { readonly limit?: number } = {},
+  c: Ctx = {},
+): Promise<ListEnvelope<Investigation>> {
+  return getList<Investigation>(`${V1}/notification-policies/${policyId}/investigations`, {
+    ...ctx(c),
+    query: query as QueryParams,
+  });
+}
+
+/**
+ * Ask one Investigator to investigate one Incident as a whole. The same `202` and the
+ * same absent idempotency key as `requestCaseInvestigation`, for the same reasons.
+ */
+export function requestIncidentInvestigation(
+  incidentNumber: number,
+  investigatorId: Uuid,
+): Promise<InvestigationDetail> {
+  return postItem<InvestigationDetail>(`${V1}/incidents/${incidentNumber}/investigations`, {
+    investigator_id: investigatorId,
+  });
+}
+
+/** One run with its whole transcript and its Finding. Frozen once it has ended. */
+export function getInvestigation(id: Uuid, c: Ctx = {}): Promise<InvestigationDetail> {
+  return getItem<InvestigationDetail>(`${V1}/investigations/${id}`, ctx(c));
+}
+
+/**
+ * The changes one run's Finding suggests (ADR 0053 §2), in the order proposed: every
+ * one still open, and every one applied. One that lapsed unapplied is not listed — it
+ * stops showing. An open membership Suggestion that would MOVE its Case names the
+ * Incident it moves from, so the screen can say so before anyone applies it.
+ */
+export function listInvestigationSuggestions(
+  investigationId: Uuid,
+  c: Ctx = {},
+): Promise<ListEnvelope<Suggestion>> {
+  return getList<Suggestion>(`${V1}/investigations/${investigationId}/suggestions`, ctx(c));
+}
+
+/**
+ * Apply one Suggestion: the ORDINARY edit it proposes — the policy edit a human's own
+ * PATCH makes, or the Incident's add or move — with this human as the actor.
+ *
+ * ⛔ A MOVE MUST BE CONFIRMED BY NAME. A membership Suggestion that would move its Case
+ * takes `movesFrom`, the Incident the list said it moves from; without it the server
+ * answers `409 suggestion_moves_case` and writes nothing. There is no other verb: an
+ * unapplied Suggestion lapses on its own.
+ */
+export function applySuggestion(id: Uuid, movesFrom: number | null = null): Promise<Suggestion> {
+  return postItem<Suggestion>(
+    `${V1}/suggestions/${id}/apply`,
+    movesFrom === null ? {} : { moves_from_incident_number: movesFrom },
+  );
+}
+
+/**
+ * The Remedies one run's Finding proposed (ADR 0054), in the order proposed, whatever
+ * state each is in: the exact command first — the write Tool and its exact arguments, or
+ * `no_tool`, "no configured Tool can carry this out" — then what it is for.
+ */
+export function listInvestigationRemedies(
+  investigationId: Uuid,
+  c: Ctx = {},
+): Promise<ListEnvelope<Remedy>> {
+  return getList<Remedy>(`${V1}/investigations/${investigationId}/remedies`, ctx(c));
+}
+
+/**
+ * Approve one Remedy, naming the hash of the arguments this human was shown: an approval
+ * of any other arguments is refused (`409 remedy_arguments_changed`). Only a holder of the
+ * grant on the Remedy's ToolServer may, and it takes as many DIFFERENT holders as its
+ * `required_approvals` — one or two, set at proposal by the risk rules; the same one twice
+ * counts once. A Remedy with no Tool is refused (`409 remedy_has_no_tool`).
+ */
+export function approveRemedy(id: Uuid, argumentsSha256: string): Promise<Remedy> {
+  return postItem<Remedy>(`${V1}/remedies/${id}/approve`, { arguments_sha256: argumentsSha256 });
+}
+
+/** Decline one Remedy that is proposed or approved and not yet being executed. No body. */
+export function declineRemedy(id: Uuid): Promise<Remedy> {
+  return getItem<Remedy>(`${V1}/remedies/${id}/decline`, { method: "POST" });
+}
+
+/**
+ * The org's Classification set (ADR 0053 §5), in the operator's order. Empty until an
+ * operator writes one — oto ships no classes.
+ */
+export function getInvestigationClasses(c: Ctx = {}): Promise<InvestigationClassSet> {
+  return getItem<InvestigationClassSet>(`${V1}/investigation-classes`, ctx(c));
+}
+
+/**
+ * Replace the whole set. An empty list is legal and stops Findings being
+ * classified. ⛔ No Finding is rewritten: each keeps the class it was given.
+ */
+export function replaceInvestigationClasses(
+  body: ReplaceInvestigationClassesRequest,
+): Promise<InvestigationClassSet> {
+  return putItem<InvestigationClassSet>(`${V1}/investigation-classes`, body);
+}
+
+/**
+ * The org's Remedy risk rules and risk model (ADR 0054 §3), in the operator's order. Empty
+ * until an operator applies some from the host shell with `oto remedy-rules apply` — oto ships
+ * no rule, and every Remedy then needs two. ⛔ Read-only: no route writes them.
+ */
+export function getRemedyRiskRules(c: Ctx = {}): Promise<RemedyRiskRules> {
+  return getItem<RemedyRiskRules>(`${V1}/remedy-risk-rules`, ctx(c));
+}
+
+/** The org's model endpoints — what the risk model is chosen from. Keys are never returned. */
+export function listModelProviders(c: Ctx = {}): Promise<ListEnvelope<ModelProvider>> {
+  return getList<ModelProvider>(`${V1}/model-providers`, ctx(c));
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1135,6 +1335,40 @@ export function createApiToken(body: CreateTokenRequest, key: string): Promise<A
  */
 export function revokeApiToken(id: Uuid): Promise<void> {
   return del(`${V1}/api-tokens/${id}`);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Linking a Slack account (git-bug a556a5c)                                  */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * ⛔ THE THREE WRITES ARE SESSION-ONLY AND NONE TAKES A USER ID. The only person
+ * they ever link or unlink is the signed-in one, because a link decides whose
+ * approval a Slack click counts as (ADR 0054 §4). The body is a code a Slack
+ * member was shown — only to them — when they pressed a Remedy button unlinked.
+ */
+
+/** The Slack accounts linked to me. */
+export function listMySlackIdentities(c: Ctx = {}): Promise<ListEnvelope<SlackIdentity>> {
+  return getList<SlackIdentity>(`${V1}/me/slack-identities`, ctx(c));
+}
+
+/**
+ * Which Slack account a code would link to me, WITHOUT using it up — the
+ * confirmation screen. It counts as one of the code's five presentations.
+ */
+export function previewSlackLink(body: SlackLinkCodeRequest): Promise<SlackLinkPreview> {
+  return postItem<SlackLinkPreview>(`${V1}/me/slack-identities/preview`, body);
+}
+
+/** Use the code up and link its Slack account to me. */
+export function linkSlackIdentity(body: SlackLinkCodeRequest): Promise<SlackIdentity> {
+  return postItem<SlackIdentity>(`${V1}/me/slack-identities`, body);
+}
+
+/** Unlink one of my Slack accounts. Anybody else's is a 404. */
+export function unlinkSlackIdentity(id: Uuid): Promise<void> {
+  return del(`${V1}/me/slack-identities/${id}`);
 }
 
 /**

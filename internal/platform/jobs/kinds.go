@@ -33,6 +33,15 @@ const (
 	// QueueMaintenance carries partition management, retention and rollups. One
 	// worker: these are DDL-adjacent and must not race themselves.
 	QueueMaintenance = "maintenance"
+	// QueueInvestigate carries `investigations.run` and nothing else (ADR 0053 §3,
+	// git-bug 180a525). ⛔ IT IS NOT `enrich`, though a Finding is published as an
+	// Enrichment: one run may hold its worker for up to its wall-time budget —
+	// minutes, against an enrichment's two seconds — and the inline enrichment pass
+	// is what releases a Case's FIRST notification early. Sharing `enrich` would let
+	// a few slow Investigations sit in the very slots that pass waits for. On a queue
+	// of its own a run competes only with other runs, and its width is the
+	// deployment's ceiling on concurrent model calls.
+	QueueInvestigate = "investigate"
 )
 
 // AllQueues is every queue oto declares, in the order they appear in SPEC §G.3.
@@ -41,6 +50,7 @@ func AllQueues() []string {
 		QueueIngest, QueueEnrich, QueueNotify,
 		QueueDeliverSlack, QueueDeliverWebhook,
 		QueueReconcile, QueueLifecycle, QueueMaintenance,
+		QueueInvestigate,
 	}
 }
 
@@ -128,6 +138,31 @@ const (
 	KindRetentionPrune        = "retention.prune"
 	KindStatsRollup           = "stats.rollup"
 	KindCacheExpire           = "cache.expire"
+	// KindInvestigationsRun runs one Investigation (ADR 0053 §3, git-bug 180a525). It
+	// is enqueued by `investigator` in the transaction that recorded the request, and
+	// nothing on the notification path enqueues it or waits for it.
+	KindInvestigationsRun = "investigations.run"
+	// KindInvestigationsIncident turns one Incident fact — drawn, or a Case joining or
+	// leaving — into the runs of the Investigators that investigate Incidents (ADR
+	// 0053 §4, git-bug 74ea849). It is enqueued by the Incident's own membership
+	// change, in its transaction, and decides and records runs; it runs none.
+	KindInvestigationsIncident = "investigations.incident"
+	// KindInvestigationsDigest arms the run for every digest window a policy asked to
+	// have summarised, ahead of the window's close (ADR 0053 §4, git-bug 3e96f5a). A
+	// per-tenant periodic that records runs and calls no model; nothing on the digest
+	// path enqueues it, waits for it, or reads it.
+	KindInvestigationsDigest = "investigations.digest"
+	// KindRemediesSweep records what the clock decided about Remedies (ADR 0054 §2,
+	// git-bug 4148256): every Remedy still proposed or approved past its approval window
+	// is recorded `expired` by `system`, and declared. A per-tenant periodic; it never
+	// reaches a ToolServer.
+	KindRemediesSweep = "remedies.sweep"
+	// KindRemediesExecute executes one approved Remedy (ADR 0054 §5, git-bug 4148256):
+	// it claims it, calls the operator's write Tool with the approved arguments exactly,
+	// and records what came back. Enqueued by the approval that completed it, in that
+	// transaction. ⭐ AT MOST ONCE: the claim commits before the call, and a redelivery
+	// that finds the Remedy claimed does nothing.
+	KindRemediesExecute = "remedies.execute"
 )
 
 // Priority levels. River orders 1 (highest) before 4 (lowest) within a queue.
@@ -156,4 +191,9 @@ const (
 	// re-created by its schedule within a minute or two, so grinding through 13
 	// retries of a stale tick only delays the fresh one.
 	MaxAttemptsPeriodic = 3
+	// MaxAttemptsRemedyExecute is deliberately small, and it is not what makes a Remedy run
+	// at most once — the claim does (RemediesExecuteArgs). It bounds how long a database
+	// that cannot answer before the claim keeps an approved Remedy waiting; one that never
+	// runs expires on its window, on the record.
+	MaxAttemptsRemedyExecute = 3
 )

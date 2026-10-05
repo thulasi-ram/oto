@@ -174,13 +174,17 @@ is told.
 | `OTO_JOBS_QUEUE_DEFAULT` | int, ≥ 0 | `0` = unset | no | Overrides the default queue width. |
 | `OTO_JOBS_QUEUE_DELIVERY` | int, ≥ 0 | `0` = unset | no | Overrides the delivery queue width. |
 | `OTO_JOBS_QUEUE_RECONCILE` | int, ≥ 0 | `0` = unset | no | Overrides the `reconcile` queue width. |
+| `OTO_JOBS_QUEUE_INVESTIGATE` | int, ≥ 0 | `0` = unset | no | Overrides the `investigate` queue width: how many Investigations (and approved Remedies' write calls) the whole deployment runs at once. Each org's `investigation_concurrency` narrows its own share under it. See [Investigators](/oto/setup/investigators/). |
 | `OTO_JOBS_EXPIRE_SILENT_AND_REMOVED` | bool | `false` | has a default | Turns on the reaper's `silent` and `source_removed` expiries (ADR 0056). File key `jobs.expire_silent_and_removed`; chart value `config.jobs.expire_silent_and_removed`. See below. |
 
 **Zero means unset, not "no workers".** Each width is applied only when it is greater than zero, so
-leaving all four alone is what lets `jobs.DefaultQueueWorkers()` — the SPEC §G.3 table — be the
+leaving all five alone is what lets `jobs.DefaultQueueWorkers()` — the SPEC §G.3 table — be the
 default: `ingest` 16, `enrich` 8, `notify` 8, `deliver_slack` 4, `deliver_webhook` 8, `reconcile` 8,
-`lifecycle` 4, `maintenance` 1. Setting one departs from the published number, and the deployment
-answers for its own width.
+`lifecycle` 4, `maintenance` 1, and `investigate` 8. `investigate` is a dedicated queue, so a
+minutes-long Investigation never holds an `enrich` slot or a worker a notification waits for. Its 8
+is four tenants' default `investigation_concurrency` (2) at once: at 2 it equalled one tenant's
+default, and one org's two half-hour runs held every slot in the deployment. Setting one departs from
+the published number, and the deployment answers for its own width.
 
 `reconcile` is the one to think about before the others: its 8 is a **supported tenant count**
 (roughly 120), not a throughput preference. Below the width SPEC §G.3.1's arithmetic requires,

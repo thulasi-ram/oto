@@ -6,6 +6,8 @@ title: 0016 — Cluster context arrives via MCP, on demand; never the Kubernetes
 [0009](/oto/adr/0009-rule-snapshot-versioning-at-fire-time/) (snapshot-at-fire-time semantics),
 [0013](/oto/adr/0013-alert-first-scope-boundary/) (oto is a flight recorder, not an observability store)
 **Resolves:** the open question *"is oto k8s-enriched or only k8s-shaped?"*
+**Amended by:** [0054](/oto/adr/0054-a-remedy-earns-the-write-path/) §5 — a ToolServer may expose write
+Tools; oto still holds no cluster credential.
 
 ## Context
 

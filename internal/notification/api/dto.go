@@ -116,6 +116,10 @@ type PolicyDTO struct {
 	// `Policy.Validate` is what enforces it. Layer 1 carries the range only.
 	DigestWindowSeconds *int32 `json:"digest_window_seconds"`
 	DigestFloor         *int32 `json:"digest_floor"`
+	// DigestInvestigatorID is `digest_investigator_id` (migration 00102, ADR 0053 §4):
+	// the Investigator this policy asked to summarise its digest windows. Absent is
+	// none — the built-in body. It never decides whether a digest is sent.
+	DigestInvestigatorID *uuid.UUID `json:"digest_investigator_id,omitempty"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -353,7 +357,7 @@ type CreatePolicyRequest struct {
 	// `test/contract/dto_schema_test.go`'s enum-ceiling gate.
 	//
 	// It moved to 17 when 00067 deleted `unacked_reminder` (git-bug bd0fb1d).
-	Reasons []string `json:"reasons" validate:"required,min=1,max=20,unique"`
+	Reasons []string `json:"reasons" validate:"required,min=1,max=27,unique"`
 	// ChannelIDs references `channels` and NOTHING ELSE.
 	ChannelIDs []uuid.UUID `json:"channel_ids" validate:"required,min=1,max=16,unique"`
 	// TemplateID names a NotificationTemplate. Omit it for oto's built-in card.
@@ -399,6 +403,10 @@ type CreatePolicyRequest struct {
 	// are cross-field and live in `domain.Policy.Validate` — see PolicyDTO.
 	DigestWindowSeconds *int32 `json:"digest_window_seconds,omitempty" validate:"omitempty,min=300,max=86400"`
 	DigestFloor         *int32 `json:"digest_floor,omitempty"          validate:"omitempty,min=1,max=10000"`
+	// DigestInvestigatorID asks an Investigator to summarise this policy's digest
+	// windows (migration 00102). Requires `digest_window_seconds`; the cross-field rule
+	// is `domain.Policy.Validate`'s.
+	DigestInvestigatorID *uuid.UUID `json:"digest_investigator_id,omitempty"`
 }
 
 // UpdatePolicyRequest is the partial update.
@@ -408,7 +416,7 @@ type UpdatePolicyRequest struct {
 	Enabled  *bool   `json:"enabled,omitempty"`
 
 	Matchers   *[]MatcherDTO `json:"matchers,omitempty"    validate:"omitempty,max=32,dive"`
-	Reasons    *[]string     `json:"reasons,omitempty"     validate:"omitempty,min=1,max=20,unique"`
+	Reasons    *[]string     `json:"reasons,omitempty"     validate:"omitempty,min=1,max=27,unique"`
 	ChannelIDs *[]uuid.UUID  `json:"channel_ids,omitempty" validate:"omitempty,min=1,max=16,unique"`
 	// TemplateID is nullable: `"template_id": null` CLEARS it and puts the policy
 	// back on oto's built-in card, while omitting the key leaves it alone.
@@ -426,6 +434,9 @@ type UpdatePolicyRequest struct {
 	// not empty", which is a real instruction and not the same as clearing both.
 	DigestWindowSeconds NullableInt32 `json:"digest_window_seconds,omitempty"`
 	DigestFloor         NullableInt32 `json:"digest_floor,omitempty"`
+	// DigestInvestigatorID is nullable for the template's reason: `null` CLEARS it and
+	// puts the policy's digest back on the built-in body (migration 00102).
+	DigestInvestigatorID *NullableUUID `json:"digest_investigator_id,omitempty"`
 
 	// SubjectKinds is the ONE new field on this request that is NOT nullable, and
 	// the asymmetry is the column's rather than an oversight. `subject_kinds` is
@@ -442,7 +453,7 @@ type UpdatePolicyRequest struct {
 	//
 	// ⚠️ THE TWO HALVES ARE SEPARATELY NULLABLE AND THAT IS NOT A LICENCE TO CLEAR
 	// ONE. `policies_count_pair_ck` is symmetric, unlike the digest's pair rule, so
-	// clearing exactly one half is refused — `validateMerged` catches it as a
+	// clearing exactly one half is refused — `PolicyPatch.ValidateAgainst` catches it as a
 	// field-level 422 before the UPDATE can turn it into a 23514. They are two
 	// nullable fields because the WIRE is two fields, not because half a condition is
 	// a state a policy may be in.
@@ -454,7 +465,7 @@ type UpdatePolicyRequest struct {
 func (r UpdatePolicyRequest) IsEmpty() bool {
 	return r.Name == nil && r.Priority == nil && r.Enabled == nil &&
 		r.Matchers == nil && r.Reasons == nil && r.ChannelIDs == nil &&
-		r.TemplateID == nil &&
+		r.TemplateID == nil && r.DigestInvestigatorID == nil &&
 		!r.Throttle.Set &&
 		!r.DigestWindowSeconds.Set && !r.DigestFloor.Set &&
 		r.SubjectKinds == nil &&

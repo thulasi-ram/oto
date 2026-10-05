@@ -333,3 +333,30 @@ func conformanceView() *domain.NotificationView {
 	v := smokeView()
 	return v
 }
+
+// A button's confirmation dialog (git-bug ac9b492: a Remedy's Approve carries one) is four
+// plain_text labels under Slack's own limits — title 100, text 300, confirm and deny 30 — and
+// Slack refuses a dialog that is missing one.
+func TestAButtonsConfirmationDialogIsHeldToSlacksLimits(t *testing.T) {
+	t.Parallel()
+	button := func(confirm string) string {
+		return `{"type":"actions","block_id":"b1","elements":[{"type":"button","action_id":"oto.remedy.approve",
+			"text":{"type":"plain_text","text":"Approve"},"value":"019fe297-d84f-7599-b5b2-1f23174910e1",
+			"confirm":` + confirm + `}]}`
+	}
+	ok := `{"title":{"type":"plain_text","text":"Approve?"},"text":{"type":"plain_text","text":"It runs."},
+		"confirm":{"type":"plain_text","text":"Approve"},"deny":{"type":"plain_text","text":"Not yet"}}`
+	if err := mustValidate(t, envelope(button(ok))); err != nil {
+		t.Fatalf("a well-formed dialog was refused: %v", err)
+	}
+	for name, bad := range map[string]string{
+		"text over 300": strings.Replace(ok, `"It runs."`, `"`+strings.Repeat("x", 301)+`"`, 1),
+		"no deny":       strings.Replace(ok, `,"deny":{"type":"plain_text","text":"Not yet"}`, ``, 1),
+		"mrkdwn title":  strings.Replace(ok, `{"type":"plain_text","text":"Approve?"}`, `{"type":"mrkdwn","text":"Approve?"}`, 1),
+	} {
+		err := mustValidate(t, envelope(button(bad)))
+		if got := checkName(err); got != "V9" {
+			t.Errorf("%s: check = %q (%v), want V9", name, got, err)
+		}
+	}
+}

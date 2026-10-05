@@ -183,7 +183,18 @@ type DigestView struct {
 	// retroactively change the span every card oto has ever drawn claims to cover. A
 	// card that does not know its span says so.
 	CoveredFrom, CoveredTo time.Time
+	// Finding is the Investigator's Finding this digest carries as its body (ADR 0053
+	// §4, git-bug 3e96f5a), or nil for the built-in body. It was COPIED onto the digest
+	// when the window closed, from whatever the window's run had reached by then, so it
+	// is the same on every delivery and every retry, and a Finding that ended later is
+	// never here. ⭐ A SNAPSHOT: a renderer says when it was concluded every time it says
+	// what, and says "partial" when a budget cut it short.
+	Finding *FindingView
 }
+
+// FindingView is a Finding as a card carries it — an Incident's latest, or the one a
+// digest carried. One shape, so one renderer says both the same way.
+type FindingView = IncidentFindingView
 
 // IncidentView is what an Incident fact carries INSTEAD OF a GroupView: the
 // Incident as it stands at claim time (C11), and every Case that has been in it.
@@ -222,6 +233,73 @@ type IncidentView struct {
 	// echoed anything. A RECEIPT, NOT STATE: no renderer may read active or quiet,
 	// or anything else, off it.
 	External []IncidentExternalView
+	// Finding is the latest Finding an Investigation of the Incident reached (ADR
+	// 0053 §4: "the latest is shown"), or nil when none has. ⭐ A SNAPSHOT, and a
+	// renderer says when it was concluded every time it says what: a model's
+	// sentence reads as present tense unless the card stops it.
+	Finding *IncidentFindingView
+	// Remedy is the Remedy transition a `remedy_*` fact declares (ADR 0054 §2), nil on
+	// every other fact. A SNAPSHOT of the transition as it was made. ⭐ A renderer says the
+	// exact command — the Tool and its arguments, or that no configured Tool can carry it
+	// out — BEFORE the Investigator's description of it.
+	Remedy *IncidentRemedyView
+}
+
+// IncidentRemedyView is one Remedy transition as a card carries it: the Remedy as it stood
+// once the transition was made, and who made it when.
+type IncidentRemedyView struct {
+	RemedyID        string
+	InvestigationID string
+	// State is the state the transition reached; From where it came from ("" for the
+	// proposal).
+	State string
+	From  string
+	// ToolServer and Tool name the write Tool, or are "" and NoTool says that no configured
+	// Tool can carry it out.
+	ToolServer string
+	Tool       string
+	NoTool     string
+	// Arguments is the exact compact JSON object the Tool would be — or was — sent.
+	Arguments         string
+	ArgumentsSHA256   string
+	Target            string
+	Description       string
+	ProposedBy        string
+	RequiredApprovals int
+	// ApprovalsSetBy and ApprovalsRule say what set RequiredApprovals — a rule (named), no
+	// rule, an unparseable command, or the risk model (git-bug eb4f21b); "" when nothing was
+	// recorded.
+	ApprovalsSetBy string
+	ApprovalsRule  string
+	Approvals      []IncidentRemedyApprovalView
+	// ActorKind is investigator, user or system; ActorLabel names who.
+	ActorKind     string
+	ActorLabel    string
+	At            time.Time
+	ExpiresAt     time.Time
+	FailureReason string
+	Detail        string
+}
+
+// IncidentRemedyApprovalView is one approval: who, and when.
+type IncidentRemedyApprovalView struct {
+	Label      string
+	ApprovedAt time.Time
+}
+
+// IncidentFindingView is an Incident's latest Finding: what was concluded, by which
+// Investigator version, whether a budget cut it short, and when.
+type IncidentFindingView struct {
+	InvestigationID string
+	// Investigator is the Investigator's name; Version the version that concluded it.
+	Investigator string
+	Version      int
+	Summary      string
+	// Classification is the class the Finding was given, "" when the org had no
+	// classes (ADR 0053 §5). A renderer that says it says whose judgement it is.
+	Classification string
+	Partial        bool
+	ConcludedAt    time.Time
 }
 
 // IncidentExternalView is one external incident: which destination it came back
@@ -436,6 +514,19 @@ const SnoozeValueSeparator = "|"
 // something, which is why it needs a value at all and why the handler must be able
 // to tell the two apart from the value alone.
 const ShowLabelsValuePrefix = "labels" + SnoozeValueSeparator
+
+// The two buttons a proposed Remedy's reply carries in Slack (ADR 0054 §2, §4; git-bug
+// ac9b492). Each button's value is the Remedy's id and nothing else (V11, S8): who may
+// approve is decided by the grant on its ToolServer, read when the press is applied.
+//
+// ⭐ THEY LIVE HERE FOR `ShowLabelsValuePrefix`'S REASON. `channels/render/slack` mints them
+// and `channels/service` routes them, and a card already sitting in Slack carries the
+// literal, so these are a DURABLE WIRE CONTRACT: renaming one turns every posted button
+// into the silent no-op `interactions.go` exists to abolish.
+const (
+	ActionRemedyApprove = "oto.remedy.approve"
+	ActionRemedyDecline = "oto.remedy.decline"
+)
 
 // SnoozePreset is one of the durations a card may offer to go quiet for.
 //

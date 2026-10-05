@@ -63,6 +63,14 @@ func Snooze(d time.Duration, reason string) error {
 	return &snoozeError{d: d, reason: reason}
 }
 
+// IsSnooze reports whether err is a Snooze: the job is waiting, not failing. A handler
+// that does something on its job's LAST attempt — gives up on the record it owns —
+// asks this first, because a snooze consumes no attempt and is never the last.
+func IsSnooze(err error) bool {
+	var sn *snoozeError
+	return errors.As(err, &sn)
+}
+
 type snoozeError struct {
 	d      time.Duration
 	reason string

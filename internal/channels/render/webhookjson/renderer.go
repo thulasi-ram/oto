@@ -230,6 +230,20 @@ func mapIncident(i domain.IncidentView) *Incident {
 		Members:  make([]IncidentMember, 0, len(i.Members)),
 		Link:     i.Link,
 	}
+	if f := i.Finding; f != nil {
+		out.Finding = &IncidentFinding{
+			InvestigationID: f.InvestigationID,
+			Investigator:    f.Investigator,
+			Version:         f.Version,
+			Summary:         f.Summary,
+			Classification:  f.Classification,
+			Partial:         f.Partial,
+			ConcludedAt:     f.ConcludedAt.UTC(),
+		}
+	}
+	if rm := i.Remedy; rm != nil {
+		out.Remedy = mapRemedy(*rm)
+	}
 	for _, m := range i.Members {
 		mm := IncidentMember{
 			CaseID:         m.CaseID,
@@ -294,11 +308,83 @@ func incidentSummary(reason string, i domain.IncidentView) string {
 		what = "is quiet: no member Case is open"
 	case "active_again":
 		what = "is active again"
+	case "finding":
+		what = "has a new Finding"
+		if f := i.Finding; f != nil {
+			what += " by " + f.Investigator + " v" + strconv.Itoa(f.Version)
+			if f.Partial {
+				what += " (partial)"
+			}
+		}
+	case "remedy_proposed", "remedy_approved", "remedy_declined", "remedy_expired", "remedy_executed", "remedy_failed":
+		what = remedySummary(reason, i.Remedy)
 	default:
 		what = reason
 	}
 	return head + " " + what + " — " + strconv.Itoa(open) + " of " +
 		plural(current, "Case", "Cases") + " open (" + i.State + ")"
+}
+
+// remedySummary is a Remedy fact's clause: what happened to which Remedy, with the exact
+// command first — the Tool, or that no configured Tool can carry it out.
+func remedySummary(reason string, r *domain.IncidentRemedyView) string {
+	verb := strings.TrimPrefix(reason, "remedy_")
+	if r == nil {
+		return "a Remedy was " + verb
+	}
+	what := "a Remedy was " + verb
+	if r.Tool != "" {
+		what += " (" + r.ToolServer + "__" + r.Tool + " on " + r.Target + ")"
+	} else {
+		what += " (" + r.NoTool + "; " + r.Target + ")"
+	}
+	if r.ActorLabel != "" {
+		what += " by " + r.ActorLabel
+	}
+	if r.FailureReason != "" {
+		what += ": " + r.FailureReason
+	}
+	return what
+}
+
+// mapRemedy projects a Remedy fact's snapshot: the command first, then what it is for, then
+// the transition.
+func mapRemedy(r domain.IncidentRemedyView) *IncidentRemedy {
+	out := &IncidentRemedy{
+		ID:                r.RemedyID,
+		InvestigationID:   r.InvestigationID,
+		State:             r.State,
+		From:              r.From,
+		Target:            r.Target,
+		Description:       r.Description,
+		ProposedBy:        r.ProposedBy,
+		RequiredApprovals: r.RequiredApprovals,
+		ApprovalsSetBy:    r.ApprovalsSetBy,
+		ApprovalsRule:     r.ApprovalsRule,
+		Approvals:         make([]IncidentRemedyApproval, 0, len(r.Approvals)),
+		Actor:             IncidentRemedyActor{Kind: r.ActorKind, Label: r.ActorLabel},
+		At:                r.At.UTC(),
+		ExpiresAt:         r.ExpiresAt.UTC(),
+		FailureReason:     r.FailureReason,
+		Detail:            r.Detail,
+	}
+	if r.Tool != "" {
+		// The object itself, byte for byte. A snapshot that is somehow not JSON — the schema
+		// admits only an object, so this is unreachable short of a hand edit — is carried as
+		// a string rather than failing the envelope.
+		args := json.RawMessage(r.Arguments)
+		if !json.Valid(args) {
+			args, _ = json.Marshal(r.Arguments)
+		}
+		out.Tool = &IncidentRemedyTool{ToolServer: r.ToolServer, Tool: r.Tool,
+			Arguments: args, ArgumentsSHA256: r.ArgumentsSHA256}
+	} else {
+		out.NoTool = r.NoTool
+	}
+	for _, a := range r.Approvals {
+		out.Approvals = append(out.Approvals, IncidentRemedyApproval{Label: a.Label, ApprovedAt: a.ApprovedAt.UTC()})
+	}
+	return out
 }
 
 func plural(n int, one, many string) string {
@@ -324,6 +410,17 @@ func plural(n int, one, many string) string {
 // be mistaken for a span in the year 1.
 func mapDigest(d domain.DigestView) *Digest {
 	out := &Digest{Count: d.Count}
+	if f := d.Finding; f != nil {
+		out.Finding = &IncidentFinding{
+			InvestigationID: f.InvestigationID,
+			Investigator:    f.Investigator,
+			Version:         f.Version,
+			Summary:         f.Summary,
+			Classification:  f.Classification,
+			Partial:         f.Partial,
+			ConcludedAt:     f.ConcludedAt.UTC(),
+		}
+	}
 	if d.CoveredFrom.IsZero() || d.CoveredTo.IsZero() {
 		// Both or neither: half a span is not a narrower answer than none, it is an
 		// unbounded one, and a consumer given only `covered_from` would read it as

@@ -40,6 +40,11 @@ import (
 	incidentsservice "github.com/thulasiram/oto/internal/incidents/service"
 	"github.com/thulasiram/oto/internal/ingestion"
 	ingestionservice "github.com/thulasiram/oto/internal/ingestion/service"
+	investigatorapi "github.com/thulasiram/oto/internal/investigator/api"
+	"github.com/thulasiram/oto/internal/investigator/models/openaicompat"
+	investigatorrepo "github.com/thulasiram/oto/internal/investigator/repository"
+	investigatorservice "github.com/thulasiram/oto/internal/investigator/service"
+	"github.com/thulasiram/oto/internal/investigator/toolservers/mcpclient"
 	notifapi "github.com/thulasiram/oto/internal/notification/api"
 	notifrepo "github.com/thulasiram/oto/internal/notification/repository"
 	notifservice "github.com/thulasiram/oto/internal/notification/service"
@@ -169,7 +174,11 @@ type Container struct {
 	// Correlators is the machine author of Incidents (ADR 0052 §2): the
 	// operator's CRUD over them, and the evaluator `incidents.correlate` runs.
 	Correlators *incidentsservice.Correlators
-	Ingestion   *ingestion.Module
+	// Investigator holds the model endpoints an org's Investigators use (ADR 0053 §3,
+	// git-bug 8f1f071), the Investigators, and the Investigations that run them
+	// (git-bug 180a525): read by `investigations.run` and by the investigator API.
+	Investigator *investigatorservice.Service
+	Ingestion    *ingestion.Module
 	// Drills runs delivery drills: one synthetic alert pushed through the REAL
 	// pipeline. It is built AFTER ingestion because it drives ingestion — through
 	// the same `Accept` the webhook handler calls, which is the whole point.
@@ -196,6 +205,9 @@ type Container struct {
 	NotifyWorkers   *notifworker.Workers
 	NotifyScopes    *notifrepo.ScopeResolver
 	notifConfigRepo *notifrepo.ConfigRepository
+	// digestFindings is the late-bound reader the digest tick asks for a window's
+	// Finding (git-bug 3e96f5a).
+	digestFindings *digestFindings
 	// incidentFacts is the notification layer's late-bound Incident reader, held
 	// here because it is built in buildNotification and filled after incidents.
 	incidentFacts *incidentFacts
@@ -238,10 +250,13 @@ type routerSet struct {
 	stats       *statsapi.Router
 	incidents   *incidentsapi.Router
 	correlators *incidentsapi.CorrelatorRouter
-	drills      *drillapi.Router
-	enrichers   *enrichapi.Router
-	streaming   *streamingapi.Router
-	ingestion   *ingestion.Module
+	// investigators serves model endpoints, Investigators and Investigations
+	// (ADR 0053, git-bug 180a525).
+	investigators *investigatorapi.Router
+	drills        *drillapi.Router
+	enrichers     *enrichapi.Router
+	streaming     *streamingapi.Router
+	ingestion     *ingestion.Module
 }
 
 // Options are what a process hands the composition root.
@@ -376,6 +391,13 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		Tokens:   tokenRepo,
 		Sessions: identityrepo.NewSessionRepository(general),
 		Slack:    identityrepo.NewSlackIdentityRepository(general),
+		// ⛔ READ-ONLY (ADR 0054 §4, git-bug 47f67c8): who may approve a Remedy. A grant
+		// is written by `oto grant` from the host shell (remedyapprover.go), never here.
+		RemedyApprovers: identityrepo.NewRemedyApproverRepository(general),
+		// The self-service Slack link's codes, wrong-attempt counts and recorded facts (git-bug
+		// a556a5c, 00109). A link is made ONLY by a signed-in session entering a code Slack showed
+		// the member — never by a route that names a user.
+		SlackLinks: identityrepo.NewSlackLinkRepository(general),
 		// The same runner the identity API uses: it is what makes the ingest-token
 		// rotation's mint and revocation ONE commit (IssueIngestToken).
 		Tx:          identityTx,
@@ -720,8 +742,16 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		// ⭐ EVERY INCIDENT FACT IS DECLARED THROUGH THE OUTBOX (ADR 0052 §5): one
 		// `notify.incident` job per fact, enqueued in the membership change's own
 		// transaction. Routing it anywhere is a notification policy's decision.
-		Announcer: incidentAnnouncer{enq: c.enqueuer},
-		Clock:     clk,
+		//
+		// ⭐ AND A DRAW OR A MEMBERSHIP CHANGE TRIGGERS THE INVESTIGATORS (ADR 0053 §4,
+		// git-bug 74ea849): one `investigations.incident` job on `lifecycle`, in the
+		// same transaction. It decides nothing here and never holds up the write; the
+		// two jobs are independent, so neither waits on the other.
+		Announcer: incidentAnnouncers{
+			incidentAnnouncer{enq: c.enqueuer},
+			incidentInvestigationTriggers{enq: c.enqueuer},
+		},
+		Clock: clk,
 	})
 	if err != nil {
 		return nil, err
@@ -740,6 +770,115 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// ---- investigator: model endpoints (ADR 0053 §3, git-bug 8f1f071) ------
+	//
+	// ⭐ THE KEY IS SEALED BY THE CHANNELS CREDENTIAL REPOSITORY, the one writer of
+	// the one sealed-secret store (SPEC §D.8), and unsealed only by the investigator's
+	// KeyStore, as a `model_api_key` and nothing else.
+	//
+	// ⭐ THE ADAPTER DIALS THROUGH THE SSRF GUARD. A model base URL is operator-
+	// supplied like every other URL oto dials, so its transport is the guard's; a
+	// self-hosted endpoint on the cluster network needs `allow_private_targets`, the
+	// same switch an in-cluster Alertmanager does. The client timeout is a backstop
+	// only — the Investigation's wall-time budget is the real bound, through ctx —
+	// and retries re-send only a request that got no answer, so they never pay twice.
+	investigatorKeys := investigatorrepo.NewKeyStore(general, investigatorUnsealer(c.Keyring))
+	c.Investigator, err = investigatorservice.New(investigatorservice.Deps{
+		Providers:   investigatorrepo.NewProviderRepository(general),
+		Credentials: credentialRepo,
+		Keys:        investigatorKeys,
+		Dialer: openaicompat.Dialer{
+			HTTPClient: &http.Client{Transport: c.NetGuard.Transport(nil), Timeout: modelCallBackstop},
+			MaxRetries: modelCallRetries,
+		},
+		Tx:    investigatorrepo.NewTxRunner(general),
+		Clock: clk,
+
+		// ---- Investigations (git-bug 180a525) ------------------------------
+		//
+		// ⛔ NOTHING BELOW IS A DOOR ONTO THE NOTIFICATION PATH. The run is
+		// `investigations.run` on its own queue; the Finding goes into the
+		// enrichment store through the same repository every enricher uses, and
+		// nothing is enqueued after it (investigator.go).
+		Investigators:  investigatorrepo.NewInvestigatorRepository(general),
+		Investigations: investigatorrepo.NewInvestigationRepository(general),
+		Cases:          investigationCases{alerts: c.Alerts},
+		// An Incident is investigated as a whole (git-bug 74ea849): read through
+		// `incidents/service`, and its new Finding declared through the outbox.
+		Incidents: investigationIncidents{incidents: c.Incidents},
+		// A digest window a policy asked to have summarised (git-bug 3e96f5a): read
+		// through notification's own policies and digest store, never written.
+		Digests: investigationDigests{
+			policies: notifrepo.NewPolicyRepository(general),
+			cases:    notifrepo.NewDigestRepository(general),
+		},
+		Declarer:    findingDeclarer{enq: c.enqueuer, seq: c.Incidents},
+		Timeline:    investigationCases{alerts: c.Alerts},
+		Rules:       investigationRules{rules: c.Rules},
+		Findings:    findingPublisher{repo: enrichmentRepo},
+		OrgControls: investigationControls{identity: c.Identity},
+		// The org's Classification set (ADR 0053 §5, git-bug 4298aa0): this module's
+		// own table, read once as a run begins and replaced whole by the settings API.
+		Classes: investigatorrepo.NewClassRepository(general),
+		Queue:   c.enqueuer,
+		// The built-in Tools' per-call controls (ADR 0053 §6), stated where every
+		// other deployment number is chosen. A ToolServer's Tools run under the
+		// limits its operator set on it (migration 00097).
+		Limits: investigatorservice.DefaultLimits(),
+
+		// ---- ToolServers (git-bug 2e9a086) ----------------------------------
+		//
+		// ⭐ THE ACCESS TOKEN IS SEALED LIKE A MODEL KEY, as a `tool_server_token`,
+		// and unsealed by the same KeyStore. ⭐ THE MCP ADAPTER DIALS THROUGH THE SSRF
+		// GUARD: a ToolServer on the cluster network needs `allow_private_targets`,
+		// the switch an in-cluster Alertmanager needs. No client timeout — each
+		// call's own timeout bounds it through ctx, and a session's SSE stream
+		// outlives any one call.
+		ToolServers: investigatorrepo.NewToolServerRepository(general),
+		Tokens:      investigatorKeys,
+		ToolDialer: mcpclient.Dialer{
+			HTTPClient:       &http.Client{Transport: c.NetGuard.Transport(nil)},
+			MaxResponseBytes: mcpclient.DefaultMaxResponseBytes,
+		},
+		// ⛔ Every Tool result is redacted with the org's ingest rules before a Step
+		// or the model sees it.
+		Redaction: toolResultRedaction{sources: c.Sources},
+
+		// ---- Suggestions (git-bug 8327c00) ----------------------------------
+		//
+		// ⭐ APPLYING ONE IS THE ORDINARY EDIT: the policy through the PATCH's own
+		// `PolicyWriter.UpdatePolicy`, a membership through the Incident service's own
+		// Add and Move — the same unit of work, joined, so the edit and the record of
+		// who applied it commit together. ⛔ No run calls either: the Investigator
+		// proposes, and only a human's request applies.
+		Suggestions: investigatorrepo.NewSuggestionRepository(general),
+		Policies:    suggestionPolicies{reads: c.notifConfigRepo, writes: c.PolicyWrites},
+		Memberships: suggestedMemberships{incidents: c.Incidents},
+
+		// ---- the Remedy approval grant (ADR 0054 §4, git-bug 47f67c8) -------
+		//
+		// ⛔ READ THROUGH `identity`, WRITTEN BY NOTHING IN THIS PROCESS. `oto grant` /
+		// `oto revoke` are the only writers, from the host shell.
+		Approvers: remedyApprovers{identity: c.Identity},
+
+		// ---- Remedies (ADR 0054, git-bug 4148256) ---------------------------
+		//
+		// ⭐ EVERY TRANSITION IS AN INCIDENT FACT, enqueued as `notify.incident` in the
+		// transaction that made it, carrying the snapshot it declares. ⛔ No run reaches
+		// a write Tool: a Remedy only names one.
+		Remedies:       investigatorrepo.NewRemedyRepository(general),
+		RemedyDeclarer: remedyDeclarer{enq: c.enqueuer, seq: c.Incidents},
+		RemedyRisk:     investigatorrepo.NewRemedyRiskRepository(general),
+	})
+	if err != nil {
+		return nil, err
+	}
+	// The notification layer's Incident reader now reads the Incident's latest Finding
+	// for its card and its `finding` fact (ADR 0053 §4, git-bug 74ea849).
+	c.incidentFacts.investigations = c.Investigator
+	// The digest tick reads a window's Finding at the send, once (git-bug 3e96f5a).
+	c.digestFindings.investigations = c.Investigator
 
 	// ---- ingestion: THE ONLY MODULE ON THE INGEST POOL -------------------
 	//
@@ -808,9 +947,15 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		// therefore not a crash, which is exactly what made it possible to ship the
 		// handlers and the menu with nothing behind them. Wiring it is what turns
 		// "oto cannot snooze from Slack in this deployment yet" back into a snooze.
-		Snoozes:  slackSnoozeActions{alerts: c.Alerts},
-		Labels:   slackLabelReads{alerts: c.Alerts},
-		Enqueuer: c.enqueuer,
+		Snoozes: slackSnoozeActions{alerts: c.Alerts},
+		Labels:  slackLabelReads{alerts: c.Alerts},
+		// A Remedy's Approve and Decline (git-bug ac9b492): the linked user, through the
+		// approval and decline the UI's routes make.
+		Remedies: slackRemedyActions{investigator: c.Investigator, identity: c.Identity},
+		// An unlinked member's Remedy press is answered with a one-time link code bound to the
+		// member the verified envelope names (git-bug a556a5c).
+		LinkCodes: slackLinkCodes{identity: c.Identity},
+		Enqueuer:  c.enqueuer,
 		// The ephemeral reply goes to Slack's own `response_url`, which needs no
 		// token and no scope — which is why oto can tell a user "that already
 		// resolved" without asking the operator for anything the manifest does
@@ -1003,10 +1148,16 @@ func (c *Container) buildNotification(
 	// DigestService.emit. It takes no settings reader, deliberately: there is no
 	// org-level digest default and there must not be one, because a window is a
 	// per-policy subscription rather than a volume dial.
+	// ⚠️ LATE-BOUND, like `incidentFacts`: the investigator is built after this, and
+	// until then every digest carries the built-in body.
+	c.digestFindings = &digestFindings{}
 	if c.Digests, err = notifservice.NewDigestService(notifservice.DigestConfig{
 		Policies: policyRepo,
 		Digests:  digestRepo,
 		Notifier: c.Notify,
+		// The Finding a window's digest may carry (ADR 0053 §4, git-bug 3e96f5a), read
+		// ONCE at the send; the digest never waits for one.
+		Findings: c.digestFindings,
 		Clock:    clk,
 		Logger:   logger,
 	}); err != nil {
@@ -1108,7 +1259,10 @@ func (c *Container) buildRouters(
 			// token whose secret nobody ever receives.
 			Tx:     identityTx,
 			Claims: c.Idempotency,
-			Clock:  clk,
+			// The self-service Slack link (git-bug a556a5c): four operations under `/me`, the
+			// three writes session-only, none taking a user id.
+			SlackLinks: c.Identity,
+			Clock:      clk,
 		}),
 		alerts: alertsapi.NewRouter(c.Alerts, clk),
 		// ⛔ THE `grouping` ROUTER WAS HERE AND IS DELETED (git-bug `7570090`), and
@@ -1196,12 +1350,13 @@ func (c *Container) buildRouters(
 			Clock:         clk,
 			BaseURL:       c.Config.HTTP.BaseURL,
 		}),
-		silences:    silencesapi.NewRouter(c.Silences, silenceBaseURLs{svc: c.Sources}, clk),
-		stats:       statsapi.NewRouter(c.Stats, clk),
-		incidents:   incidentsapi.NewRouter(c.Incidents, clk),
-		correlators: incidentsapi.NewCorrelatorRouter(c.Correlators, clk),
-		drills:      drillRouter(c.Drills, clk),
-		enrichers:   enrichapi.NewRouter(enricherRegistry, clk),
+		silences:      silencesapi.NewRouter(c.Silences, silenceBaseURLs{svc: c.Sources}, clk),
+		stats:         statsapi.NewRouter(c.Stats, clk),
+		incidents:     incidentsapi.NewRouter(c.Incidents, clk),
+		correlators:   incidentsapi.NewCorrelatorRouter(c.Correlators, clk),
+		investigators: investigatorapi.NewRouter(c.Investigator, clk),
+		drills:        drillRouter(c.Drills, clk),
+		enrichers:     enrichapi.NewRouter(enricherRegistry, clk),
 		streaming: streamingapi.NewRouter(c.Streaming, c.StreamHub,
 			streamingapi.ScopeResolverFunc(func(ctx context.Context) (db.TenantScope, error) {
 				_, s, err := authn.Scope(ctx)

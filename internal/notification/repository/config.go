@@ -171,14 +171,31 @@ func (r *ConfigRepository) GetPolicy(
 	return p, nil
 }
 
+const lockPolicySQL = getPolicyLiveSQL + `
+   FOR UPDATE`
+
+// LockPolicy is GetPolicy holding the policy's row lock for the caller's transaction: a
+// read-then-write that must not overwrite an edit committed between the two (an applied
+// count Suggestion's stale check, judgment 2 E6) reads through this, so a concurrent edit
+// waits for it, or it waits for the edit and compares what that edit wrote.
+func (r *ConfigRepository) LockPolicy(
+	ctx context.Context, s db.TenantScope, policyID uuid.UUID,
+) (domain.Policy, error) {
+	p, err := scanPolicy(r.db(ctx).QueryRow(ctx, lockPolicySQL, s.OrgID(), policyID).Scan)
+	if err != nil {
+		return domain.Policy{}, mapErr(err, "policy_not_found", "notification policy")
+	}
+	return p, nil
+}
+
 const insertPolicySQL = `
 INSERT INTO notification_policies (
   id, org_id, name, priority, enabled, matchers, reasons, channel_ids,
   throttle, subject_kinds, digest_window_s, digest_floor,
   count_min, count_window_s,
-  template_id,
+  template_id, digest_investigator_id,
   created_at, updated_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$16)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$17,$16,$16)
 RETURNING id`
 
 // CreatePolicy writes one routing rule.
@@ -247,6 +264,8 @@ func (r *ConfigRepository) CreatePolicy(
 		in.CountMin, secondsPtr(in.CountWindow),
 		in.TemplateID,
 		r.clock.Now().UTC(),
+		// NULL is "no Investigator asked" (00102): the built-in digest body.
+		in.DigestInvestigatorID,
 	).Scan(&stored)
 	if err != nil {
 		return domain.Policy{}, mapErr(err, "policy_not_found", "create a notification policy")
@@ -281,6 +300,9 @@ UPDATE notification_policies SET
     -- the template is a real operation — it is how an operator puts a policy back
     -- on oto's built-in card — and COALESCE cannot express "set this to NULL".
     template_id     = CASE WHEN $20 THEN $21 ELSE template_id END,
+    -- A CASE for the template's reason: clearing it (00102) is how an operator puts a
+    -- policy's digest back on the built-in body.
+    digest_investigator_id = CASE WHEN $23 THEN $24 ELSE digest_investigator_id END,
     updated_at  = GREATEST(updated_at, $22)
  WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL
 RETURNING id`
@@ -333,6 +355,8 @@ func (r *ConfigRepository) UpdatePolicy(
 		countWinVal *int
 		setTemplate bool
 		templateVal *uuid.UUID
+		setInvestig bool
+		investigVal *uuid.UUID
 	)
 	if p.Matchers != nil {
 		b, err := encodeMatchers(*p.Matchers)
@@ -391,6 +415,10 @@ func (r *ConfigRepository) UpdatePolicy(
 		setTemplate = true
 		templateVal = *p.TemplateID
 	}
+	if p.DigestInvestigatorID != nil {
+		setInvestig = true
+		investigVal = *p.DigestInvestigatorID
+	}
 
 	var stored uuid.UUID
 	err := r.db(ctx).QueryRow(ctx, updatePolicySQL,
@@ -401,6 +429,7 @@ func (r *ConfigRepository) UpdatePolicy(
 		setCountMin, countMinVal, setCountWin, countWinVal,
 		setTemplate, templateVal,
 		r.clock.Now().UTC(),
+		setInvestig, investigVal,
 	).Scan(&stored)
 	if err != nil {
 		return domain.Policy{}, mapErr(err, "policy_not_found", "notification policy")

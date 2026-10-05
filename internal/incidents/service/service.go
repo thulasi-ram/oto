@@ -262,12 +262,12 @@ func (s *Service) Add(
 			Type:    kernel.EventIncidentCaseAdded,
 			CaseID:  c.ID,
 			AlertID: c.AlertID,
-			Summary: fmt.Sprintf("Added to Incident #%d by %s", in.Number, who(by)),
-			Payload: map[string]any{
+			Summary: fmt.Sprintf("Added to Incident #%d by %s", in.Number, who(by)) + suggestedNote(by),
+			Payload: withProvenance(by, map[string]any{
 				"incident_id":     in.ID.String(),
 				"incident_number": in.Number,
 				"drawn":           false,
-			},
+			}),
 			By: by,
 		})
 	})
@@ -382,13 +382,13 @@ func (s *Service) Move(
 			Type:    kernel.EventIncidentCaseMoved,
 			CaseID:  c.ID,
 			AlertID: c.AlertID,
-			Summary: fmt.Sprintf("Moved from Incident #%d to #%d by %s", src.Number, dst.Number, who(by)),
-			Payload: map[string]any{
+			Summary: fmt.Sprintf("Moved from Incident #%d to #%d by %s", src.Number, dst.Number, who(by)) + suggestedNote(by),
+			Payload: withProvenance(by, map[string]any{
 				"from_incident_id": src.ID.String(),
 				"from_number":      src.Number,
 				"to_incident_id":   dst.ID.String(),
 				"to_number":        dst.Number,
-			},
+			}),
 			By: by,
 		})
 	})
@@ -486,6 +486,20 @@ func (s *Service) announce(ctx context.Context, scope db.TenantScope, incidentID
 	}})
 }
 
+// NextFactSequence allocates the next fact sequence of one Incident for a fact
+// ANOTHER module declares about it — the Investigator's `finding` and `remedy_*` —
+// inside the caller's transaction, beside the outbox job that carries the fact
+// (ADR 0052 §5, migration 00093). It is `announce`'s numbering, lent out: the same
+// counter and the same row lock, so a fact declared from outside this module is
+// ordered against the module's own facts in commit order, never beside them.
+//
+// ⛔ CALL IT ONLY IN THE TRANSACTION THAT ENQUEUES THE FACT. A number taken in one
+// transaction and enqueued in another would be a number the counter gave away to a
+// fact that may never commit.
+func (s *Service) NextFactSequence(ctx context.Context, scope db.TenantScope, incidentID uuid.UUID) (int64, error) {
+	return s.incidents.NextSequence(ctx, scope, incidentID)
+}
+
 // resolveCases reads the named Cases inside the org, in the order asked, and
 // refuses the request if any is missing — another org's Case included, which is
 // the same 404 as one that never existed — or is a delivery drill's.
@@ -549,6 +563,27 @@ func distinctCases(ids []uuid.UUID) ([]uuid.UUID, error) {
 		return nil, domain.CaseNotFound()
 	}
 	return out, nil
+}
+
+// withProvenance adds `suggested_by_investigation_id` to a membership fact's payload when
+// the human applied an Investigation's Suggestion (git-bug 8327c00). It is the minimal home
+// for "suggested by Investigation X": the timeline fact already names the human as its
+// actor, and the payload is where a fact says what else is true of it. A decision nobody
+// suggested carries no key at all.
+func withProvenance(by domain.Attribution, payload map[string]any) map[string]any {
+	if id := by.SuggestedBy(); id != uuid.Nil {
+		payload["suggested_by_investigation_id"] = id.String()
+	}
+	return payload
+}
+
+// suggestedNote is the timeline sentence's tail for a suggested decision: whose call it
+// was stays the human's, and the sentence says where the idea came from.
+func suggestedNote(by domain.Attribution) string {
+	if by.SuggestedBy() == uuid.Nil {
+		return ""
+	}
+	return ", applying an Investigation's Suggestion"
 }
 
 // who renders the actor for a timeline sentence.

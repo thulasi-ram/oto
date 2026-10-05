@@ -95,9 +95,9 @@ which fields below you can rely on.
 | `org` | object | `id`, `slug`, `name` of the tenant. |
 | `summary` | string | One human sentence. For display and logs — **do not parse it**. |
 | `alerts` | array | The Alerts the message is about; `[]` on a digest and on every Incident fact. |
-| `incident` | object, optional | Present on exactly the five Incident facts. See below. |
+| `incident` | object, optional | Present on exactly the six Incident facts. See below. |
 | `group` | object, optional | The conversation a Case fact belongs to: title, receiver, labels, `state`, counts. Absent on a digest and on an Incident fact. |
-| `digest` | object, optional | A periodic summary: `count` and the half-open span `[covered_from, covered_to)`. |
+| `digest` | object, optional | A periodic summary: `count` and the half-open span `[covered_from, covered_to)`, and — when the policy names a digest Investigator whose run had ended with a Finding by the time the window closed — `finding`, in the same shape as `incident.finding` (`investigation_id`, `investigator`, `version`, `summary`, `classification`, `partial`, `concluded_at`). `finding` is **absent** for the built-in body. It is copied at the send and never amended: a digest never waits for a Finding and is never re-sent with a later one. |
 | `occurrence` | object, optional | The Case (one firing episode) a Case fact is about: `id`, `state`, `ack_state`, `started_at`, `ended_at`, … The key keeps its v1 spelling. |
 | `focus` | object, optional | The one Alert a Case fact is about, in `alerts[]` shape. |
 | `rule`, `rule_change` | object, optional | What the alerting rule said, and what changed in it. |
@@ -142,7 +142,7 @@ when the set grows again.
 An Incident is a set of one or more Cases drawn as one story
 ([ADR 0052](/oto/adr/0052-an-incident-is-drawn-over-cases-and-its-response-is-handed-off/)). An
 Incident fact carries `incident` and no `group`, `digest`, `occurrence` or `focus`; `reason` is one
-of exactly five:
+of exactly twelve:
 
 | `reason` | The fact |
 |---|---|
@@ -151,6 +151,13 @@ of exactly five:
 | `case_removed` | A Case left it (removed, or moved to another Incident). |
 | `quiet` | Every current member Case has closed. |
 | `active_again` | A member Case is open again after the Incident was quiet. |
+| `finding` | An Investigation of the Incident as a whole reached a new Finding (ADR 0053 §4), carried in `incident.finding`. |
+| `remedy_proposed` | An Investigator proposed a **Remedy** — a change to the cluster — with its Finding (ADR 0054), carried in `incident.remedy`. |
+| `remedy_approved` | A Remedy got the approvals it needs: one or two different holders of the grant on its write ToolServer, as the org's risk rules set when it was proposed. |
+| `remedy_declined` | A person in oto said no to a Remedy. |
+| `remedy_expired` | A Remedy's approval window passed before it was approved, or before it was executed. |
+| `remedy_executed` | oto sent a Remedy's exact arguments to its write Tool, and the Tool did not report a failure. |
+| `remedy_failed` | A Remedy was not executed, its write Tool reported a failure, or what happened is not known. It is never retried. |
 
 ⛔ **These are facts, never commands.** None of them means resolve, close or acknowledge, and no
 envelope oto sends carries a status for your tool to adopt. **`quiet` is not `fixed`**: it says the
@@ -158,6 +165,11 @@ signals stopped, not that the response is over. If you want your incident tool t
 `quiet`, that is a rule *you* write in your tool or bridge, and it ends a response the moment the
 signals go quiet — including the times they went quiet because the thing that was emitting them
 died.
+
+The six `remedy_*` facts are the same: approval happens **in oto**, and oto reads nothing back.
+Someone saying no in your incident tool is a fact oto cannot hear — say it in oto, where
+**Decline** is. A Remedy on a Case that is in no Incident is declared nowhere. See
+[Remedies](/oto/setup/remedies/).
 
 The `incident` object:
 
@@ -171,6 +183,8 @@ The `incident` object:
 | `drawn_by` | `{kind: "human", label}` or `{kind: "correlator", correlator_id}`. |
 | `members` | Every spell of every Case that has been in it, current and removed, in the order they joined. |
 | `link` | oto's own page for it, when oto has a public URL configured. |
+| `remedy` | On the six `remedy_*` facts only: the transition. ⭐ **The exact command first** — `tool` is `{tool_server, tool, arguments, arguments_sha256}`, where `arguments` is the JSON object the write Tool would be (or was) sent, byte for byte; or `no_tool` says *"no configured Tool can carry this out"*, and there is no `tool`. Then `target`, the Investigator's `description`, `proposed_by`, `required_approvals` and what set it — `approvals_set_by` (`rule`, `no_rule`, `unparseable`, `risk_model`, `risk_model_failed`, `risk_model_budget`) and `approvals_rule` (the rule's name), both absent on a Remedy that names no Tool — `approvals` (`label`, `approved_at`), the `state` reached and the one it came `from`, the `actor` (`kind` is `investigator`, `user` or `system`, with a `label`), `at`, `expires_at`, and — when it failed or expired — `failure_reason` and `detail`. A snapshot of the transition, never re-read. |
+| `finding` | The latest Finding an Investigation of the Incident reached, absent until one has: `investigation_id`, `investigator`, `version`, `summary`, `classification`, `partial` (a budget stopped the run first) and `concluded_at`. It is what a model concluded **at `concluded_at`**, never live state — and paging on it is paging on a model's judgement. It is on every Incident fact once one exists; `finding` is the fact that says a new one arrived. `classification` is one of **your** classes (Settings → Classification) or `unclassified`, and is absent when your org has written no classes — see *Classification*, below. |
 
 Each member: `case_id`, `case_number`, `case_state` (`open`/`closed`), `alert_id`, `alert_name`,
 `labels`, `added_at`, `added_by`, and on a removed spell `removed_at`, `removed_by_label` and — when
@@ -205,6 +219,27 @@ pick.
 
 A full `case_added` envelope is checked in at
 [`internal/channels/render/webhookjson/testdata/incident_case_added.golden.json`](../../internal/channels/render/webhookjson/testdata/incident_case_added.golden.json).
+
+### Classification — paging on one is paging on a model's judgement
+
+A Finding may carry a **classification**: the class an Investigator put it in, chosen from a closed
+set **your operator wrote** (Settings → Classification, or `PUT /api/v1/investigation-classes`), or
+`unclassified` — always allowed, and the model's answer whenever none of your classes clearly fits or
+it is unsure. oto ships **no** classes: until you write some, no Finding is classified and the key is
+absent. A Finding keeps the class it was given even if you later rename or remove that class.
+
+It travels outbound — as `incident.finding.classification` on every Incident fact, as
+`digest.finding.classification` on a digest that carried a Finding, and as
+`enrichments["investigator.<name>"].payload.classification` on a Case's facts once its Finding is
+published — so a receiver can route on it. Only the Finding and its classification go outbound; an
+Investigation's Steps (its transcript) stay in oto, readable through
+`GET /api/v1/investigations/{investigation_id}`.
+
+> ⚠️ **Paging on a classification is paging on a model's judgement.** A class is what a model
+> concluded from what it could read at `concluded_at`; it can be wrong, and `unclassified` means
+> "it would not say", not "it is fine". oto itself never decides whether anyone is told on the
+> strength of a Finding or its class. If your receiver pages on one, that is your receiver's
+> decision, and it inherits the model's error rate.
 
 ---
 

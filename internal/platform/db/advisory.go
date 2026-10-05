@@ -43,6 +43,17 @@ const (
 	// LockNamespaceReconcile serialises one source's reconciler run so two pods
 	// cannot both walk the same Alertmanager (SPEC §G.8).
 	LockNamespaceReconcile LockNamespace = 0x6F74_0004
+
+	// LockNamespaceInvestigations serialises the two ADR 0053 §6 decisions that read
+	// a count and then write against it: starting a run under the org's concurrency
+	// (keyed by org) and admitting a trigger under an Investigator's minimum interval
+	// (keyed by Investigator and subject). git-bug bf172fe.
+	LockNamespaceInvestigations LockNamespace = 0x6F74_0005
+
+	// LockNamespaceSlackLinkAttempts serialises one user's wrong-link-code budget (keyed by org
+	// and user): count, refuse at the limit, else record the attempt — so N parallel guesses
+	// cannot all read "under the limit". Review E2 on git-bug a556a5c.
+	LockNamespaceSlackLinkAttempts LockNamespace = 0x6F74_0006
 )
 
 // JobsAdvisoryLockPrefix is the value river.Config.AdvisoryLockPrefix MUST be set

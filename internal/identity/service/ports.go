@@ -128,4 +128,48 @@ type SlackIdentityStore interface {
 	// member, never an org. Its caller has already authenticated by Slack's HMAC
 	// signature (§H.8).
 	ResolveBySlackUser(ctx context.Context, team domain.SlackTeamID, member domain.SlackUserID) (domain.SlackIdentity, error)
+
+	// LockByID reads one identity and holds its row to the end of the transaction, so the
+	// self-service link's "is this another real person's?" and its write cannot be split by a
+	// concurrent link (git-bug a556a5c).
+	LockByID(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.SlackIdentity, error)
+	// ListByUser is every identity linked to one user.
+	ListByUser(ctx context.Context, s db.TenantScope, userID uuid.UUID) ([]domain.SlackIdentity, error)
+	// Unlink drops the link of an identity linked to userID, and is NotFound for any other.
+	Unlink(ctx context.Context, s db.TenantScope, id, userID uuid.UUID) (domain.SlackIdentity, error)
+}
+
+// SlackLinkStore is the self-service link's own state (git-bug a556a5c, migration 00109): the one
+// live code per identity (stored as a sha256 only), the per-user count of wrong codes, and the
+// recorded fact of every link and unlink.
+type SlackLinkStore interface {
+	IssueCode(ctx context.Context, s db.TenantScope, identityID uuid.UUID, hash domain.TokenHash, issuedAt, expiresAt time.Time) error
+	// PresentCode spends one presentation of a live code without consuming it.
+	PresentCode(ctx context.Context, s db.TenantScope, hash domain.TokenHash, now time.Time) (uuid.UUID, time.Time, error)
+	// ConsumeCode uses a live code up. Both answer `slack_link_code_invalid` for any code that is
+	// not live, whatever the reason.
+	ConsumeCode(ctx context.Context, s db.TenantScope, hash domain.TokenHash, userID uuid.UUID, now time.Time) (uuid.UUID, error)
+	// ReserveAttempt records one attempt against the user's wrong-code budget BEFORE the code is
+	// read, under a lock on that user, and reports false (recording nothing) once the budget for
+	// the window since `since` is spent. It needs the caller's transaction.
+	ReserveAttempt(ctx context.Context, s db.TenantScope, id, userID uuid.UUID, at, since time.Time, limit int) (bool, error)
+	// ReleaseAttempt gives back a reserved attempt that proved not to be a wrong code.
+	ReleaseAttempt(ctx context.Context, s db.TenantScope, id uuid.UUID) error
+	RecordFact(ctx context.Context, s db.TenantScope, f domain.SlackLinkFact) error
+}
+
+// RemedyApproverReader reads `remedy_approver_grants` (ADR 0054 §4, migration 00103,
+// git-bug 47f67c8), satisfied by `identity/repository.RemedyApproverRepository`.
+//
+// ⛔⛔ IT HAS NO WRITE METHOD AND MUST NEVER GROW ONE. A grant is given and taken by `oto
+// grant` / `oto revoke` from the host shell (internal/app), never by anything this
+// service can reach: a write here is one handler away from an HTTP route, and an in-app
+// grant lets one holder mint a second approver and defeat double approval.
+type RemedyApproverReader interface {
+	// ListForToolServer reads every grant on one ToolServer with its holder, disabled
+	// holders included.
+	ListForToolServer(ctx context.Context, s db.TenantScope, toolServerID uuid.UUID) ([]domain.RemedyApprover, error)
+	// Grant reads one user's grant on one ToolServer; KindNotFound when they hold none
+	// (never granted, or revoked).
+	Grant(ctx context.Context, s db.TenantScope, toolServerID, userID uuid.UUID) (domain.RemedyApprover, error)
 }

@@ -297,6 +297,23 @@ func MappingFixtures() []Fixture {
 			}
 		}),
 		fact("active_again", incident("active_again"), nil),
+		// The sixth Incident fact (ADR 0053 §4, git-bug 74ea849): an Investigation of
+		// the Incident reached a new Finding, which the card carries.
+		fact("finding", incident("finding"), func(v *domain.NotificationView) {
+			v.Incident.Finding = &domain.IncidentFindingView{
+				InvestigationID: "0199a1b2-c3d4-7e5f-8a9b-00000000f1d1", Investigator: "firstlook", Version: 2,
+				Summary:     "The checkout deploy doubled the error rate; the crash loop began two minutes later.",
+				ConcludedAt: fixtureClock.Add(25 * time.Minute),
+			}
+		}),
+		// The six Remedy facts (ADR 0054 §2, git-bug 4148256): each carries the Remedy
+		// transition it declares.
+		fact("remedy_proposed", incident("remedy_proposed"), withRemedy("proposed", "investigator", "")),
+		fact("remedy_approved", incident("remedy_approved"), withRemedy("approved", "user", "")),
+		fact("remedy_declined", incident("remedy_declined"), withRemedy("declined", "user", "")),
+		fact("remedy_expired", incident("remedy_expired"), withRemedy("expired", "system", "")),
+		fact("remedy_executed", incident("remedy_executed"), withRemedy("executed", "system", "")),
+		fact("remedy_failed", incident("remedy_failed"), withRemedy("failed", "system", "tool_error")),
 	}
 
 	hostileCase := hostileView()
@@ -366,5 +383,41 @@ func incidentFixtureView(reason string) *domain.NotificationView {
 			},
 		},
 		RenderedAt: fixtureClock.Add(30 * time.Minute),
+	}
+}
+
+// withRemedy dresses an Incident fixture with the Remedy transition a `remedy_*` fact carries:
+// a rollout restart on the checkout Deployment, approved by two people where it got that far.
+func withRemedy(state, actorKind, failure string) func(v *domain.NotificationView) {
+	return func(v *domain.NotificationView) {
+		r := &domain.IncidentRemedyView{
+			RemedyID: "0199a1b2-c3d4-7e5f-8a9b-00000000e1d1", InvestigationID: "0199a1b2-c3d4-7e5f-8a9b-00000000f1d1",
+			State: state, ToolServer: "k8s-write", Tool: "rollout_restart",
+			Arguments:       `{"namespace":"checkout","deployment":"api"}`,
+			ArgumentsSHA256: "524bbf6f79faeb40f6b7bf21913d076e37ad70c570aef46870fa570113e95198",
+			Target:          "Deployment checkout/api",
+			Description:     "The 14:02 deploy left the api pods crash-looping; a restart picks up the reverted config.",
+			ProposedBy:      "Investigator firstlook v2", RequiredApprovals: 2,
+			Approvals: []domain.IncidentRemedyApprovalView{},
+			ActorKind: actorKind, ActorLabel: "Investigator firstlook v2",
+			At: fixtureClock.Add(30 * time.Minute), ExpiresAt: fixtureClock.Add(90 * time.Minute),
+			FailureReason: failure,
+		}
+		if actorKind != "investigator" {
+			r.ActorLabel = "Grace Hopper"
+			if actorKind == "system" {
+				r.ActorLabel = "oto"
+			}
+		}
+		if state != "proposed" && state != "declined" && state != "expired" {
+			r.Approvals = []domain.IncidentRemedyApprovalView{
+				{Label: "Grace Hopper", ApprovedAt: fixtureClock.Add(31 * time.Minute)},
+				{Label: "Ada Lovelace", ApprovedAt: fixtureClock.Add(32 * time.Minute)},
+			}
+		}
+		if failure != "" {
+			r.Detail = "the ToolServer answered: deployments.apps \"api\" is forbidden"
+		}
+		v.Incident.Remedy = r
 	}
 }

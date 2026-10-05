@@ -1,0 +1,14 @@
+{
+  "id": "chatcmpl-local-0002",
+  "object": "chat.completion",
+  "created": 1790912051,
+  "model": "local-model",
+  "choices": [
+    {
+      "index": 0,
+      "message": {"role": "assistant", "content": "The pod is out of memory."},
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {"total_tokens": 31}
+}

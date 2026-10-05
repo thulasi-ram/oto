@@ -81,6 +81,11 @@ type OrgSettingsPatchDTO struct {
 
 	DefaultVerbosity *string `json:"default_verbosity,omitempty"`
 
+	InvestigationsEnabled    *bool `json:"investigations_enabled,omitempty"`
+	InvestigationDailyTokens *int  `json:"investigation_daily_tokens,omitempty"`
+	InvestigationConcurrency *int  `json:"investigation_concurrency,omitempty"`
+	RemedyApprovalWindowS    *int  `json:"remedy_approval_window_s,omitempty"`
+
 	// ⛔⛔ `refire_grace_s` AND `group_close_delay_s` WERE THE FIRST AND THIRD
 	// FIELDS AND BOTH ARE DELETED (git-bug 7287b28). An override of a key that
 	// decides nothing is the worst thing this type can hold: `Shadowed` would
@@ -100,6 +105,11 @@ func toOrgSettingsPatchDTO(p domain.SettingsPatch) OrgSettingsPatchDTO {
 		RawRetentionDays:    p.RawRetentionDays,
 		EventRetentionMonth: p.EventRetentionMonth,
 		DefaultVerbosity:    p.DefaultVerbosity,
+
+		InvestigationsEnabled:    p.InvestigationsEnabled,
+		InvestigationDailyTokens: p.InvestigationDailyTokens,
+		InvestigationConcurrency: p.InvestigationConcurrency,
+		RemedyApprovalWindowS:    p.RemedyApprovalWindowS,
 	}
 }
 
@@ -136,6 +146,20 @@ type UpdateOrgSettingsRequest struct {
 
 	// DefaultVerbosity is the fallback for a Channel that names no verbosity.
 	DefaultVerbosity *string `json:"default_verbosity,omitempty"`
+
+	// InvestigationsEnabled is the org's Investigation kill switch (ADR 0053 §6).
+	// `false` stops every new Investigation; it never changes a notification.
+	InvestigationsEnabled *bool `json:"investigations_enabled,omitempty"`
+
+	// InvestigationDailyTokens is the org's daily token budget and
+	// InvestigationConcurrency the most Investigations running at once (ADR 0053
+	// §6). Bounded by `domain.Bounds`, like every integer here.
+	InvestigationDailyTokens *int `json:"investigation_daily_tokens,omitempty"`
+	InvestigationConcurrency *int `json:"investigation_concurrency,omitempty"`
+
+	// RemedyApprovalWindowS is how long a Remedy waits for its approvals, and then for
+	// its execution (ADR 0054 §2). Bounded by `domain.Bounds`.
+	RemedyApprovalWindowS *int `json:"remedy_approval_window_s,omitempty"`
 
 	// ⛔⛔ `refire_grace_s` AND `group_close_delay_s` WERE HERE AND BOTH ARE DELETED
 	// (git-bug 7287b28). ⚠️ THIS SCHEMA IS `additionalProperties: false`, so a
@@ -174,6 +198,11 @@ func (r UpdateOrgSettingsRequest) toDomain() (domain.SettingsPatch, []domain.Set
 		RawRetentionDays:    r.RawRetentionDays,
 		EventRetentionMonth: r.EventRetentionMonth,
 		DefaultVerbosity:    r.DefaultVerbosity,
+
+		InvestigationsEnabled:    r.InvestigationsEnabled,
+		InvestigationDailyTokens: r.InvestigationDailyTokens,
+		InvestigationConcurrency: r.InvestigationConcurrency,
+		RemedyApprovalWindowS:    r.RemedyApprovalWindowS,
 	}
 
 	known := make(map[string]domain.SettingKey, len(domain.AllSettingKeys()))

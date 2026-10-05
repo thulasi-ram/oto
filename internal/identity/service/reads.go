@@ -321,11 +321,12 @@ func (s *Service) ResolveSlackActor(ctx context.Context, rawTeam, rawMember stri
 // bundled here: this function's job is to stop a SECOND LIVE MEMBER existing from
 // the moment of the link, and it does that completely.
 //
-// ⚠️ AND IT HAS NO PRODUCTION CALLER YET. There is no route in the contract that
-// links a Slack identity — `identity/api` exposes none — so this path is LATENT.
-// The adoption is written now anyway because the alternative is a correct-looking
-// one-line `Link` waiting for whoever wires the route, and the duplicate member it
-// would leave behind is invisible until an operator asks why they appear twice.
+// ⚠️ THIS EXPORTED WRAPPER STILL HAS NO PRODUCTION CALLER, AND ITS BODY DOES. The
+// self-service link (git-bug a556a5c, `slack_link.go`) calls `linkSlackIdentity`
+// inside its OWN transaction, after consuming a link code and refusing — under a row
+// lock — an identity that already names another real user. This wrapper performs
+// neither check: it re-points whatever it is given, so nothing reachable from a
+// request may call it. It stays for the tests that pin the adoption on its own.
 func (s *Service) LinkSlackIdentity(
 	ctx context.Context, scope db.TenantScope, identityID, userID uuid.UUID,
 ) (domain.SlackIdentity, error) {

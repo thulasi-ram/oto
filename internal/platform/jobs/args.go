@@ -5,6 +5,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
 )
 
 // Payload carries the payload version every job in oto is required to have
@@ -218,7 +219,7 @@ type NotifyIncidentArgs struct {
 	Payload
 	// IncidentID is the subject, and what the tenant is resolved through.
 	IncidentID uuid.UUID `json:"incident_id"`
-	// Reason is one of the five Incident Reasons.
+	// Reason is one of the twelve Incident Reasons.
 	Reason string `json:"reason"`
 	// OccasionID is WHICH TIME this fact happened. Required for every Incident
 	// Reason (`notification/domain.Reason.NeedsOccasion`).
@@ -231,6 +232,49 @@ type NotifyIncidentArgs struct {
 	// before 00093 has no `sequence`; it decodes as 0, the row stores NULL, and the
 	// envelope omits the field — the honest rendering of a fact nobody numbered.
 	Sequence int64 `json:"sequence,omitzero"`
+	// Remedy is the Remedy transition a `remedy_*` fact declares (ADR 0054 §2, git-bug
+	// 4148256), copied by `investigator` in the transaction that made the transition —
+	// absent on every other Reason. ⭐ ADDITIVE: a new optional field, so payload v1 still
+	// says what it said, and the occasion is the transition.
+	Remedy *RemedyFact `json:"remedy,omitempty"`
+}
+
+// RemedyFact is one Remedy transition as `notify.incident` carries it: the Remedy as it stood
+// once the transition was made — its write Tool and exact arguments, or the sentence that no
+// configured Tool can carry it out — and who made the transition when. A snapshot: nothing
+// downstream re-reads the Remedy.
+type RemedyFact struct {
+	RemedyID          uuid.UUID `json:"remedy_id"`
+	InvestigationID   uuid.UUID `json:"investigation_id"`
+	State             string    `json:"state"`
+	From              string    `json:"from,omitempty"`
+	ToolServer        string    `json:"tool_server,omitempty"`
+	Tool              string    `json:"tool,omitempty"`
+	NoTool            string    `json:"no_tool,omitempty"`
+	Arguments         string    `json:"arguments,omitempty"`
+	ArgumentsSHA256   string    `json:"arguments_sha256,omitempty"`
+	Target            string    `json:"target"`
+	Description       string    `json:"description"`
+	ProposedBy        string    `json:"proposed_by"`
+	RequiredApprovals int       `json:"required_approvals"`
+	// ApprovalsSetBy is what set RequiredApprovals (rule, no_rule, unparseable, risk_model,
+	// risk_model_failed) and ApprovalsRule the rule behind it; both "" when nothing was
+	// recorded (git-bug eb4f21b).
+	ApprovalsSetBy string               `json:"approvals_set_by,omitempty"`
+	ApprovalsRule  string               `json:"approvals_rule,omitempty"`
+	Approvals      []RemedyFactApproval `json:"approvals"`
+	ActorKind      string               `json:"actor_kind"`
+	ActorLabel     string               `json:"actor_label"`
+	At             time.Time            `json:"at"`
+	ExpiresAt      time.Time            `json:"expires_at"`
+	FailureReason  string               `json:"failure_reason,omitempty"`
+	Detail         string               `json:"detail,omitempty"`
+}
+
+// RemedyFactApproval is one approval a Remedy had when the fact was made.
+type RemedyFactApproval struct {
+	Label      string    `json:"label"`
+	ApprovedAt time.Time `json:"approved_at"`
 }
 
 // Kind implements db.JobArgs and river.JobArgs.
@@ -772,5 +816,214 @@ func periodicOpts(queue string, priority int, period time.Duration) river.Insert
 			ByQueue:  true,
 			ByPeriod: period,
 		},
+	}
+}
+
+// ------------------------------------------------------------- investigator
+
+// InvestigationJobTimeout bounds one `investigations.run` execution: the largest
+// wall-time budget an Investigator may set (`investigators_wall_ck`, 1800 s) plus two
+// minutes to record how it ended. ⚠️ It is a copy of that bound — platform may not
+// import the investigator domain — and `investigator/service` asserts the two agree.
+const InvestigationJobTimeout = 32 * time.Minute
+
+// InvestigationsRunArgs runs one Investigation (ADR 0053 §3, git-bug 180a525): one
+// Investigator version against one subject, with its Steps recorded as they happen and
+// its Finding published as the Enrichment `investigator.<name>`.
+//
+// Queue: investigate · Priority: normal · Retry: retryable (12) · Payload v1
+//
+// ⛔ NOT `enrich` AND NOT `notify`. A run can take minutes, and the queue a Case's
+// first notification is released from must never be the queue it is waiting on. A
+// Finding never decides whether anyone is told (ADR 0053 §2), and this job neither
+// enqueues nor reads anything on the notification path.
+//
+// IDEMPOTENCY: by state. The handler starts a run only from `queued`, in one UPDATE;
+// a redelivery finds it `running` — the previous attempt died mid-run — and ends it
+// `interrupted` rather than paying for every turn again, or finds it ended and does
+// nothing. A retry therefore re-runs only work that never called a model.
+type InvestigationsRunArgs struct {
+	Payload
+	// OrgID is the tenant; the run is resolved inside it.
+	OrgID uuid.UUID `json:"org_id"`
+	// InvestigationID is the run.
+	InvestigationID uuid.UUID `json:"investigation_id"`
+}
+
+// Kind implements db.JobArgs and river.JobArgs.
+func (InvestigationsRunArgs) Kind() string { return KindInvestigationsRun }
+
+// InsertOpts pins the queue, priority and retry ceiling of this job type.
+func (InvestigationsRunArgs) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue:       QueueInvestigate,
+		Priority:    PriorityNormal,
+		MaxAttempts: MaxAttemptsRetryable,
+	}
+}
+
+// InvestigationsIncidentArgs turns one Incident fact into Investigations (ADR 0053 §4,
+// git-bug 74ea849): "an Incident is drawn; its membership changes (with a minimum
+// interval on the Investigator)". The handler starts one run per Investigator that
+// investigates Incidents — a draw resolves to the run a first delivery made, and a
+// membership change coalesces under the Investigator's minimum interval — and
+// enqueues each run's `investigations.run` in its own transaction.
+//
+// Queue: lifecycle · Priority: BACKGROUND · Retry: retryable (12) · Payload v1 ·
+// Unique: by args, while available, pending, scheduled or running
+//
+// ⭐ BACKGROUND, AND ONE PENDING TRIGGER PER (org, Incident, trigger) (review B1). It
+// shares `lifecycle` with `notify.digest` and `case.reap`, and a Correlator storm
+// enqueues one of these per membership change; at the digest's priority they would
+// queue ahead of the digest tick on a four-worker queue. Background priority puts them
+// behind it, and uniqueness folds a burst into the one trigger already waiting —
+// which loses nothing, because the handler reads CURRENT state: the run it queues
+// reads the Incident when that run starts, and a trigger for an Incident whose
+// trigger job is mid-flight resolves into the run that job queued. River requires
+// `running` among the unique states; `completed`, `cancelled` and `discarded` are
+// left out so a later change always gets a trigger of its own.
+//
+// ⛔ NOT `investigate`, NOT `notify`, AND NOT THE INCIDENT'S OWN WRITE. The membership
+// change enqueues this and returns: it never waits for an Investigator to be read, a
+// budget to be summed or a run to be recorded, and a failure here retries on its own
+// budget while the Incident and its notifications go on exactly as they would have.
+// `investigate` carries runs and nothing else, so a trigger never waits behind a
+// minutes-long run for a slot.
+//
+// ⛔ GOING QUIET ENQUEUES NOTHING (§4: "Not on quiet"), and neither does `active_again`,
+// which only ever accompanies the `case_added` that caused it.
+//
+// IDEMPOTENCY: by state. A redelivered draw resolves to the run the first delivery
+// recorded; a redelivered membership change coalesces into the run it queued.
+type InvestigationsIncidentArgs struct {
+	Payload
+	// OrgID is the tenant; the Incident is resolved inside it.
+	OrgID uuid.UUID `json:"org_id"`
+	// IncidentID is the subject.
+	IncidentID uuid.UUID `json:"incident_id"`
+	// Trigger is `drawn` or `membership` (`investigator/domain.Trigger`).
+	Trigger string `json:"trigger"`
+}
+
+// Kind implements db.JobArgs and river.JobArgs.
+func (InvestigationsIncidentArgs) Kind() string { return KindInvestigationsIncident }
+
+// InsertOpts pins the queue, priority and retry ceiling of this job type.
+func (InvestigationsIncidentArgs) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue:       QueueLifecycle,
+		Priority:    PriorityBackground,
+		MaxAttempts: MaxAttemptsRetryable,
+		UniqueOpts: river.UniqueOpts{
+			ByArgs: true,
+			ByState: []rivertype.JobState{
+				rivertype.JobStateAvailable, rivertype.JobStatePending,
+				rivertype.JobStateScheduled, rivertype.JobStateRunning,
+			},
+		},
+	}
+}
+
+// InvestigationsDigestArgs arms a digest window's Investigation ahead of the window's
+// close (ADR 0053 §4, git-bug 3e96f5a): once a minute, per tenant, every live digest
+// policy that names an Investigator gets ONE run for the window open now, recorded and
+// enqueued as `investigations.run` once the window's lead has begun
+// (`investigator/domain.DigestLead`: the Investigator's wall-time budget plus two
+// minutes, at most half the window). Periodic, 60 s, zero payload.
+//
+// Queue: lifecycle · Priority: BACKGROUND · Retry: periodic (3) · Payload v1
+//
+// ⛔ IT IS NOT ON THE DIGEST PATH AND THE DIGEST NEVER WAITS FOR IT. `notify.digest`
+// sends a closed window on its own minute whether or not this ran, armed anything, or
+// the run finished; it reads the run once, at the send, and carries its Finding only if
+// it has one by then. A priority below the digest tick's, so on a busy install the four
+// lifecycle workers send the windows people are waiting for before they arm summaries.
+//
+// IDEMPOTENCY: by state. `investigations_digest_window_uniq` holds one run per policy per
+// window, and a tick that finds the window armed does nothing. Tick uniqueness is by
+// kind, ARGS and period, per tenant through `TenantFanOut`, like the digest tick's.
+type InvestigationsDigestArgs struct {
+	Payload
+	TenantFanOut
+}
+
+// Kind implements db.JobArgs and river.JobArgs.
+func (InvestigationsDigestArgs) Kind() string { return KindInvestigationsDigest }
+
+// InsertOpts pins the queue, priority, retry ceiling and tick uniqueness.
+func (InvestigationsDigestArgs) InsertOpts() river.InsertOpts {
+	return periodicOpts(QueueLifecycle, PriorityBackground, time.Minute)
+}
+
+// RemediesSweepArgs records what the clock decided about Remedies (ADR 0054 §2, git-bug
+// 4148256): once a minute, per tenant, every Remedy still `proposed` or `approved` whose
+// approval window has passed is moved to `expired` by `system`, and every one still
+// `executing` past `investigator/domain.RemedyOutcomeDeadline` — its worker died mid-call — is
+// moved to `failed` with `outcome_unknown`, each in its own transaction and declared outbound
+// like any other transition. ⛔ NOTHING IT TOUCHES IS SENT AGAIN. Periodic, 60 s, zero payload.
+//
+// Queue: lifecycle · Priority: BACKGROUND · Retry: periodic (3) · Payload v1
+//
+// ⭐ RECORDED, NEVER SILENT, AND NEVER THE GATE. A Remedy past its window already reads as
+// expired the moment the window passes — nothing can approve, decline or execute it from
+// then — so a late or missed sweep delays only the record and the fact, never the refusal.
+// ⛔ IT CALLS NO TOOLSERVER.
+//
+// IDEMPOTENCY: by state. Each Remedy is locked and moved only from the state it was read in;
+// one already moved — approved, declined, claimed, or expired by an earlier tick — is left.
+type RemediesSweepArgs struct {
+	Payload
+	TenantFanOut
+}
+
+// Kind implements db.JobArgs and river.JobArgs.
+func (RemediesSweepArgs) Kind() string { return KindRemediesSweep }
+
+// InsertOpts pins the queue, priority, retry ceiling and tick uniqueness.
+func (RemediesSweepArgs) InsertOpts() river.InsertOpts {
+	return periodicOpts(QueueLifecycle, PriorityBackground, time.Minute)
+}
+
+// RemedyExecuteJobTimeout bounds one `remedies.execute`: the longest per-call timeout a
+// ToolServer may set (`tool_servers_timeout_ck`, 120 s) and two minutes to claim before the
+// call and record after it. ⚠️ A copy of that bound — platform may not import the
+// investigator domain — and `investigator/service` asserts the two agree.
+const RemedyExecuteJobTimeout = 4 * time.Minute
+
+// RemediesExecuteArgs executes one approved Remedy (ADR 0054 §5, §6; git-bug 4148256): the
+// executor re-checks the Remedy against the configuration and the grants as they stand,
+// CLAIMS it (`approved → executing`, committed), calls the operator's write Tool through the
+// MCP client with the approved arguments exactly, and records what came back — `executed`,
+// or `failed` with the reason.
+//
+// Queue: investigate · Priority: normal · Retry: 3 · Payload v1
+//
+// ⭐⭐ AT MOST ONCE, BY STATE. The claim is an UPDATE from `approved` committed BEFORE the call.
+// A retry of a job that failed before the claim re-checks and may claim; a retry of one that
+// failed after it finds the Remedy `executing` (or ended) and does nothing — so a crash
+// mid-call leaves it `executing`, never `approved`, and `remedies.sweep` records it `failed`
+// with `outcome_unknown` once RemedyOutcomeDeadline passes. Nothing re-sends a Remedy, and a
+// failed one is never retried: a retry is a new Remedy and a new approval (§6).
+//
+// ⛔ `investigate`, NOT `notify`: a write Tool call can take its ToolServer's whole per-call
+// timeout, and the notification path never waits on it.
+type RemediesExecuteArgs struct {
+	Payload
+	// OrgID is the tenant; the Remedy is resolved inside it.
+	OrgID uuid.UUID `json:"org_id"`
+	// RemedyID is the Remedy.
+	RemedyID uuid.UUID `json:"remedy_id"`
+}
+
+// Kind implements db.JobArgs and river.JobArgs.
+func (RemediesExecuteArgs) Kind() string { return KindRemediesExecute }
+
+// InsertOpts pins the queue, priority and retry ceiling. Three attempts cover a database
+// blip before the claim; after the claim a retry is a no-op by state.
+func (RemediesExecuteArgs) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue:       QueueInvestigate,
+		Priority:    PriorityNormal,
+		MaxAttempts: MaxAttemptsRemedyExecute,
 	}
 }

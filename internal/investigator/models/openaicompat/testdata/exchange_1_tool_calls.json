@@ -1,0 +1,46 @@
+{
+  "id": "chatcmpl-9xK2fQ7mZpL0",
+  "object": "chat.completion",
+  "created": 1790912040,
+  "model": "gateway-model-2026-08",
+  "system_fingerprint": "fp_5c1e8a",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "refusal": null,
+        "tool_calls": [
+          {
+            "id": "call_Vq3n8YkR2b",
+            "type": "function",
+            "function": {
+              "name": "logs_query",
+              "arguments": "{\"query\":\"namespace:payments AND (OOMKilled OR \\\"out of memory\\\")\",\"limit\":50}"
+            }
+          },
+          {
+            "id": "call_Hc7p1WsT0d",
+            "type": "function",
+            "function": {
+              "name": "k8s_describe",
+              "arguments": "{\"kind\":\"Pod\",\"namespace\":\"payments\",\"name\":\"api-7d9f\"}"
+            }
+          }
+        ],
+        "annotations": []
+      },
+      "logprobs": null,
+      "finish_reason": "tool_calls"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 412,
+    "completion_tokens": 87,
+    "total_tokens": 499,
+    "prompt_tokens_details": {"cached_tokens": 0, "audio_tokens": 0},
+    "completion_tokens_details": {"reasoning_tokens": 0, "audio_tokens": 0, "accepted_prediction_tokens": 0, "rejected_prediction_tokens": 0}
+  },
+  "service_tier": "default"
+}

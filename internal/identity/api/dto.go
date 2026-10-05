@@ -72,6 +72,21 @@ type OrgSettingsDTO struct {
 	// DefaultVerbosity is the fallback for a Channel that names no verbosity.
 	DefaultVerbosity string `json:"default_verbosity"`
 
+	// InvestigationsEnabled is the org's Investigation kill switch (ADR 0053 §6):
+	// while false, no new Investigation starts and each one asked for is recorded
+	// `skipped` with reason `disabled`. It never changes a notification.
+	InvestigationsEnabled bool `json:"investigations_enabled"`
+	// InvestigationDailyTokens is the org's daily token budget (ADR 0053 §6): past
+	// it, a new Investigation is recorded `skipped` with reason `budget` until 00:00
+	// UTC.
+	InvestigationDailyTokens int `json:"investigation_daily_tokens"`
+	// InvestigationConcurrency is the most Investigations running at once; one past
+	// it waits, queued, and is never dropped.
+	InvestigationConcurrency int `json:"investigation_concurrency"`
+	// RemedyApprovalWindowS is how long a proposed Remedy waits for its approvals, and an
+	// approved one for its execution, before it is recorded expired (ADR 0054 §2).
+	RemedyApprovalWindowS int `json:"remedy_approval_window_s"`
+
 	// ⛔⛔ `refire_grace_s` AND `group_close_delay_s` WERE HERE AND BOTH ARE DELETED
 	// (git-bug 7287b28), off the wire as well as out of the struct: both are gone
 	// from this schema's `required` list in `openapi.yaml`, so a client still
@@ -188,4 +203,33 @@ type APITokenDTO struct {
 type APITokenCreatedDTO struct {
 	Token  APITokenDTO `json:"token"`
 	Secret string      `json:"secret"`
+}
+
+// SlackLinkCodeRequest is the body of `POST /api/v1/me/slack-identities/preview` and
+// `POST /api/v1/me/slack-identities` (git-bug a556a5c): the link code an unlinked Slack member
+// was shown, as typed. There is no user id in it, and there is nowhere to put one — the only
+// user these operations ever link is the signed-in one.
+type SlackLinkCodeRequest struct {
+	Code string `json:"code" validate:"required,notblank,max=32"`
+}
+
+// SlackLinkPreviewDTO is what a code WOULD link, read without using it up: the confirmation
+// screen's "clicks from this Slack account will count as you".
+type SlackLinkPreviewDTO struct {
+	TeamID      string  `json:"team_id"`
+	SlackUserID string  `json:"slack_user_id"`
+	Handle      *string `json:"handle"`
+	// ExpiresAt is when the code dies, whether or not it is confirmed.
+	ExpiresAt time.Time `json:"expires_at"`
+	// AlreadyYours is true when the member already resolves to the signed-in user.
+	AlreadyYours bool `json:"already_yours"`
+}
+
+// SlackIdentityDTO is one Slack member linked to the signed-in user.
+type SlackIdentityDTO struct {
+	ID          uuid.UUID `json:"id"`
+	TeamID      string    `json:"team_id"`
+	SlackUserID string    `json:"slack_user_id"`
+	Handle      *string   `json:"handle"`
+	LinkedAt    time.Time `json:"linked_at"`
 }

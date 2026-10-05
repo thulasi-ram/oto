@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"strconv"
 	"strings"
 	"time"
 
@@ -57,7 +58,9 @@ const (
 	// vocabulary does — which is the whole reason all three layers must agree.
 	//
 	// ⬆️ IT IS 20 AT MIGRATION 00084: the five Incident facts joined (ADR 0052 §5).
-	MaxPolicyReasons = 20
+	// ⬆️ IT IS 21 AT MIGRATION 00099: `finding` joined (ADR 0053 §4).
+	// ⬆️ IT IS 27 AT MIGRATION 00104: the six Remedy facts joined (ADR 0054 §2).
+	MaxPolicyReasons = 27
 	// MaxPolicyChannels is policies_chan_ck.
 	MaxPolicyChannels = 16
 	// MinPolicyPriority and MaxPolicyPriority are policies_prio_ck. LOWER IS
@@ -555,7 +558,7 @@ func (p Policy) Validate() error {
 		})
 	case len(p.Reasons) > MaxPolicyReasons:
 		v = append(v, errs.Violation{
-			Field: "reasons", Code: "max_items", Message: "at most 20 reasons",
+			Field: "reasons", Code: "max_items", Message: "at most " + strconv.Itoa(MaxPolicyReasons) + " reasons",
 		})
 	}
 	// ⭐ `reasons` IS A SET, and this loop is the layer that says so where it
@@ -929,6 +932,17 @@ func (p Policy) validateDigest() []errs.Violation {
 			Field: "digest_floor", Code: "incomplete",
 			Message: "a digest floor needs a digest window: a threshold over an unbounded span " +
 				"is not something anything can evaluate",
+		})
+	}
+
+	// `policies_digest_investigator_ck` (00102): an Investigator asked to summarise a
+	// digest that is never sent is a knob nothing reads. A PATCH that clears the window
+	// and does not mention the Investigator never reaches this: PolicyPatch.WithImpliedClears
+	// clears it too. Only a request that clears the window AND names one is refused here.
+	if p.Digest.InvestigatorID != uuid.Nil && p.Digest.Window == 0 {
+		v = append(v, errs.Violation{
+			Field: "digest_investigator_id", Code: "incomplete",
+			Message: "an Investigator summarises a digest's windows, so naming one needs a digest window",
 		})
 	}
 

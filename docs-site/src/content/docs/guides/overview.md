@@ -122,6 +122,21 @@ rather than 404ing, and `oto version` reports `ui: absent` or `ui: embedded (N f
 is not losing API access: **Settings → Access tokens** mints more. Minting always requires a
 signed-in session, so a token can never mint or enumerate its siblings.
 
+**Who may approve a Remedy is granted from the host shell, the same way.** A Remedy (ADR 0054) is
+approved only by a user holding the approval grant on its `write` ToolServer, and two different
+holders for a double approval. There is no grant screen and no grant route, on purpose — an
+in-app grant would let one holder mint a second approver:
+
+```bash
+go run ./cmd/oto grant  remedy-approver --org acme --toolserver k8s-write --email you@example.com
+go run ./cmd/oto revoke remedy-approver --org acme --toolserver k8s-write --email you@example.com
+```
+
+The user is found by address; a `read` ToolServer, an unknown org, ToolServer or address, a
+disabled user, a grant already held and a revoke of one not held are each refused with a non-zero
+exit. A disabled user's grant stops counting; deleting the ToolServer deletes its grants. `GET
+/api/v1/tool-servers/{id}/remedy-approvers` lists the holders, read-only.
+
 ### Try it with demo data
 
 A freshly migrated database is empty, and an empty oto is a set of placeholder sentences.
@@ -242,8 +257,14 @@ a human does not get to overwrite what a signal said.
 
 ## What oto is not
 
-Not an incident manager, an on-call or paging system, a workflow engine, a rule editor, an
-AI investigator, or anything with a write path into your cluster.
+Not an incident manager, an on-call or paging system, a workflow engine, or a rule editor. Not an
+AI that decides who is told: an **Investigator** reads (oto's own history, and MCP ToolServers you
+configure), proposes, and never decides delivery — its Finding changes what people read, never
+whether they are told ([ADR 0053](/oto/adr/0053-an-investigator-reads-proposes-and-never-decides-delivery/),
+[setup](/oto/setup/investigators/)). And no write path into your cluster but one: a **Remedy** an
+Investigator proposes, executed once through **your** write ToolServer and only after two different
+holders of the approver grant (`oto grant remedy-approver`, host shell only) say yes
+([ADR 0054](/oto/adr/0054-a-remedy-earns-the-write-path/), [setup](/oto/setup/remedies/)).
 
 This is enforced rather than promised. `tools/lintvocab` fails CI on thirteen banned concept
 words and six forbidden column names, and `notification_policies` has a `ChannelIDs` column

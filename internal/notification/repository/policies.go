@@ -42,9 +42,11 @@ type policyRow struct {
 	countMin         *int
 	countWindowSecs  *int
 	templateID       *uuid.UUID
-	createdAt        time.Time
-	updatedAt        time.Time
-	deletedAt        *time.Time
+	// digestInvestigatorID is `digest_investigator_id` (00102): NULL for none.
+	digestInvestigatorID *uuid.UUID
+	createdAt            time.Time
+	updatedAt            time.Time
+	deletedAt            *time.Time
 }
 
 // scanInto is the ONE argument list for `policyColumns`, and it exists because
@@ -64,6 +66,7 @@ func (r *policyRow) scanInto() []any {
 		&r.digestWindowSecs, &r.digestFloor,
 		&r.countMin, &r.countWindowSecs,
 		&r.templateID,
+		&r.digestInvestigatorID,
 		&r.createdAt, &r.updatedAt, &r.deletedAt,
 	}
 }
@@ -133,6 +136,9 @@ func (r policyRow) toDomain() (domain.Policy, error) {
 	if r.digestFloor != nil {
 		p.Digest.Floor = *r.digestFloor
 	}
+	if r.digestInvestigatorID != nil {
+		p.Digest.InvestigatorID = *r.digestInvestigatorID
+	}
 
 	// NULL on either half means "no count condition", the shipped default and the
 	// state of every row written before migration 00072. `policies_count_pair_ck`
@@ -170,6 +176,7 @@ const policyColumns = `
   throttle, subject_kinds, digest_window_s, digest_floor,
   count_min, count_window_s,
   template_id,
+  digest_investigator_id,
   created_at, updated_at, deleted_at`
 
 const listLivePoliciesSQL = `

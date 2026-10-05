@@ -133,6 +133,30 @@ func (c *Container) handlers() jobs.Handlers {
 		// stats.rollup (ADR 0014) — what keeps the hygiene report off a scan of
 		// the event stream, and therefore what makes Postgres-only viable.
 		StatsRollup: statsworker.StatsRollup(c.Stats, c.orgs, c.enqueuer, c.Clock, c.Logger),
+
+		// ⭐ investigations.run (ADR 0053 §3, git-bug 180a525) — one Investigation,
+		// on the `investigate` queue, never `enrich` or `notify`: a run can take
+		// minutes, and it must not hold a slot a Case's notification waits on.
+		InvestigationsRun: c.runInvestigation,
+
+		// ⭐ investigations.incident (ADR 0053 §4, git-bug 74ea849) — an Incident drawn,
+		// or a Case joining or leaving it, becomes the runs of the Investigators that
+		// investigate Incidents. On `lifecycle`, enqueued by the membership change and
+		// never awaited by it; it records runs and calls no model.
+		InvestigationsIncident: c.triggerIncidentInvestigations,
+
+		// ⭐ investigations.digest (ADR 0053 §4, git-bug 3e96f5a) — arms a summarised
+		// digest window's run ahead of its close. The digest tick never waits for it.
+		InvestigationsDigest: c.armDigestInvestigations,
+
+		// ⭐ remedies.sweep (ADR 0054 §2, git-bug 4148256) — records every Remedy past its
+		// approval window as expired, by system, and declares it. It reaches no ToolServer.
+		RemediesSweep: c.sweepRemedies,
+
+		// ⭐ remedies.execute (ADR 0054 §5, git-bug 4148256) — one approved Remedy, claimed
+		// before its write Tool is called, so it is sent at most once. Enqueued by the
+		// approval that completed it.
+		RemediesExecute: c.executeRemedy,
 	}
 
 	// notification fills its own four fields (notify.evaluate, deliver.dispatch,

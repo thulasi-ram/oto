@@ -168,7 +168,8 @@ var (
 
 	// EventIncidentCaseAdded records the Case joining an Incident — drawn with it
 	// (payload `drawn: true`) or added to it later. Payload: incident_id,
-	// incident_number, drawn.
+	// incident_number, drawn — and suggested_by_investigation_id when the human was
+	// applying an Investigation's Suggestion (git-bug 8327c00).
 	EventIncidentCaseAdded = EventType{"incident.case_added"}
 	// EventIncidentCaseRemoved records a human taking the Case out of an Incident.
 	// Payload: incident_id, incident_number.
@@ -176,7 +177,7 @@ var (
 	// EventIncidentCaseMoved records a human moving the Case from one Incident to
 	// another in one transaction — ONE fact, not a removal and an add, because it
 	// was one decision. Payload: from_incident_id, from_number, to_incident_id,
-	// to_number.
+	// to_number — and suggested_by_investigation_id, as for an add.
 	EventIncidentCaseMoved = EventType{"incident.case_moved"}
 )
 

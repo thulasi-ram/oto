@@ -263,9 +263,16 @@ export type KnobKind =
   | "count"
   | "days"
   | "months"
-  | "verbosity";
+  | "verbosity"
+  | "onoff";
 
-/* ⛔ `boolean` WAS A KIND HERE AND IS DELETED (git-bug 7570090). It existed for
+/* ⭐ `onoff` IS A BOOLEAN KNOB, and the warning below was honoured rather than
+   worked around: `investigations_enabled` (ADR 0053 §6) is a two-position
+   SELECT whose labels are written for that one setting, not a generic checkbox
+   reinstated with the old broadcast copy. It renders through the same
+   `KnobSelect` as the verbosity, with options of its own (`onOffOptions`).
+
+   ⛔ `boolean` WAS A KIND HERE AND IS DELETED (git-bug 7570090). It existed for
    exactly one knob, `broadcast_on_resolved`, and Slack thread-broadcast is gone —
    there is no broadcast for an org to opt into, so the knob went and the kind went
    with it. `verbosity` is now the only non-numeric kind, which is why
@@ -536,6 +543,86 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
      documents nothing that removes a channel reference once made. ADR 0020 holds
      that reasoning; it is not restated as UI copy for a control nobody can see. */
 
+  /* ---- investigations ---------------------------------------------------- */
+
+  investigations_enabled: {
+    key: "investigations_enabled",
+    kind: "onoff",
+    label: "Investigations",
+    what: "The org-wide kill switch for Investigators. While it is off, no new Investigation starts in this org: one a person asks for is recorded as skipped, with the reason disabled, rather than dropped silently; Incidents and digest windows ask for none, and this switch is the record of why. A run already under way finishes under its own budgets.",
+    risks: [
+      {
+        label: "If it is off",
+        text: "Nothing new is investigated, whoever asks and whatever fires. A person's request is recorded as skipped, so an empty Finding can always say why; an Incident or a digest window starts nothing and records nothing, because this switch already says why. Notifications are unaffected: an Investigation never decides whether or how anyone is told.",
+      },
+      {
+        label: "If it is on",
+        text: "Investigators that are themselves enabled, and have a model endpoint, may run against Cases and spend tokens within their own budgets. Turning this on starts nothing by itself: an org with no enabled Investigator runs nothing.",
+      },
+    ],
+    amRule:
+      "Nothing in alertmanager.yml bears on this, and it never changes a notification. Each Investigator also carries its own enabled flag; this switch is the brake for all of them at once.",
+  },
+
+  investigation_daily_tokens: {
+    key: "investigation_daily_tokens",
+    kind: "count",
+    label: "Daily token budget",
+    unit: "tokens per UTC day",
+    what: "The input and output tokens every Investigation in this org may spend between two midnights UTC, counted from each model turn as it is recorded. Once the day's spend reaches it, a new Investigation is recorded as skipped, with the reason budget, and never queued; the budget resets at 00:00 UTC.",
+    risks: [
+      {
+        label: "Too low",
+        text: "Investigations stop early in the day and each later request is recorded as skipped (budget) until midnight UTC — visible on the Case, never silent. A run already under way is not cut off: it finishes under its own per-run token budget, so the day can overrun by what the runs in flight still had left.",
+      },
+      {
+        label: "Too high",
+        text: "A storm that asks for many Investigations can spend this much in a day before anything stops it. There is no unlimited: the default is ten runs at the default per-run budget, and every number here is a ceiling you can read back.",
+      },
+    ],
+    amRule:
+      "Nothing in alertmanager.yml bears on this, and it never changes a notification. It is the org's ceiling; each Investigator's own token budget still bounds every single run.",
+  },
+
+  investigation_concurrency: {
+    key: "investigation_concurrency",
+    kind: "count",
+    label: "Investigations at once",
+    unit: "running",
+    what: "The most Investigations running at the same time in this org. One past it waits — it stays queued until a run ends — and is never dropped.",
+    risks: [
+      {
+        label: "Too low",
+        text: "Requests queue behind each other and a Finding arrives later than it could have. Nothing is lost: a waiting run starts as soon as a slot frees.",
+      },
+      {
+        label: "Too high",
+        text: "More model calls run at once, which spends the daily budget faster and puts more load on your model endpoint and ToolServers at the moment a storm is already loading them. Each oto process works at most eight at once by default (jobs.queue_investigate), so a number above the workers you run never binds.",
+      },
+    ],
+    amRule:
+      "Nothing in alertmanager.yml bears on this, and it never changes a notification. A run waiting for a slot is still queued, and says so.",
+  },
+
+  remedy_approval_window_s: {
+    key: "remedy_approval_window_s",
+    kind: "seconds",
+    label: "Remedy approval window",
+    what: "How long a Remedy an Investigator proposed waits for its approvals (one or two, as the risk rules say), and then — once approved — for oto to execute it. Past it the Remedy is recorded as expired, said on the Incident, and can no longer be approved or executed; a new Investigation can propose it again.",
+    risks: [
+      {
+        label: "Too short",
+        text: "The people holding the grant on the ToolServer that the Remedy needs (one or two, as the risk rules say) have to read the exact command and approve it inside the window, or it expires and the change is not made. An expired Remedy is recorded and declared, never silent, and nothing about it is retried.",
+      },
+      {
+        label: "Too long",
+        text: "A Remedy approved now can be executed against a cluster that has moved on since the Investigator looked: the change was right for what it saw, not for what is there. The window is the age past which oto refuses to act on a proposal.",
+      },
+    ],
+    amRule:
+      "Nothing in alertmanager.yml bears on this, and it never changes a notification. Approval is the grant on a write ToolServer, given only by `oto grant remedy-approver` on the host; this is how long that approval stays good.",
+  },
+
   /* ---- retention --------------------------------------------------------- */
 
   raw_retention_days: {
@@ -608,6 +695,20 @@ export const KNOB_GROUPS: readonly KnobGroup[] = [
       "The only settings here that delete something. Neither changes what oto says or when — they decide how far back you can still look, and lowering either one drops whole partitions permanently. There is no export and no undo. Read what each one destroys before you lower it.",
     keys: ["raw_retention_days", "event_retention_months"],
   },
+  {
+    id: "investigations",
+    title: "Investigations",
+    blurb:
+      "Whether an Investigator may start a new Investigation in this org, how many tokens a day they may spend between them, and how many may run at once. An Investigation reads oto's own history and writes a Finding beside the Case; it never decides whether anyone is notified. Each limit is recorded, never silent: a run that was asked for and did not start says why, and one waiting for a slot stays queued.",
+    keys: ["investigations_enabled", "investigation_daily_tokens", "investigation_concurrency"],
+  },
+  {
+    id: "remedies",
+    title: "Remedies",
+    blurb:
+      "How long a Remedy — a change to a cluster an Investigator proposed — waits for the two different approvers it needs, and then for oto to execute it. A Remedy past the window is recorded expired and declared on its Incident; it is never retried.",
+    keys: ["remedy_approval_window_s"],
+  },
 ];
 
 /* -------------------------------------------------------------------------- */
@@ -640,6 +741,16 @@ const VERBOSITY_LABEL: Record<Verbosity, string> = {
 };
 
 export const VERBOSITY_OPTIONS = labelled<Verbosity>(VerbositySchema.options, VERBOSITY_LABEL);
+
+/**
+ * The two positions of an `onoff` knob, as the string the select hands back.
+ * The labels are `investigations_enabled`'s own, because it is the only `onoff`
+ * knob: a second one gets its own labels rather than borrowing these.
+ */
+export const ON_OFF_OPTIONS: readonly { readonly value: "true" | "false"; readonly label: string }[] = [
+  { value: "true", label: "On — enabled Investigators may start new Investigations" },
+  { value: "false", label: "Off — nothing new starts; each is recorded skipped (disabled)" },
+];
 
 /* ⛔ THE MENTION VOCABULARY WAS HERE AND IS DELETED (git-bug bd0fb1d):
    MENTION_MODE_LABEL, MENTION_MODE_OPTIONS, MENTION_TOKEN_HINT, SEVERITY_LABEL,

@@ -260,7 +260,61 @@ export type SettingBound = S["SettingBoundDTO"];
 export type User = S["UserDTO"];
 export type ApiToken = S["ApiTokenDTO"];
 export type ApiTokenCreated = S["ApiTokenCreatedDTO"];
+/** A Slack member linked to the signed-in user (git-bug a556a5c). */
+export type SlackIdentity = S["SlackIdentityDTO"];
+/** Which Slack member a link code would link — read without using the code up. */
+export type SlackLinkPreview = S["SlackLinkPreviewDTO"];
+export type SlackLinkCodeRequest = S["SlackLinkCodeRequest"];
 export type VersionInfo = S["VersionDTO"];
+
+/* ---- investigators (ADR 0053) ------------------------------------------- */
+
+/** A named, versioned configuration of a model-driven investigation. */
+export type Investigator = S["InvestigatorDTO"];
+/**
+ * One run of one Investigator version against one Case, frozen once it ends.
+ * Its `finding` is a snapshot of what was seen when it ran — never live state
+ * (ADR 0016), and never an input to whether anyone is told (ADR 0053 §2).
+ */
+export type Investigation = S["InvestigationDTO"];
+/** The same run with its whole transcript — every Step, in order. */
+export type InvestigationDetail = S["InvestigationDetailDTO"];
+/** One immutable transcript entry: a model turn, or one Tool call and what came of it. */
+export type InvestigationStep = S["InvestigationStepDTO"];
+export type StepToolCall = S["StepToolCallDTO"];
+export type InvestigationStatus = S["InvestigationStatus"];
+export type InvestigationReason = S["InvestigationReason"];
+/** What came of one Tool call. `null` on a model turn. */
+export type StepOutcome = NonNullable<InvestigationStep["outcome"]>;
+/**
+ * The org's Classification set (ADR 0053 §5): the operator's closed vocabulary a
+ * Finding is classified in. Empty by default — oto ships no classes — and
+ * `unclassified` is never in it, because it is always admissible.
+ */
+export type InvestigationClassSet = S["InvestigationClassSetDTO"];
+export type InvestigationClass = S["InvestigationClassDTO"];
+/**
+ * A change a Finding proposes and only a human can apply (ADR 0053 §2): a policy's
+ * count condition, or one Case into one Incident. `open` or `applied`; one that lapsed
+ * unapplied is never listed. There is no other verb on it.
+ */
+export type Suggestion = S["SuggestionDTO"];
+/**
+ * A change to a cluster an Investigator proposed and oto executes only after one or two
+ * DIFFERENT holders of the grant on its ToolServer approve it (ADR 0054). The exact
+ * command first: `tool` and the exact `arguments`, or `no_tool`.
+ */
+export type Remedy = S["RemedyDTO"];
+/** How a Remedy's required approvals were set (ADR 0054 §3, git-bug eb4f21b). */
+export type RemedyRisk = S["RemedyRiskDTO"];
+/**
+ * The org's Remedy risk rules and its risk model (ADR 0054 §3): the most severe matching
+ * rule wins, no match is two, an unparseable command is two, and a model may only raise.
+ */
+export type RemedyRiskRules = S["RemedyRiskRulesDTO"];
+export type RemedyRiskRule = S["RemedyRiskRuleDTO"];
+/** One configured model endpoint — a candidate risk model. The key is never returned. */
+export type ModelProvider = S["ModelProviderDTO"];
 
 /* ---- requests ----------------------------------------------------------- */
 
@@ -270,6 +324,10 @@ export type CreateIncidentRequest = S["CreateIncidentRequest"];
 export type AddIncidentCaseRequest = S["AddIncidentCaseRequest"];
 export type MoveIncidentCaseRequest = S["MoveIncidentCaseRequest"];
 export type CreateCorrelatorRequest = S["CreateCorrelatorRequest"];
+export type RequestInvestigationRequest = S["RequestInvestigationRequest"];
+export type ReplaceInvestigationClassesRequest = S["ReplaceInvestigationClassesRequest"];
+export type ApplySuggestionRequest = S["ApplySuggestionRequest"];
+export type ApproveRemedyRequest = S["ApproveRemedyRequest"];
 export type UpdateCorrelatorRequest = S["UpdateCorrelatorRequest"];
 export type CommentRequest = S["CommentRequest"];
 /** Exactly one of `until` and `duration_seconds`. Both, or neither, is a 422. */

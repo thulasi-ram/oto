@@ -532,7 +532,12 @@ learn); assignment and ownership (no signal row has a person-reference column �
 past-tense attribution and the only exception); unprompted reminders *at all* (the single reminder
 stage that once existed was withdrawn, and it was the last one — there is no first stage for a
 second to follow); human writes to a signal's `state` (no resolve, close, merge, dismiss or reopen
-endpoint; `ack_state` is the only state axis a human may write); any write path into your cluster;
+endpoint; `ack_state` is the only state axis a human may write); any write path into your cluster
+other than a **Remedy** — proposed by an Investigator, executed once through the operator's own write
+ToolServer, and only after one or two different holders of the approver grant say yes — two unless
+the operator's risk rules say one (ADR 0054,
+[`setup/remedies.md`](/oto/setup/remedies/)); an AI that decides who is told — an **Investigator** reads
+and proposes and never decides delivery (ADR 0053, [`setup/investigators.md`](/oto/setup/investigators/));
 and measuring people (firing duration measures the signal — `MTTR`, `MTTA` and `SLA` measure humans
 and are banned words).
 
@@ -594,7 +599,8 @@ generation could hold many Cases where a Conversation may not.
 
 **Deferred, post-v1** — not retired, simply not built, and not to be stubbed beyond the ports that
 already exist: **correlation** (once called "incidents"), **k8scontext**, **changefeed**, **views**,
-**audit** (configuration changes only), **authz**, extra channel providers, anything AI-shaped.
+**audit** (configuration changes only), **authz**, extra channel providers. (Investigators are no
+longer deferred: ADR 0053 built them, and ADR 0054 the Remedy behind its approver grant.)
 
 **Permanently out** — there is no version of oto containing incidents, on-call, assignment,
 multi-stage escalation, paging, status pages, postmortems, SLA/MTTA measurement, manual

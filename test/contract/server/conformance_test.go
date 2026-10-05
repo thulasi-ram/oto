@@ -160,7 +160,49 @@ func TestTheRunningServerMatchesTheContract(t *testing.T) {
 //
 // ⬆️ 89 → 93 (ADR 0052 §2, git-bug 61eeddf). Four Correlator operations — list,
 // create, patch, delete — each with a probe that answers 2xx.
-const minimumSuccessfulOperations = 93
+//
+// ⬆️ 93 → 102 (ADR 0053, git-bug 8f1f071 and 180a525). Nine Investigator
+// operations — model endpoints list and create, Investigators list, create, get
+// and patch, a Case's Investigations list and request, one Investigation's read —
+// each with a probe that answers 2xx.
+//
+// ⬆️ 102 → 106 (ADR 0053 §3, 0054 §5, git-bug 2e9a086). Five ToolServer operations
+// landed and FOUR of them answer 2xx — list, create, get, and the Tool list. The
+// fifth, discover, is driven to its 502: this world runs no MCP server, so it is
+// driven but not credited, which is why the floor rises by four and not five.
+//
+// ⬆️ 106 → 108 (ADR 0053 §4, git-bug 74ea849). An Incident's Investigations — list
+// and request — each with a probe that answers 2xx.
+//
+// ⬆️ 108 → 110 (ADR 0053 §5, git-bug 4298aa0). The org's Classification set — read and
+// replace — each with a probe that answers 2xx.
+//
+// ⬆️ 110 → 111 (ADR 0053 §2, git-bug 8327c00). A Finding's Suggestions — list and apply
+// — landed, and ONE answers 2xx: the list, empty, because this world works no runs. Apply
+// needs a Suggestion only a run's Finding makes, so it is driven to its typed 404 and not
+// credited, which is why the floor rises by one and not two.
+//
+// ⬆️ 111 → 112 (ADR 0054 §4, git-bug 47f67c8). A ToolServer's Remedy approvers — one read,
+// answering 2xx with an empty list. There is no write operation to drive: a grant is
+// given only by `oto grant` on the host.
+//
+// ⬆️ 112 → 113 (ADR 0054, git-bug 4148256). Four Remedy operations — list, read, approve and
+// decline — landed, and ONE answers 2xx: the list, empty, because this world works no runs. A
+// Remedy is made only by a run's Finding, so the other three are driven to their typed 404s
+// and not credited, which is why the floor rises by one and not four.
+//
+// ⬆️ 113 → 115 (ADR 0054 §3, git-bug eb4f21b). The org's Remedy risk rules — read and
+// replace — each with a probe that answers 2xx.
+//
+// ⬇️ 115 → 114 (owner ruling 2026-10-05 on git-bug eb4f21b). The replace is gone: the rules
+// are written by `oto remedy-rules apply` from the host shell and no route writes them, so
+// its operation, and the one 2xx probe it was credited for, are removed. The read stays.
+//
+// ⬆️ 114 → 115 (git-bug a556a5c). Four self-service Slack link operations under `/me`, and ONE
+// answers 2xx: the list, empty. A link code exists only once a Slack member presses a Remedy
+// button, which this world never does, so the preview and the link are driven to their typed
+// 422s and the unlink to its 404 — not credited, which is why the floor rises by one and not four.
+const minimumSuccessfulOperations = 115
 
 /* -------------------------------------------------------------------------- */
 /* The three assertions                                                       */

@@ -41,6 +41,11 @@ const (
 	// DOCUMENTED: button element, "maximum length for the text in this field is
 	// 75 characters".
 	maxButtonText = 75
+	// DOCUMENTED: confirmation dialog object — `title` "maximum length … is 100
+	// characters", `text` 300, and the `confirm` and `deny` button labels 30 each.
+	maxConfirmTitle  = 100
+	maxConfirmText   = 300
+	maxConfirmButton = 30
 	// DOCUMENTED: button `url` and overflow option `url`, "maximum length is 3000
 	// characters".
 	maxURL = 3000
@@ -219,15 +224,7 @@ func truncateAt(text string, hard int, moreURL string) string {
 		return ""
 	}
 
-	suffix := ellipsis
-	if moreURL != "" {
-		// `*2 <= hard` IS the "at least as long as the pointer" rule, stated as the
-		// arithmetic rather than as a comment about the arithmetic.
-		if withLink := ellipsis + " " + link(moreURL, seeFullDetail); len(withLink)*2 <= hard {
-			suffix = withLink
-		}
-	}
-
+	suffix := truncationSuffix(hard, moreURL)
 	cut := hard - len(suffix)
 	head := text[:cut]
 	// Never split a rune, and never split a link: cutting inside "<url|label>"
@@ -240,6 +237,29 @@ func truncateAt(text string, hard int, moreURL string) string {
 	}
 	head = strings.TrimRight(head, " \t\n·•-")
 	return head + suffix
+}
+
+// truncationSuffix is what truncateAt appends when it cuts: the ellipsis, and the link to the
+// rest when the link costs at most half the budget.
+func truncationSuffix(hard int, moreURL string) string {
+	if moreURL != "" {
+		// `*2 <= hard` IS the "at least as long as the pointer" rule, stated as the
+		// arithmetic rather than as a comment about the arithmetic.
+		if withLink := ellipsis + " " + link(moreURL, seeFullDetail); len(withLink)*2 <= hard {
+			return withLink
+		}
+	}
+	return ellipsis
+}
+
+// sectionKeeps is how many leading bytes of a section's text `truncateSection` keeps whatever
+// follows them: a section no longer than this is never cut, and a longer one keeps every byte
+// of a leading part this long or shorter that ends on a rune and closes every link it opens
+// (and does not end in the blanks and dots the cut trims). A renderer that must know a part of a section SURVIVED (the
+// arguments on a Remedy card, E1) measures that part's ESCAPED bytes against this — never its
+// runes before escaping, which undercount `&` five times over.
+func sectionKeeps(moreURL string) int {
+	return maxSectionText - len(truncationSuffix(maxSectionText, moreURL))
 }
 
 // truncateRunes cuts a short string (a button label, a title) on a rune boundary

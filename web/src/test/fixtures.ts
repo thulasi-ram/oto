@@ -25,6 +25,10 @@ import type {
   Incident,
   IncidentDetail,
   IncidentMember,
+  Investigation,
+  InvestigationDetail,
+  InvestigationStep,
+  Investigator,
   OrgSettingsView,
   Policy,
   RuleSnapshot,
@@ -503,6 +507,10 @@ export function orgSettings(
     raw_retention_days: 30,
     event_retention_months: 13,
     default_verbosity: "status_changes",
+    investigations_enabled: true,
+    investigation_daily_tokens: 2000000,
+    investigation_concurrency: 2,
+    remedy_approval_window_s: 3600,
     // ⛔ `refire_grace_s` AND `group_close_delay_s` LED THIS BAG AND BOTH ARE
     // DELETED (git-bug 7287b28) — off the wire, not merely off the screen.
     //
@@ -588,6 +596,135 @@ export function statsOverview(patch: Partial<StatsOverview> = {}): StatsOverview
     sources: { healthy: 0, degraded: 0, unreachable: 0, unknown: 0 },
     channels: { healthy: 0, degraded: 0, auth_failed: 0, config_invalid: 0 },
     generated_at: T0,
+    ...patch,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Investigators (ADR 0053)                                                   */
+/* -------------------------------------------------------------------------- */
+
+const INVESTIGATOR_ID = "3e7b1c2d-4f5a-4b6c-8d7e-9f0a1b2c3d4e";
+
+/** One Investigator as a row of `GET /api/v1/investigators`, at version 3. */
+export function investigator(patch: Partial<Investigator> = {}): Investigator {
+  return {
+    id: INVESTIGATOR_ID,
+    name: "firstlook",
+    enricher: "investigator.firstlook",
+    enabled: true,
+    budgets: { max_steps: 20, max_tokens: 200000, max_wall_seconds: 300 },
+    min_interval_seconds: 600,
+    investigates_incidents: false,
+    current_version: {
+      id: "6a1b2c3d-4e5f-4a6b-9c7d-8e9f0a1b2c3d",
+      version: 3,
+      model_provider_id: "9d8c7b6a-5f4e-4d3c-8b2a-1f0e9d8c7b6a",
+      model: { endpoint: "https://llm-gateway.internal/v1", name: "gpt-4.1-mini" },
+      prompt: "Read the Case and say what is most likely wrong.",
+      tools: ["oto_case_timeline", "oto_prior_findings"],
+      created_at: T0,
+    },
+    created_at: T0,
+    updated_at: T0,
+    ...patch,
+  };
+}
+
+/**
+ * One finished Investigation of the case fixture, as a row of
+ * `GET /api/v1/cases/{id}/investigations`.
+ *
+ * ⭐ `ended_at` IS NOT `requested_at`, AND NEITHER IS T0. The Finding is labelled
+ * with the moment it was REACHED, so a fixture whose three instants coincided
+ * would pass against a screen that labelled it with the wrong one.
+ */
+export function investigation(patch: Partial<Investigation> = {}): Investigation {
+  return {
+    id: "c0ffee00-1111-4222-8333-444455556666",
+    subject_kind: "case",
+    subject_id: "0f8fad5b-d9cb-469f-a165-70867728950e",
+    investigator_id: INVESTIGATOR_ID,
+    investigator_name: "firstlook",
+    investigator_version: 3,
+    investigator_version_id: "6a1b2c3d-4e5f-4a6b-9c7d-8e9f0a1b2c3d",
+    model: { endpoint: "https://llm-gateway.internal/v1", name: "gpt-4.1-mini" },
+    status: "completed",
+    reason: null,
+    reason_detail: null,
+    budgets: { max_steps: 20, max_tokens: 200000, max_wall_seconds: 300 },
+    tokens_in: 1200,
+    tokens_out: 340,
+    tool_calls: 1,
+    finding: "The checkout pods are crash-looping on a missing secret since the 09:02 deploy.",
+    // ⭐ null BY DEFAULT: oto ships no classes, so a Finding carries none until an
+    // operator writes a set (ADR 0053 §5).
+    classification: null,
+    partial: false,
+    requested_by_label: "Priya R.",
+    requested_at: "2026-08-09T09:10:00.000Z",
+    not_before: null,
+    started_at: "2026-08-09T09:10:02.000Z",
+    ended_at: "2026-08-09T09:11:30.000Z",
+    ...patch,
+  };
+}
+
+/** One transcript entry. A model turn unless `kind` says otherwise. */
+export function step(patch: Partial<InvestigationStep> = {}): InvestigationStep {
+  return {
+    seq: 1,
+    kind: "model_turn",
+    text: null,
+    tool_calls: null,
+    finish_reason: null,
+    tokens_in: null,
+    tokens_out: null,
+    call_id: null,
+    tool_name: null,
+    arguments: null,
+    outcome: null,
+    result: null,
+    duration_ms: 0,
+    recorded_at: "2026-08-09T09:10:05.000Z",
+    ...patch,
+  };
+}
+
+/** One Investigation with its transcript, as `GET /api/v1/investigations/{id}` serves it. */
+export function investigationDetail(
+  patch: Partial<InvestigationDetail> = {},
+): InvestigationDetail {
+  return {
+    ...investigation(),
+    steps: [
+      step({
+        seq: 1,
+        tool_calls: [{ id: "call_1", name: "oto_case_timeline", arguments: "{}" }],
+        finish_reason: "tool_calls",
+        tokens_in: 600,
+        tokens_out: 40,
+        duration_ms: 900,
+      }),
+      step({
+        seq: 2,
+        kind: "tool_call",
+        call_id: "call_1",
+        tool_name: "oto_case_timeline",
+        arguments: "{}",
+        outcome: "ok",
+        result: "[fired 09:02]",
+        duration_ms: 35,
+      }),
+      step({
+        seq: 3,
+        text: "The checkout pods are crash-looping on a missing secret since the 09:02 deploy.",
+        finish_reason: "stop",
+        tokens_in: 600,
+        tokens_out: 300,
+        duration_ms: 2100,
+      }),
+    ],
     ...patch,
   };
 }

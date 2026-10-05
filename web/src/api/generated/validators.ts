@@ -100,7 +100,7 @@ export const ActorKindSchema = v.picklist(["system", "ingest", "reconciler", "re
 
 export const AlertEventTypeSchema = v.picklist(["alert.created", "alert.mutated", "case.opened", "case.reopened", "case.suppressed", "case.unsuppressed", "case.resolved", "case.expired", "case.acknowledged", "case.unacknowledged", "alert.snoozed", "alert.unsnoozed", "group.opened", "group.closed", "group.member_joined", "group.member_left", "rule.snapshot_captured", "rule.definition_changed", "rule.lookup_failed", "enrichment.completed", "enrichment.failed", "notification.created", "notification.suppressed", "delivery.sent", "delivery.updated", "delivery.failed", "delivery.skipped", "delivery.dead", "comment.added", "source.unreachable", "source.recovered", "source.clock_skew", "incident.case_added", "incident.case_removed", "incident.case_moved"]);
 
-export const NotificationReasonSchema = v.picklist(["fired", "all_resolved", "repeat", "suppressed", "unsuppressed", "expired", "refired", "acked", "unacked", "snoozed", "unsnoozed", "enriched", "rule_changed", "comment", "digest", "drawn", "case_added", "case_removed", "quiet", "active_again"]);
+export const NotificationReasonSchema = v.picklist(["fired", "all_resolved", "repeat", "suppressed", "unsuppressed", "expired", "refired", "acked", "unacked", "snoozed", "unsnoozed", "enriched", "rule_changed", "comment", "digest", "drawn", "case_added", "case_removed", "quiet", "active_again", "finding", "remedy_proposed", "remedy_approved", "remedy_declined", "remedy_expired", "remedy_executed", "remedy_failed"]);
 
 export const NotificationStatusSchema = v.picklist(["pending", "dispatched", "partial", "delivered", "failed", "suppressed"]);
 
@@ -1656,7 +1656,7 @@ export const PolicyDTOSchema = v.looseObject({
   "reasons": v.pipe(
     v.array(NotificationReasonSchema),
     v.minLength(1),
-    v.maxLength(20),
+    v.maxLength(27),
     v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
   ),
   "channel_ids": v.pipe(
@@ -1696,6 +1696,7 @@ export const PolicyDTOSchema = v.looseObject({
     v.minValue(1),
     v.maxValue(10000),
   ))),
+  "digest_investigator_id": v.exactOptional(UuidSchema),
   "created_at": TimestampSchema,
   "updated_at": TimestampSchema,
 });
@@ -2159,6 +2160,25 @@ export const OrgSettingsDTOSchema = v.looseObject({
     v.maxValue(120),
   ),
   "default_verbosity": VerbositySchema,
+  "investigations_enabled": v.boolean(),
+  "investigation_daily_tokens": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1000),
+    v.maxValue(1000000000),
+  ),
+  "investigation_concurrency": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+    v.maxValue(32),
+  ),
+  "remedy_approval_window_s": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(60),
+    v.maxValue(86400),
+  ),
 });
 
 export const OrgDTOSchema = v.looseObject({
@@ -3093,7 +3113,7 @@ export const CreatePolicyRequestSchema = v.strictObject({
   "reasons": v.pipe(
     v.array(NotificationReasonSchema),
     v.minLength(1),
-    v.maxLength(20),
+    v.maxLength(27),
     v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
   ),
   "channel_ids": v.pipe(
@@ -3133,6 +3153,7 @@ export const CreatePolicyRequestSchema = v.strictObject({
     v.minValue(1),
     v.maxValue(10000),
   )),
+  "digest_investigator_id": v.exactOptional(UuidSchema),
 });
 
 export const UpdatePolicyRequestSchema = v.pipe(
@@ -3156,7 +3177,7 @@ export const UpdatePolicyRequestSchema = v.pipe(
     "reasons": v.exactOptional(v.pipe(
       v.array(NotificationReasonSchema),
       v.minLength(1),
-      v.maxLength(20),
+      v.maxLength(27),
       v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
     )),
     "channel_ids": v.exactOptional(v.pipe(
@@ -3179,6 +3200,7 @@ export const UpdatePolicyRequestSchema = v.pipe(
       v.minValue(1),
       v.maxValue(10000),
     ))),
+    "digest_investigator_id": v.exactOptional(v.nullable(UuidSchema)),
     "subject_kinds": v.exactOptional(v.pipe(
       v.array(v.picklist(["alert", "case", "digest", "incident"])),
       v.maxLength(4),
@@ -3226,6 +3248,48 @@ export const CreateTokenRequestSchema = v.strictObject({
     v.maxLength(120),
   ),
   "expires_at": v.exactOptional(TimestampSchema),
+});
+
+export const SlackLinkCodeRequestSchema = v.strictObject({
+  "code": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(32),
+  ),
+});
+
+export const SlackLinkPreviewDTOSchema = v.looseObject({
+  "team_id": v.pipe(
+    v.string(),
+    v.regex(/^T[A-Z0-9]{2,}$/),
+  ),
+  "slack_user_id": v.pipe(
+    v.string(),
+    v.regex(/^[UW][A-Z0-9]{2,}$/),
+  ),
+  "handle": v.nullable(v.pipe(
+    v.string(),
+    v.maxLength(120),
+  )),
+  "expires_at": TimestampSchema,
+  "already_yours": v.boolean(),
+});
+
+export const SlackIdentityDTOSchema = v.looseObject({
+  "id": UuidSchema,
+  "team_id": v.pipe(
+    v.string(),
+    v.regex(/^T[A-Z0-9]{2,}$/),
+  ),
+  "slack_user_id": v.pipe(
+    v.string(),
+    v.regex(/^[UW][A-Z0-9]{2,}$/),
+  ),
+  "handle": v.nullable(v.pipe(
+    v.string(),
+    v.maxLength(120),
+  )),
+  "linked_at": TimestampSchema,
 });
 
 export const DeliveryDrillResponseSchema = v.looseObject({
@@ -3387,6 +3451,826 @@ export const CasePolicyListResponseSchema = v.looseObject({
 
 export const CasePolicyResponseSchema = v.looseObject({
   "data": CasePolicyDTOSchema,
+  "meta": MetaSchema,
+});
+
+export const ModelProviderDTOSchema = v.looseObject({
+  "id": UuidSchema,
+  "name": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(120),
+  ),
+  "base_url": v.pipe(
+    v.string(),
+    v.maxLength(2048),
+  ),
+  "model": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(200),
+  ),
+  "has_key": v.boolean(),
+  "created_at": TimestampSchema,
+  "updated_at": TimestampSchema,
+});
+
+export const CreateModelProviderRequestSchema = v.strictObject({
+  "name": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(120),
+  ),
+  "base_url": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(2048),
+  ),
+  "model": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(200),
+  ),
+  "api_key": v.exactOptional(v.pipe(
+    v.string(),
+    v.maxLength(4096),
+  )),
+});
+
+export const ModelIdentityDTOSchema = v.looseObject({
+  "endpoint": v.pipe(
+    v.string(),
+    v.maxLength(2048),
+  ),
+  "name": v.pipe(
+    v.string(),
+    v.maxLength(200),
+  ),
+});
+
+export const InvestigatorBudgetsDTOSchema = v.looseObject({
+  "max_steps": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+    v.maxValue(100),
+  ),
+  "max_tokens": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1000),
+    v.maxValue(2000000),
+  ),
+  "max_wall_seconds": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(10),
+    v.maxValue(1800),
+  ),
+});
+
+export const InvestigatorVersionDTOSchema = v.looseObject({
+  "id": UuidSchema,
+  "version": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+  ),
+  "model_provider_id": UuidSchema,
+  "model": ModelIdentityDTOSchema,
+  "prompt": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(32768),
+  ),
+  "tools": v.pipe(
+    v.array(v.pipe(
+      v.string(),
+      v.maxLength(64),
+    )),
+    v.maxLength(64),
+  ),
+  "created_at": TimestampSchema,
+});
+
+export const InvestigatorDTOSchema = v.looseObject({
+  "id": UuidSchema,
+  "name": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(63),
+  ),
+  "enricher": v.string(),
+  "enabled": v.boolean(),
+  "budgets": InvestigatorBudgetsDTOSchema,
+  "min_interval_seconds": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+    v.maxValue(86400),
+  ),
+  "investigates_incidents": v.boolean(),
+  "current_version": InvestigatorVersionDTOSchema,
+  "created_at": TimestampSchema,
+  "updated_at": TimestampSchema,
+});
+
+export const InvestigatorDetailDTOSchema = v.intersect([
+  InvestigatorDTOSchema,
+  v.looseObject({
+    "versions": v.pipe(
+      v.array(InvestigatorVersionDTOSchema),
+      v.maxLength(100),
+    ),
+  }),
+]);
+
+export const CreateInvestigatorRequestSchema = v.strictObject({
+  "name": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(63),
+    v.regex(/^[a-z][a-z0-9]{0,62}$/),
+  ),
+  "enabled": v.exactOptional(v.boolean(), true),
+  "budgets": v.exactOptional(InvestigatorBudgetsDTOSchema),
+  "min_interval_seconds": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+    v.maxValue(86400),
+  ), 600),
+  "investigates_incidents": v.exactOptional(v.boolean(), false),
+  "model_provider_id": UuidSchema,
+  "prompt": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(32768),
+  ),
+  "tools": v.exactOptional(v.pipe(
+    v.array(v.pipe(
+      v.string(),
+      v.minLength(1),
+      v.maxLength(64),
+      v.regex(/^[A-Za-z0-9_-]{1,64}$/),
+    )),
+    v.maxLength(64),
+    v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
+  ), () => ([])),
+});
+
+export const UpdateInvestigatorRequestSchema = v.strictObject({
+  "enabled": v.exactOptional(v.boolean()),
+  "budgets": v.exactOptional(InvestigatorBudgetsDTOSchema),
+  "min_interval_seconds": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+    v.maxValue(86400),
+  )),
+  "investigates_incidents": v.exactOptional(v.boolean()),
+  "model_provider_id": v.exactOptional(UuidSchema),
+  "prompt": v.exactOptional(v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(32768),
+  )),
+  "tools": v.exactOptional(v.pipe(
+    v.array(v.pipe(
+      v.string(),
+      v.minLength(1),
+      v.maxLength(64),
+      v.regex(/^[A-Za-z0-9_-]{1,64}$/),
+    )),
+    v.maxLength(64),
+    v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
+  )),
+});
+
+export const RequestInvestigationRequestSchema = v.strictObject({
+  "investigator_id": UuidSchema,
+});
+
+export const InvestigationStatusSchema = v.picklist(["queued", "running", "completed", "exhausted", "failed", "skipped"]);
+
+export const InvestigationReasonSchema = v.picklist(["step_budget", "token_budget", "wall_time_budget", "usage_missing", "model_error", "model_changed", "subject_gone", "interrupted", "internal", "disabled", "budget", "window_closed"]);
+
+export const InvestigationDTOSchema = v.looseObject({
+  "id": UuidSchema,
+  "subject_kind": v.picklist(["case", "incident", "digest"]),
+  "subject_id": UuidSchema,
+  "investigator_id": UuidSchema,
+  "investigator_name": v.pipe(
+    v.string(),
+    v.maxLength(63),
+  ),
+  "investigator_version": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+  ),
+  "investigator_version_id": UuidSchema,
+  "model": ModelIdentityDTOSchema,
+  "status": InvestigationStatusSchema,
+  "reason": v.nullable(InvestigationReasonSchema),
+  "reason_detail": v.nullable(v.pipe(
+    v.string(),
+    v.maxLength(2000),
+  )),
+  "budgets": InvestigatorBudgetsDTOSchema,
+  "tokens_in": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+  ),
+  "tokens_out": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+  ),
+  "tool_calls": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+  ),
+  "finding": v.nullable(v.pipe(
+    v.string(),
+    v.maxLength(16384),
+  )),
+  "classification": v.nullable(v.pipe(
+    v.string(),
+    v.maxLength(63),
+    v.regex(/^[a-z][a-z0-9_-]{0,62}$/),
+  )),
+  "partial": v.boolean(),
+  "requested_by_label": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(200),
+  ),
+  "requested_at": TimestampSchema,
+  "not_before": v.nullable(TimestampSchema),
+  "started_at": v.nullable(TimestampSchema),
+  "ended_at": v.nullable(TimestampSchema),
+  "digest_window_start": v.exactOptional(TimestampSchema),
+  "digest_window_end": v.exactOptional(TimestampSchema),
+});
+
+export const StepToolCallDTOSchema = v.looseObject({
+  "id": v.string(),
+  "name": v.string(),
+  "arguments": v.string(),
+});
+
+export const InvestigationStepDTOSchema = v.looseObject({
+  "seq": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+  ),
+  "kind": v.picklist(["model_turn", "tool_call"]),
+  "text": v.nullable(v.string()),
+  "tool_calls": v.nullable(v.pipe(
+    v.array(StepToolCallDTOSchema),
+    v.maxLength(1000),
+  )),
+  "finish_reason": v.nullable(v.string()),
+  "tokens_in": v.nullable(v.pipe(
+    v.number(),
+    v.integer(),
+  )),
+  "tokens_out": v.nullable(v.pipe(
+    v.number(),
+    v.integer(),
+  )),
+  "call_id": v.nullable(v.string()),
+  "tool_name": v.nullable(v.string()),
+  "arguments": v.nullable(v.string()),
+  "outcome": v.nullable(v.picklist(["ok", "refused", "timeout", "truncated", "failed"])),
+  "result": v.nullable(v.string()),
+  "duration_ms": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+  ),
+  "recorded_at": TimestampSchema,
+});
+
+export const InvestigationDetailDTOSchema = v.intersect([
+  InvestigationDTOSchema,
+  v.looseObject({
+    "steps": v.pipe(
+      v.array(InvestigationStepDTOSchema),
+      v.maxLength(1000),
+    ),
+  }),
+]);
+
+export const ModelProviderListResponseSchema = v.looseObject({
+  "data": v.array(ModelProviderDTOSchema),
+  "page": PageInfoSchema,
+  "meta": MetaSchema,
+});
+
+export const ModelProviderResponseSchema = v.looseObject({
+  "data": ModelProviderDTOSchema,
+  "meta": MetaSchema,
+});
+
+export const ToolServerDTOSchema = v.looseObject({
+  "id": UuidSchema,
+  "name": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(24),
+    v.regex(/^[a-z]([a-z0-9-]{0,22}[a-z0-9])?$/),
+  ),
+  "url": v.pipe(
+    v.string(),
+    v.maxLength(2048),
+  ),
+  "transport": v.picklist(["streamable_http", "sse"]),
+  "access": v.picklist(["read", "write"]),
+  "has_token": v.boolean(),
+  "call_timeout_seconds": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+    v.maxValue(120),
+  ),
+  "max_result_bytes": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1024),
+    v.maxValue(61440),
+  ),
+  "discovered_at": v.nullable(TimestampSchema),
+  "discovery_failed_at": v.nullable(TimestampSchema),
+  "discovery_error": v.nullable(v.pipe(
+    v.string(),
+    v.maxLength(2000),
+  )),
+  "created_at": TimestampSchema,
+  "updated_at": TimestampSchema,
+});
+
+export const CreateToolServerRequestSchema = v.strictObject({
+  "name": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(24),
+  ),
+  "url": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(2048),
+  ),
+  "transport": v.exactOptional(v.picklist(["streamable_http", "sse"])),
+  "access": v.picklist(["read", "write"]),
+  "token": v.exactOptional(v.pipe(
+    v.string(),
+    v.maxLength(4096),
+  )),
+  "call_timeout_seconds": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+    v.maxValue(120),
+  )),
+  "max_result_bytes": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1024),
+    v.maxValue(61440),
+  )),
+});
+
+export const ToolServerToolDTOSchema = v.looseObject({
+  "name": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(128),
+  ),
+  "qualified_name": v.nullable(v.pipe(
+    v.string(),
+    v.maxLength(64),
+  )),
+  "description": v.pipe(
+    v.string(),
+    v.maxLength(4096),
+  ),
+  "input_schema": v.nullable(v.record(v.string(), v.unknown())),
+  "read_only_hint": v.nullable(v.boolean()),
+  "usable": v.boolean(),
+  "unusable_reason": v.nullable(v.string()),
+});
+
+export const RemedyApproverDTOSchema = v.looseObject({
+  "user_id": v.pipe(
+    v.string(),
+    v.uuid(),
+  ),
+  "email": v.string(),
+  "display_name": v.string(),
+  "granted_at": v.pipe(
+    v.string(),
+    v.isoTimestamp(),
+  ),
+  "granted_by": v.picklist(["cli"]),
+  "counts": v.boolean(),
+});
+
+export const RemedyApproverListResponseSchema = v.looseObject({
+  "data": v.pipe(
+    v.array(RemedyApproverDTOSchema),
+    v.maxLength(200),
+  ),
+  "page": PageInfoSchema,
+  "meta": MetaSchema,
+});
+
+export const ToolServerListResponseSchema = v.looseObject({
+  "data": v.array(ToolServerDTOSchema),
+  "page": PageInfoSchema,
+  "meta": MetaSchema,
+});
+
+export const ToolServerResponseSchema = v.looseObject({
+  "data": ToolServerDTOSchema,
+  "meta": MetaSchema,
+});
+
+export const ToolServerToolListResponseSchema = v.looseObject({
+  "data": v.pipe(
+    v.array(ToolServerToolDTOSchema),
+    v.maxLength(200),
+  ),
+  "page": PageInfoSchema,
+  "meta": MetaSchema,
+});
+
+export const InvestigatorListResponseSchema = v.looseObject({
+  "data": v.array(InvestigatorDTOSchema),
+  "page": PageInfoSchema,
+  "meta": MetaSchema,
+});
+
+export const InvestigatorResponseSchema = v.looseObject({
+  "data": InvestigatorDetailDTOSchema,
+  "meta": MetaSchema,
+});
+
+export const InvestigationListResponseSchema = v.looseObject({
+  "data": v.array(InvestigationDTOSchema),
+  "page": PageInfoSchema,
+  "meta": MetaSchema,
+});
+
+export const InvestigationResponseSchema = v.looseObject({
+  "data": InvestigationDetailDTOSchema,
+  "meta": MetaSchema,
+});
+
+export const InvestigationClassDTOSchema = v.looseObject({
+  "name": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(63),
+    v.regex(/^[a-z][a-z0-9_-]{0,62}$/),
+  ),
+  "description": v.pipe(
+    v.string(),
+    v.maxLength(500),
+  ),
+});
+
+export const InvestigationClassSetDTOSchema = v.looseObject({
+  "classes": v.pipe(
+    v.array(InvestigationClassDTOSchema),
+    v.maxLength(50),
+  ),
+});
+
+export const InvestigationClassRequestSchema = v.strictObject({
+  "name": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(63),
+  ),
+  "description": v.exactOptional(v.pipe(
+    v.string(),
+    v.maxLength(500),
+  ), ""),
+});
+
+export const ReplaceInvestigationClassesRequestSchema = v.strictObject({
+  "classes": v.pipe(
+    v.array(InvestigationClassRequestSchema),
+    v.maxLength(50),
+  ),
+});
+
+export const InvestigationClassSetResponseSchema = v.looseObject({
+  "data": InvestigationClassSetDTOSchema,
+  "meta": MetaSchema,
+});
+
+export const CountConditionSuggestionDTOSchema = v.looseObject({
+  "policy_id": UuidSchema,
+  "policy_name": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(120),
+  ),
+  "count_min": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(2),
+    v.maxValue(10000),
+  ),
+  "count_window_seconds": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(60),
+    v.maxValue(86400),
+  ),
+  "was_count_min": v.nullable(v.pipe(
+    v.number(),
+    v.integer(),
+  )),
+  "was_count_window_seconds": v.nullable(v.pipe(
+    v.number(),
+    v.integer(),
+  )),
+});
+
+export const MembershipSuggestionDTOSchema = v.looseObject({
+  "incident_id": UuidSchema,
+  "incident_number": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+  ),
+  "case_id": UuidSchema,
+  "case_number": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+  ),
+  "moves_from_incident_number": v.nullable(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+  )),
+});
+
+export const SuggestionDTOSchema = v.looseObject({
+  "id": UuidSchema,
+  "investigation_id": UuidSchema,
+  "kind": v.picklist(["policy_count_condition", "incident_membership"]),
+  "state": v.picklist(["open", "applied"]),
+  "why": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(1000),
+  ),
+  "proposed_at": v.pipe(
+    v.string(),
+    v.isoTimestamp(),
+  ),
+  "lapses_at": v.pipe(
+    v.string(),
+    v.isoTimestamp(),
+  ),
+  "applied_at": v.nullable(v.pipe(
+    v.string(),
+    v.isoTimestamp(),
+  )),
+  "applied_by_label": v.nullable(v.pipe(
+    v.string(),
+    v.maxLength(200),
+  )),
+  "count_condition": v.nullable(CountConditionSuggestionDTOSchema),
+  "membership": v.nullable(MembershipSuggestionDTOSchema),
+});
+
+export const ApplySuggestionRequestSchema = v.strictObject({
+  "moves_from_incident_number": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+  )),
+});
+
+export const SuggestionListResponseSchema = v.looseObject({
+  "data": v.array(SuggestionDTOSchema),
+  "page": PageInfoSchema,
+  "meta": MetaSchema,
+});
+
+export const SuggestionResponseSchema = v.looseObject({
+  "data": SuggestionDTOSchema,
+  "meta": MetaSchema,
+});
+
+export const RemedyToolDTOSchema = v.looseObject({
+  "tool_server_id": UuidSchema,
+  "tool_server_name": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(24),
+  ),
+  "tool_name": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(128),
+  ),
+});
+
+export const RemedyRiskDTOSchema = v.looseObject({
+  "set_by": v.picklist(["rule", "no_rule", "unparseable", "risk_model", "risk_model_failed", "risk_model_budget"]),
+  "rule": v.nullable(v.pipe(
+    v.string(),
+    v.regex(/^[a-z][a-z0-9_-]{0,62}$/),
+  )),
+  "detail": v.nullable(v.pipe(
+    v.string(),
+    v.maxLength(1000),
+  )),
+  "risk_model_check": v.picklist(["unset", "not_asked", "kept", "raised", "failed", "budget"]),
+  "risk_model": v.nullable(v.string()),
+  "risk_model_tokens": v.nullable(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+  )),
+});
+
+export const RemedyApprovalDTOSchema = v.looseObject({
+  "user_id": v.nullable(UuidSchema),
+  "label": v.pipe(
+    v.string(),
+    v.maxLength(200),
+  ),
+  "approved_at": v.pipe(
+    v.string(),
+    v.isoTimestamp(),
+  ),
+});
+
+export const RemedyTransitionDTOSchema = v.looseObject({
+  "from": v.nullable(v.picklist(["proposed", "approved", "executing"])),
+  "to": v.picklist(["proposed", "approved", "executing", "executed", "failed", "declined", "expired"]),
+  "actor_kind": v.picklist(["investigator", "user", "system"]),
+  "actor_label": v.pipe(
+    v.string(),
+    v.maxLength(200),
+  ),
+  "at": v.pipe(
+    v.string(),
+    v.isoTimestamp(),
+  ),
+  "failure_reason": v.nullable(v.picklist(["tool_error", "outcome_unknown", "tool_unavailable", "arguments_changed", "approvals_withdrawn"])),
+  "detail": v.nullable(v.pipe(
+    v.string(),
+    v.maxLength(2000),
+  )),
+  "declared_incident_id": v.nullable(UuidSchema),
+});
+
+export const RemedyDTOSchema = v.looseObject({
+  "id": UuidSchema,
+  "investigation_id": UuidSchema,
+  "subject_kind": v.picklist(["case", "incident"]),
+  "subject_id": UuidSchema,
+  "state": v.picklist(["proposed", "approved", "executing", "executed", "failed", "declined", "expired"]),
+  "tool": v.nullable(RemedyToolDTOSchema),
+  "no_tool": v.nullable(v.string()),
+  "blocked": v.nullable(v.string()),
+  "arguments": v.nullable(v.pipe(
+    v.string(),
+    v.maxLength(16384),
+  )),
+  "arguments_display": v.nullable(v.string()),
+  "arguments_sha256": v.nullable(v.pipe(
+    v.string(),
+    v.regex(/^[0-9a-f]{64}$/),
+  )),
+  "target": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(500),
+  ),
+  "description": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(2000),
+  ),
+  "proposed_by_label": v.pipe(
+    v.string(),
+    v.maxLength(200),
+  ),
+  "required_approvals": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+    v.maxValue(2),
+  ),
+  "risk": v.nullable(RemedyRiskDTOSchema),
+  "approvals": v.array(RemedyApprovalDTOSchema),
+  "proposed_at": v.pipe(
+    v.string(),
+    v.isoTimestamp(),
+  ),
+  "expires_at": v.pipe(
+    v.string(),
+    v.isoTimestamp(),
+  ),
+  "approved_at": v.nullable(v.pipe(
+    v.string(),
+    v.isoTimestamp(),
+  )),
+  "executing_at": v.nullable(v.pipe(
+    v.string(),
+    v.isoTimestamp(),
+  )),
+  "ended_at": v.nullable(v.pipe(
+    v.string(),
+    v.isoTimestamp(),
+  )),
+  "failure_reason": v.nullable(v.picklist(["tool_error", "outcome_unknown", "tool_unavailable", "arguments_changed", "approvals_withdrawn"])),
+  "detail": v.nullable(v.pipe(
+    v.string(),
+    v.maxLength(2000),
+  )),
+  "result": v.nullable(v.pipe(
+    v.string(),
+    v.maxLength(16384),
+  )),
+  "transitions": v.array(RemedyTransitionDTOSchema),
+});
+
+export const RemedyRiskRuleDTOSchema = v.looseObject({
+  "name": v.pipe(
+    v.string(),
+    v.regex(/^[a-z][a-z0-9_-]{0,62}$/),
+  ),
+  "tool": v.nullable(v.string()),
+  "verbs": v.pipe(
+    v.array(v.string()),
+    v.maxLength(20),
+  ),
+  "kinds": v.pipe(
+    v.array(v.string()),
+    v.maxLength(20),
+  ),
+  "namespaces": v.pipe(
+    v.array(v.string()),
+    v.maxLength(20),
+  ),
+  "reversibility": v.nullable(v.picklist(["reversible", "irreversible"])),
+  "approvals": v.picklist([1, 2]),
+});
+
+export const RemedyRiskRulesDTOSchema = v.looseObject({
+  "rules": v.pipe(
+    v.array(RemedyRiskRuleDTOSchema),
+    v.maxLength(100),
+  ),
+  "risk_model_provider_id": v.nullable(UuidSchema),
+  "written_by_label": v.nullable(v.pipe(
+    v.string(),
+    v.maxLength(200),
+  )),
+  "written_at": v.nullable(v.pipe(
+    v.string(),
+    v.isoTimestamp(),
+  )),
+  "reversible_verbs": v.array(v.string()),
+});
+
+export const RemedyRiskRulesResponseSchema = v.looseObject({
+  "data": RemedyRiskRulesDTOSchema,
+  "meta": MetaSchema,
+});
+
+export const ApproveRemedyRequestSchema = v.strictObject({
+  "arguments_sha256": v.pipe(
+    v.string(),
+    v.minLength(64),
+    v.maxLength(64),
+    v.regex(/^[0-9a-f]{64}$/),
+  ),
+});
+
+export const RemedyListResponseSchema = v.looseObject({
+  "data": v.array(RemedyDTOSchema),
+  "page": PageInfoSchema,
+  "meta": MetaSchema,
+});
+
+export const RemedyResponseSchema = v.looseObject({
+  "data": RemedyDTOSchema,
   "meta": MetaSchema,
 });
 
@@ -3601,6 +4485,19 @@ export const OrgSettingsPatchDTOSchema = v.looseObject({
     v.integer(),
   )),
   "default_verbosity": v.exactOptional(VerbositySchema),
+  "investigations_enabled": v.exactOptional(v.boolean()),
+  "investigation_daily_tokens": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+  )),
+  "investigation_concurrency": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+  )),
+  "remedy_approval_window_s": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+  )),
 });
 
 export const OrgSettingsViewDTOSchema = v.looseObject({
@@ -3657,6 +4554,25 @@ export const UpdateOrgSettingsRequestSchema = v.strictObject({
     v.maxValue(120),
   )),
   "default_verbosity": v.exactOptional(VerbositySchema),
+  "investigations_enabled": v.exactOptional(v.boolean()),
+  "investigation_daily_tokens": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1000),
+    v.maxValue(1000000000),
+  )),
+  "investigation_concurrency": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+    v.maxValue(32),
+  )),
+  "remedy_approval_window_s": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(60),
+    v.maxValue(86400),
+  )),
   "reset": v.exactOptional(v.pipe(
     v.array(v.pipe(
       v.string(),
@@ -3675,6 +4591,25 @@ export const ApiTokenListResponseSchema = v.looseObject({
 
 export const ApiTokenCreatedResponseSchema = v.looseObject({
   "data": ApiTokenCreatedDTOSchema,
+  "meta": MetaSchema,
+});
+
+export const SlackIdentityListResponseSchema = v.looseObject({
+  "data": v.pipe(
+    v.array(SlackIdentityDTOSchema),
+    v.maxLength(50),
+  ),
+  "page": PageInfoSchema,
+  "meta": MetaSchema,
+});
+
+export const SlackIdentityResponseSchema = v.looseObject({
+  "data": SlackIdentityDTOSchema,
+  "meta": MetaSchema,
+});
+
+export const SlackLinkPreviewResponseSchema = v.looseObject({
+  "data": SlackLinkPreviewDTOSchema,
   "meta": MetaSchema,
 });
 

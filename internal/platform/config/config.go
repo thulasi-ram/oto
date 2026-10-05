@@ -204,6 +204,14 @@ type JobsConfig struct {
 	// that lets an operator move it without a rebuild.
 	QueueReconcile int `koanf:"queue_reconcile" validate:"gte=0"`
 
+	// QueueInvestigate is the `investigate` queue's worker count (ADR 0053 §3): how
+	// many Investigations — each a chain of paid model calls of up to half an hour —
+	// the whole deployment runs at once. Each org's `investigation_concurrency` narrows
+	// its own share; this is the ceiling across them. Zero falls through to
+	// `jobs.DefaultQueueWorkers`. A knob of its own for queue_reconcile's reason: it
+	// answers a capacity question no other queue shares.
+	QueueInvestigate int `koanf:"queue_investigate" validate:"gte=0"`
+
 	FetchInterval time.Duration `koanf:"fetch_interval" validate:"gt=0"`
 	JobTimeout    time.Duration `koanf:"job_timeout"    validate:"gt=0"`
 	RescueAfter   time.Duration `koanf:"rescue_after"   validate:"gt=0"`

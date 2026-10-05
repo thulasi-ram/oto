@@ -98,7 +98,8 @@ var mappingFacts = []string{
 	"refired", "acked", "unacked", "snoozed", "unsnoozed",
 	"enriched", "rule_changed", "comment",
 	"digest",
-	"drawn", "case_added", "case_removed", "quiet", "active_again",
+	"drawn", "case_added", "case_removed", "quiet", "active_again", "finding",
+	"remedy_proposed", "remedy_approved", "remedy_declined", "remedy_expired", "remedy_executed", "remedy_failed",
 }
 
 // MappingFacts returns every fact a mapping is rendered for, freshly copied.
@@ -107,11 +108,21 @@ func MappingFacts() []string { return slices.Clone(mappingFacts) }
 // IsMappingFact reports whether fact is one an envelope can carry.
 func IsMappingFact(fact string) bool { return slices.Contains(mappingFacts, fact) }
 
-// IncidentFact reports whether fact is one of the five Incident facts, whose
+// IncidentFact reports whether fact is one of the twelve Incident facts, whose
 // envelope carries `incident` and no `group`.
 func IncidentFact(fact string) bool {
 	switch fact {
-	case "drawn", "case_added", "case_removed", "quiet", "active_again":
+	case "drawn", "case_added", "case_removed", "quiet", "active_again", "finding":
+		return true
+	}
+	return RemedyFact(fact)
+}
+
+// RemedyFact reports whether fact is one of the six Remedy transitions (ADR 0054 §2), whose
+// envelope's `incident` also carries `remedy`.
+func RemedyFact(fact string) bool {
+	switch fact {
+	case "remedy_proposed", "remedy_approved", "remedy_declined", "remedy_expired", "remedy_executed", "remedy_failed":
 		return true
 	}
 	return false

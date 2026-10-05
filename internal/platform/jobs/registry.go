@@ -146,6 +146,13 @@ type Handlers struct {
 	RetentionPrune   Handler[RetentionPruneArgs]
 	StatsRollup      Handler[StatsRollupArgs]
 	CacheExpire      Handler[CacheExpireArgs]
+
+	InvestigationsRun      Handler[InvestigationsRunArgs]
+	InvestigationsIncident Handler[InvestigationsIncidentArgs]
+	InvestigationsDigest   Handler[InvestigationsDigestArgs]
+
+	RemediesSweep   Handler[RemediesSweepArgs]
+	RemediesExecute Handler[RemediesExecuteArgs]
 }
 
 // stub returns the not-implemented handler for a kind.
@@ -275,6 +282,38 @@ func RegisterAll(r *Registry, h Handlers) error {
 			return Register(r, Spec{Queue: QueueMaintenance, PayloadVersion: 1, Timeout: 5 * time.Minute},
 				orStub(h.CacheExpire, KindCacheExpire))
 		},
+		func() error {
+			// The longest wall-time budget an Investigator may set, plus room to
+			// record the ending. The run's own budget is what stops it; this is the
+			// backstop that frees the worker if the budget's context did not.
+			return Register(r, Spec{Queue: QueueInvestigate, PayloadVersion: 1, Timeout: InvestigationJobTimeout},
+				orStub(h.InvestigationsRun, KindInvestigationsRun))
+		},
+		func() error {
+			// Two minutes, like `incidents.correlate`: it reads the org's Investigators
+			// and records at most one run each. It never calls a model.
+			return Register(r, Spec{Queue: QueueLifecycle, PayloadVersion: 1, Timeout: 2 * time.Minute},
+				orStub(h.InvestigationsIncident, KindInvestigationsIncident))
+		},
+		func() error {
+			// Two minutes, like `investigations.incident`: one tenant's digest policies,
+			// at most one recorded run each. It never calls a model.
+			return Register(r, Spec{Queue: QueueLifecycle, PayloadVersion: 1, Timeout: 2 * time.Minute},
+				orStub(h.InvestigationsDigest, KindInvestigationsDigest))
+		},
+		func() error {
+			// Two minutes, like `investigations.digest`: one tenant's Remedies past their
+			// window, one short transaction each. It never reaches a ToolServer.
+			return Register(r, Spec{Queue: QueueLifecycle, PayloadVersion: 1, Timeout: 2 * time.Minute},
+				orStub(h.RemediesSweep, KindRemediesSweep))
+		},
+		func() error {
+			// The longest per-call timeout a ToolServer may set, plus room to claim before
+			// and to record after. The call's own timeout is what stops it; this frees the
+			// worker if that context did not, and the Remedy stays `executing` for the sweep.
+			return Register(r, Spec{Queue: QueueInvestigate, PayloadVersion: 1, Timeout: RemedyExecuteJobTimeout},
+				orStub(h.RemediesExecute, KindRemediesExecute))
+		},
 	}
 
 	for _, reg := range regs {
@@ -346,6 +385,18 @@ func AddDefaultPeriodic(r *Registry, clk clock.Clock) {
 	// out, and waiting an hour to answer that is an hour of not knowing.
 	add(time.Hour, KindNotifyDigestReconcile, func() (river.JobArgs, *river.InsertOpts) {
 		return NotifyDigestReconcileArgs{}, nil
+	})
+	// The digest-summary arming tick (git-bug 3e96f5a), on the digest tick's minute
+	// because a window's lead is measured in minutes. It only arms runs; the digest is
+	// sent by `notify.digest` whatever this does.
+	add(time.Minute, KindInvestigationsDigest, func() (river.JobArgs, *river.InsertOpts) {
+		return InvestigationsDigestArgs{}, nil
+	})
+	// The Remedy sweep (git-bug 4148256), on the same minute: a window is an hour by
+	// default and a minute at its shortest, so a minute is the resolution the record
+	// needs. The refusal does not wait for it — a Remedy past its window reads expired.
+	add(time.Minute, KindRemediesSweep, func() (river.JobArgs, *river.InsertOpts) {
+		return RemediesSweepArgs{}, nil
 	})
 	add(time.Hour, KindPartitionsManage, func() (river.JobArgs, *river.InsertOpts) {
 		return PartitionsManageArgs{}, nil

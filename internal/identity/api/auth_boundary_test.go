@@ -544,6 +544,11 @@ func sessionOnlyRoutes() []struct{ method, path string } {
 		{http.MethodPost, "/api-tokens"},
 		{http.MethodDelete, "/api-tokens/" + uuid.NewString()},
 		{http.MethodPatch, "/org/settings"},
+		// The self-service Slack link (git-bug a556a5c): a link decides whose approval a Slack
+		// click counts as, so a PAT may not preview, make or drop one.
+		{http.MethodPost, "/me/slack-identities/preview"},
+		{http.MethodPost, "/me/slack-identities"},
+		{http.MethodDelete, "/me/slack-identities/" + uuid.NewString()},
 	}
 }
 

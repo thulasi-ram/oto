@@ -133,6 +133,18 @@ type Action struct {
 	Value       string           `json:"value,omitempty"`
 	Style       string           `json:"style,omitempty"`
 	Options     []OverflowOption `json:"options,omitempty"`
+	// Confirm is a button's confirmation dialog: Slack asks before it sends the press. Only
+	// a Remedy's Approve carries one (git-bug ac9b492) — S10's "destructive things live
+	// behind a confirm", for the one button on any oto card that changes a cluster.
+	Confirm *Confirm `json:"confirm,omitempty"`
+}
+
+// Confirm is Slack's confirmation dialog object. Every text in it is plain_text (V9).
+type Confirm struct {
+	Title   *Text `json:"title"`
+	Text    *Text `json:"text"`
+	Confirm *Text `json:"confirm"`
+	Deny    *Text `json:"deny"`
 }
 
 // OverflowOption is one entry in an overflow menu OR in a static select. Every

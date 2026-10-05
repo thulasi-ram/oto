@@ -496,6 +496,16 @@ func newDigestRig(
 	t *testing.T, now time.Time, p domain.Policy, reads *digestReads, notifs *digestNotifications,
 ) digestRig {
 	t.Helper()
+	return newDigestRigWith(t, now, p, reads, notifs, nil)
+}
+
+// newDigestRigWith is newDigestRig with a Finding reader (git-bug 3e96f5a): what the
+// window's Investigation had reached when the tick asked, once.
+func newDigestRigWith(
+	t *testing.T, now time.Time, p domain.Policy, reads *digestReads, notifs *digestNotifications,
+	findings service.DigestFindings,
+) digestRig {
+	t.Helper()
 
 	scope, err := db.NewTenantScope(p.OrgID)
 	require.NoError(t, err)
@@ -537,6 +547,7 @@ func newDigestRig(
 		Policies: policies,
 		Digests:  reads,
 		Notifier: notifier,
+		Findings: findings,
 		Clock:    clock.NewFake(now),
 		Logger:   slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	})

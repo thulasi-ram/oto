@@ -176,6 +176,7 @@ func (w *Workers) NotifyIncident(ctx context.Context, job *jobs.Job[jobs.NotifyI
 		IncidentID: args.IncidentID,
 		Reason:     reason,
 		OccasionID: args.OccasionID,
+		Remedy:     incidentRemedy(args.Remedy),
 		Sequence:   args.Sequence,
 	})
 	if err != nil {
@@ -190,6 +191,28 @@ func (w *Workers) NotifyIncident(ctx context.Context, job *jobs.Job[jobs.NotifyI
 		"notification_id", res.Notification.ID, "created", res.Created,
 		"deliveries", res.Deliveries, "suppressed", string(res.Suppressed))
 	return nil
+}
+
+// incidentRemedy is the job's Remedy snapshot as the notification domain holds it; nil for
+// none.
+func incidentRemedy(f *jobs.RemedyFact) *domain.IncidentRemedy {
+	if f == nil {
+		return nil
+	}
+	out := &domain.IncidentRemedy{
+		RemedyID: f.RemedyID, InvestigationID: f.InvestigationID, State: f.State, From: f.From,
+		ToolServer: f.ToolServer, Tool: f.Tool, NoTool: f.NoTool,
+		Arguments: f.Arguments, ArgumentsSHA256: f.ArgumentsSHA256,
+		Target: f.Target, Description: f.Description, ProposedBy: f.ProposedBy,
+		RequiredApprovals: f.RequiredApprovals, ApprovalsSetBy: f.ApprovalsSetBy, ApprovalsRule: f.ApprovalsRule,
+		Approvals: make([]domain.IncidentRemedyApproval, 0, len(f.Approvals)),
+		ActorKind: f.ActorKind, ActorLabel: f.ActorLabel, At: f.At.UTC(), ExpiresAt: f.ExpiresAt.UTC(),
+		FailureReason: f.FailureReason, Detail: f.Detail,
+	}
+	for _, a := range f.Approvals {
+		out.Approvals = append(out.Approvals, domain.IncidentRemedyApproval{Label: a.Label, ApprovedAt: a.ApprovedAt.UTC()})
+	}
+	return out
 }
 
 // DeliverDispatch is the `deliver.dispatch` handler.

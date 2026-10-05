@@ -145,10 +145,33 @@ type Settings struct {
 	// oto has. Slack thread-broadcast is now removed outright — no `reply_broadcast`
 	// is sent for any transition — so the dial had nothing left to turn.
 	//
-	// ⚠️ IT WAS THE ONLY BOOLEAN SETTING oto had. If a boolean setting returns, the
-	// read-back path needs no clamp (a bool cannot be out of range) but it DOES need
-	// an `Origin` case, a `Clear` case and an `only` case — the integer keys get
-	// those from `intPtr` and a bool does not.
+	// ⚠️ IT WAS THE ONLY BOOLEAN SETTING oto had, until InvestigationsEnabled below.
+	// As this note promised, the read-back path needed no clamp (a bool cannot be out
+	// of range) but did need an `Origin` case, a `Clear` case and an `only` case —
+	// the integer keys get those from `intPtr` and a bool does not.
+
+	// InvestigationsEnabled is the org's Investigation kill switch (ADR 0053 §6).
+	// While false, no new Investigation starts in this org; one not yet begun is
+	// recorded `skipped` with reason `disabled`. It never touches notification.
+	//
+	// ⚠️ THE ZERO VALUE IS false, AND THAT FAILS CLOSED ON PURPOSE. A Settings
+	// assembled by hand rather than through DefaultSettings or
+	// SettingsPatch.Settings reads "disabled", which is the safe direction for a
+	// kill switch: the cost is a skipped Investigation that says why, never a
+	// model call nobody allowed.
+	InvestigationsEnabled bool
+
+	// InvestigationDailyTokens is the org's daily token budget (ADR 0053 §6): the
+	// input + output tokens every Investigation may spend between two UTC midnights.
+	// Past it, a new Investigation is recorded `skipped` with reason `budget`.
+	InvestigationDailyTokens int
+	// InvestigationConcurrency is the most Investigations `running` at once in the
+	// org (ADR 0053 §6). One past it waits, queued; it is never dropped.
+	InvestigationConcurrency int
+
+	// RemedyApprovalWindow is how long a proposed Remedy waits for its approvals, and an
+	// approved one for its execution, before it is recorded expired (ADR 0054 §2).
+	RemedyApprovalWindow time.Duration
 }
 
 // The defaults of SPEC §D.1, restated as the values a brand-new org boots with.
@@ -248,8 +271,40 @@ func DefaultSettings() Settings {
 		EventRetention:     DefaultEventRetention,
 
 		DefaultVerbosity: DefaultChannelVerbosity,
+
+		// The kill switch ships NOT PULLED: an org still runs no Investigation until
+		// it configures a model endpoint and an enabled Investigator, so this is
+		// the brake, not the opt-in.
+		InvestigationsEnabled: DefaultInvestigationsEnabled,
+
+		InvestigationDailyTokens: DefaultInvestigationDailyTokens,
+		InvestigationConcurrency: DefaultInvestigationConcurrency,
+
+		RemedyApprovalWindow: DefaultRemedyApprovalWindow,
 	}
 }
+
+// DefaultRemedyApprovalWindow is `remedy_approval_window_s`'s shipped value (ADR 0054 §2): an
+// hour — long enough for two people to read an exact command and approve it, short enough
+// that what they approve still describes the cluster it changes.
+const DefaultRemedyApprovalWindow = time.Hour
+
+// DefaultInvestigationsEnabled is `investigations_enabled`'s shipped value. Only
+// identity reads it, so it lives here rather than in `platform/tuning`.
+const DefaultInvestigationsEnabled = true
+
+// The shipped §6 org controls. Only identity reads them, so they live here.
+//
+// ⭐ TWO MILLION TOKENS IS TEN RUNS AT THE DEFAULT PER-RUN BUDGET (200 000), which is
+// a storm's worth of curiosity and not an afternoon of it: an org that wants more
+// raises a number it can read back, and an org that set nothing cannot be surprised
+// by its bill. TWO AT ONCE is a per-org share, not the `investigate` queue's width (eight
+// workers per process by default, `jobs.queue_investigate`): one org's two runs of up to
+// half an hour no longer hold the whole deployment (review A10).
+const (
+	DefaultInvestigationDailyTokens = 2_000_000
+	DefaultInvestigationConcurrency = 2
+)
 
 // Normalise replaces any non-positive value with its default.
 //
@@ -280,6 +335,22 @@ func (s Settings) Normalise() Settings {
 	if !channelVerbosities[s.DefaultVerbosity] {
 		s.DefaultVerbosity = d.DefaultVerbosity
 	}
+	// A zero budget or concurrency is "never written", and repairing it to the
+	// default fails SAFE in both directions: the default is a finite ceiling, never
+	// "unlimited", and neither is the brake — investigations_enabled is.
+	if s.InvestigationDailyTokens <= 0 {
+		s.InvestigationDailyTokens = d.InvestigationDailyTokens
+	}
+	if s.InvestigationConcurrency <= 0 {
+		s.InvestigationConcurrency = d.InvestigationConcurrency
+	}
+	if s.RemedyApprovalWindow <= 0 {
+		s.RemedyApprovalWindow = d.RemedyApprovalWindow
+	}
+	// ⚠️ InvestigationsEnabled IS NOT REPAIRED HERE, AND CANNOT BE. A false is
+	// either "this org pulled the switch" or "a zero Settings" and the struct cannot
+	// tell them apart; reading it as unset would re-enable an org that turned
+	// Investigations off. Both readings of false fail closed, so false stays false.
 	return s
 }
 

@@ -58,14 +58,14 @@ func TestAMappingThatRendersEveryFactIsSaved(t *testing.T) {
 	}
 }
 
-// TestAMappingThatFailsAnyOneFactCannotBeSavedAndTheRefusalNamesIt walks all twenty
+// TestAMappingThatFailsAnyOneFactCannotBeSavedAndTheRefusalNamesIt walks all twenty-seven
 // facts. For each, a mapping that renders broken JSON for THAT fact alone is refused,
 // and the violation names the fact.
 func TestAMappingThatFailsAnyOneFactCannotBeSavedAndTheRefusalNamesIt(t *testing.T) {
 	t.Parallel()
 	facts := domain.MappingFacts()
-	if len(facts) != 20 {
-		t.Fatalf("there are %d facts, want the 20 an envelope carries", len(facts))
+	if len(facts) != 27 {
+		t.Fatalf("there are %d facts, want the 27 an envelope carries", len(facts))
 	}
 	for _, fact := range facts {
 		t.Run(fact, func(t *testing.T) {

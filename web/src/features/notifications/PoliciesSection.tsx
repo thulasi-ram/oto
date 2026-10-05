@@ -125,6 +125,7 @@ import { cn } from "~/lib/cn";
 import { duration, idempotencyKey } from "~/lib/format";
 import { formatMatchers, parseMatchers } from "~/lib/matchers";
 import { MatcherInput } from "~/features/alerts/MatcherInput";
+import { DigestInvestigations } from "~/features/investigations/DigestInvestigations";
 import { SchemaForm } from "~/features/settings/SchemaForm";
 import {
   cleanConfig,
@@ -635,6 +636,17 @@ const REASON_LABEL: Record<NotificationReason, string> = {
   case_removed: "Case removed from an Incident",
   quiet: "Incident went quiet",
   active_again: "Incident active again",
+  // The sixth (ADR 0053 §4, git-bug 74ea849): an Investigation of the Incident
+  // reached a new Finding. A fact to declare, never a decision about delivery.
+  finding: "New Finding on an Incident",
+  // The six Remedy transitions (ADR 0054 §2, git-bug 4148256): declared to the
+  // Incident the Remedy is about, each a fact about what was proposed, decided or done.
+  remedy_proposed: "Remedy proposed",
+  remedy_approved: "Remedy approved",
+  remedy_declined: "Remedy declined",
+  remedy_expired: "Remedy expired",
+  remedy_executed: "Remedy executed",
+  remedy_failed: "Remedy failed",
 };
 
 /**
@@ -856,6 +868,12 @@ const PolicyRow: Component<{
                 </Show>
               </p>
             )}
+          </Show>
+          {/* Review D4: a digest Investigator's runs have no page of their own, so the
+              policy that names one is where they are read — including the ones that never
+              ran. Collapsed, and read only when opened. */}
+          <Show when={p().digest_investigator_id}>
+            <DigestInvestigations policyId={p().id} />
           </Show>
         </div>
 

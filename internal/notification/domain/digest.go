@@ -2,6 +2,8 @@ package domain
 
 import (
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // ⛔ BINDING (SCOPE-BOUNDARY §4.8, §5.3). A DIGEST IS A WINDOW, NEVER A SCHEDULE
@@ -71,6 +73,16 @@ type Digest struct {
 	// empty. It counts CASES rather than alerts or notifications; migration 00058
 	// carries the argument.
 	Floor int
+	// InvestigatorID is `digest_investigator_id` (migration 00102, ADR 0053 §4): the
+	// Investigator this policy ASKED to summarise its windows, uuid.Nil for none — the
+	// default. Its run for a window is armed ahead of the close; the tick carries the
+	// run's Finding if it has ended with one when the window closes, and sends the
+	// built-in body otherwise.
+	//
+	// ⛔ IT NEVER DECIDES WHETHER A DIGEST IS SENT, AND IT NEVER DELAYS ONE (ADR 0053
+	// §2). `Clears` above is the whole of that question; this field only changes what a
+	// digest that is being sent says.
+	InvestigatorID uuid.UUID
 }
 
 // Enabled reports whether this policy digests at all.

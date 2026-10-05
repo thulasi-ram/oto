@@ -81,6 +81,9 @@ data:
   {{- if gt (int .Values.config.jobs.queue_reconcile) 0 }}
   OTO_JOBS_QUEUE_RECONCILE: {{ int .Values.config.jobs.queue_reconcile | quote }}
   {{- end }}
+  {{- if gt (int .Values.config.jobs.queue_investigate) 0 }}
+  OTO_JOBS_QUEUE_INVESTIGATE: {{ int .Values.config.jobs.queue_investigate | quote }}
+  {{- end }}
   OTO_JOBS_FETCH_INTERVAL: {{ .Values.config.jobs.fetch_interval | quote }}
   OTO_JOBS_JOB_TIMEOUT: {{ .Values.config.jobs.job_timeout | quote }}
   OTO_JOBS_RESCUE_AFTER: {{ .Values.config.jobs.rescue_after | quote }}

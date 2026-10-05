@@ -23,11 +23,11 @@ import (
 // path is therefore its own port, injected from the composition root. `api` still
 // does not IMPORT `repository`, so depguard's rule holds.
 //
-// ⛔ AND `CreatePolicy` IS NO LONGER ON IT. See PolicyCreator.
+// ⛔ AND NEITHER `CreatePolicy` NOR `UpdatePolicy` IS ON IT. See PolicyCreator: both
+// writes go through the service.
 type PolicyStore interface {
 	ListPolicies(ctx context.Context, s db.TenantScope, p db.Keyset) ([]domain.Policy, db.Cursor, error)
 	GetPolicy(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Policy, error)
-	UpdatePolicy(ctx context.Context, s db.TenantScope, id uuid.UUID, p domain.PolicyPatch) (domain.Policy, error)
 	SoftDeletePolicy(ctx context.Context, s db.TenantScope, id uuid.UUID) error
 }
 
@@ -41,8 +41,13 @@ type PolicyStore interface {
 // conflict naming nothing rather than with the policy the caller already made.
 // It is NOT `PolicyService`: that one evaluates policies, and the evaluator must
 // not gain a way to change the rules it reads.
+//
+// ⭐ AND IT EDITS ONE (git-bug 8327c00): `UpdatePolicy` is the one policy edit, shared by
+// the PATCH and by an applied Investigation Suggestion, so the merged validation is
+// written once, in the service.
 type PolicyCreator interface {
 	CreatePolicy(ctx context.Context, s db.TenantScope, in domain.PolicyDraft, idem service.Idempotency) (domain.Policy, error)
+	UpdatePolicy(ctx context.Context, s db.TenantScope, id uuid.UUID, p domain.PolicyPatch) (domain.Policy, error)
 }
 
 // Compile-time proof that the writer satisfies the port this layer declares.

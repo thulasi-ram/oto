@@ -69,9 +69,19 @@ func (r *Renderer) renderDigest(
 	// The first upstream value added to it — a policy NAME is the obvious candidate —
 	// has to go through `escape`, because it is operator-supplied and reaches a
 	// message.
-	blocks := make([]Block, 0, 4)
+	blocks := make([]Block, 0, 5)
 	blocks = append(blocks, sectionBlock(blockID("digest", nonce),
 		truncateSection(digestHead(), "")))
+	// ⭐ THE FINDING IS THE BODY WHEN THE DIGEST CARRIES ONE (ADR 0053 §4, git-bug
+	// 3e96f5a), drawn the way an Incident's is — who concluded it, AS SEEN AT when, partial
+	// first if a budget cut it short — and quoted through `escape`, because a model's text
+	// is upstream text. The facts below stay: the count and the span are oto's own
+	// assertion, and the Finding is somebody's reading of them. A digest without one is
+	// the built-in card, block for block, so every existing golden is unchanged.
+	if d.Finding != nil {
+		blocks = append(blocks, sectionBlock(blockID("digestfinding", nonce),
+			truncateSection(incidentFinding(*d.Finding), "")))
+	}
 	blocks = append(blocks, fieldsBlock(blockID("digestfacts", nonce), digestFields(d)))
 	blocks = append(blocks, contextBlock(blockID("digestlook", nonce),
 		Text{Type: TypeMrkdwn, Text: truncateField(digestWhereToLook(d), "")}))

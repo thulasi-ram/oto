@@ -214,11 +214,20 @@ describe("the guided knobs as a set", () => {
     // at all. Inventing a threshold for either is the one thing this screen must
     // not do. (The three Slack mention rows were here too, and went with the
     // reminder — git-bug bd0fb1d. `broadcast_on_resolved` was here as well, and
-    // went with Slack thread-broadcast — git-bug 7570090.)
+    // went with Slack thread-broadcast — git-bug 7570090.) `investigations_enabled`
+    // (ADR 0053 §6) is the Investigation kill switch, and its daily token budget
+    // and concurrency are the org's other two §6 controls: no Alertmanager term
+    // bears on whether, how much or how many at once an org may investigate. The
+    // Remedy approval window (ADR 0054 §2) is how long an approval stays good, and
+    // no Alertmanager term bears on that either.
     expect([...unguided].sort()).toEqual([
       "default_verbosity",
       "event_retention_months",
+      "investigation_concurrency",
+      "investigation_daily_tokens",
+      "investigations_enabled",
       "raw_retention_days",
+      "remedy_approval_window_s",
     ]);
   });
 

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	channelsrepo "github.com/thulasiram/oto/internal/channels/repository"
+	investigatorrepo "github.com/thulasiram/oto/internal/investigator/repository"
 	notifservice "github.com/thulasiram/oto/internal/notification/service"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
@@ -103,6 +104,23 @@ func dispatchUnsealer(k *secrets.Keyring) notifservice.CredentialUnsealer {
 	}
 	return k
 }
+
+func investigatorUnsealer(k *secrets.Keyring) investigatorrepo.Unsealer {
+	if k == nil {
+		return nil
+	}
+	return k
+}
+
+// modelCallBackstop bounds one model request when nothing else does. It is not a
+// budget: an Investigation's wall-time budget (ADR 0053 §6) cancels through ctx long
+// before this on any sane configuration, and this exists so a caller that forgot its
+// ctx cannot hold a connection forever.
+const modelCallBackstop = 10 * time.Minute
+
+// modelCallRetries is how often a model request that got NO answer — a dial failure,
+// a 429 or a 5xx — is re-sent. An answered request is never retried.
+const modelCallRetries = 2
 
 // retentionCeiling is the ONE read `foldRetention` makes: the widest retention
 // window any live tenant has asked for, evaluated by `identity/service.MaxRetention`

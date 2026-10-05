@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 94 {
-		t.Fatalf("latest migration is %d, want 94 — this test pins the number so that a "+
+	if latest != 110 {
+		t.Fatalf("latest migration is %d, want 110 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1563,11 +1563,13 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 			"`all_resolved` stays because a Case resolving is a fact about the Case", def)
 	}
 	// The ceiling follows the enum, as it has in both directions since 00046. 00069
-	// left it at fifteen; 00084 added the five Incident facts, so the top of the stack
-	// reads twenty, and fifteen is asserted again once 00084's Down has run.
-	if def := policyReasonsCheck(); !strings.Contains(def, "20") {
-		t.Fatalf("policies_reasons_ck does not bound reasons at 20 at the top of the stack: "+
-			"%s — the enum has twenty values now, and twenty-one is a cardinality no row can "+
+	// left it at fifteen; 00084 added the five Incident facts, 00099 `finding` and 00104
+	// the six Remedy transitions, so the top of the stack reads twenty-seven, twenty-one
+	// is asserted once 00104's Down has run, twenty once 00099's has, and fifteen once
+	// 00084's has.
+	if def := policyReasonsCheck(); !strings.Contains(def, "27") {
+		t.Fatalf("policies_reasons_ck does not bound reasons at 27 at the top of the stack: "+
+			"%s — the enum has twenty-seven values now, and twenty-eight is a cardinality no row can "+
 			"reach. ⛔ The ceiling moving is only half of it: the constraint does NOT test "+
 			"membership, so 00069 also has to strip the two values out of the arrays by hand",
 			def)
@@ -1631,6 +1633,726 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// accepts a kind the release below it cannot interpret. No column reading can
 	// see that, and it is the half most likely to be forgotten because nothing
 	// references it.
+	// ⭐ 00110 SAYS A SINGLE APPROVAL NAMES ITS TOOL, AND ITS RULE (judgment 2 on the Remedy review,
+	// C1+C3 and C11): two CHECKs, and a Tool-less one-approval rule already stored is RAISED to two
+	// and recorded. That raise is a row rewrite, so — for 00094's reason — it is exercised on a real
+	// row: 00110 is rolled back, a Tool-less one-approval rule written the way release N-1 could,
+	// 00110 re-applied over it (the rule reads two, recorded), and rolled back again (the rule reads
+	// one, the record gone). A Down that dropped the CHECKs and forgot the rule would pass every
+	// schema-shaped assertion here.
+	if n := countConstraints("remedy_risk_rules_single_names_tool_ck", "remedies_one_needs_a_rule_ck"); n != 2 {
+		t.Fatalf("%d of 00110's two CHECKs exist at migration 110", n)
+	}
+	if n := countTables("remedy_risk_rules_raised_by_00110"); n != 1 {
+		t.Fatalf("00110's record of the rules it raised does not exist at migration 110")
+	}
+	down(110)
+	if n := countConstraints("remedy_risk_rules_single_names_tool_ck", "remedies_one_needs_a_rule_ck"); n != 0 {
+		t.Fatalf("%d of 00110's CHECKs survived its Down", n)
+	}
+	if n := countTables("remedy_risk_rules_raised_by_00110"); n != 0 {
+		t.Fatalf("00110's record table survived its Down")
+	}
+	rulesScope, _, _ := seedSource(t, env)
+	if _, err := env.pool.Exec(env.ctx,
+		`INSERT INTO remedy_risk_rules (org_id, name, position, tool, verbs, kinds, namespaces, reversibility, approvals, created_at)
+		 VALUES ($1, 'payments-one', 0, NULL, '{}', '{}', '{payments}', 'reversible', 1, now()),
+		        ($1, 'kubectl-one', 1, 'k8s__kubectl', '{}', '{}', '{payments}', NULL, 1, now())`,
+		rulesScope.OrgID()); err != nil {
+		t.Fatalf("seed a Tool-less one-approval rule below 00110: %v", err)
+	}
+	ruleApprovals := func(name string) int {
+		t.Helper()
+		var n int
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT approvals FROM remedy_risk_rules WHERE org_id = $1 AND name = $2`, rulesScope.OrgID(), name).
+			Scan(&n); err != nil {
+			t.Fatalf("read rule %s: %v", name, err)
+		}
+		return n
+	}
+	if err := migrate.UpByOne(env.ctx, dsn); err != nil {
+		t.Fatalf("re-apply 00110 over a Tool-less one-approval rule: %v", err)
+	}
+	if got := ruleApprovals("payments-one"); got != 2 {
+		t.Fatalf("00110 left a Tool-less rule at %d approvals, want it raised to 2", got)
+	}
+	if got := ruleApprovals("kubectl-one"); got != 1 {
+		t.Fatalf("00110 moved a rule that names its Tool to %d approvals", got)
+	}
+	var recorded int
+	if err := env.pool.QueryRow(env.ctx,
+		`SELECT count(*) FROM remedy_risk_rules_raised_by_00110 WHERE org_id = $1 AND name = 'payments-one'`,
+		rulesScope.OrgID()).Scan(&recorded); err != nil || recorded != 1 {
+		t.Fatalf("00110 did not record the rule it raised: %d, %v", recorded, err)
+	}
+	down(110)
+	if got := ruleApprovals("payments-one"); got != 1 {
+		t.Fatalf("00110's Down left the rule it raised at %d approvals, want 1 again", got)
+	}
+	if _, err := env.pool.Exec(env.ctx, `DELETE FROM remedy_risk_rules WHERE org_id = $1`, rulesScope.OrgID()); err != nil {
+		t.Fatalf("clear the seeded rules: %v", err)
+	}
+
+	// ⭐ 00109 LETS A SLACK MEMBER LINK THEMSELVES WITH A CODE (git-bug a556a5c): three tables —
+	// the one live code per identity, the per-user wrong-attempt count, and the recorded fact of
+	// every link and unlink — with their CHECKs. Read on both sides, for 00075's reason: a Down that
+	// exits 0 and drops nothing leaves a schema no release below it has run against.
+	if n := countTables("slack_link_codes", "slack_link_attempts", "slack_identity_links"); n != 3 {
+		t.Fatalf("%d of 00109's three tables exist at migration 109", n)
+	}
+	if n := countConstraints("slack_link_codes_hash_uniq", "slack_link_codes_hash_ck", "slack_link_codes_life_ck",
+		"slack_link_codes_presented_ck", "slack_link_codes_consumed_ck",
+		"slack_identity_links_change_ck", "slack_identity_links_displaced_ck"); n != 7 {
+		t.Fatalf("%d of 00109's seven named constraints exist at migration 109, want 7", n)
+	}
+	if n := countIndexes("slack_link_attempts_user_idx", "slack_identity_links_identity_idx"); n != 2 {
+		t.Fatalf("%d of 00109's two indexes exist at migration 109", n)
+	}
+	if c := tableComment("slack_link_codes"); !strings.Contains(c, "credential") {
+		t.Fatalf("slack_link_codes's comment at migration 109 does not say a code is a credential: %s", c)
+	}
+
+	down(109)
+
+	if n := countTables("slack_link_codes", "slack_link_attempts", "slack_identity_links"); n != 0 {
+		t.Fatalf("%d of 00109's three tables survived its Down", n)
+	}
+	if n := countIndexes("slack_link_attempts_user_idx", "slack_identity_links_identity_idx"); n != 0 {
+		t.Fatalf("%d of 00109's indexes survived its Down", n)
+	}
+
+	// ⭐ 00108 LETS THE RISK MODEL SPEND FROM THE DAY'S BUDGET (owner ruling 2026-10-05 on git-bug
+	// eb4f21b): `budget` added to `remedies_risk_model_ck` and to the TWO-approval arm of
+	// `remedies_risk_tier_ck` only, `remedies_risk_spend_idx`, and three comments restated. Both
+	// CHECKs are read for their BODY on both sides, for 00075's reason — a Down that dropped and
+	// re-added the same widened CHECK exits 0 — and the tier CHECK is read for WHERE `budget` sits:
+	// on the one-approval arm it would let an unasked question leave one approval standing.
+	tierDef := func() string { t.Helper(); return constraintDef("remedies_risk_tier_ck", "remedies") }
+	if def := constraintDef("remedies_risk_model_ck", "remedies"); !strings.Contains(def, "'budget'") {
+		t.Fatalf("remedies_risk_model_ck does not admit budget at migration 108: %s", def)
+	}
+	if def := tierDef(); !strings.Contains(def, "'budget'") || !strings.Contains(def, "required_approvals = 2") ||
+		strings.Contains(def[:strings.Index(def, "required_approvals = 2")], "'budget'") {
+		t.Fatalf("remedies_risk_tier_ck does not admit budget on the two-approval arm alone at migration 108: %s", def)
+	}
+	if n := countIndexes("remedies_risk_spend_idx"); n != 1 {
+		t.Fatalf("remedies_risk_spend_idx exists %d time(s) at migration 108", n)
+	}
+	if c := tableComment("remedy_risk_rules"); !strings.Contains(c, "oto remedy-rules apply") {
+		t.Fatalf("remedy_risk_rules's comment at migration 108 does not say who writes the rules: %s", c)
+	}
+	if c := columnComment("remedies", "risk_basis"); !strings.Contains(c, "budget") {
+		t.Fatalf("remedies.risk_basis's comment at migration 108 does not say budget: %s", c)
+	}
+
+	down(108)
+
+	if def := constraintDef("remedies_risk_model_ck", "remedies"); strings.Contains(def, "'budget'") || !strings.Contains(def, "'failed'") {
+		t.Fatalf("00108's Down did not restore 00107's remedies_risk_model_ck: %s", def)
+	}
+	if def := tierDef(); strings.Contains(def, "'budget'") || !strings.Contains(def, "required_approvals = 1") {
+		t.Fatalf("00108's Down did not restore 00107's remedies_risk_tier_ck: %s", def)
+	}
+	if n := countIndexes("remedies_risk_spend_idx"); n != 0 {
+		t.Fatalf("remedies_risk_spend_idx survived 00108's Down")
+	}
+	if c := tableComment("remedy_risk_rules"); strings.Contains(c, "oto remedy-rules apply") || !strings.Contains(c, "settings API") {
+		t.Fatalf("00108's Down did not restore 00107's remedy_risk_rules comment: %s", c)
+	}
+	if c := tableComment("remedy_risk_settings"); strings.Contains(c, "00108") {
+		t.Fatalf("00108's Down did not restore 00107's remedy_risk_settings comment: %s", c)
+	}
+	if c := columnComment("remedies", "risk_basis"); strings.Contains(c, "budget") {
+		t.Fatalf("00108's Down did not restore 00107's risk_basis comment: %s", c)
+	}
+
+	// ⭐ 00107 LETS AN OPERATOR'S RULES SAY HOW MANY APPROVALS A REMEDY NEEDS (ADR 0054 §3,
+	// git-bug eb4f21b): two tables, six columns on `remedies` with seven CHECKs, a new body for
+	// `remedies_refuse_rewrite`, and the required_approvals comment. The tier CHECK is read for
+	// its BODY, for 00075's reason — it IS the rule that one approval stands only on a rule — and
+	// so is the trigger function, because a Down that left the new body would compare columns
+	// that no longer exist and refuse every approval of every Remedy.
+	riskFrozen := func() int {
+		t.Helper()
+		var n int
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT count(*) FROM pg_proc WHERE proname = 'remedies_refuse_rewrite' AND prosrc LIKE '%risk_basis%'`).
+			Scan(&n); err != nil {
+			t.Fatalf("introspect remedies_refuse_rewrite: %v", err)
+		}
+		return n
+	}
+	if n := countTables("remedy_risk_rules", "remedy_risk_settings"); n != 2 {
+		t.Fatalf("%d of 00107's two tables exist at migration 107", n)
+	}
+	if n := countConstraints("remedy_risk_rules_name_ck", "remedy_risk_rules_condition_ck", "remedy_risk_rules_approvals_ck",
+		"remedies_risk_basis_ck", "remedies_risk_model_ck", "remedies_risk_set_ck", "remedies_risk_rule_ck",
+		"remedies_risk_detail_ck", "remedies_risk_model_used_ck", "remedies_risk_tier_ck"); n != 10 {
+		t.Fatalf("%d of 00107's ten named CHECKs exist at migration 107, want 10", n)
+	}
+	if def := constraintDef("remedies_risk_tier_ck", "remedies"); !strings.Contains(def, "required_approvals = 1") ||
+		!strings.Contains(def, "'kept'") {
+		t.Fatalf("remedies_risk_tier_ck does not tie one approval to a rule the model kept: %s", def)
+	}
+	if n := countColumns("remedies", "risk_basis"); n != 1 {
+		t.Fatalf("remedies.risk_basis exists %d time(s) at migration 107", n)
+	}
+	if n := riskFrozen(); n != 1 {
+		t.Fatalf("remedies_refuse_rewrite does not freeze the risk record at migration 107")
+	}
+	if c := columnComment("remedies", "required_approvals"); !strings.Contains(c, "00107") {
+		t.Fatalf("remedies.required_approvals's comment at migration 107 does not say the rules set it: %s", c)
+	}
+
+	down(107)
+
+	if n := countTables("remedy_risk_rules", "remedy_risk_settings"); n != 0 {
+		t.Fatalf("%d of 00107's two tables survived its Down", n)
+	}
+	for _, col := range []string{"risk_basis", "risk_rule", "risk_detail", "risk_model_check", "risk_model", "risk_model_tokens"} {
+		if n := countColumns("remedies", col); n != 0 {
+			t.Fatalf("remedies.%s survived 00107's Down", col)
+		}
+	}
+	if n := countConstraints("remedies_risk_tier_ck", "remedies_risk_set_ck"); n != 0 {
+		t.Fatalf("%d of 00107's remedies CHECKs survived its Down", n)
+	}
+	if n := riskFrozen(); n != 0 {
+		t.Fatalf("00107's Down left remedies_refuse_rewrite comparing the dropped risk columns")
+	}
+	if c := columnComment("remedies", "required_approvals"); strings.Contains(c, "00107") ||
+		!strings.Contains(c, "until operator-written risk rules exist") {
+		t.Fatalf("00107's Down did not restore 00104's required_approvals comment: %s", c)
+	}
+
+	// ⭐ 00106 ENDS A DIGEST WINDOW'S RUN THAT WAS STILL QUEUED WHEN ITS WINDOW CLOSED AS
+	// `skipped`/`window_closed` (owner ruling O4): one reason added to one arm of
+	// `investigations_reason_ck`, and the table comment restated. The CHECK is read for its
+	// BODY on both sides, for 00075's reason — a Down that dropped and re-added the same
+	// widened CHECK exits 0 — and the comment because the Down restores 00098's exactly.
+	if def := constraintDef("investigations_reason_ck", "investigations"); !strings.Contains(def, "'window_closed'") ||
+		!strings.Contains(def, "'budget'") {
+		t.Fatalf("investigations_reason_ck does not admit skipped/window_closed at migration 106: %s", def)
+	}
+	if c := tableComment("investigations"); !strings.Contains(c, "window closed") {
+		t.Fatalf("investigations's comment at migration 106 does not name the closed window: %s", c)
+	}
+
+	down(106)
+
+	if def := constraintDef("investigations_reason_ck", "investigations"); strings.Contains(def, "'window_closed'") ||
+		!strings.Contains(def, "'budget'") {
+		t.Fatalf("00106's Down did not restore 00098's investigations_reason_ck: %s", def)
+	}
+	if c := tableComment("investigations"); strings.Contains(c, "window closed") ||
+		!strings.Contains(c, "daily token budget") {
+		t.Fatalf("00106's Down did not restore 00098's investigations comment: %s", c)
+	}
+
+	// ⭐ 00105 LETS A FROZEN INVESTIGATION, OR AN APPLIED SUGGESTION, LOSE ITS ACTOR WHEN THE
+	// USER GOES (review B5): two trigger function BODIES replaced, nothing else. There is no
+	// catalog object to count, so the body is read — `pg_trigger_depth` is the clause the Up
+	// adds and the Down must take away. A Down that forgot one function leaves a freeze with
+	// a hole no other assertion here can see.
+	frozenBodies := func() int {
+		t.Helper()
+		var n int
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT count(*) FROM pg_proc
+			  WHERE proname IN ('investigations_refuse_change_once_ended','investigation_suggestions_refuse_rewrite')
+			    AND prosrc LIKE '%pg_trigger_depth%'`).Scan(&n); err != nil {
+			t.Fatalf("introspect the frozen-row trigger functions: %v", err)
+		}
+		return n
+	}
+	if n := frozenBodies(); n != 2 {
+		t.Fatalf("%d of 00105's two frozen-row functions let the actor's SET NULL through at migration 105", n)
+	}
+
+	down(105)
+
+	if n := frozenBodies(); n != 0 {
+		t.Fatalf("%d of 00105's two frozen-row functions kept the actor clause after its Down", n)
+	}
+
+	// ⭐ 00104 LETS AN INVESTIGATOR PROPOSE A REMEDY THAT TWO DIFFERENT APPROVERS MUST SAY YES
+	// TO (ADR 0054, git-bug 4148256): three tables, two trigger functions, the six Remedy
+	// facts on `notifications_reason_ck` with the snapshot column and its CHECK, the reasons
+	// ceiling raised to 27, and the settings comment's eleventh key. The CHECKs are read for
+	// their BODY on both sides, for 00075's reason; the one-person-one-approval index and the
+	// hash CHECK are read because they ARE the rules — a Down that left either, or an Up that
+	// lost one, is the defect. The trigger functions are counted because a Down that dropped
+	// the tables and left a function behind is green everywhere else.
+	remedyFunctions := func() int {
+		t.Helper()
+		var n int
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT count(*) FROM pg_proc WHERE proname IN ('remedies_refuse_rewrite','remedy_record_refuse_change')`).
+			Scan(&n); err != nil {
+			t.Fatalf("introspect the Remedy trigger functions: %v", err)
+		}
+		return n
+	}
+	if n := countTables("remedies", "remedy_approvals", "remedy_transitions"); n != 3 {
+		t.Fatalf("%d of 00104's three tables exist at migration 104", n)
+	}
+	if n := remedyFunctions(); n != 2 {
+		t.Fatalf("%d of 00104's two trigger functions exist at migration 104", n)
+	}
+	if def := indexDef("remedy_approvals_user_uniq"); !strings.Contains(def, "UNIQUE") ||
+		!strings.Contains(def, "remedy_id, user_id") {
+		t.Fatalf("remedy_approvals_user_uniq does not hold one approval per person per Remedy: %s", def)
+	}
+	if def := constraintDef("remedies_arguments_hash_ck", "remedies"); !strings.Contains(def, "sha256") {
+		t.Fatalf("remedies_arguments_hash_ck does not pin the hash to the arguments: %s", def)
+	}
+	if def := constraintDef("remedies_no_tool_ck", "remedies"); !strings.Contains(def, "'proposed'") ||
+		strings.Contains(def, "'approved'") {
+		t.Fatalf("remedies_no_tool_ck lets a Remedy with no Tool be approved: %s", def)
+	}
+	if def := constraintDef("notifications_reason_ck", "notifications"); !strings.Contains(def, "'remedy_failed'") ||
+		!strings.Contains(def, "'finding'") {
+		t.Fatalf("notifications_reason_ck does not admit the Remedy facts beside `finding` at migration 104: %s", def)
+	}
+	if def := constraintDef("notifications_remedy_ck", "notifications"); !strings.Contains(def, "'remedy_proposed'") {
+		t.Fatalf("notifications_remedy_ck does not tie the snapshot to the Remedy facts: %s", def)
+	}
+	if c := columnComment("orgs", "settings"); !strings.Contains(c, "remedy_approval_window_s") ||
+		!strings.Contains(c, "eleven keys") {
+		t.Fatalf("orgs.settings's comment at migration 104 does not name remedy_approval_window_s: %s", c)
+	}
+
+	down(104)
+
+	if n := countTables("remedies", "remedy_approvals", "remedy_transitions"); n != 0 {
+		t.Fatalf("%d of 00104's three tables survived its Down", n)
+	}
+	if n := remedyFunctions(); n != 0 {
+		t.Fatalf("%d of 00104's two trigger functions survived its Down", n)
+	}
+	if def := constraintDef("notifications_reason_ck", "notifications"); strings.Contains(def, "'remedy_") ||
+		!strings.Contains(def, "'finding'") {
+		t.Fatalf("00104's Down did not restore 00099's notifications_reason_ck: %s", def)
+	}
+	if n := countColumns("notifications", "remedy"); n != 0 {
+		t.Fatalf("notifications.remedy survived 00104's Down")
+	}
+	if def := policyReasonsCheck(); !strings.Contains(def, "21") || !strings.Contains(def, "oto_array_is_set") {
+		t.Fatalf("policies_reasons_ck did not go back to a set of 1..21 after 00104's Down: %s", def)
+	}
+	if c := columnComment("notifications", "reason"); !strings.Contains(c, "twenty-one") || strings.Contains(c, "remedy") {
+		t.Fatalf("00104's Down did not restore 00099's notifications.reason comment: %s", c)
+	}
+	if c := columnComment("orgs", "settings"); strings.Contains(c, "remedy_approval_window_s") || !strings.Contains(c, "ten keys") {
+		t.Fatalf("00104's Down did not restore 00098's orgs.settings comment: %s", c)
+	}
+
+	// ⭐ 00103 GRANTS A REMEDY APPROVER FROM THE HOST SHELL (ADR 0054 §4, git-bug 47f67c8):
+	// one table with its two CHECKs and two composite foreign keys, a user index, and the
+	// two unique indexes those keys target (`tool_servers (org_id, id, access)` and
+	// `users (org_id, id)`). The writer CHECK is read for its BODY: `cli` is the only
+	// writer, and a Down that left the indexes behind leaves two the release below never had.
+	if n := countTables("remedy_approver_grants"); n != 1 {
+		t.Fatalf("remedy_approver_grants exists %d time(s) at migration 103", n)
+	}
+	if n := countConstraints("remedy_approver_grants_access_ck", "remedy_approver_grants_by_ck",
+		"remedy_approver_grants_tool_server_fk", "remedy_approver_grants_user_fk"); n != 4 {
+		t.Fatalf("%d of 00103's four constraints exist at migration 103", n)
+	}
+	if def := constraintDef("remedy_approver_grants_by_ck", "remedy_approver_grants"); !strings.Contains(def, "'cli'") {
+		t.Fatalf("remedy_approver_grants_by_ck does not pin the writer to the CLI: %s", def)
+	}
+	if n := countIndexes("tool_servers_org_id_access_uniq", "users_org_id_uniq", "remedy_approver_grants_user_idx"); n != 3 {
+		t.Fatalf("%d of 00103's three indexes exist at migration 103", n)
+	}
+	if c := columnComment("remedy_approver_grants", "granted_by"); !strings.Contains(c, "no other writer") {
+		t.Fatalf("remedy_approver_grants.granted_by's comment does not say the CLI is the only writer: %s", c)
+	}
+
+	down(103)
+
+	if n := countTables("remedy_approver_grants"); n != 0 {
+		t.Fatalf("remedy_approver_grants survived 00103's Down")
+	}
+	if n := countIndexes("tool_servers_org_id_access_uniq", "users_org_id_uniq", "remedy_approver_grants_user_idx"); n != 0 {
+		t.Fatalf("%d of 00103's three indexes survived its Down", n)
+	}
+
+	// ⭐ 00102 LETS A DIGEST CARRY A FINDING THAT WAS READY WHEN ITS WINDOW CLOSED (ADR
+	// 0053 §4, git-bug 3e96f5a): `investigations_subjkind_ck` widened by `digest`, the
+	// window pair on `investigations` with its CHECK and its one-run-per-window index, the
+	// policy's `digest_investigator_id` with its composite FK (over a new unique index on
+	// `investigators`) and its CHECK, and the copy `notifications.digest_finding` with its
+	// CHECK. The subject CHECK is read for its BODY on both sides, for 00075's reason. ⛔
+	// `enrichments_subjkind_ck` is NOT touched by 00102 and is asserted unchanged: a digest
+	// Finding is not an Enrichment (the migration's header says why).
+	if def := constraintDef("investigations_subjkind_ck", "investigations"); !strings.Contains(def, "'digest'") ||
+		!strings.Contains(def, "'incident'") {
+		t.Fatalf("investigations_subjkind_ck does not admit a digest at migration 102: %s", def)
+	}
+	if def := constraintDef("enrichments_subjkind_ck", "enrichments"); strings.Contains(def, "'digest'") {
+		t.Fatalf("enrichments_subjkind_ck admits a digest at migration 102, and 00102 refused to: %s", def)
+	}
+	if n := countColumns("investigations", "digest_window_start", "digest_window_end") +
+		countColumns("notification_policies", "digest_investigator_id") +
+		countColumns("notifications", "digest_finding"); n != 4 {
+		t.Fatalf("%d of 00102's four columns exist at migration 102", n)
+	}
+	if n := countConstraints("investigations_digest_window_ck", "policies_digest_investigator_fk",
+		"policies_digest_investigator_ck", "notifications_digest_finding_ck"); n != 4 {
+		t.Fatalf("%d of 00102's four constraints exist at migration 102", n)
+	}
+	if n := countIndexes("investigations_digest_window_uniq", "investigators_org_id_uniq"); n != 2 {
+		t.Fatalf("%d of 00102's two indexes exist at migration 102", n)
+	}
+	if c := columnComment("notifications", "digest_finding"); !strings.Contains(c, "never waits") {
+		t.Fatalf("notifications.digest_finding's comment does not say a digest never waits: %s", c)
+	}
+
+	down(102)
+
+	if def := constraintDef("investigations_subjkind_ck", "investigations"); strings.Contains(def, "'digest'") ||
+		!strings.Contains(def, "'incident'") || !strings.Contains(def, "'case'") {
+		t.Fatalf("00102's Down did not restore 00099's investigations_subjkind_ck: %s", def)
+	}
+	if n := countColumns("investigations", "digest_window_start", "digest_window_end") +
+		countColumns("notification_policies", "digest_investigator_id") +
+		countColumns("notifications", "digest_finding"); n != 0 {
+		t.Fatalf("%d of 00102's four columns survived its Down", n)
+	}
+	if n := countConstraints("investigations_digest_window_ck", "policies_digest_investigator_fk",
+		"policies_digest_investigator_ck", "notifications_digest_finding_ck"); n != 0 {
+		t.Fatalf("%d of 00102's four constraints survived its Down", n)
+	}
+	if n := countIndexes("investigations_digest_window_uniq", "investigators_org_id_uniq"); n != 0 {
+		t.Fatalf("%d of 00102's two indexes survived its Down", n)
+	}
+
+	// ⭐ 00101 LETS A FINDING SUGGEST, AND A HUMAN APPLY IT OR IT LAPSES (ADR 0053 §2,
+	// git-bug 8327c00): one table with its nine named CHECKs, its run index, a comment on
+	// `lapses_at`, and the trigger that applies a Suggestion once and never rewrites a
+	// proposal. The shape CHECK is read for its BODY, for 00075's reason: it is what keeps
+	// a row from saying half of two changes. The trigger and its function are counted on
+	// both sides — a Down that dropped the table and forgot the function leaves a
+	// function the release below never had.
+	suggestionFn := func() int {
+		t.Helper()
+		var n int
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT count(*) FROM pg_proc WHERE proname = 'investigation_suggestions_refuse_rewrite'`).Scan(&n); err != nil {
+			t.Fatalf("introspect investigation_suggestions_refuse_rewrite: %v", err)
+		}
+		return n
+	}
+	if n := countTables("investigation_suggestions"); n != 1 {
+		t.Fatalf("investigation_suggestions exists %d time(s) at migration 101", n)
+	}
+	if n := countConstraints("investigation_suggestions_kind_ck", "investigation_suggestions_shape_ck",
+		"investigation_suggestions_count_ck", "investigation_suggestions_was_ck", "investigation_suggestions_name_ck",
+		"investigation_suggestions_number_ck", "investigation_suggestions_why_ck", "investigation_suggestions_lapse_ck",
+		"investigation_suggestions_applied_ck", "investigation_suggestions_label_ck"); n != 10 {
+		t.Fatalf("%d of 00101's ten CHECKs exist at migration 101, want 10", n)
+	}
+	if def := constraintDef("investigation_suggestions_shape_ck", "investigation_suggestions"); !strings.Contains(def, "'incident_membership'") ||
+		!strings.Contains(def, "'policy_count_condition'") {
+		t.Fatalf("investigation_suggestions_shape_ck does not tie each kind to its own columns: %s", def)
+	}
+	if n := countIndexes("investigation_suggestions_run_idx"); n != 1 {
+		t.Fatalf("investigation_suggestions_run_idx is absent at migration 101 (found %d)", n)
+	}
+	if c := columnComment("investigation_suggestions", "lapses_at"); !strings.Contains(c, "never written") {
+		t.Fatalf("investigation_suggestions.lapses_at's comment does not say lapsing is read: %s", c)
+	}
+	if n := suggestionFn(); n != 1 {
+		t.Fatalf("investigation_suggestions_refuse_rewrite exists %d time(s) at migration 101", n)
+	}
+
+	down(101)
+
+	if n := countTables("investigation_suggestions"); n != 0 {
+		t.Fatalf("investigation_suggestions survived 00101's Down")
+	}
+	if n := countIndexes("investigation_suggestions_run_idx"); n != 0 {
+		t.Fatalf("investigation_suggestions_run_idx survived 00101's Down (found %d)", n)
+	}
+	if n := suggestionFn(); n != 0 {
+		t.Fatalf("investigation_suggestions_refuse_rewrite survived 00101's Down")
+	}
+
+	// ⭐ 00100 CLASSIFIES A FINDING ONLY IN THE OPERATOR'S WORDS (ADR 0053 §5, git-bug
+	// 4298aa0): one table with its three named CHECKs and its position index, and one
+	// column on `investigations` with its CHECK. The name CHECK is read for its BODY, for
+	// 00075's reason: `unclassified` is reserved there, and a CHECK that admitted it would
+	// let the operator take away the one answer that is always admissible. Both the table
+	// and the column are read on the far side: the release below has neither.
+	if n := countTables("investigation_classes"); n != 1 {
+		t.Fatalf("investigation_classes exists %d time(s) at migration 100", n)
+	}
+	if n := countConstraints("investigation_classes_name_ck", "investigation_classes_desc_ck",
+		"investigation_classes_position_ck", "investigations_class_ck"); n != 4 {
+		t.Fatalf("%d of 00100's four CHECKs exist at migration 100, want 4", n)
+	}
+	if def := constraintDef("investigation_classes_name_ck", "investigation_classes"); !strings.Contains(def, "'unclassified'") {
+		t.Fatalf("investigation_classes_name_ck does not reserve unclassified: %s", def)
+	}
+	if def := constraintDef("investigations_class_ck", "investigations"); !strings.Contains(def, "finding IS NOT NULL") {
+		t.Fatalf("investigations_class_ck does not tie a class to a Finding: %s", def)
+	}
+	if n := countIndexes("investigation_classes_position_uniq"); n != 1 {
+		t.Fatalf("investigation_classes_position_uniq is absent at migration 100 (found %d)", n)
+	}
+	if n := countColumns("investigations", "classification"); n != 1 {
+		t.Fatalf("investigations.classification exists %d time(s) at migration 100", n)
+	}
+	if c := columnComment("investigations", "classification"); !strings.Contains(c, "never a foreign key") {
+		t.Fatalf("investigations.classification's comment does not say it is a copy: %s", c)
+	}
+
+	down(100)
+
+	if n := countTables("investigation_classes"); n != 0 {
+		t.Fatalf("investigation_classes survived 00100's Down")
+	}
+	if n := countIndexes("investigation_classes_position_uniq"); n != 0 {
+		t.Fatalf("investigation_classes_position_uniq survived 00100's Down (found %d)", n)
+	}
+	if n := countColumns("investigations", "classification"); n != 0 {
+		t.Fatalf("investigations.classification survived 00100's Down")
+	}
+	if n := countConstraints("investigations_class_ck"); n != 0 {
+		t.Fatalf("investigations_class_ck survived 00100's Down")
+	}
+
+	// ⭐ 00099 INVESTIGATES AN INCIDENT AS A WHOLE (ADR 0053 §4, git-bug 74ea849): three
+	// CHECKs widened by one value each — `investigations_subjkind_ck` and
+	// `enrichments_subjkind_ck` by `incident`, `notifications_reason_ck` by `finding` —
+	// the reasons ceiling raised to 21, and one column. Every CHECK is read for its BODY
+	// on both sides, for 00075's reason: a Down that kept a value admitted leaves a
+	// database that accepts what the release below cannot read back. ⚠️
+	// `enrichments_subjkind_ck` must go back to 00069's Up — `('alert','case')` — and
+	// NOT to the `'group'` its Down spells, which is where the ticket misread it.
+	if def := constraintDef("investigations_subjkind_ck", "investigations"); !strings.Contains(def, "'incident'") {
+		t.Fatalf("investigations_subjkind_ck does not admit an Incident at migration 99: %s", def)
+	}
+	if def := constraintDef("enrichments_subjkind_ck", "enrichments"); !strings.Contains(def, "'incident'") ||
+		strings.Contains(def, "'group'") {
+		t.Fatalf("enrichments_subjkind_ck at migration 99 is %s, want alert, case and incident", def)
+	}
+	if def := constraintDef("notifications_reason_ck", "notifications"); !strings.Contains(def, "'finding'") ||
+		!strings.Contains(def, "'active_again'") {
+		t.Fatalf("notifications_reason_ck does not admit `finding` beside the five at migration 99: %s", def)
+	}
+	if n := countColumns("investigators", "investigates_incidents"); n != 1 {
+		t.Fatalf("investigators.investigates_incidents exists %d time(s) at migration 99", n)
+	}
+	if c := columnComment("notifications", "reason"); !strings.Contains(c, "twenty-one") {
+		t.Fatalf("notifications.reason's comment at migration 99 does not count twenty-one: %s", c)
+	}
+
+	down(99)
+
+	if def := constraintDef("investigations_subjkind_ck", "investigations"); strings.Contains(def, "'incident'") ||
+		!strings.Contains(def, "'case'") {
+		t.Fatalf("00099's Down did not restore 00096's investigations_subjkind_ck: %s", def)
+	}
+	if def := constraintDef("enrichments_subjkind_ck", "enrichments"); strings.Contains(def, "'incident'") ||
+		strings.Contains(def, "'group'") || !strings.Contains(def, "'case'") || !strings.Contains(def, "'alert'") {
+		t.Fatalf("00099's Down did not restore 00069's enrichments_subjkind_ck: %s", def)
+	}
+	if def := constraintDef("notifications_reason_ck", "notifications"); strings.Contains(def, "'finding'") ||
+		!strings.Contains(def, "'active_again'") {
+		t.Fatalf("00099's Down did not restore 00084's notifications_reason_ck: %s", def)
+	}
+	if def := policyReasonsCheck(); !strings.Contains(def, "20") || !strings.Contains(def, "oto_array_is_set") {
+		t.Fatalf("policies_reasons_ck did not go back to a set of 1..20 after 00099's Down: %s", def)
+	}
+	if n := countColumns("investigators", "investigates_incidents"); n != 0 {
+		t.Fatalf("investigators.investigates_incidents survived 00099's Down")
+	}
+	if c := columnComment("notifications", "reason"); !strings.Contains(c, "twenty values") || strings.Contains(c, "finding") {
+		t.Fatalf("00099's Down did not restore 00084's notifications.reason comment: %s", c)
+	}
+
+	// ⭐ 00098 HOLDS AN INVESTIGATION TO THE ORG'S DAY, ITS CONCURRENCY AND AN INVESTIGATOR'S
+	// INTERVAL (ADR 0053 §6, git-bug bf172fe): a column and its CHECK on each of
+	// `investigators` and `investigations`, a reason CHECK widened by `budget`, two partial
+	// indexes, and two comments. The reason CHECK is read for its BODY on both sides, for
+	// 00075's reason: a Down that kept `budget` admitted leaves a database that accepts a
+	// reason the release below cannot read back. The two comments are read because they
+	// are the half of a Down nothing references — the table's says `budget`, the settings
+	// document's says ten keys, and both must go back to 00096's words.
+	if n := countColumns("investigators", "min_interval_s") + countColumns("investigations", "not_before"); n != 2 {
+		t.Fatalf("%d of 00098's two columns exist at migration 98", n)
+	}
+	if n := countConstraints("investigators_interval_ck", "investigations_not_before_ck"); n != 2 {
+		t.Fatalf("%d of 00098's two new CHECKs exist at migration 98", n)
+	}
+	if def := constraintDef("investigations_reason_ck", "investigations"); !strings.Contains(def, "'budget'") {
+		t.Fatalf("investigations_reason_ck at migration 98 does not admit skipped/budget: %s", def)
+	}
+	if n := countIndexes("investigation_steps_spend_idx", "investigations_running_idx"); n != 2 {
+		t.Fatalf("%d of 00098's two indexes exist at migration 98", n)
+	}
+	if c := columnComment("orgs", "settings"); !strings.Contains(c, "The ten keys are") ||
+		!strings.Contains(c, "investigation_daily_tokens") || !strings.Contains(c, "investigation_concurrency") {
+		t.Fatalf("orgs.settings' comment at migration 98 does not name the two Investigation controls: %s", c)
+	}
+	if c := tableComment("investigations"); !strings.Contains(c, "daily token budget") {
+		t.Fatalf("investigations' comment at migration 98 does not say a run can skip on the budget: %s", c)
+	}
+
+	down(98)
+
+	if n := countColumns("investigators", "min_interval_s") + countColumns("investigations", "not_before"); n != 0 {
+		t.Fatalf("%d of 00098's columns survived its Down", n)
+	}
+	if n := countConstraints("investigators_interval_ck", "investigations_not_before_ck"); n != 0 {
+		t.Fatalf("%d of 00098's CHECKs survived its Down", n)
+	}
+	if def := constraintDef("investigations_reason_ck", "investigations"); strings.Contains(def, "'budget'") ||
+		!strings.Contains(def, "'disabled'") {
+		t.Fatalf("00098's Down did not restore 00096's investigations_reason_ck: %s", def)
+	}
+	if n := countIndexes("investigation_steps_spend_idx", "investigations_running_idx"); n != 0 {
+		t.Fatalf("%d of 00098's indexes survived its Down", n)
+	}
+	if c := columnComment("orgs", "settings"); !strings.Contains(c, "The eight keys are") ||
+		strings.Contains(c, "investigation_daily_tokens") {
+		t.Fatalf("00098's Down did not restore 00096's orgs.settings comment: %s", c)
+	}
+	if c := tableComment("investigations"); strings.Contains(c, "daily token budget") {
+		t.Fatalf("00098's Down did not restore 00096's investigations comment: %s", c)
+	}
+
+	// ⭐ 00097 LETS AN INVESTIGATOR READ THE CLUSTER THROUGH A TOOLSERVER (ADR 0053, 0054 §5,
+	// git-bug 2e9a086): two tables with their named CHECKs and the per-org name index, and
+	// a widened `channel_credentials_kind_ck` admitting `tool_server_token`. The kind CHECK
+	// is read on both sides for 00075's reason, and its Down must restore 00095's exactly —
+	// `model_api_key` still admitted — or a rollback one step too far would orphan every
+	// model key. The access CHECK is read for its body: `read`/`write` is the gate an
+	// allowlist is held to, and a Down that left it behind is no Down.
+	if n := countTables("tool_servers", "tool_server_tools"); n != 2 {
+		t.Fatalf("%d of 00097's two tables exist at migration 97", n)
+	}
+	if n := countConstraints("tool_servers_name_ck", "tool_servers_url_ck", "tool_servers_transport_ck",
+		"tool_servers_access_ck", "tool_servers_token_tls_ck", "tool_servers_timeout_ck", "tool_servers_result_ck",
+		"tool_servers_failure_ck", "tool_servers_time_ck", "tool_server_tools_name_ck", "tool_server_tools_desc_ck",
+		"tool_server_tools_schema_ck"); n != 12 {
+		t.Fatalf("%d of 00097's twelve CHECKs exist at migration 97, want 12", n)
+	}
+	if def := constraintDef("tool_servers_access_ck", "tool_servers"); !strings.Contains(def, "'read'") ||
+		!strings.Contains(def, "'write'") {
+		t.Fatalf("tool_servers_access_ck does not declare read and write: %s", def)
+	}
+	if n := countIndexes("tool_servers_org_name_uniq"); n != 1 {
+		t.Fatalf("tool_servers_org_name_uniq is absent at migration 97 (found %d)", n)
+	}
+	if def := constraintDef("channel_credentials_kind_ck", "channel_credentials"); !strings.Contains(def, "tool_server_token") {
+		t.Fatalf("channel_credentials_kind_ck at migration 97 does not admit tool_server_token: %s", def)
+	}
+
+	down(97)
+
+	if n := countTables("tool_servers", "tool_server_tools"); n != 0 {
+		t.Fatalf("%d of 00097's tables survived its Down", n)
+	}
+	if n := countIndexes("tool_servers_org_name_uniq"); n != 0 {
+		t.Fatalf("tool_servers_org_name_uniq survived 00097's Down (found %d)", n)
+	}
+	if def := constraintDef("channel_credentials_kind_ck", "channel_credentials"); strings.Contains(def, "tool_server_token") ||
+		!strings.Contains(def, "model_api_key") {
+		t.Fatalf("00097's Down did not restore 00095's channel_credentials_kind_ck: %s", def)
+	}
+
+	// ⭐ 00096 RUNS AN INVESTIGATION AGAINST A CASE (ADR 0053, git-bug 180a525): four
+	// tables, the two trigger functions that make a Step append-only and an ended run
+	// frozen, and a new statement of the `orgs.settings` key set. The triggers are read
+	// on both sides because a Down that dropped the tables and forgot a function leaves
+	// a function nothing calls — harmless, until the next Up's CREATE FUNCTION fails on
+	// it. The comment is read because it is the one output of this migration on a table
+	// it did not create, which is the half a Down forgets.
+	investigatorTriggers := func() int {
+		t.Helper()
+		var n int
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT count(*) FROM pg_proc WHERE proname IN
+			   ('investigation_steps_refuse_change','investigations_refuse_change_once_ended')`).Scan(&n); err != nil {
+			t.Fatalf("introspect 00096's functions: %v", err)
+		}
+		return n
+	}
+	if n := countTables("investigators", "investigator_versions", "investigations", "investigation_steps"); n != 4 {
+		t.Fatalf("%d of 00096's four tables exist at migration 96", n)
+	}
+	if n := investigatorTriggers(); n != 2 {
+		t.Fatalf("%d of 00096's two trigger functions exist at migration 96", n)
+	}
+	if n := countConstraints("investigators_name_ck", "investigator_versions_tools_ck", "investigations_subjkind_ck",
+		"investigations_reason_ck", "investigations_started_ck", "investigation_steps_call_ck"); n != 6 {
+		t.Fatalf("%d of the six named 00096 CHECKs read here exist at migration 96", n)
+	}
+	if def := constraintDef("investigations_subjkind_ck", "investigations"); !strings.Contains(def, "'case'") {
+		t.Fatalf("investigations_subjkind_ck does not admit a case: %s", def)
+	}
+	if n := countIndexes("investigators_org_name_uniq", "investigator_versions_number_uniq",
+		"investigations_subject_idx", "investigations_alert_key_idx", "investigation_steps_seq_uniq"); n != 5 {
+		t.Fatalf("%d of 00096's five indexes exist at migration 96", n)
+	}
+	if c := columnComment("orgs", "settings"); !strings.Contains(c, "investigations_enabled") {
+		t.Fatalf("orgs.settings' comment at migration 96 does not name investigations_enabled: %s", c)
+	}
+
+	down(96)
+
+	if n := countTables("investigators", "investigator_versions", "investigations", "investigation_steps"); n != 0 {
+		t.Fatalf("%d of 00096's tables survived its Down", n)
+	}
+	if n := investigatorTriggers(); n != 0 {
+		t.Fatalf("%d of 00096's trigger functions survived its Down", n)
+	}
+	if c := columnComment("orgs", "settings"); strings.Contains(c, "investigations_enabled") ||
+		!strings.Contains(c, "The seven keys are") {
+		t.Fatalf("00096's Down did not restore 00071's orgs.settings comment: %s", c)
+	}
+
+	// ⭐ 00095 CONFIGURES A MODEL ENDPOINT WITH A SEALED KEY (ADR 0053 §3, git-bug 8f1f071):
+	// one table with its five CHECKs and its per-org name index, and a widened
+	// `channel_credentials_kind_ck` admitting `model_api_key`. The kind CHECK is read on
+	// both sides for 00075's reason — a Down that dropped the table and forgot the enum
+	// leaves a database accepting a kind the release below cannot interpret — and the
+	// TLS CHECK is read for its body because it is the rule domain.KeyNeedsHTTPS
+	// restates: a key bound for plaintext is refused at both layers or at neither.
+	if n := countTables("model_providers"); n != 1 {
+		t.Fatalf("model_providers is absent at migration 95 (found %d)", n)
+	}
+	if n := countConstraints("model_providers_name_ck", "model_providers_base_url_ck",
+		"model_providers_model_ck", "model_providers_key_tls_ck", "model_providers_time_ck"); n != 5 {
+		t.Fatalf("%d of 00095's five CHECKs exist at migration 95, want 5", n)
+	}
+	if def := constraintDef("model_providers_key_tls_ck", "model_providers"); !strings.Contains(def, "https://") {
+		t.Fatalf("model_providers_key_tls_ck does not confine a key to https: %s", def)
+	}
+	if n := countIndexes("model_providers_org_name_uniq"); n != 1 {
+		t.Fatalf("model_providers_org_name_uniq is absent at migration 95 (found %d)", n)
+	}
+	if def := constraintDef("channel_credentials_kind_ck", "channel_credentials"); !strings.Contains(def, "model_api_key") {
+		t.Fatalf("channel_credentials_kind_ck at migration 95 does not admit model_api_key: %s", def)
+	}
+
+	down(95)
+
+	if n := countTables("model_providers"); n != 0 {
+		t.Fatalf("model_providers survived 00095's Down (found %d)", n)
+	}
+	if n := countIndexes("model_providers_org_name_uniq"); n != 0 {
+		t.Fatalf("model_providers_org_name_uniq survived 00095's Down (found %d)", n)
+	}
+	if def := constraintDef("channel_credentials_kind_ck", "channel_credentials"); strings.Contains(def, "model_api_key") ||
+		!strings.Contains(def, "webhook_mapping_secrets") {
+		t.Fatalf("00095's Down did not restore 00090's channel_credentials_kind_ck: %s", def)
+	}
+
 	// ⭐ 00094 LETS A CASE THE UPSTREAM STOPPED SPEAKING ABOUT EXPIRE (ADR 0056): it
 	// widens `case_resreason_ck` to admit `silent` and `source_removed`, adds
 	// `alert_sources.max_silence_s` with its CHECK and a day's default, and adds
@@ -1724,7 +2446,10 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// predates it now that the Down has run), and the two rows are read back. A
 	// single `ADD COLUMN ... DEFAULT 86400` would backfill the old row and fail the
 	// first check. Then the Down runs again, and the loop below carries on from 93.
-	if err := migrate.Up(env.ctx, dsn); err != nil {
+	//
+	// ⚠️ ONE STEP, NOT `migrate.Up`: 00095 onwards sit above 00094, and `Up` would
+	// re-apply all of them and leave the second `down(94)` below refusing the run.
+	if err := migrate.UpByOne(env.ctx, dsn); err != nil {
 		t.Fatalf("re-apply 00094 over a source that predates it: %v", err)
 	}
 	if top := appliedTop(); top != 94 {
@@ -1767,9 +2492,9 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// its CHECK. The notifications CHECK is read for its subject arm, because a sequence on
 	// a Case fact would be a number no receiver could order anything against.
 	//
-	// ⚠️ 00091 AND 00092 BELONG TO A CONCURRENT BRANCH. Until it lands, 00090 is the
-	// migration beneath this one and `down(93)` is followed directly by `down(90)`; when it
-	// lands, its two steps go between them, and `down` refuses the run until they do.
+	// ⚠️ 00091 AND 00092 ARE UNUSED. They were held for a concurrent branch, whose
+	// migrations landed above 00094 instead (00095 onwards), so 00090 is the migration
+	// beneath this one and `down(93)` is followed directly by `down(90)`.
 	if n := countColumns("incidents", "fact_sequence"); n != 1 {
 		t.Fatalf("incidents.fact_sequence is absent at migration 93 (found %d)", n)
 	}

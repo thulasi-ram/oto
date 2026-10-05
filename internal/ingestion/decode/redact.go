@@ -397,6 +397,15 @@ func redactAny(v any, patterns []string) {
 	}
 }
 
+// MatchesName reports whether a name matches any label or annotation pattern — the
+// one question a redaction rule answers, asked by a caller whose values are not in an
+// Alertmanager envelope: `internal/app` hands it to the investigator, which redacts a
+// ToolServer's results with the org's ingest rules (git-bug 2e9a086), the same dialect
+// and the same RedactedValue.
+func (r *Redactor) MatchesName(name string) bool {
+	return matchAny(name, r.labels) || matchAny(name, r.annotations)
+}
+
 // Labels reports a redacted copy of a label map, leaving the input untouched.
 func (r *Redactor) Labels(in map[string]string) map[string]string {
 	return redactCopy(in, r.labels)

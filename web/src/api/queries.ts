@@ -44,6 +44,9 @@ import {
   listChannelTypes,
   listChannels,
   listClusters,
+  listInvestigators,
+  listModelProviders,
+  getRemedyRiskRules,
   listLabelNames,
   listNotifications,
   listPayloadMappingCatalog,
@@ -240,6 +243,49 @@ export function templatePreviewQuery(
   };
 }
 
+/**
+ * Every Investigator in the org — what the Case screen's "Investigate" offers.
+ *
+ * Bounded at the reference staleness, and for the same reason clusters are: an
+ * Investigator changes when an operator configures one, no frame announces it,
+ * and no screen writes one yet. Five minutes behind costs an operator a reload
+ * to see one that was configured in that window — never a run against the wrong
+ * one, because the server pins the version that is current when it is asked.
+ */
+export function investigatorsQuery() {
+  return {
+    queryKey: qk.settings.investigators(),
+    queryFn: ({ signal }: { signal: AbortSignal }) => listInvestigators({ signal }),
+    staleTime: REFERENCE_STALE_MS,
+  };
+}
+
+/**
+ * The org's model endpoints — what the Remedy risk screen offers as a risk model. Bounded at
+ * the reference staleness: an endpoint is configured through the API, no frame announces
+ * one, and the server refuses a risk model this org does not have.
+ */
+export function modelProvidersQuery() {
+  return {
+    queryKey: qk.settings.modelProviders(),
+    queryFn: ({ signal }: { signal: AbortSignal }) => listModelProviders({ signal }),
+    staleTime: REFERENCE_STALE_MS,
+  };
+}
+
+/**
+ * The org's Remedy risk rules and risk model (ADR 0054 §3), shown read-only. Bounded at the
+ * reference staleness: they are applied from the host shell by `oto remedy-rules apply`, no
+ * frame announces a change, and nothing in the app writes them.
+ */
+export function remedyRiskRulesQuery() {
+  return {
+    queryKey: qk.settings.remedyRiskRules(),
+    queryFn: ({ signal }: { signal: AbortSignal }) => getRemedyRiskRules({ signal }),
+    staleTime: REFERENCE_STALE_MS,
+  };
+}
+
 /** The label names offered as matcher completions. */
 export function labelNamesQuery() {
   return {
@@ -396,6 +442,20 @@ export const FRESHNESS: Readonly<Record<string, Freshness>> = {
   "cases.list": { by: "live" },
   "cases.detail": { by: "live" },
   "cases.timeline": { by: "live" },
+  // A Case's Investigations ride the same prefix. While one is `queued` or
+  // `running` it changes with no frame at all, and `InvestigationPanel` polls
+  // for exactly that window; the request it sends invalidates the list itself.
+  "cases.investigations": { by: "live" },
+  "cases.investigation": { by: "live" },
+  // A run's Suggestions: frozen with the run except for `applied`, which only the
+  // apply on the same panel writes — and it invalidates the key. A lapse writes nothing
+  // and needs no frame: the next read simply does not list it.
+  "cases.suggestions": { by: "live" },
+  // A run's Remedies ride the same prefix, so the frames that reach `["cases"]` reach
+  // them. Another approver, the expiry sweep and the executor each move one with no frame
+  // of its own, and `RemediesView` polls for exactly that window — while any Remedy on
+  // screen is proposed, approved or executing — as `InvestigationPanel` does for a run.
+  "cases.remedies": { by: "live" },
 
   // Incidents. No frame is ABOUT one, but every frame that can turn one quiet or
   // active is about one of its Cases: `case.upserted` closes a member, and
@@ -406,6 +466,9 @@ export const FRESHNESS: Readonly<Record<string, Freshness>> = {
   "incidents.list": { by: "live" },
   "incidents.detail": { by: "live" },
   "incidents.holding": { by: "live" },
+  // An Incident's Investigations: polled by `InvestigationPanel` while a run is in
+  // progress, exactly as a Case's are, and invalidated by the request it sends.
+  "incidents.investigations": { by: "live" },
 
   // Health arrives as `source.health`; the rejection feed and the failed-batch
   // list hang under the same source prefix and ride the same frame.
@@ -421,10 +484,20 @@ export const FRESHNESS: Readonly<Record<string, Freshness>> = {
   // whose whole purpose is "is this old token still in use somewhere", a
   // question answered by looking rather than by watching.
   "settings.apiTokens": { by: "mutation" },
+  // Only this person's own link and unlink change it (git-bug a556a5c), and both invalidate it.
+  "settings.slackIdentities": { by: "mutation" },
   "settings.channels": { by: "mutation" },
   "settings.channelConnections": { by: "mutation" },
   "settings.policies": { by: "mutation" },
+  // A policy's digest Investigations sit under `policies()`, so every policy write
+  // invalidates them with the list. A digest run that lands while the disclosure is
+  // open is not announced — no frame is about a policy — and shows on the next open,
+  // which `DigestInvestigations` asks afresh because it fetches only while open.
+  "settings.policyInvestigations": { by: "mutation" },
   "settings.correlators": { by: "mutation" },
+  // The Classification set is written on the screen that reads it, and its save
+  // writes the server's answer back; no frame is about it.
+  "settings.investigationClasses": { by: "mutation" },
   // Settings, like the policies beside them: creating, editing and deleting a
   // A template is written, edited and deleted on the screen that reads the list,
   // and all three invalidate it. No stream frame can change one — a template is
@@ -447,6 +520,21 @@ export const FRESHNESS: Readonly<Record<string, Freshness>> = {
     by: "bounded",
     ms: CAPABILITY_STALE_MS,
     why: "the payload-mapping catalog embedded in this build, which changes on deploy and not on any action an operator can take here — importing an entry writes the connection, never the catalog",
+  },
+  "settings.modelProviders": {
+    by: "bounded",
+    ms: REFERENCE_STALE_MS,
+    why: "the org's model endpoints are configured through the API and no screen writes one yet; a list five minutes behind costs a reload before the risk model's name is shown, and the rules name it by id",
+  },
+  "settings.remedyRiskRules": {
+    by: "bounded",
+    ms: REFERENCE_STALE_MS,
+    why: "the Remedy risk rules are applied from the host shell by `oto remedy-rules apply` and nothing in the app writes them; a screen five minutes behind costs a reload, never a wrong tier, because a Remedy's tier is set by the server at its proposal",
+  },
+  "settings.investigators": {
+    by: "bounded",
+    ms: REFERENCE_STALE_MS,
+    why: "the org's Investigators are configured through the API and no screen writes one yet; a list five minutes behind costs a reload, never a run against the wrong version, because the server pins the version current when asked",
   },
   "labels.names": {
     by: "bounded",

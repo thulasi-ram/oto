@@ -6,6 +6,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
+
+	"github.com/google/uuid"
 
 	"github.com/thulasiram/oto/internal/channels/domain"
 )
@@ -31,7 +34,9 @@ import (
 //
 // ⛔ NO ACTIONS. Every action on a card acts on a signal; the Incident card is about
 // the story, and a button on it would have to pick one of its Cases. Each member
-// links to its own Case, which is where the buttons are.
+// links to its own Case, which is where the buttons are. ⭐ The one exception is not the
+// card: a PROPOSED Remedy's reply in the thread carries Approve and Decline, and they act
+// on that Remedy and nothing else (`remedyActions`, git-bug ac9b492).
 //
 // ⭐ THE OUTBOUND LINK SITS IN THE CONTEXT LINE, BESIDE OTO'S OWN (git-bug 506ff21).
 // ADR 0052 §5's outbound mapping is recorded when an incident tool echoes its own
@@ -65,7 +70,28 @@ const (
 	reasonCaseRemoved = "case_removed"
 	reasonQuiet       = "quiet"
 	reasonActiveAgain = "active_again"
+	reasonFinding     = "finding"
+	// remedyReasonPrefix begins each of the six Remedy facts (ADR 0054 §2):
+	// remedy_proposed, remedy_approved, and so on.
+	remedyReasonPrefix = "remedy_"
 )
+
+// remedyEmoji marks a Remedy transition: a change to the cluster, proposed, decided or made.
+// Not one of §H.2's state emoji, for the jigsaw's reason.
+const remedyEmoji = ":wrench:"
+
+// maxRemedyArgumentsRunes bounds the exact arguments quoted in a reply. The whole of them is
+// on the Remedy's page; a reply that cut them says so.
+const maxRemedyArgumentsRunes = 1500
+
+// findingEmoji marks an Investigation's Finding. A magnifying glass because it is what
+// somebody LOOKED at and concluded — and, like the jigsaw, not one of §H.2's state
+// emoji, which a reader would take for a signal's state.
+const findingEmoji = ":mag:"
+
+// maxFindingRunes bounds a Finding quoted on a card or in a reply. The whole of it is
+// on the Incident's page, which the card links; the card says what it begins with.
+const maxFindingRunes = 600
 
 // incidentNonce is `renderNonce` for a view with no group: the Incident's identity,
 // the membership shape the card shows, the mode and the claim time. Two renders of
@@ -82,6 +108,17 @@ func incidentNonce(v *domain.NotificationView, o domain.RenderOptions) string {
 	}
 	for _, m := range iv.Members {
 		h.Write([]byte(m.CaseID + m.CaseState))
+		h.Write([]byte{0})
+	}
+	// A card whose Finding moved is a different card. Hashed only when there is one,
+	// so every card without a Finding hashes exactly as it did before there could be.
+	if f := iv.Finding; f != nil {
+		h.Write([]byte("finding:" + f.InvestigationID))
+		h.Write([]byte{0})
+	}
+	// A Remedy fact is about one transition; hashed only on those six facts.
+	if rm := iv.Remedy; rm != nil {
+		h.Write([]byte("remedy:" + rm.RemedyID + ":" + rm.State))
 		h.Write([]byte{0})
 	}
 	return hex.EncodeToString(h.Sum(nil))[:10]
@@ -162,6 +199,10 @@ func (r *Renderer) renderIncidentRoot(v *domain.NotificationView, o domain.Rende
 	if members := incidentMembers(iv, o); members != "" {
 		blocks = append(blocks, sectionBlock(blockID("incidentmembers", nonce),
 			truncateSection(members, iv.Link)))
+	}
+	if iv.Finding != nil {
+		blocks = append(blocks, sectionBlock(blockID("incidentfinding", nonce),
+			truncateSection(incidentFinding(*iv.Finding), iv.Link)))
 	}
 	blocks = append(blocks, contextBlock(blockID("incidentfooter", nonce),
 		Text{Type: TypeMrkdwn, Text: truncateField(incidentFooter(iv, o, now), "")}))
@@ -310,21 +351,32 @@ func (r *Renderer) renderIncidentReply(v *domain.NotificationView, o domain.Rend
 	now := plural(current, "case", "cases") + ", " + strconv.Itoa(open) + " open"
 
 	var body, sentence string
-	switch v.Reason {
-	case reasonCaseAdded:
+	switch {
+	case v.Reason == reasonCaseAdded:
 		body = ":heavy_plus_sign: *A case joined* — now " + now
 		sentence = "A case joined " + incidentName(iv) + "; it now has " + now
-	case reasonCaseRemoved:
+	case v.Reason == reasonCaseRemoved:
 		body = ":heavy_minus_sign: *A case left* — now " + now
 		sentence = "A case left " + incidentName(iv) + "; it now has " + now
-	case reasonQuiet:
+	case v.Reason == reasonQuiet:
 		body = incidentQuietEmoji + " *Quiet* — every member case has closed. _Whether the " +
 			"response is over is for the incident tool to say._"
 		sentence = incidentName(iv) + " is quiet: every member case has closed"
-	case reasonActiveAgain:
+	case v.Reason == reasonActiveAgain:
 		body = CardFiring.Emoji() + " *Active again* — " + plural(open, "case open", "cases open")
 		sentence = incidentName(iv) + " is active again: " + plural(open, "case", "cases") + " open"
-	case reasonDrawn:
+	case v.Reason == reasonFinding:
+		// The Finding as of claim time — the newest, which is the one this fact
+		// announced unless a later run has already overtaken it.
+		body = findingEmoji + " *A new Finding* — " + now
+		sentence = incidentName(iv) + " has a new Finding"
+		if f := iv.Finding; f != nil {
+			body = incidentFinding(*f)
+			sentence += " by " + f.Investigator + " v" + strconv.Itoa(f.Version)
+		}
+	case strings.HasPrefix(v.Reason, remedyReasonPrefix):
+		body, sentence = incidentRemedy(v.Reason, iv)
+	case v.Reason == reasonDrawn:
 		// `incidentModes` never gives `drawn` a reply — the card says it all — so this
 		// arm is for a preview or a future mode, and it still says something true.
 		body = incidentEmoji + " *" + escape(incidentName(iv)) + " drawn* — " + now
@@ -336,6 +388,10 @@ func (r *Renderer) renderIncidentReply(v *domain.NotificationView, o domain.Rend
 	}
 	text := truncateClause(oneLine(endSentence(incidentEmoji+" "+sentence)), otoTopLevelText)
 
+	blocks := []Block{sectionBlock(blockID("incidentreply", nonce), truncateSection(body, iv.Link))}
+	if b, ok := remedyActions(v.Reason, iv, nonce); ok {
+		blocks = append(blocks, b)
+	}
 	return Payload{
 		Text:        text,
 		UnfurlLinks: false,
@@ -343,8 +399,7 @@ func (r *Renderer) renderIncidentReply(v *domain.NotificationView, o domain.Rend
 		Attachments: []Attachment{{
 			Color:    incidentColour(iv),
 			Fallback: truncateRunes(text, 200),
-			Blocks: []Block{sectionBlock(blockID("incidentreply", nonce),
-				truncateSection(body, iv.Link))},
+			Blocks:   blocks,
 		}},
 	}, text, text
 }
@@ -414,4 +469,282 @@ func incidentCaseClause(v *domain.NotificationView) string {
 		return " (case #" + strconv.FormatInt(in.CaseNumber, 10) + " in " + incident + ")"
 	}
 	return " (in " + incident + ")"
+}
+
+// incidentRemedy is a Remedy fact's reply: the transition and who made it, then ⭐ THE EXACT
+// COMMAND — the write Tool and its arguments, or that no configured Tool can carry it out —
+// then what it is made to, how many approvals it needs and what set that, who has approved
+// so far, and only then the Investigator's description of it (ADR 0054 §3).
+func incidentRemedy(reason string, iv domain.IncidentView) (body, sentence string) {
+	verb := strings.ReplaceAll(strings.TrimPrefix(reason, remedyReasonPrefix), "_", " ")
+	sentence = "A Remedy on " + incidentName(iv) + " was " + verb
+	r := iv.Remedy
+	if r == nil {
+		return remedyEmoji + " *Remedy " + escape(verb) + "*", sentence
+	}
+	if r.ActorLabel != "" {
+		sentence += " by " + r.ActorLabel
+	}
+	return remedyCard(reason, iv).body, sentence
+}
+
+// remedyCardText is a Remedy reply's body and whether a reader of it saw the whole command.
+type remedyCardText struct {
+	body string
+	// whole: the reply quotes EVERY byte of the arguments, and `truncateSection` keeps all of
+	// them and the target and tier lines after them. The one predicate both the "cut here" note
+	// and the Approve button read (git-bug a556a5c, review E1).
+	whole bool
+}
+
+// remedyCard builds a Remedy reply (see `incidentRemedy`) and decides whether it is whole.
+//
+// ⛔⛔ WHOLENESS IS MEASURED IN BYTES, AFTER ESCAPING, AGAINST WHAT THE SECTION KEEPS (review
+// E1). It used to be "the arguments are under maxRemedyArgumentsRunes RUNES", and the section
+// is then cut at maxSectionText BYTES of the ESCAPED text: `&` is five bytes once escaped, `<`
+// and `>` four, a non-ASCII rune two to four. About 1,400 runes of `&` lost their tail — and
+// the target and tier after it — while Approve stayed on the card, and the adapter passes the
+// stored hash, so this renderer is the only thing that stops an approval of a command nobody
+// saw. Now the reply up to and including the tier line must fit `sectionKeeps`; when it does
+// not, the arguments are cut HERE (after escaping, never inside an `&amp;`), the note says the
+// Remedy is approved on its page, and `remedyActions` offers Decline only.
+func remedyCard(reason string, iv domain.IncidentView) remedyCardText {
+	r := iv.Remedy
+	verb := strings.ReplaceAll(strings.TrimPrefix(reason, remedyReasonPrefix), "_", " ")
+
+	// lead: the transition, who made it, the approvals count, then the write Tool.
+	var lead strings.Builder
+	lead.WriteString(remedyEmoji + " *Remedy " + escape(verb) + "*")
+	if r.ActorLabel != "" {
+		lead.WriteString(" by " + escape(r.ActorLabel))
+	}
+	if r.RequiredApprovals > 0 {
+		lead.WriteString(" — " + strconv.Itoa(len(r.Approvals)) + " of " + strconv.Itoa(r.RequiredApprovals) + " approvals")
+	}
+
+	// then: what it is made to, where it is read whole, and the tier — the part a reader must
+	// still see under the arguments.
+	var then strings.Builder
+	then.WriteString("\non " + escape(r.Target))
+	if u := safeURL(iv.Link); u != "" {
+		// Where the whole Remedy is read — every argument, its history — and decided in oto.
+		then.WriteString("  ·  " + link(u, "open "+incidentName(iv)+" in oto"))
+	}
+	if tier := remedyTier(*r); tier != "" {
+		then.WriteString("\n" + tier)
+	}
+
+	// rest: approvals so far, any failure, and only then the Investigator's description. The
+	// section may cut these; they are not what an approval approves.
+	var rest strings.Builder
+	if len(r.Approvals) > 0 {
+		names := make([]string, 0, len(r.Approvals))
+		for _, a := range r.Approvals {
+			names = append(names, escape(firstNonEmpty(a.Label, "a person")))
+		}
+		rest.WriteString("\nApproved so far by " + strings.Join(names, ", "))
+	}
+	if r.FailureReason != "" {
+		rest.WriteString("\n*" + escape(r.FailureReason) + "*")
+		if r.Detail != "" {
+			rest.WriteString(": " + escape(r.Detail))
+		}
+	} else if r.Detail != "" {
+		rest.WriteString("\n" + escape(r.Detail))
+	}
+	if text := strings.TrimSpace(r.Description); text != "" {
+		rest.WriteString("\n>" + strings.ReplaceAll(escape(truncateRunes(text, maxFindingRunes)), "\n", "\n>"))
+	}
+
+	if r.Tool == "" {
+		// Nothing can carry it out (ADR 0054 §1), so there is no command to see whole.
+		return remedyCardText{body: lead.String() + "\n_" + escape(r.NoTool) + "_" + then.String() + rest.String()}
+	}
+	lead.WriteString("\n" + code(r.ToolServer+"__"+r.Tool))
+
+	const fence = "```"
+	onCard := remedyArgumentsOnCard(*r)
+	quoted := quoteRemedyArguments(onCard)
+	keeps := sectionKeeps(iv.Link)
+	if onCard == r.Arguments && lead.Len()+len("\n"+fence+quoted+fence)+then.Len() <= keeps {
+		return remedyCardText{body: lead.String() + "\n" + fence + quoted + fence + then.String() + rest.String(), whole: true}
+	}
+
+	note := "\n_the arguments are cut here; the Remedy's page shows them whole_"
+	if remedyAwaitingApproval(reason, *r) {
+		// ⭐ NO APPROVE BUTTON BELOW, AND THIS IS WHY: nobody approves a command from a
+		// card that did not show all of it (`remedyActions`).
+		note = "\n_the arguments are cut here, so it is approved on the Remedy's page, which shows them whole_"
+	}
+	// Cut the ESCAPED arguments so the note, the target and the tier still fit the section.
+	room := keeps - lead.Len() - len("\n"+fence+fence) - len(ellipsis) - len(note) - then.Len()
+	if onCard == r.Arguments || len(quoted) > room {
+		quoted = cutEscaped(strings.TrimSuffix(quoted, ellipsis), room) + ellipsis
+	}
+	return remedyCardText{body: lead.String() + "\n" + fence + quoted + fence + note + then.String() + rest.String()}
+}
+
+// quoteRemedyArguments is the arguments as the code block quotes them: escaped for mrkdwn, and
+// a run of three backticks inside them turned to three apostrophes (same bytes) so they cannot
+// close the block early.
+func quoteRemedyArguments(args string) string {
+	return strings.ReplaceAll(escape(args), "```", "'''")
+}
+
+// cutEscaped cuts already-escaped text to at most n bytes without splitting a rune or an
+// `&amp;`-style entity, and without leaving a backtick to run into the closing fence.
+func cutEscaped(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	if len(s) > n {
+		s = s[:n]
+	}
+	for len(s) > 0 && !utf8.ValidString(s) {
+		s = s[:len(s)-1]
+	}
+	if i := strings.LastIndex(s, "&"); i > strings.LastIndex(s, ";") {
+		s = s[:i]
+	}
+	return strings.TrimRight(s, "`")
+}
+
+// remedyArgumentsOnCard is the arguments as the reply quotes them at most: whole, or cut at
+// maxRemedyArgumentsRunes. `remedyCard` may cut them further to fit the section.
+func remedyArgumentsOnCard(r domain.IncidentRemedyView) string {
+	return truncateRunes(r.Arguments, maxRemedyArgumentsRunes)
+}
+
+// remedyAwaitingApproval reports whether this reply is the proposal of a Remedy that is
+// still waiting for a decision — the one reply that offers one.
+func remedyAwaitingApproval(reason string, r domain.IncidentRemedyView) bool {
+	return reason == remedyReasonPrefix+"proposed" && r.State == "proposed"
+}
+
+// remedyTier is how many approvals the Remedy needs and what set that number, in the
+// approval screen's words (git-bug eb4f21b): a named rule, no rule, an unparseable command,
+// or the risk model raising it. "" for a Remedy that needs none recorded.
+func remedyTier(r domain.IncidentRemedyView) string {
+	if r.RequiredApprovals <= 0 {
+		return ""
+	}
+	need := "*Needs 1 approval*"
+	if r.RequiredApprovals > 1 {
+		need = "*Needs " + strconv.Itoa(r.RequiredApprovals) + " approvals from different people*"
+	}
+	rule := ""
+	if strings.TrimSpace(r.ApprovalsRule) != "" {
+		rule = code(r.ApprovalsRule)
+	}
+	var why string
+	switch r.ApprovalsSetBy {
+	case "rule":
+		why = "set by the rule " + firstNonEmpty(rule, "an operator wrote")
+	case "no_rule":
+		why = "no rule matched this command"
+	case "unparseable":
+		why = "the rules could not parse this command"
+	case "risk_model":
+		why = "raised by the risk model"
+		if rule != "" {
+			why += "; the rule " + rule + " said one"
+		}
+	case "risk_model_failed":
+		why = "the risk model gave no answer oto could take"
+		if rule != "" {
+			why += "; the rule " + rule + " said one"
+		}
+	case "risk_model_budget":
+		why = "the day's token budget was spent, so the risk model was not asked"
+		if rule != "" {
+			why += "; the rule " + rule + " said one"
+		}
+	}
+	if why == "" {
+		return need
+	}
+	return need + " — " + why
+}
+
+// remedyRunsWhen is the confirmation's last sentence: when the approval the reader is about to
+// give makes the change happen.
+func remedyRunsWhen(required int) string {
+	if required <= 1 {
+		return "It runs once you approve."
+	}
+	return "It runs once " + strconv.Itoa(required) + " different people have approved, you among them."
+}
+
+// remedyActions is the row under a PROPOSED Remedy's reply: Approve and Decline (ADR 0054
+// §2, git-bug ac9b492). Each button's value is the Remedy's id (V11); the press is applied by
+// `channels/service` through the same approval the UI makes, for a Slack member LINKED to an
+// oto user, and refused with a sentence otherwise.
+//
+// ⛔ NO APPROVE BUTTON FOR A REMEDY THAT NAMES NO TOOL (ADR 0054 §1): nothing can carry it
+// out, so it cannot be approved — only declined. ⛔ NOR FOR ONE WHOSE ARGUMENTS THE REPLY CUT:
+// an approval in Slack is an approval of what the card showed, and it did not show it all.
+//
+// ⭐ APPROVE ASKS FIRST. It is the one button on any oto card that changes a cluster, so it
+// carries Slack's confirmation dialog (S10: destructive things live behind a confirm). Decline
+// does not: saying no is the safe direction.
+//
+// ⚠️ THE ROW IS NOT TAKEN DOWN WHEN THE REMEDY MOVES. A reply is posted, never amended, so a
+// button on a Remedy that has since been approved, declined or expired stays on screen; its
+// press is answered with why it no longer applies. The transition itself is a new reply.
+func remedyActions(reason string, iv domain.IncidentView, nonce string) (Block, bool) {
+	r := iv.Remedy
+	if r == nil || !remedyAwaitingApproval(reason, *r) {
+		return Block{}, false
+	}
+	if _, err := uuid.Parse(r.RemedyID); err != nil {
+		return Block{}, false
+	}
+	elements := make([]Action, 0, 2)
+	if r.Tool != "" && remedyCard(reason, iv).whole {
+		elements = append(elements, Action{
+			Type: ElementButton, Text: plain("Approve"), ActionID: domain.ActionRemedyApprove, Value: r.RemedyID,
+			Confirm: &Confirm{
+				Title: plain(truncateRunes("Approve this Remedy?", maxConfirmTitle)),
+				Text: plain(truncateRunes("You approve "+r.ToolServer+"__"+r.Tool+" on "+r.Target+
+					" with exactly the arguments on this card. "+remedyRunsWhen(r.RequiredApprovals), maxConfirmText)),
+				Confirm: plain("Approve"),
+				Deny:    plain("Not yet"),
+			},
+		})
+	}
+	elements = append(elements, Action{
+		Type: ElementButton, Text: plain("Decline"), ActionID: domain.ActionRemedyDecline, Value: r.RemedyID,
+	})
+	return actionsBlock(blockID("remedyactions", nonce), elements...), true
+}
+
+// incidentFinding is an Investigation's latest Finding as a card says it (ADR 0053
+// §4): who concluded it and WHEN, then the opening of what it concluded, quoted.
+//
+// ⭐ IT SAYS "AS SEEN AT" EVERY TIME IT SAYS THE FINDING. A model's sentence about a
+// storm reads as present tense unless the card stops it; the instant it was reached
+// is what makes it a snapshot (ADR 0016) rather than a claim about now. A Finding a
+// budget cut short says "partial" before anything else.
+//
+// ⭐ A CLASSIFICATION IS SAID AS THE INVESTIGATOR'S, NEVER AS A LABEL OF THE INCIDENT'S
+// (ADR 0053 §5). "classified `x`" sits on the line that names who concluded it, so a
+// reader cannot take the operator's class for a fact about the signal; a Finding with no
+// classification — the org wrote no classes — says nothing about one.
+func incidentFinding(f domain.IncidentFindingView) string {
+	head := "Finding"
+	if f.Partial {
+		head = "Partial Finding"
+	}
+	var b strings.Builder
+	b.WriteString(findingEmoji + " *" + head + "* by " + code(f.Investigator+" v"+strconv.Itoa(f.Version)))
+	if !f.ConcludedAt.IsZero() {
+		b.WriteString(", as seen at " + slackDateTime(f.ConcludedAt))
+	}
+	if f.Classification != "" {
+		b.WriteString(", classified " + code(f.Classification))
+	}
+	if text := strings.TrimSpace(f.Summary); text != "" {
+		b.WriteString("\n>" + strings.ReplaceAll(escape(truncateRunes(text, maxFindingRunes)), "\n", "\n>"))
+	}
+	return b.String()
 }

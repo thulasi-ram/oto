@@ -545,6 +545,11 @@ config:
     # reservation, 15 at the defaults).
     # Left unset like its neighbours: the fall-through value IS 8. Set it to depart.
     queue_reconcile: 0
+    # How many Investigations the whole deployment runs at once (ADR 0053 §3); each
+    # org's investigation_concurrency narrows its own share. A run mostly waits on its
+    # model endpoint, so a slot is a goroutine and a db connection, not a core.
+    # Left unset like its neighbours: the fall-through value IS 8. Set it to depart.
+    queue_investigate: 0
     fetch_interval: 1s
     job_timeout: 1m
     # How long a job may sit `running` before the rescuer reclaims it — the
@@ -642,7 +647,18 @@ config:
 #
 # Keys are the ones on docs/setup/tuning.md, e.g.
 #   resolve_grace_s, raw_retention_days, event_retention_months,
-#   default_verbosity
+#   default_verbosity, investigations_enabled, investigation_daily_tokens,
+#   investigation_concurrency, remedy_approval_window_s
+#   (investigations_enabled is the org-wide Investigation kill switch, ADR 0053
+#   §6: `false` stops every new Investigation and records it `skipped`; it never
+#   changes a notification. Set it here to pull the switch for every org at once.)
+#   (investigation_daily_tokens, 1000..1000000000, default 2000000, is each org's
+#   input + output tokens per UTC day — past it a new Investigation is recorded
+#   `skipped` with reason `budget` — and investigation_concurrency, 1..32, default
+#   2, is the most running at once; one past it waits queued. ADR 0053 §6.)
+#   (remedy_approval_window_s, 60..86400, default 3600, is how long a Remedy waits
+#   for its two approvals and then for its execution before it is recorded
+#   `expired`. ADR 0054 §2; see docs/setup/remedies.md.)
 #   (the five unacked_reminder_* keys were here and are gone — git-bug bd0fb1d;
 #   a config still naming one is refused with unknown_key)
 #   (refire_grace_s and group_close_delay_s were here and are gone the same way —
@@ -654,8 +670,8 @@ config:
 #   the notifier there is no broadcast for an org to opt into. ⛔ IT OUTLIVED ITS
 #   OWN DELETION ON THE LIVE SIDE OF THIS LIST, which is worse than the three
 #   tombstones above it — a tombstone teaches, but a dead key advertised as live is
-#   an instruction to write the line that fails the rollout. `default_verbosity` is
-#   the only non-integer key left.)
+#   an instruction to write the line that fails the rollout. `default_verbosity` and
+#   `investigations_enabled` are the only non-integer keys.)
 # -----------------------------------------------------------------------------
 
 tuning: {}

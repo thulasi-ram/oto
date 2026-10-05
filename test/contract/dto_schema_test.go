@@ -26,6 +26,7 @@ import (
 	incidentsapi "github.com/thulasiram/oto/internal/incidents/api"
 	incidentsdomain "github.com/thulasiram/oto/internal/incidents/domain"
 	ingestionapi "github.com/thulasiram/oto/internal/ingestion/api"
+	investigatorapi "github.com/thulasiram/oto/internal/investigator/api"
 	notificationapi "github.com/thulasiram/oto/internal/notification/api"
 	notificationdomain "github.com/thulasiram/oto/internal/notification/domain"
 	rulesapi "github.com/thulasiram/oto/internal/rules/api"
@@ -146,6 +147,50 @@ var bindings = []binding{
 	{"incidents", "CreateCorrelatorRequest", incidentsapi.CreateCorrelatorRequest{}},
 	{"incidents", "UpdateCorrelatorRequest", incidentsapi.UpdateCorrelatorRequest{}},
 
+	// --------------------------------------------------------- investigator
+	// ADR 0053, git-bug 180a525. `InvestigatorDetailDTO` and `InvestigationDetailDTO`
+	// embed their summaries exactly as the contract's `allOf` composes them.
+	// `CreateModelProviderRequest.api_key` is write-only and appears in no response.
+	{"investigator", "ModelProviderDTO", investigatorapi.ModelProviderDTO{}},
+	{"investigator", "CreateModelProviderRequest", investigatorapi.CreateModelProviderRequest{}},
+	{"investigator", "ModelIdentityDTO", investigatorapi.ModelIdentityDTO{}},
+	{"investigator", "InvestigatorBudgetsDTO", investigatorapi.InvestigatorBudgetsDTO{}},
+	{"investigator", "InvestigatorVersionDTO", investigatorapi.InvestigatorVersionDTO{}},
+	{"investigator", "InvestigatorDTO", investigatorapi.InvestigatorDTO{}},
+	{"investigator", "InvestigatorDetailDTO", investigatorapi.InvestigatorDetailDTO{}},
+	{"investigator", "CreateInvestigatorRequest", investigatorapi.CreateInvestigatorRequest{}},
+	{"investigator", "UpdateInvestigatorRequest", investigatorapi.UpdateInvestigatorRequest{}},
+	{"investigator", "RequestInvestigationRequest", investigatorapi.RequestInvestigationRequest{}},
+	{"investigator", "InvestigationDTO", investigatorapi.InvestigationDTO{}},
+	{"investigator", "StepToolCallDTO", investigatorapi.StepToolCallDTO{}},
+	{"investigator", "InvestigationStepDTO", investigatorapi.InvestigationStepDTO{}},
+	{"investigator", "InvestigationDetailDTO", investigatorapi.InvestigationDetailDTO{}},
+	{"investigator", "InvestigationClassDTO", investigatorapi.InvestigationClassDTO{}},
+	{"investigator", "InvestigationClassSetDTO", investigatorapi.InvestigationClassSetDTO{}},
+	{"investigator", "InvestigationClassRequest", investigatorapi.InvestigationClassRequest{}},
+	{"investigator", "ReplaceInvestigationClassesRequest", investigatorapi.ReplaceInvestigationClassesRequest{}},
+	// Suggestions (git-bug 8327c00): applied or lapsed, and apply is the one request.
+	{"investigator", "SuggestionDTO", investigatorapi.SuggestionDTO{}},
+	{"investigator", "CountConditionSuggestionDTO", investigatorapi.CountConditionSuggestionDTO{}},
+	{"investigator", "MembershipSuggestionDTO", investigatorapi.MembershipSuggestionDTO{}},
+	{"investigator", "ApplySuggestionRequest", investigatorapi.ApplySuggestionRequest{}},
+	// ToolServers (git-bug 2e9a086). `CreateToolServerRequest.token` is write-only.
+	{"investigator", "ToolServerDTO", investigatorapi.ToolServerDTO{}},
+	{"investigator", "CreateToolServerRequest", investigatorapi.CreateToolServerRequest{}},
+	{"investigator", "ToolServerToolDTO", investigatorapi.ToolServerToolDTO{}},
+	// The Remedy approval grant (git-bug 47f67c8): read-only; `oto grant` is the only writer.
+	{"investigator", "RemedyApproverDTO", investigatorapi.RemedyApproverDTO{}},
+	// Remedies (git-bug 4148256): read, approved by the hash of the arguments approved, declined.
+	{"investigator", "RemedyDTO", investigatorapi.RemedyDTO{}},
+	{"investigator", "RemedyToolDTO", investigatorapi.RemedyToolDTO{}},
+	// Remedy risk rules (git-bug eb4f21b).
+	{"investigator", "RemedyRiskDTO", investigatorapi.RemedyRiskDTO{}},
+	{"investigator", "RemedyRiskRuleDTO", investigatorapi.RemedyRiskRuleDTO{}},
+	{"investigator", "RemedyRiskRulesDTO", investigatorapi.RemedyRiskRulesDTO{}},
+	{"investigator", "RemedyApprovalDTO", investigatorapi.RemedyApprovalDTO{}},
+	{"investigator", "RemedyTransitionDTO", investigatorapi.RemedyTransitionDTO{}},
+	{"investigator", "ApproveRemedyRequest", investigatorapi.ApproveRemedyRequest{}},
+
 	// ------------------------------------------------------------ sources
 	{"sources", "ClusterDTO", sourcesapi.ClusterDTO{}},
 	{"sources", "CreateClusterRequest", sourcesapi.CreateClusterRequest{}},
@@ -236,6 +281,10 @@ var bindings = []binding{
 	// `API`; the JSON is identical and the difference is only in the type name.
 	{"identity", "ApiTokenDTO", identityapi.APITokenDTO{}},
 	{"identity", "ApiTokenCreatedDTO", identityapi.APITokenCreatedDTO{}},
+	// The self-service Slack link (git-bug a556a5c).
+	{"identity", "SlackLinkCodeRequest", identityapi.SlackLinkCodeRequest{}},
+	{"identity", "SlackLinkPreviewDTO", identityapi.SlackLinkPreviewDTO{}},
+	{"identity", "SlackIdentityDTO", identityapi.SlackIdentityDTO{}},
 
 	// ------------------------------------------------------------ silences
 	{"silences", "SilenceDTO", silencesapi.SilenceDTO{}},

@@ -1,0 +1,27 @@
+{
+  "id": "chatcmpl-9xK2gT1aBcD3",
+  "object": "chat.completion",
+  "created": 1790912046,
+  "model": "gateway-model-2026-08",
+  "system_fingerprint": "fp_5c1e8a",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "api-7d9f was OOMKilled four times since 02:14; its memory limit is 256Mi and the working set reaches it within six minutes of each start.",
+        "refusal": null,
+        "annotations": []
+      },
+      "logprobs": null,
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 1630,
+    "completion_tokens": 41,
+    "total_tokens": 1671,
+    "prompt_tokens_details": {"cached_tokens": 384, "audio_tokens": 0},
+    "completion_tokens_details": {"reasoning_tokens": 0, "audio_tokens": 0, "accepted_prediction_tokens": 0, "rejected_prediction_tokens": 0}
+  }
+}

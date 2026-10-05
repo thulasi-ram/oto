@@ -324,6 +324,12 @@ const (
 	// SubjectCase is one firing episode. This is the v1 default: an
 	// enrichment is a fact about a FIRE, not about an identity.
 	SubjectCase = "case"
+	// SubjectIncident is a set of Cases drawn as one story (ADR 0052). Only an
+	// Investigator writes one: an Incident's Finding is published as the
+	// Enrichment `investigator.<name>` on the Incident, exactly as a Case's is on
+	// the Case (ADR 0053 §3, §4; migration 00099 widened `enrichments_subjkind_ck`
+	// to admit it). No enricher of the pipeline runs against an Incident.
+	SubjectIncident = "incident"
 
 	// ⛔ `SubjectGroup = "group"` WAS HERE AND IS DELETED (git-bug `7570090`).
 	// It named an AlertGroup generation, and a conversation now holds exactly one
@@ -340,23 +346,15 @@ const (
 	// across the schema meets two different strings for one idea, which is why it
 	// is said here rather than assumed.
 	//
-	// ⚠️ AND `enrichments_subjkind_ck` STILL ADMITS `'group'` AS THIS LANDS.
-	// 00069 left that narrowing out deliberately — its own header says so — because
-	// a CHECK that refuses a value the validator still accepts is the wrong half to
-	// ship first. This change is the other half, and the constraint owes:
-	//
-	//	ALTER TABLE enrichments DROP CONSTRAINT enrichments_subjkind_ck;
-	//	ALTER TABLE enrichments ADD  CONSTRAINT enrichments_subjkind_ck
-	//	  CHECK (subject_kind IN ('alert','case'));
-	//
-	// Until it lands the schema is merely WIDER than the domain, which is the safe
-	// direction to be wrong in: nothing can write `'group'` because nothing can
-	// construct it, so no row can exist for the narrowing to then refuse.
+	// ⭐ `enrichments_subjkind_ck` NO LONGER ADMITS `'group'`. 00069's Up narrowed
+	// it to `('alert','case')` (its line 342; the `'group'` at its line 640 is the
+	// DOWN), and 00099 widened it by exactly `'incident'`. The CHECK and the switch
+	// below are the same set again, three values each (git-bug 74ea849 checked).
 )
 
 func validSubjectKind(k string) bool {
 	switch k {
-	case SubjectAlert, SubjectCase:
+	case SubjectAlert, SubjectCase, SubjectIncident:
 		return true
 	default:
 		return false

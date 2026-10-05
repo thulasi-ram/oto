@@ -258,6 +258,19 @@ func (v *ViewService) digest(n domain.Notification) *NotificationView {
 	if n.DigestCoveredFrom != nil && n.DigestCoveredTo != nil {
 		d.CoveredFrom, d.CoveredTo = n.DigestCoveredFrom.UTC(), n.DigestCoveredTo.UTC()
 	}
+	// ⭐ THE FINDING IS READ OFF THE ROW TOO, so this function still reads nothing (git-bug
+	// 3e96f5a). It was copied when the window closed; a later Finding cannot reach it.
+	if f := n.DigestFinding; f != nil {
+		d.Finding = &IncidentFindingView{
+			InvestigationID: f.InvestigationID.String(),
+			Investigator:    f.Investigator,
+			Version:         f.Version,
+			Summary:         f.Summary,
+			Classification:  f.Classification,
+			Partial:         f.Partial,
+			ConcludedAt:     f.ConcludedAt.UTC(),
+		}
+	}
 	return &NotificationView{
 		Reason:     string(n.Reason),
 		Digest:     d,

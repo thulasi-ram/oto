@@ -162,6 +162,11 @@ tags:
       Sets of one or more Cases drawn together as one story (ADR 0052) — by an operator-written
       Correlator or by a human. An Incident's state is read off its Cases and never set by a hand, and
       a Case belongs to at most one Incident. Its response is handed off to the tool it is declared to.
+  - name: Investigators
+    description: |
+      Model endpoints, Investigators and their Investigations (ADR 0053): a named, versioned
+      configuration runs against a Case asynchronously, records every Step, ends at its budgets, and
+      publishes its Finding as an Enrichment. It changes what people read — never whether they are told.
   - name: Rules
     description: Content-addressed rule snapshots captured at fire time. The differentiator.
   - name: Sources
@@ -2494,6 +2499,1100 @@ paths:
           $ref: '#/components/responses/ServiceUnavailable'
 
   # =================================================================================================
+  # Investigators
+  # =================================================================================================
+
+  /api/v1/model-providers:
+    get:
+      operationId: listModelProviders
+      summary: List model endpoints
+      tags: [Investigators]
+      description: |
+        Every model endpoint the org's Investigators may use, by name (ADR 0053 §3): a Chat Completions
+        base URL, a model name, and whether a key is stored. **The key itself is never returned** — not
+        here, not anywhere. The list is never paged; `page.has_more` is always `false`.
+      responses:
+        '200':
+          description: Every model endpoint, by name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelProviderListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    post:
+      operationId: createModelProvider
+      summary: Configure a model endpoint
+      tags: [Investigators]
+      description: |
+        One endpoint that serves the OpenAI-compatible Chat Completions API with tool calling — a hosted
+        API, an operator's gateway, or a model server on the cluster network. `api_key` is **write-only**:
+        it is sealed before the row is written, and every response says only `has_key`. A key is only
+        ever sent over `https`, so a keyed `http` base URL is a `422`. A base URL carrying credentials is
+        refused, not stripped.
+
+        A duplicate name is a `409` naming `model_providers_org_name_uniq`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateModelProviderRequest'
+      responses:
+        '201':
+          description: The endpoint, without its key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelProviderResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/tool-servers:
+    get:
+      operationId: listToolServers
+      summary: List ToolServers
+      tags: [Investigators]
+      description: |
+        Every ToolServer the org's operator configured, by name (ADR 0016, 0053, 0054 §5): an MCP server
+        the operator runs, which an Investigator reads the cluster through. oto ships none and holds no
+        cluster credential — only each ToolServer's own access token, which is **never returned**. The
+        list is never paged; `page.has_more` is always `false`.
+      responses:
+        '200':
+          description: Every ToolServer, by name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolServerListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    post:
+      operationId: createToolServer
+      summary: Configure a ToolServer
+      tags: [Investigators]
+      description: |
+        One MCP server reached over HTTP — `streamable_http` (the default) or the older `sse`; there is
+        no stdio, because oto starts no process. `access` is the operator's **declaration** and has no
+        default: only a `read` ToolServer's Tools may be on an Investigator's allowlist; a `write` one
+        is configured and discovered but never offered to a model — it is where a Remedy's write Tool
+        will be bound (ADR 0054). A Tool's own `readOnlyHint` is shown, never trusted.
+
+        `token` is **write-only**: sealed before the row is written, sent as a bearer token, and only over
+        `https` — a token with an `http` URL is a `422`. A URL carrying credentials or a query is refused,
+        not stripped. `call_timeout_seconds` and `max_result_bytes` are the per-call controls (ADR 0053
+        §6); a timeout or a truncation is recorded on the Step and the run continues. Creating a
+        ToolServer lists nothing: discover it.
+
+        A duplicate name is a `409` naming `tool_servers_org_name_uniq`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateToolServerRequest'
+      responses:
+        '201':
+          description: The ToolServer, without its token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolServerResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/tool-servers/{id}:
+    get:
+      operationId: getToolServer
+      summary: Get one ToolServer
+      tags: [Investigators]
+      description: |
+        One ToolServer, without its token, with when it was last discovered and — if the last attempt
+        since then failed — why.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      responses:
+        '200':
+          description: The ToolServer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolServerResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/tool-servers/{id}/discover:
+    post:
+      operationId: discoverToolServer
+      summary: List a ToolServer's Tools now
+      tags: [Investigators]
+      description: |
+        Asks the ToolServer for every Tool it serves and records the answer, replacing the last list,
+        and answers with it. A ToolServer that cannot be reached, refuses oto's token or answers
+        badly is a `502`; the failure is recorded on the ToolServer (`discovery_error`) and the last
+        good list is kept. A run offers a model the Tools as last discovered, so discover again after
+        a ToolServer changes. Listing reads nothing from the cluster, so a `write` ToolServer is
+        discovered too. Takes no body.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      responses:
+        '200':
+          description: The Tools the ToolServer listed, by name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolServerToolListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/tool-servers/{id}/tools:
+    get:
+      operationId: listToolServerTools
+      summary: List a ToolServer's Tools
+      tags: [Investigators]
+      description: |
+        The Tools the ToolServer listed at its last successful discovery, by name, each with the
+        qualified name an allowlist holds it by — `<toolserver>__<tool>` — or why it cannot be held: a
+        name a model cannot be offered, a schema that is not one JSON object, or a `write` ToolServer.
+        Never paged.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      responses:
+        '200':
+          description: The Tools, by name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolServerToolListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/tool-servers/{id}/remedy-approvers:
+    get:
+      operationId: listToolServerRemedyApprovers
+      summary: List who may approve Remedies on a ToolServer
+      tags: [Investigators]
+      description: |
+        Every user holding the Remedy approval grant on this ToolServer (ADR 0054 §4), by address.
+        A Remedy on a `write` ToolServer may be approved only by a holder whose grant `counts`; double
+        approval needs two different holders. A disabled user's grant is listed with `counts: false`.
+        A `read` ToolServer never carries a grant.
+
+        **Read-only, and there is no write operation anywhere in this API.** A grant is given and taken
+        from the host shell — `oto grant remedy-approver --org <slug> --toolserver <name> --email <addr>`
+        and `oto revoke remedy-approver …` — so that no holder can mint a second approver from inside
+        oto. Never paged.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      responses:
+        '200':
+          description: The grant holders, by address.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RemedyApproverListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/investigators:
+    get:
+      operationId: listInvestigators
+      summary: List Investigators
+      tags: [Investigators]
+      description: |
+        Every Investigator in the org, by name, each with the version a new Investigation uses. An
+        Investigator is a named, versioned configuration of a model-driven investigation (ADR 0053 §1):
+        which model, which prompt, which Tools it may call, and its budgets. It changes what people
+        **read** about a Case — never **whether** they are told (§2). The list is never paged.
+      responses:
+        '200':
+          description: Every Investigator, by name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvestigatorListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    post:
+      operationId: createInvestigator
+      summary: Write an Investigator
+      tags: [Investigators]
+      description: |
+        Writes the Investigator and its **version 1**. `name` is lower-case letters and digits, because
+        its Findings are published as the Enrichment `investigator.<name>`; it is never renamed. `tools`
+        names Tools **exactly** — there are no wildcards — and a Tool the list omits is refused when
+        called, and recorded. oto's own history is offered as three built-in Tools: `oto_prior_findings`,
+        `oto_case_timeline` and `oto_rule_at_fire`. Two more built-in Tools let a Finding propose a change
+        a human then applies or lets lapse — `oto_suggest_count_condition` and `oto_suggest_membership`
+        (`GET /api/v1/investigations/{id}/suggestions`); an Investigator holds them only when `tools`
+        names them, and never applies one. A ToolServer's Tool is named `<toolserver>__<tool>`,
+        and only one a `read` ToolServer has listed may be held — anything else is a `422`
+        (`investigator_tools_invalid`). Omitted `budgets` are oto's defaults.
+
+        A duplicate name is a `409` naming `investigators_org_name_uniq`; a `model_provider_id` this org
+        does not have is a `404`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateInvestigatorRequest'
+      responses:
+        '201':
+          description: The Investigator and its one version.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvestigatorResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/investigators/{id}:
+    get:
+      operationId: getInvestigator
+      summary: Get one Investigator and its versions
+      tags: [Investigators]
+      description: |
+        The Investigator and every version it has had, newest first. A Finding names the version that
+        produced it; this is where that name resolves to a model, a prompt and an allowlist.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      responses:
+        '200':
+          description: The Investigator.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvestigatorResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    patch:
+      operationId: updateInvestigator
+      summary: Change an Investigator
+      tags: [Investigators]
+      description: |
+        A partial update. `enabled` — this Investigator's kill switch — and `budgets` change in place.
+        Any of `model_provider_id`, `prompt` and `tools` is folded over the current version, and **only
+        a result that differs** — another endpoint, a model that endpoint now names differently, another
+        prompt, another set of Tools — writes **version N+1** (ADR 0053 §6). Re-sending what is already
+        current writes nothing. Investigations already requested keep the version they pinned.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateInvestigatorRequest'
+      responses:
+        '200':
+          description: The Investigator as it now stands, with every version.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvestigatorResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/cases/{id}/investigations:
+    get:
+      operationId: listCaseInvestigations
+      summary: A Case's Investigations, latest first
+      tags: [Investigators]
+      description: |
+        Every Investigation of this Case, latest requested first, without transcripts. The latest one's
+        Finding is the one a Case shows (ADR 0053 §4); it is also published as the Enrichment
+        `investigator.<name>`. A Case this org does not have is a `404`.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/CursorParam'
+      responses:
+        '200':
+          description: One page of the Case's Investigations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvestigationListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    post:
+      operationId: requestCaseInvestigation
+      summary: Ask an Investigator to investigate a Case
+      tags: [Investigators]
+      description: |
+        Records one Investigation of this Case by the Investigator's **current version** and runs it
+        **asynchronously** — a job on a queue of its own, never on the notification path: a Finding never
+        decides, delays or causes a notification (ADR 0053 §2). Answers `202` with the run as recorded.
+        Poll `GET /api/v1/investigations/{id}`.
+
+        When the org's `investigations_enabled` or the Investigator's `enabled` is off, **nothing
+        starts**, and the request is still recorded: the answer is a run with status `skipped` and reason
+        `disabled`, never a silent drop. When the org has already spent its `investigation_daily_tokens`
+        since 00:00 UTC, the answer is a run `skipped` with reason `budget` — recorded, never queued —
+        until the budget resets at UTC midnight (ADR 0053 §6).
+
+        A run past the org's `investigation_concurrency` **waits**: it stays `queued` until a slot is
+        free, and is never dropped. A human's request is not held to the Investigator's
+        `min_interval_seconds`, which coalesces automatic triggers only.
+
+        Needs a human: a system principal is a `403`. A Case or an Investigator this org does not have is
+        a `404`.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RequestInvestigationRequest'
+      responses:
+        '202':
+          description: The Investigation as recorded — `queued`, or `skipped` when a kill switch is off or the org's daily token budget is spent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvestigationResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/incidents/{number}/investigations:
+    get:
+      operationId: listIncidentInvestigations
+      summary: An Incident's Investigations, latest first
+      tags: [Investigators]
+      description: |
+        Every Investigation of this Incident as a whole, latest requested first, without transcripts
+        (ADR 0053 §4). The latest one's Finding is the one the Incident shows; it is also published as the
+        Enrichment `investigator.<name>` on the Incident, and declared outbound as the Incident fact
+        `finding`. An Incident this org does not have — or a `number` that is not one — is a `404`.
+
+        An Incident starts runs on its own: when it is drawn, one per Investigator that is switched on and
+        `investigates_incidents`; when a Case joins or leaves it, one more per such Investigator,
+        coalesced under its `min_interval_seconds`. Going quiet starts nothing. While a Case is in an
+        Incident, nothing starts a run of that Case on its own — the Incident's covers it — though a human
+        may still ask about the Case.
+      parameters:
+        - $ref: '#/components/parameters/IncidentNumberParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/CursorParam'
+      responses:
+        '200':
+          description: One page of the Incident's Investigations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvestigationListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    post:
+      operationId: requestIncidentInvestigation
+      summary: Ask an Investigator to investigate an Incident as a whole
+      tags: [Investigators]
+      description: |
+        Records one Investigation of this Incident — the story, with every member Case — by the
+        Investigator's **current version**, and runs it **asynchronously**, exactly as a Case's request
+        does: never on the notification path, `202` with the run as recorded, `skipped` with reason
+        `disabled` or `budget` when a kill switch is off or the org's daily budget is spent, waiting under
+        the org's concurrency, and not held to `min_interval_seconds`. Any Investigator may be asked,
+        whether or not it `investigates_incidents` on its own.
+
+        The run reads the member Cases' earlier Findings through the built-in Tool `oto_member_findings`
+        and the Incident's own through `oto_prior_findings`, when its allowlist names them. Tools that
+        read one Case are not offered to it.
+
+        Needs a human: a system principal is a `403`. An Incident or an Investigator this org does not
+        have is a `404`.
+      parameters:
+        - $ref: '#/components/parameters/IncidentNumberParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RequestInvestigationRequest'
+      responses:
+        '202':
+          description: The Investigation as recorded — `queued`, or `skipped` when a kill switch is off or the org's daily token budget is spent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvestigationResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/investigations/{id}:
+    get:
+      operationId: getInvestigation
+      summary: Get one Investigation, its Steps and its Finding
+      tags: [Investigators]
+      description: |
+        One run with its whole transcript, in order: every model turn and every Tool call, including the
+        ones refused, timed out or truncated. Steps are append-only and a run is frozen once it ends, so
+        "why did it say that?" reads the same a year later. A run that hit a budget is `exhausted`, says
+        which in `reason`, and keeps its partial `finding`.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      responses:
+        '200':
+          description: The Investigation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvestigationResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/investigations/{id}/suggestions:
+    get:
+      operationId: listInvestigationSuggestions
+      summary: The changes an Investigation's Finding suggests
+      tags: [Investigators]
+      description: |
+        The Suggestions this run's Finding made (ADR 0053 §2), in the order they were proposed: a change
+        to oto's **own** configuration that only a human can apply — a notification policy's count
+        condition (ADR 0044), or one Case into one Incident (ADR 0052 §4). An Investigator proposes them
+        through the built-in Tools `oto_suggest_count_condition` and `oto_suggest_membership`, held only
+        when its allowlist names them; **it never applies one**.
+
+        A Suggestion is `open` until a human applies it (`applied`, with who and when) or it **lapses**,
+        seven days after it was proposed (`lapses_at`). A lapsed Suggestion is **not listed**: it stops
+        showing. There is no other state and no other verb — nothing declines one, so it is never a queue.
+
+        An open membership Suggestion for a Case that is in **another** Incident names it in
+        `membership.moves_from_incident_number`: applying it moves the Case, because a Case belongs to at
+        most one Incident, and the screen says so before anyone applies it. An Investigation this org does
+        not have is a `404`.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      responses:
+        '200':
+          description: The Investigation's Suggestions that are still shown — open or applied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuggestionListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/suggestions/{id}/apply:
+    post:
+      operationId: applySuggestion
+      summary: Apply a Suggestion — the ordinary edit, with provenance
+      tags: [Investigators]
+      description: |
+        A human applies one Suggestion, and oto makes **the ordinary edit** it proposes, in one
+        transaction with the record of who applied it:
+
+        - `policy_count_condition` sets the policy's `count_min` and `count_window_seconds` through the
+          same service method `PATCH /api/v1/notification-policies/{id}` uses — the merged policy is
+          validated exactly as a hand edit's is, and refused (`422`) where a hand edit would be.
+        - `incident_membership` adds the Case to the Incident through the Incident's own add — or, when
+          the Case is in another Incident, its **move** — with the applier as actor. The Case's timeline
+          fact (`incident.case_added` or `incident.case_moved`) also carries
+          `suggested_by_investigation_id`.
+
+        **A move is never a surprise.** When applying would move the Case, the body must name the
+        Incident it moves from in `moves_from_incident_number`; without it — or with another number,
+        because the Case moved since it was read — the answer is `409 suggestion_moves_case` with the
+        sentence to show, and nothing is written. Every other Suggestion takes an empty body.
+
+        Refusals, each typed: `404 suggestion_not_found`; `409 suggestion_already_applied`;
+        `409 suggestion_lapsed`; `409 suggestion_target_gone` when the policy, Incident or Case was
+        deleted since it was proposed; `409 suggestion_stale` when a count Suggestion's policy no longer
+        has the count condition it had when the Suggestion was proposed — someone edited it since, and
+        applying would silently overwrite that edit, so nothing is written and the sentence says to edit
+        the policy by hand. The edit's own refusals come back as the hand edit would answer
+        them. Needs a human: a system principal is a `403`.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplySuggestionRequest'
+      responses:
+        '200':
+          description: The Suggestion, applied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuggestionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/investigations/{id}/remedies:
+    get:
+      operationId: listInvestigationRemedies
+      summary: The Remedies an Investigation's Finding proposes
+      tags: [Investigators]
+      description: |
+        The Remedies this run's Finding proposed (ADR 0054), in the order they were proposed, whatever state
+        each is in: a change to a cluster that an Investigator proposes and oto executes **only after
+        approval**. An Investigator proposes one through the built-in Tool `oto_propose_remedy`, held only
+        when its allowlist names it; **it never holds or calls the write Tool**.
+
+        ⭐ **The exact command comes first.** A Remedy names the write Tool that would carry it out —
+        `tool`, a Tool a `write` ToolServer listed — with the exact `arguments` it would be sent, byte for
+        byte, and their `arguments_sha256`; then the `target` and the Investigator's `description`. Or it
+        names no Tool, and `no_tool` says *"no configured Tool can carry this out"*: such a Remedy **can
+        never be approved**, can still be declined, and expires.
+
+        `state` is read at the request: a `proposed` or `approved` Remedy past `expires_at` is `expired`
+        even before the sweep records it. `blocked` says why it cannot be approved now — no Tool, or its
+        Tool removed from configuration since it was proposed — and is null when it can. Every Remedy needs
+        `required_approvals` (two) approvals from **different** holders of the grant on its ToolServer.
+        An Investigation this org does not have is a `404`.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      responses:
+        '200':
+          description: The Investigation's Remedies, in the order proposed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RemedyListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/remedies/{id}:
+    get:
+      operationId: getRemedy
+      summary: One Remedy, with its approvals and every transition
+      tags: [Investigators]
+      description: |
+        One Remedy (ADR 0054) — the exact command first, then what it is for — with the approvals it has and
+        every transition it made, each by a named actor: the Investigator proposed it, a user approved or
+        declined it, and oto (`system`) expired it, claimed it for execution, and recorded what the write
+        Tool answered. Each transition says the Incident it was declared to as a fact, or null when its
+        subject was in no Incident. A Remedy this org does not have is `404 remedy_not_found`.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      responses:
+        '200':
+          description: The Remedy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RemedyResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/remedies/{id}/approve:
+    post:
+      operationId: approveRemedy
+      summary: Approve a Remedy — one of the two different approvals it needs
+      tags: [Investigators]
+      description: |
+        One human approves one Remedy, having been shown its exact arguments: the body names their
+        `arguments_sha256`, and an approval of any other arguments is refused. When **different** holders
+        of the grant on the Remedy's ToolServer reach its `required_approvals`, the Remedy is `approved`,
+        its window to execution starts (`remedy_approval_window_s`), and the transition is declared to its
+        Incident as a fact. The same person approving twice counts once.
+
+        Refusals, each typed and none of them a write: `404 remedy_not_found`; `409 remedy_has_no_tool` —
+        *no configured Tool can carry this out*, so it can never be approved; `409 remedy_expired`;
+        `409 remedy_not_proposed`; `409 remedy_tool_unavailable` when its ToolServer was removed or
+        re-declared `read`, or no longer lists the Tool; `403 remedy_approver_required` when the user does
+        not hold a counting grant on that ToolServer (a grant is given only by `oto grant` on the host);
+        `409 remedy_already_approved` for a second approval by the same person; and
+        `409 remedy_arguments_changed` when the hash is not this Remedy's. Needs a human: a system
+        principal is a `403`.
+
+        ⛔ **Session only** (owner ruling 2026-10-05, ADR 0054 §4): a personal access token is refused with
+        `403 remedy_approval_needs_a_session` before the Remedy is looked up — an approval is what makes a
+        command run, and a leaked or scripted token must not make one count. A Remedy is approved from a
+        signed-in browser session or from its Slack card (a signed click on a linked account). Declining
+        stays open to a token.
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApproveRemedyRequest'
+      responses:
+        '200':
+          description: The Remedy, with this approval — and `approved` when it was the last one it needed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RemedyResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/remedies/{id}/decline:
+    post:
+      operationId: declineRemedy
+      summary: Decline a Remedy
+      tags: [Investigators]
+      description: |
+        One human says no to a Remedy that is `proposed` or `approved` and not yet being executed. It is
+        `declined` from then on, the transition is declared to its Incident as a fact, and nothing is ever
+        sent for it. Any member may decline — saying no is the safe direction — and a Remedy no configured
+        Tool can carry out is declinable like any other. Takes no body.
+
+        Refusals: `404 remedy_not_found`; `409 remedy_expired`; `409 remedy_not_open` once it is being
+        executed or has ended. Needs a human: a system principal is a `403`. A personal access token may
+        decline (only approving is session-only), and a declined Remedy may be proposed again by a later
+        Investigation.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      responses:
+        '200':
+          description: The Remedy, declined.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RemedyResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/investigation-classes:
+    get:
+      operationId: getInvestigationClasses
+      summary: Read the org's Classification set
+      tags: [Investigators]
+      description: |
+        The closed set of classes an Investigation classifies its Finding in (ADR 0053 §5), in the
+        operator's order. **oto ships no classes**: a fresh org's set is empty, and while it is empty a
+        Finding carries no classification at all. `unclassified` is never in the set — it is always
+        admissible, and is the right answer under doubt.
+      responses:
+        '200':
+          description: The set, in the operator's order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvestigationClassSetResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    put:
+      operationId: replaceInvestigationClasses
+      summary: Replace the org's Classification set
+      tags: [Investigators]
+      description: |
+        Writes the whole set, replacing the old one; an empty `classes` is legal and stops Findings
+        being classified. A name is lower-case letters, digits, `_` and `-`, starting with a letter, at
+        most 63 characters, and unique; `unclassified` is reserved. Each refusal is a `422`
+        (`investigation_classes_invalid`) naming the class it is about. At most 50 classes.
+
+        A run reads the set once, when it begins, and its Finding is classified in that set. **No
+        Finding is rewritten by a change here**: each keeps the class it was given, because it copied the
+        name. A classification travels outbound with its Finding, and paging on one is paging on a
+        model's judgement.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReplaceInvestigationClassesRequest'
+      responses:
+        '200':
+          description: The set as it now stands.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvestigationClassSetResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/remedy-risk-rules:
+    get:
+      operationId: getRemedyRiskRules
+      summary: Read the org's Remedy risk rules
+      tags: [Investigators]
+      description: |
+        The operator's rules over a Remedy's command — its write Tool, verb, resource kind, namespace and
+        whether its verb is known reversible — each saying one or two approvals, and the org's risk model
+        (ADR 0054 §3). **oto ships no rule**: with none, every Remedy needs two approvals.
+
+        **Read-only.** The rules and the risk model are applied whole from the host shell with
+        `oto remedy-rules apply --org SLUG -f rules.yaml`, and no route writes them: a rule saying one lets
+        one grant holder approve alone, so writing one is the same authority as granting a second approver
+        (ADR 0054 §4). The most severe matching rule wins; no match is two; a command the rules cannot parse
+        is two whatever they say; a risk model may then raise one to two and never lower.
+      responses:
+        '200':
+          description: The rules, in the operator's order, and the risk model.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RemedyRiskRulesResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  # =================================================================================================
   # Rules
   # =================================================================================================
 
@@ -4275,6 +5374,44 @@ paths:
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
 
+  /api/v1/notification-policies/{id}/investigations:
+    get:
+      operationId: listPolicyDigestInvestigations
+      summary: A notification policy's digest Investigations, latest first
+      tags: [Investigators]
+      description: |
+        Every Investigation this policy's digest windows asked for (`subject_kind` `digest`), latest
+        requested first, without transcripts — including the ones that never ran: `skipped` with reason
+        `budget`, `disabled` or `window_closed`, and the `failed` and `exhausted` ones. A digest window's
+        run has no page of its own, so this is where its record is read (ADR 0053 §6: recorded, never
+        silent). Its Finding is not an Enrichment: it stays on the run and is copied onto the digest it
+        was ready for. A policy this org does not have, or a deleted one, is a `404`.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/CursorParam'
+      responses:
+        '200':
+          description: One page of the policy's digest Investigations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvestigationListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   /api/v1/notifications:
     get:
       operationId: listNotifications
@@ -4301,7 +5438,7 @@ paths:
           description: Comma-separated reasons.
           schema:
             type: array
-            maxItems: 20
+            maxItems: 27
             uniqueItems: true
             items:
               $ref: '#/components/schemas/NotificationReason'
@@ -5630,6 +6767,169 @@ paths:
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
 
+  /api/v1/me/slack-identities:
+    get:
+      operationId: listMySlackIdentities
+      summary: The Slack accounts linked to me
+      tags: [Identity]
+      description: |
+        Every Slack member linked to the **signed-in** user — one per workspace they linked. A Slack
+        approve or decline by any of them counts as this user (ADR 0054 §4). Never paged; there is no
+        way to list anybody else's.
+      responses:
+        '200':
+          description: The signed-in user's linked Slack accounts.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SlackIdentityListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    post:
+      operationId: linkSlackIdentity
+      summary: Link a Slack account to me with the code Slack showed it
+      tags: [Identity]
+      security:
+        - sessionCookie: []
+      description: |
+        Uses a **link code** up and links its Slack member to the **signed-in** user. The code is the one
+        an unlinked member is shown — only to them — when they press a Remedy's Approve or Decline in
+        Slack: ten characters, single-use, ten minutes. It links through the same re-point that adopts the
+        member's shadow, and records the fact with who did it.
+
+        **No operation links anybody but the signed-in user**: the body is a code and nothing else. A
+        session is required — a token cannot link, because a link decides whose approval a Slack click
+        counts as.
+
+        ⚠️ **A link code is a credential.** Whoever enters it in their own oto session makes that Slack
+        member's clicks count as them. Show the preview (`previewSlackLink`) and confirm.
+
+        Refusals, none of them a write: `422 slack_link_code_invalid` for a code that is wrong, used,
+        expired or presented five times (one answer for all, counted against you); `429
+        slack_link_attempts_exhausted` after five of those in fifteen minutes; `409
+        slack_identity_linked_elsewhere` when the Slack member is already linked to another real user —
+        a link is never moved; they unlink it themselves first.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SlackLinkCodeRequest'
+      responses:
+        '201':
+          description: The Slack account, now linked to you.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SlackIdentityResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/me/slack-identities/preview:
+    post:
+      operationId: previewSlackLink
+      summary: Which Slack account a link code would link to me
+      tags: [Identity]
+      security:
+        - sessionCookie: []
+      description: |
+        Names the Slack member and workspace a link code would link to the **signed-in** user, **without
+        using the code up** — the confirmation screen's *"Clicks from this Slack account will count as
+        you."* It counts as one of the code's five presentations. Same refusals as `linkSlackIdentity`,
+        including `409 slack_identity_linked_elsewhere`, so the screen says so before anybody confirms.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SlackLinkCodeRequest'
+      responses:
+        '200':
+          description: The Slack account the code would link.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SlackLinkPreviewResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/me/slack-identities/{id}:
+    delete:
+      operationId: unlinkSlackIdentity
+      summary: Unlink one of my Slack accounts
+      tags: [Identity]
+      security:
+        - sessionCookie: []
+      description: |
+        Unlinks a Slack member linked to the **signed-in** user, and records the fact. From then on its
+        Slack clicks count as nobody until it is linked again. A Slack account linked to anybody else —
+        or not linked, or in another org — is a `404`: you can unlink only your own.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   # =================================================================================================
   # Integrations
   # =================================================================================================
@@ -6630,8 +7930,10 @@ components:
         alice". `incident.case_added` carries `{incident_id, incident_number, drawn}`, where `drawn` is
         true when the Case was one of those the Incident was drawn over; `incident.case_removed`
         carries `{incident_id, incident_number}`; `incident.case_moved` carries
-        `{from_incident_id, from_number, to_incident_id, to_number}`. None of them changes the Case: an
-        episode is open or closed exactly as it was.
+        `{from_incident_id, from_number, to_incident_id, to_number}`. When the human was applying an
+        Investigation's Suggestion, an add or a move also carries `suggested_by_investigation_id` — the
+        decision is still the human's, and the key says which Finding proposed it. None of them changes
+        the Case: an episode is open or closed exactly as it was.
       examples: [case.opened]
 
     NotificationReason:
@@ -6657,6 +7959,13 @@ components:
         - case_removed
         - quiet
         - active_again
+        - finding
+        - remedy_proposed
+        - remedy_approved
+        - remedy_declined
+        - remedy_expired
+        - remedy_executed
+        - remedy_failed
       description: |
         Why a Notification exists. Distinct from Alertmanager's wire `notification_reason` string, which
         is mapped onto this enum on ingest.
@@ -6686,6 +7995,21 @@ components:
         policy sends nothing about its Incidents. They are delivered over the generic webhook as the
         `incident` subject of `oto.notification.v1`; a threaded channel records the delivery as skipped,
         because an Incident is not yet a conversation on one.
+
+        `finding` is the sixth Incident fact (ADR 0052 §5, ADR 0053 §4): an Investigation of the Incident
+        reached a new Finding, which the envelope's `incident.finding` carries — what was concluded, by
+        which Investigator version, and when. Like the other five it is a fact, never a command, and a
+        Finding never decides whether anything about any signal is sent; whether `finding` itself goes
+        anywhere is a policy's word.
+
+        The last six — `remedy_proposed`, `remedy_approved`, `remedy_declined`, `remedy_expired`,
+        `remedy_executed` and `remedy_failed` — are the transitions of a **Remedy** (ADR 0054 §2), each
+        declared to the Incident the Remedy is about, or to the Incident holding its Case; a Remedy on a
+        Case in no Incident is declared nowhere. The envelope's `incident.remedy` carries the transition:
+        the exact command first — the write Tool and the exact arguments, or *"no configured Tool can
+        carry this out"* — then its target and the Investigator's description, its approvals so far, and
+        who made the transition when. Facts, never commands: approval happens in oto, and oto reads
+        nothing back from the incident tool.
 
         ⛔ **There is no `severity_raised`, and there was.** ADR 0020 proposed it as the purest case for
         broadcasting — a card going amber to red under a silent `chat.update` — and a migration was
@@ -10178,7 +11502,7 @@ components:
         reasons:
           type: array
           minItems: 1
-          maxItems: 20
+          maxItems: 27
           uniqueItems: true
           items:
             $ref: '#/components/schemas/NotificationReason'
@@ -10348,6 +11672,15 @@ components:
             (`policies_digest_pair_ck`): a threshold over an unbounded span is not something anything
             can evaluate.
           examples: [5]
+        digest_investigator_id:
+          allOf:
+            - $ref: '#/components/schemas/Uuid'
+          description: |
+            The **Investigator** this policy asked to summarise its digest windows (ADR 0053 §4). Absent is
+            none — the built-in digest body. Its run for a window starts ahead of the window's close; if it
+            has ended with a Finding when the window closes, the digest carries that Finding as its body,
+            and otherwise the digest is sent on time with the built-in body. **A digest never waits for an
+            Investigation**, is never re-sent with a later Finding, and is sent or not on its floor alone.
         created_at:
           $ref: '#/components/schemas/Timestamp'
         updated_at:
@@ -11066,6 +12399,10 @@ components:
         - raw_retention_days
         - event_retention_months
         - default_verbosity
+        - investigations_enabled
+        - investigation_daily_tokens
+        - investigation_concurrency
+        - remedy_approval_window_s
       properties:
         resolve_grace_s:
           type: integer
@@ -11151,6 +12488,51 @@ components:
             There is no cold-storage export: an aged-out month is not archived anywhere. See ADR 0024.
         default_verbosity:
           $ref: '#/components/schemas/Verbosity'
+        investigations_enabled:
+          type: boolean
+          default: true
+          description: |
+            The org-wide **kill switch** for Investigators (ADR 0053 §6). While `false`, no new
+            Investigation starts in this org: one that has not begun is recorded `skipped` with reason
+            `disabled` — recorded, never silently dropped. It never changes whether or how anyone is
+            notified. An Investigator also needs a model endpoint and its own enabled flag before
+            anything runs, so this is the brake, not the opt-in.
+        investigation_daily_tokens:
+          type: integer
+          format: int32
+          minimum: 1000
+          maximum: 1000000000
+          default: 2000000
+          description: |
+            The org's **daily token budget** for Investigations (ADR 0053 §6): input + output tokens across
+            every run between two UTC midnights, counted from each model turn as it is recorded. Once the
+            day's spend reaches it, a new Investigation is recorded `skipped` with reason `budget` and is
+            never queued, until 00:00 UTC. A run already going is bounded by its own per-run token budget,
+            so the day can overrun by at most what the runs in flight still had left. There is no
+            "unlimited": the default is ten runs at the default per-run budget.
+        investigation_concurrency:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 32
+          default: 2
+          description: |
+            The most Investigations `running` at once in this org (ADR 0053 §6). One past it **waits** —
+            it stays `queued` and is never dropped. Each oto process works at most eight at once by
+            default (the `investigate` queue's width, `jobs.queue_investigate`), so a number above the
+            workers you run never binds.
+        remedy_approval_window_s:
+          type: integer
+          format: int32
+          minimum: 60
+          maximum: 86400
+          default: 3600
+          description: |
+            How long a **Remedy** waits (ADR 0054 §2): a proposed Remedy that has not had its required
+            approvals within this long after it was proposed, or an approved one not executed within this
+            long after its approval, is recorded `expired` and can no longer be approved or executed. It
+            reads as expired the moment the window passes; the `remedies.sweep` job records it and declares
+            the fact.
       description: |
         Org-level tuning, as **effective values**. **Grouping is on by default and flap scoring is on by
         default** — oto defaults to quiet, and every damping decision it makes is a visible state rather
@@ -13031,7 +14413,7 @@ components:
         reasons:
           type: array
           minItems: 1
-          maxItems: 20
+          maxItems: 27
           uniqueItems: true
           items:
             $ref: '#/components/schemas/NotificationReason'
@@ -13125,6 +14507,13 @@ components:
           description: |
             Send the digest only if at least this many Cases opened inside the window. Requires
             `digest_window_seconds`; omitting it means no floor.
+        digest_investigator_id:
+          allOf:
+            - $ref: '#/components/schemas/Uuid'
+          description: |
+            Ask this org's Investigator to summarise each digest window: its Finding becomes the digest's
+            body when it is ready as the window closes, and the digest never waits for it. Requires
+            `digest_window_seconds` (a `422` with code `incomplete` otherwise).
       description: Create a routing policy. Use the preview endpoint to see what it would do before saving.
 
     UpdatePolicyRequest:
@@ -13151,7 +14540,7 @@ components:
         reasons:
           type: array
           minItems: 1
-          maxItems: 20
+          maxItems: 27
           uniqueItems: true
           items:
             $ref: '#/components/schemas/NotificationReason'
@@ -13190,6 +14579,16 @@ components:
           description: |
             An explicit `null` removes the floor — send whenever the window was not empty — which is a
             different request from omitting the field.
+        digest_investigator_id:
+          description: |
+            Nullable. An explicit `null` **clears** it and puts the policy's digest back on the built-in
+            body; omitting the key leaves it alone — except that a patch clearing `digest_window_seconds`
+            (an explicit `null`) without naming this field clears it too, since an Investigator summarises
+            a digest's windows and there are none left. Clearing the window while naming an Investigator
+            is a `422`.
+          oneOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: "null"
         subject_kinds:
           type: array
           maxItems: 4
@@ -13292,6 +14691,70 @@ components:
       description: |
         Mint a personal access token. The secret is returned exactly once in the response and only its
         hash is stored, so it can never be shown again.
+
+    SlackLinkCodeRequest:
+      type: object
+      required: [code]
+      additionalProperties: false
+      properties:
+        code:
+          type: string
+          minLength: 1
+          maxLength: 32
+          description: |
+            The link code as typed — `ABCDE-FGHJK`. Case, spaces and hyphens are ignored, and I, L and O
+            are read as 1, 1 and 0.
+          examples: ['ABCDE-FGHJK']
+      description: A link code an unlinked Slack member was shown. There is no user id here and nowhere to put one.
+
+    SlackLinkPreviewDTO:
+      type: object
+      required: [team_id, slack_user_id, handle, expires_at, already_yours]
+      additionalProperties: false
+      properties:
+        team_id:
+          type: string
+          pattern: '^T[A-Z0-9]{2,}$'
+          description: The Slack workspace id.
+          examples: ['T9TK3CUKW']
+        slack_user_id:
+          type: string
+          pattern: '^[UW][A-Z0-9]{2,}$'
+          examples: ['U0123456789']
+        handle:
+          type: ['string', 'null']
+          maxLength: 120
+          description: The member's Slack handle as last seen, without the `@`; null when Slack never sent one.
+          examples: ['ram']
+        expires_at:
+          $ref: '#/components/schemas/Timestamp'
+        already_yours:
+          type: boolean
+          description: True when this Slack member is already linked to you, so confirming changes nothing.
+      description: The Slack account a link code would link to you. Reading it does not use the code up.
+
+    SlackIdentityDTO:
+      type: object
+      required: [id, team_id, slack_user_id, handle, linked_at]
+      additionalProperties: false
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        team_id:
+          type: string
+          pattern: '^T[A-Z0-9]{2,}$'
+          examples: ['T9TK3CUKW']
+        slack_user_id:
+          type: string
+          pattern: '^[UW][A-Z0-9]{2,}$'
+          examples: ['U0123456789']
+        handle:
+          type: ['string', 'null']
+          maxLength: 120
+          examples: ['ram']
+        linked_at:
+          $ref: '#/components/schemas/Timestamp'
+      description: A Slack member linked to you. Its Slack clicks — approving a Remedy among them — count as you.
 
     # ---------------------------------------------------------------------------------------------
     # Response envelopes. Every collection is `{data, page, meta}`; every single resource is
@@ -13646,6 +15109,1358 @@ components:
       properties:
         data:
           $ref: '#/components/schemas/CasePolicyDTO'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    # ------------------------------------------------------------------ Investigators (ADR 0053)
+
+    ModelProviderDTO:
+      type: object
+      required: [id, name, base_url, model, has_key, created_at, updated_at]
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+          examples: ['gateway']
+        base_url:
+          type: string
+          maxLength: 2048
+          description: Normalised — lower-case scheme and host, no trailing slash. Never carries credentials.
+          examples: ['https://llm-gateway.internal/v1']
+        model:
+          type: string
+          minLength: 1
+          maxLength: 200
+          examples: ['gpt-4.1-mini']
+        has_key:
+          type: boolean
+          description: Whether a key is stored. The key itself is never returned.
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        updated_at:
+          $ref: '#/components/schemas/Timestamp'
+      description: |
+        One model endpoint (ADR 0053 §3): a base URL serving the OpenAI-compatible Chat Completions API
+        with tool calling, a model name, and a key sealed server-side.
+
+    CreateModelProviderRequest:
+      type: object
+      required: [name, base_url, model]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        base_url:
+          type: string
+          minLength: 1
+          maxLength: 2048
+          description: '`http` or `https`. A key is only sent over `https`; a URL with credentials in it is refused.'
+        model:
+          type: string
+          minLength: 1
+          maxLength: 200
+        api_key:
+          type: string
+          maxLength: 4096
+          writeOnly: true
+          description: Sealed before it is stored and never returned. Omit it for an endpoint that takes no key.
+      description: Configure a model endpoint.
+
+    ModelIdentityDTO:
+      type: object
+      required: [endpoint, name]
+      properties:
+        endpoint:
+          type: string
+          maxLength: 2048
+          description: The endpoint's base URL as it stood when the version was written.
+        name:
+          type: string
+          maxLength: 200
+          description: The model name.
+      description: Which endpoint and which model — what an Investigator version pins and a Finding names.
+
+    InvestigatorBudgetsDTO:
+      type: object
+      required: [max_steps, max_tokens, max_wall_seconds]
+      additionalProperties: false
+      properties:
+        max_steps:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 100
+          description: The most Tool calls one Investigation may make.
+          examples: [20]
+        max_tokens:
+          type: integer
+          format: int64
+          minimum: 1000
+          maximum: 2000000
+          description: The most input + output tokens one Investigation may spend.
+          examples: [200000]
+        max_wall_seconds:
+          type: integer
+          format: int32
+          minimum: 10
+          maximum: 1800
+          description: The longest one Investigation may run, from when it starts.
+          examples: [300]
+      description: |
+        The per-run budgets (ADR 0053 §6). A run that hits any of them ends `exhausted`, keeps whatever
+        Finding it reached — marked partial — and records which budget it was.
+
+    InvestigatorVersionDTO:
+      type: object
+      required: [id, version, model_provider_id, model, prompt, tools, created_at]
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        version:
+          type: integer
+          format: int32
+          minimum: 1
+        model_provider_id:
+          $ref: '#/components/schemas/Uuid'
+        model:
+          $ref: '#/components/schemas/ModelIdentityDTO'
+        prompt:
+          type: string
+          minLength: 1
+          maxLength: 32768
+        tools:
+          type: array
+          maxItems: 64
+          items:
+            type: string
+            maxLength: 64
+          description: The exact Tools this version may call, sorted. No wildcards.
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+      description: One immutable version — what produced a Finding. Changing the model, prompt or Tools writes the next.
+
+    InvestigatorDTO:
+      type: object
+      required: [id, name, enricher, enabled, budgets, min_interval_seconds, investigates_incidents, current_version,
+                 created_at, updated_at]
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        name:
+          type: string
+          minLength: 1
+          maxLength: 63
+          examples: ['firstlook']
+        enricher:
+          type: string
+          description: The Enrichment its Findings are published as, `investigator.<name>`.
+          examples: ['investigator.firstlook']
+        enabled:
+          type: boolean
+          description: This Investigator's kill switch. Off, nothing starts and a request is recorded `skipped`.
+        budgets:
+          $ref: '#/components/schemas/InvestigatorBudgetsDTO'
+        min_interval_seconds:
+          type: integer
+          format: int32
+          minimum: 0
+          maximum: 86400
+          description: |
+            The least time between two runs on one subject (ADR 0053 §6), measured from when the last one
+            started. Membership-change triggers inside it coalesce into one run that starts when it is up;
+            0 runs on every trigger. A human's request is not held to it. Not versioned.
+          examples: [600]
+        investigates_incidents:
+          type: boolean
+          description: |
+            Whether an Incident starts runs of this Investigator on its own (ADR 0053 §4): one when it is
+            drawn, and one more per burst of membership change under `min_interval_seconds`. Going quiet
+            starts nothing. Off by default — automatic runs cost tokens, so an operator opts in. A human
+            may ask any Investigator about any Incident regardless. Not versioned.
+        current_version:
+          $ref: '#/components/schemas/InvestigatorVersionDTO'
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        updated_at:
+          $ref: '#/components/schemas/Timestamp'
+      description: A named, versioned configuration of a model-driven investigation (ADR 0053 §1).
+
+    InvestigatorDetailDTO:
+      allOf:
+        - $ref: '#/components/schemas/InvestigatorDTO'
+        - type: object
+          required: [versions]
+          properties:
+            versions:
+              type: array
+              maxItems: 100
+              items:
+                $ref: '#/components/schemas/InvestigatorVersionDTO'
+              description: Every version, newest first.
+
+    CreateInvestigatorRequest:
+      type: object
+      required: [name, model_provider_id, prompt]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 63
+          pattern: '^[a-z][a-z0-9]{0,62}$'
+          description: Lower-case letters and digits, starting with a letter. Never renamed.
+        enabled:
+          type: boolean
+          default: true
+        budgets:
+          $ref: '#/components/schemas/InvestigatorBudgetsDTO'
+        min_interval_seconds:
+          type: integer
+          format: int32
+          minimum: 0
+          maximum: 86400
+          default: 600
+          description: The least time between two runs on one subject; membership-change triggers inside it coalesce.
+        investigates_incidents:
+          type: boolean
+          default: false
+          description: Whether an Incident being drawn, and its membership changing, starts a run of this Investigator on its own.
+        model_provider_id:
+          $ref: '#/components/schemas/Uuid'
+        prompt:
+          type: string
+          minLength: 1
+          maxLength: 32768
+        tools:
+          type: array
+          maxItems: 64
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+            maxLength: 64
+            pattern: '^[A-Za-z0-9_-]{1,64}$'
+          default: []
+          description: Exact Tool names. No wildcards.
+      description: Write an Investigator and its version 1.
+
+    UpdateInvestigatorRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        enabled:
+          type: boolean
+        budgets:
+          $ref: '#/components/schemas/InvestigatorBudgetsDTO'
+        min_interval_seconds:
+          type: integer
+          format: int32
+          minimum: 0
+          maximum: 86400
+        investigates_incidents:
+          type: boolean
+        model_provider_id:
+          $ref: '#/components/schemas/Uuid'
+        prompt:
+          type: string
+          minLength: 1
+          maxLength: 32768
+        tools:
+          type: array
+          maxItems: 64
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+            maxLength: 64
+            pattern: '^[A-Za-z0-9_-]{1,64}$'
+      description: |
+        A partial update. `enabled`, `budgets`, `min_interval_seconds` and `investigates_incidents` change
+        in place; a differing model, prompt or Tool list writes a new version.
+
+    RequestInvestigationRequest:
+      type: object
+      required: [investigator_id]
+      additionalProperties: false
+      properties:
+        investigator_id:
+          $ref: '#/components/schemas/Uuid'
+      description: Which Investigator to run against the Case or the Incident. Its current version is pinned.
+
+    InvestigationStatus:
+      type: string
+      enum: [queued, running, completed, exhausted, failed, skipped]
+      description: |
+        `queued` → `running` → `completed` (the model answered), `exhausted` (a per-run budget stopped
+        it; its Finding is partial), or `failed`. `skipped` never started: a kill switch was off, the
+        org's daily token budget was spent, or a digest window's run was still queued when its window
+        closed. A `queued` run may be waiting — for a slot under the org's
+        concurrency, or for `not_before`.
+
+    InvestigationReason:
+      type: string
+      enum: [step_budget, token_budget, wall_time_budget, usage_missing, model_error, model_changed, subject_gone, interrupted, internal, disabled, budget, window_closed]
+      description: |
+        Why a run ended any way but `completed`. `exhausted`: `step_budget`, `token_budget`,
+        `wall_time_budget`. `failed`: `usage_missing` (the model reported no token usage, so the run could
+        not be budgeted), `model_error`, `model_changed` (the endpoint no longer reports the model the
+        version pinned), `subject_gone`, `interrupted` (its worker stopped; it is not re-run, which would
+        pay twice), `internal`. `skipped`: `disabled` (a kill switch was off), `budget` (the org had
+        spent its `investigation_daily_tokens` since 00:00 UTC; it resets at UTC midnight), or
+        `window_closed` (a digest window's run was still `queued` when its window closed, so the digest
+        had already gone out without it and a Finding would be read by nothing; no model was called).
+
+    InvestigationDTO:
+      type: object
+      required: [id, subject_kind, subject_id, investigator_id, investigator_name, investigator_version,
+                 investigator_version_id, model, status, reason, reason_detail, budgets, tokens_in,
+                 tokens_out, tool_calls, finding, classification, partial, requested_by_label, requested_at,
+                 not_before, started_at, ended_at]
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        subject_kind:
+          type: string
+          enum: [case, incident, digest]
+          description: |
+            What was investigated: one Case, an Incident as a whole, or one window of a notification
+            policy's digest (ADR 0053 §4 names four subjects; these three have a run path). `subject_id`
+            is the Case's, the Incident's or — for a digest — the policy's id; a digest's window is
+            `digest_window_start`/`digest_window_end`.
+        subject_id:
+          $ref: '#/components/schemas/Uuid'
+        investigator_id:
+          $ref: '#/components/schemas/Uuid'
+        investigator_name:
+          type: string
+          maxLength: 63
+        investigator_version:
+          type: integer
+          format: int32
+          minimum: 1
+          description: The version that ran — the one its Finding names.
+        investigator_version_id:
+          $ref: '#/components/schemas/Uuid'
+        model:
+          $ref: '#/components/schemas/ModelIdentityDTO'
+        status:
+          $ref: '#/components/schemas/InvestigationStatus'
+        reason:
+          oneOf:
+            - $ref: '#/components/schemas/InvestigationReason'
+            - type: 'null'
+          description: Why it ended, when it ended any way but `completed`.
+        reason_detail:
+          type: ['string', 'null']
+          maxLength: 2000
+          description: The same, as a sentence for a human.
+        budgets:
+          $ref: '#/components/schemas/InvestigatorBudgetsDTO'
+        tokens_in:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Input tokens spent, as the model reported them.
+        tokens_out:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Output tokens spent.
+        tool_calls:
+          type: integer
+          format: int32
+          minimum: 0
+          description: |
+            Tool calls made, refused ones included. The `oto_classify` call is not one of them: it is the
+            shape of the answer, not a look at anything, and costs no step.
+        finding:
+          type: ['string', 'null']
+          maxLength: 16384
+          description: |
+            What it concluded — the model's last answer. Partial when `partial` is true. A Finding is a
+            snapshot of what was seen, and never an input to whether a notification is sent.
+        classification:
+          type: ['string', 'null']
+          maxLength: 63
+          pattern: '^[a-z][a-z0-9_-]{0,62}$'
+          description: |
+            The class its Finding was given (ADR 0053 §5): one of the org's own classes as the set stood
+            when the run began, or `unclassified` — the set was offered and the model named nothing in it,
+            out of doubt, silence, or a word outside the set, which is refused on the record in the Steps.
+            `null` when there is no Finding or the org had written no classes: nobody was asked. A copy of
+            the name, never re-read against today's set, so a Finding keeps its class when the set changes.
+            ⚠️ It is a model's judgement — paging on it is paging on a model's judgement.
+        partial:
+          type: boolean
+          description: Whether a budget stopped the run before it concluded (`status` is `exhausted`).
+        requested_by_label:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: Who asked, frozen when they asked.
+        requested_at:
+          $ref: '#/components/schemas/Timestamp'
+        not_before:
+          oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+          description: |
+            The earliest this run may start, when an Investigator's minimum interval deferred it (ADR 0053
+            §6); null when nothing did. Membership changes before then coalesce into this run.
+        started_at:
+          oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+        ended_at:
+          oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+        digest_window_start:
+          allOf:
+            - $ref: '#/components/schemas/Timestamp'
+          description: |
+            For a `digest` subject only: the INCLUSIVE start of the window it summarises. Absent for every
+            other subject. One run per policy per window, armed ahead of the window's close; its Finding is
+            the digest's body only if it had ended with one when the window closed — the digest never waits.
+        digest_window_end:
+          allOf:
+            - $ref: '#/components/schemas/Timestamp'
+          description: For a `digest` subject only, the EXCLUSIVE end of its window — when the digest is sent.
+      description: One run of one Investigator version against one subject (ADR 0053 §1), frozen once it ends.
+
+    StepToolCallDTO:
+      type: object
+      required: [id, name, arguments]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        arguments:
+          type: string
+          description: The raw arguments the model wrote — kept even when they are not valid JSON.
+      description: One Tool call a model turn asked for.
+
+    InvestigationStepDTO:
+      type: object
+      required: [seq, kind, text, tool_calls, finish_reason, tokens_in, tokens_out, call_id, tool_name,
+                 arguments, outcome, result, duration_ms, recorded_at]
+      properties:
+        seq:
+          type: integer
+          format: int32
+          minimum: 1
+        kind:
+          type: string
+          enum: [model_turn, tool_call]
+        text:
+          type: ['string', 'null']
+          description: A model turn's text; `null` on a Tool call.
+        tool_calls:
+          type: ['array', 'null']
+          maxItems: 1000
+          items:
+            $ref: '#/components/schemas/StepToolCallDTO'
+          description: The Tool calls a model turn asked for; `null` on a Tool call.
+        finish_reason:
+          type: ['string', 'null']
+          description: Why the model stopped, as the endpoint said it.
+        tokens_in:
+          type: ['integer', 'null']
+          format: int64
+        tokens_out:
+          type: ['integer', 'null']
+          format: int64
+        call_id:
+          type: ['string', 'null']
+        tool_name:
+          type: ['string', 'null']
+        arguments:
+          type: ['string', 'null']
+        outcome:
+          type: ['string', 'null']
+          enum: [ok, refused, timeout, truncated, failed, null]
+          description: |
+            What came of a Tool call. `refused`: outside the allowlist, no such Tool, one the run cannot
+            hold (a `write` ToolServer's), or past the step budget. `timeout` and `truncated` are the
+            per-call controls; the run continued.
+        result:
+          type: ['string', 'null']
+          description: |
+            What the model was answered with — after the org's ingest redaction rules, and the same bytes
+            the model read.
+        duration_ms:
+          type: integer
+          format: int64
+          minimum: 0
+        recorded_at:
+          $ref: '#/components/schemas/Timestamp'
+      description: One immutable transcript entry — a model turn, or one Tool call and what came of it.
+
+    InvestigationDetailDTO:
+      allOf:
+        - $ref: '#/components/schemas/InvestigationDTO'
+        - type: object
+          required: [steps]
+          properties:
+            steps:
+              type: array
+              maxItems: 1000
+              items:
+                $ref: '#/components/schemas/InvestigationStepDTO'
+              description: The transcript, in order. Append-only.
+
+    ModelProviderListResponse:
+      type: object
+      required: [data, page, meta]
+      additionalProperties: false
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ModelProviderDTO'
+        page:
+          $ref: '#/components/schemas/PageInfo'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    ModelProviderResponse:
+      type: object
+      required: [data, meta]
+      additionalProperties: false
+      properties:
+        data:
+          $ref: '#/components/schemas/ModelProviderDTO'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    ToolServerDTO:
+      type: object
+      required: [id, name, url, transport, access, has_token, call_timeout_seconds, max_result_bytes,
+                 discovered_at, discovery_failed_at, discovery_error, created_at, updated_at]
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        name:
+          type: string
+          minLength: 1
+          maxLength: 24
+          pattern: '^[a-z]([a-z0-9-]{0,22}[a-z0-9])?$'
+          description: The first half of every qualified Tool name, `<toolserver>__<tool>`.
+          examples: ['k8s']
+        url:
+          type: string
+          maxLength: 2048
+          description: The MCP endpoint. Never carries credentials or a query.
+          examples: ['https://k8s-mcp.tools.svc/mcp']
+        transport:
+          type: string
+          enum: [streamable_http, sse]
+        access:
+          type: string
+          enum: [read, write]
+          description: |
+            The operator's declaration. Only a `read` ToolServer's Tools may be held by an Investigator; a
+            `write` one is never offered to a model.
+        has_token:
+          type: boolean
+          description: Whether an access token is stored. The token itself is never returned.
+        call_timeout_seconds:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 120
+        max_result_bytes:
+          type: integer
+          format: int32
+          minimum: 1024
+          maximum: 61440
+        discovered_at:
+          oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+          description: When its Tools were last listed successfully; `null` for never.
+        discovery_failed_at:
+          oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+          description: When a discovery since then failed; `null` once one succeeds.
+        discovery_error:
+          type: ['string', 'null']
+          maxLength: 2000
+          description: Why it failed.
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        updated_at:
+          $ref: '#/components/schemas/Timestamp'
+      description: |
+        One ToolServer (ADR 0053 §1): an MCP server the operator runs, where trust stops. oto holds only its
+        access token, sealed server-side.
+
+    CreateToolServerRequest:
+      type: object
+      required: [name, url, access]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 24
+          description: Lower-case letters, digits and inner hyphens, starting with a letter; not `oto`.
+        url:
+          type: string
+          minLength: 1
+          maxLength: 2048
+          description: '`http` or `https`. A token is only sent over `https`; credentials or a query in the URL are refused.'
+        transport:
+          type: string
+          enum: [streamable_http, sse]
+          description: Defaults to `streamable_http`.
+        access:
+          type: string
+          enum: [read, write]
+          description: No default — declare what the ToolServer's Tools may do.
+        token:
+          type: string
+          maxLength: 4096
+          writeOnly: true
+          description: Sealed before it is stored and never returned. Omit it for a ToolServer that takes none.
+        call_timeout_seconds:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 120
+          description: Defaults to 15.
+        max_result_bytes:
+          type: integer
+          format: int32
+          minimum: 1024
+          maximum: 61440
+          description: Defaults to 16384.
+      description: Configure a ToolServer.
+
+    ToolServerToolDTO:
+      type: object
+      required: [name, qualified_name, description, input_schema, read_only_hint, usable, unusable_reason]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: The ToolServer's own name for it.
+        qualified_name:
+          type: ['string', 'null']
+          maxLength: 64
+          description: '`<toolserver>__<tool>` — what an allowlist names and a model is offered. `null` when no model could be offered the name.'
+          examples: ['k8s__pods_list']
+        description:
+          type: string
+          maxLength: 4096
+        input_schema:
+          type: ['object', 'null']
+          additionalProperties: true
+          description: Its arguments' JSON Schema as listed; `null` when it was not one JSON object of at most 64 KiB.
+        read_only_hint:
+          type: ['boolean', 'null']
+          description: What the ToolServer says about the Tool. Shown, never trusted — `access` decides.
+        usable:
+          type: boolean
+          description: Whether an Investigator's allowlist may hold it.
+        unusable_reason:
+          type: ['string', 'null']
+          description: Why not, when `usable` is false.
+      description: One Tool a ToolServer listed at its last successful discovery.
+
+    RemedyApproverDTO:
+      type: object
+      required: [user_id, email, display_name, granted_at, granted_by, counts]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          description: The holder's address. A grant is given by address, so a member with none can never hold one.
+        display_name:
+          type: string
+        granted_at:
+          type: string
+          format: date-time
+        granted_by:
+          type: string
+          enum: [cli]
+          description: Who wrote the grant. Always `cli` — `oto grant` on the host is the only writer.
+        counts:
+          type: boolean
+          description: Whether this grant lets its holder approve a Remedy now. False when the holder is disabled.
+      description: One user holding the Remedy approval grant on a ToolServer (ADR 0054 §4). Read-only.
+
+    RemedyApproverListResponse:
+      type: object
+      required: [data, page, meta]
+      additionalProperties: false
+      properties:
+        data:
+          type: array
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/RemedyApproverDTO'
+        page:
+          $ref: '#/components/schemas/PageInfo'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    ToolServerListResponse:
+      type: object
+      required: [data, page, meta]
+      additionalProperties: false
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ToolServerDTO'
+        page:
+          $ref: '#/components/schemas/PageInfo'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    ToolServerResponse:
+      type: object
+      required: [data, meta]
+      additionalProperties: false
+      properties:
+        data:
+          $ref: '#/components/schemas/ToolServerDTO'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    ToolServerToolListResponse:
+      type: object
+      required: [data, page, meta]
+      additionalProperties: false
+      properties:
+        data:
+          type: array
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/ToolServerToolDTO'
+        page:
+          $ref: '#/components/schemas/PageInfo'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    InvestigatorListResponse:
+      type: object
+      required: [data, page, meta]
+      additionalProperties: false
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/InvestigatorDTO'
+        page:
+          $ref: '#/components/schemas/PageInfo'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    InvestigatorResponse:
+      type: object
+      required: [data, meta]
+      additionalProperties: false
+      properties:
+        data:
+          $ref: '#/components/schemas/InvestigatorDetailDTO'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    InvestigationListResponse:
+      type: object
+      required: [data, page, meta]
+      additionalProperties: false
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/InvestigationDTO'
+        page:
+          $ref: '#/components/schemas/PageInfo'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    InvestigationResponse:
+      type: object
+      required: [data, meta]
+      additionalProperties: false
+      properties:
+        data:
+          $ref: '#/components/schemas/InvestigationDetailDTO'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    InvestigationClassDTO:
+      type: object
+      required: [name, description]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 63
+          pattern: '^[a-z][a-z0-9_-]{0,62}$'
+          description: The word the model must say back exactly, a card quotes and a receiver matches on.
+        description:
+          type: string
+          maxLength: 500
+          description: What the class means, in the operator's words — what the model is told. May be empty.
+      description: One class of the org's Classification set, as the operator wrote it.
+
+    InvestigationClassSetDTO:
+      type: object
+      required: [classes]
+      properties:
+        classes:
+          type: array
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/InvestigationClassDTO'
+      description: |
+        The org's Classification set (ADR 0053 §5), in the operator's order. Empty — oto ships no classes —
+        means Findings carry no classification. `unclassified` is never listed: it is always admissible.
+
+    InvestigationClassRequest:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 63
+          description: |
+            Lower-case letters, digits, `_` and `-`, starting with a letter. Unique in the set; `unclassified`
+            is reserved.
+        description:
+          type: string
+          maxLength: 500
+          default: ''
+          description: What the class means. The model is told it.
+      description: One class, as the operator writes it.
+
+    ReplaceInvestigationClassesRequest:
+      type: object
+      required: [classes]
+      additionalProperties: false
+      properties:
+        classes:
+          type: array
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/InvestigationClassRequest'
+          description: The whole set, in order. Empty stops Findings being classified.
+      description: The org's whole Classification set, replacing the old one.
+
+    InvestigationClassSetResponse:
+      type: object
+      required: [data, meta]
+      additionalProperties: false
+      properties:
+        data:
+          $ref: '#/components/schemas/InvestigationClassSetDTO'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    SuggestionDTO:
+      type: object
+      required: [id, investigation_id, kind, state, why, proposed_at, lapses_at, applied_at, applied_by_label,
+                 count_condition, membership]
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        investigation_id:
+          $ref: '#/components/schemas/Uuid'
+          description: The Investigation whose Finding proposed it — its provenance.
+        kind:
+          type: string
+          enum: [policy_count_condition, incident_membership]
+          description: |
+            What it would change: one notification policy's count condition (ADR 0044), or one Case into one
+            Incident (ADR 0052 §4). Exactly the matching one of `count_condition` and `membership` is set.
+        state:
+          type: string
+          enum: [open, applied]
+          description: |
+            `open` until a human applies it, then `applied`. A Suggestion that lapsed unapplied is never
+            shown, so it never carries a third state here.
+        why:
+          type: string
+          minLength: 1
+          maxLength: 1000
+          description: The Investigator's reason, in a sentence or two — a model's judgement, read before applying.
+        proposed_at:
+          type: string
+          format: date-time
+        lapses_at:
+          type: string
+          format: date-time
+          description: When an unapplied Suggestion lapses and stops showing — seven days after it was proposed.
+        applied_at:
+          type: ['string', 'null']
+          format: date-time
+        applied_by_label:
+          type: ['string', 'null']
+          maxLength: 200
+          description: Who applied it, as their name stood then.
+        count_condition:
+          oneOf:
+            - $ref: '#/components/schemas/CountConditionSuggestionDTO'
+            - type: 'null'
+        membership:
+          oneOf:
+            - $ref: '#/components/schemas/MembershipSuggestionDTO'
+            - type: 'null'
+      description: |
+        A change a Finding proposes and only a human can apply (ADR 0053 §2). It is applied or it lapses;
+        there is no other verb.
+
+    CountConditionSuggestionDTO:
+      type: object
+      required: [policy_id, policy_name, count_min, count_window_seconds, was_count_min, was_count_window_seconds]
+      properties:
+        policy_id:
+          $ref: '#/components/schemas/Uuid'
+        policy_name:
+          type: string
+          minLength: 1
+          maxLength: 120
+          description: The policy's name when it was proposed.
+        count_min:
+          type: integer
+          format: int32
+          minimum: 2
+          maximum: 10000
+        count_window_seconds:
+          type: integer
+          format: int32
+          minimum: 60
+          maximum: 86400
+        was_count_min:
+          type: ['integer', 'null']
+          format: int32
+          description: The count condition the policy carried when it was proposed; null for none.
+        was_count_window_seconds:
+          type: ['integer', 'null']
+          format: int32
+      description: Set this policy's count condition — the one silence an operator may ask for by name (ADR 0044).
+
+    MembershipSuggestionDTO:
+      type: object
+      required: [incident_id, incident_number, case_id, case_number, moves_from_incident_number]
+      properties:
+        incident_id:
+          $ref: '#/components/schemas/Uuid'
+        incident_number:
+          type: integer
+          format: int64
+          minimum: 1
+        case_id:
+          $ref: '#/components/schemas/Uuid'
+        case_number:
+          type: integer
+          format: int64
+          minimum: 1
+        moves_from_incident_number:
+          type: ['integer', 'null']
+          format: int64
+          minimum: 1
+          description: |
+            While it is open: the Incident the Case is in now, when that is not this one — applying it MOVES
+            the Case from there, because a Case belongs to at most one Incident. Null when applying it adds.
+      description: Put this Case in this Incident.
+
+    ApplySuggestionRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        moves_from_incident_number:
+          type: integer
+          format: int64
+          minimum: 1
+          description: |
+            Required to apply a membership Suggestion that would move its Case: the Incident it moves from,
+            as the list said. Omitted otherwise.
+      description: Applying a Suggestion. Empty for every Suggestion but a membership one that moves its Case.
+
+    SuggestionListResponse:
+      type: object
+      required: [data, page, meta]
+      additionalProperties: false
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/SuggestionDTO'
+        page:
+          $ref: '#/components/schemas/PageInfo'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    SuggestionResponse:
+      type: object
+      required: [data, meta]
+      additionalProperties: false
+      properties:
+        data:
+          $ref: '#/components/schemas/SuggestionDTO'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    RemedyDTO:
+      type: object
+      required: [id, investigation_id, subject_kind, subject_id, state, tool, no_tool, blocked, arguments,
+                 arguments_display, arguments_sha256, target, description, proposed_by_label, required_approvals,
+                 risk, approvals, proposed_at, expires_at, approved_at, executing_at, ended_at, failure_reason, detail,
+                 result, transitions]
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        investigation_id:
+          $ref: '#/components/schemas/Uuid'
+          description: The Investigation whose Finding proposed it — its provenance.
+        subject_kind:
+          type: string
+          enum: [case, incident]
+        subject_id:
+          $ref: '#/components/schemas/Uuid'
+        state:
+          type: string
+          enum: [proposed, approved, executing, executed, failed, declined, expired]
+          description: |
+            Where it is, read at the request: a `proposed` or `approved` Remedy past `expires_at` is `expired`
+            whether or not the sweep has recorded it yet. `executing` is oto's claim, made before the write
+            Tool is called; `executed`, `failed`, `declined` and `expired` are final.
+        tool:
+          oneOf:
+            - $ref: '#/components/schemas/RemedyToolDTO'
+            - type: 'null'
+        no_tool:
+          type: ['string', 'null']
+          description: '"no configured Tool can carry this out" when it names no Tool — and then it can never be approved; null otherwise.'
+        blocked:
+          type: ['string', 'null']
+          description: |
+            Why it cannot be approved now — it names no Tool, or its Tool was removed from configuration, or
+            its ToolServer is no longer `write` — and null when nothing about its Tool stands in the way.
+        arguments:
+          type: ['string', 'null']
+          maxLength: 16384
+          description: The EXACT arguments the write Tool would be sent, as compact JSON, byte for byte. Null with no Tool.
+        arguments_display:
+          type: ['string', 'null']
+          description: The same arguments indented for reading — whitespace only, the same keys, order and values.
+        arguments_sha256:
+          type: ['string', 'null']
+          pattern: '^[0-9a-f]{64}$'
+          description: The SHA-256 of `arguments`. An approval names it; the executor sends only when it still matches.
+        target:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: What the change is made to.
+        description:
+          type: string
+          minLength: 1
+          maxLength: 2000
+          description: The Investigator's description of the change and why — a model's words, shown after the exact command.
+        proposed_by_label:
+          type: string
+          maxLength: 200
+          description: The Investigator and version that proposed it.
+        required_approvals:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 2
+          description: |
+            How many DIFFERENT holders of the grant on its ToolServer must approve it, set at proposal from the
+            org's risk rules (ADR 0054 §3): one only when a rule said so and the risk model, if any, kept it; two
+            otherwise. `risk` says what set it.
+        risk:
+          oneOf:
+            - $ref: '#/components/schemas/RemedyRiskDTO'
+            - type: 'null'
+          description: How `required_approvals` was set; null for a Remedy that names no Tool, or one proposed before the risk rules existed.
+        approvals:
+          type: array
+          items:
+            $ref: '#/components/schemas/RemedyApprovalDTO'
+        proposed_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+          description: When it expires if it has not been approved, or — once approved — executed.
+        approved_at:
+          type: ['string', 'null']
+          format: date-time
+        executing_at:
+          type: ['string', 'null']
+          format: date-time
+        ended_at:
+          type: ['string', 'null']
+          format: date-time
+        failure_reason:
+          type: ['string', 'null']
+          enum: [tool_error, outcome_unknown, tool_unavailable, arguments_changed, approvals_withdrawn, null]
+          description: |
+            Why it failed: the write Tool reported a failure (`tool_error`); it was sent, or may have been, and
+            no answer was recorded (`outcome_unknown`); or it was not sent, because its Tool was gone
+            (`tool_unavailable`), its arguments no longer hashed to what was approved (`arguments_changed`), or
+            fewer approvers than it needs still held the grant (`approvals_withdrawn`). A failed Remedy is
+            never retried.
+        detail:
+          type: ['string', 'null']
+          maxLength: 2000
+        result:
+          type: ['string', 'null']
+          maxLength: 16384
+          description: What the write Tool answered, redacted with the org's rules and capped. Null until it was sent.
+        transitions:
+          type: array
+          items:
+            $ref: '#/components/schemas/RemedyTransitionDTO'
+      description: |
+        A change to a cluster an Investigator proposed and oto executes only after the required approvals
+        (ADR 0054): `proposed → approved → executing → executed | failed`, or `declined`, or `expired`, each
+        by a named actor, and each declared to its Incident as a fact.
+
+    RemedyRiskDTO:
+      type: object
+      required: [set_by, rule, detail, risk_model_check, risk_model, risk_model_tokens]
+      properties:
+        set_by:
+          type: string
+          enum: [rule, no_rule, unparseable, risk_model, risk_model_failed, risk_model_budget]
+          description: |
+            What set the tier, as the approval screen says it under the exact command: `rule` (`rule` names it),
+            `no_rule` (two: no rule matched), `unparseable` (two, whatever the rules say: `detail` says why),
+            `risk_model` (the risk model raised one to two: `detail` is its reason), `risk_model_failed` (two:
+            the risk model gave no answer oto could take; `detail` says why) or `risk_model_budget` (two: the
+            org's daily token budget was spent, so the risk model was not asked; `detail` says so).
+        rule:
+          type: ['string', 'null']
+          pattern: '^[a-z][a-z0-9_-]{0,62}$'
+          description: The rule behind the baseline, as the rules stood at proposal — a copy of its name.
+        detail:
+          type: ['string', 'null']
+          maxLength: 1000
+        risk_model_check:
+          type: string
+          enum: [unset, not_asked, kept, raised, failed, budget]
+          description: |
+            What the risk model did: `unset` (the org names none, and the rules' tier stands), `not_asked` (the
+            rules already said two, which nothing lowers), `kept`, `raised`, `failed`, or `budget` (its question
+            counts against the org's daily token budget, which was spent, so it was not asked and the Remedy
+            needs two). The risk model sees only
+            the command, its target and the rules' verdict — never the Investigation.
+        risk_model:
+          type: ['string', 'null']
+          description: The endpoint and model asked, `<endpoint>#<model>`; null when none was.
+        risk_model_tokens:
+          type: ['integer', 'null']
+          format: int64
+          minimum: 0
+          description: Input and output tokens the question cost; null when no model was asked.
+      description: How a Remedy's required approvals were set (ADR 0054 §3).
+
+    RemedyRiskRuleDTO:
+      type: object
+      required: [name, tool, verbs, kinds, namespaces, reversibility, approvals]
+      properties:
+        name:
+          type: string
+          pattern: '^[a-z][a-z0-9_-]{0,62}$'
+        tool:
+          type: ['string', 'null']
+          description: A qualified write Tool, `<toolserver>__<tool>`; null for any.
+        verbs:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+          description: The command's verb is one of these (`rollout restart`, `delete`); empty for any.
+        kinds:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+          description: The command's resource kind is one of these, folded to kubectl's singular name; empty for any.
+        namespaces:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+          description: The command names one of these namespaces; empty for any.
+        reversibility:
+          type: ['string', 'null']
+          enum: [reversible, irreversible, null]
+          description: The command's verb is (or is not) one oto knows to be reversible; null for either.
+        approvals:
+          type: integer
+          format: int32
+          enum: [1, 2]
+      description: One rule, normalised as stored. Every condition must hold for it to match.
+
+    RemedyRiskRulesDTO:
+      type: object
+      required: [rules, risk_model_provider_id, written_by_label, written_at, reversible_verbs]
+      properties:
+        rules:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/RemedyRiskRuleDTO'
+          description: The rules in the operator's order. Empty — oto ships none — means every Remedy needs two approvals.
+        risk_model_provider_id:
+          oneOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
+          description: The model endpoint asked whether a single-approval Remedy should need two; null for none.
+        written_by_label:
+          type: ['string', 'null']
+          maxLength: 200
+          description: Who last applied the rules (`oto remedy-rules apply`); null when nobody has.
+        written_at:
+          type: ['string', 'null']
+          format: date-time
+        reversible_verbs:
+          type: array
+          items:
+            type: string
+          description: The verbs oto knows to be reversible — what `reversibility` reads. Every other verb is irreversible.
+      description: |
+        The org's Remedy risk rules and risk model (ADR 0054 §3). The MOST SEVERE matching rule wins and is
+        named after the first such in order; no match is two approvals; a command the rules cannot parse is
+        two whatever they say; a risk model may raise one to two and never lower.
+
+    RemedyRiskRulesResponse:
+      type: object
+      required: [data, meta]
+      additionalProperties: false
+      properties:
+        data:
+          $ref: '#/components/schemas/RemedyRiskRulesDTO'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    RemedyToolDTO:
+      type: object
+      required: [tool_server_id, tool_server_name, tool_name]
+      properties:
+        tool_server_id:
+          $ref: '#/components/schemas/Uuid'
+        tool_server_name:
+          type: string
+          minLength: 1
+          maxLength: 24
+          description: The write ToolServer's name when the Remedy was proposed.
+        tool_name:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: The ToolServer's own name for the write Tool.
+      description: The write Tool a Remedy would be carried out by.
+
+    RemedyApprovalDTO:
+      type: object
+      required: [user_id, label, approved_at]
+      properties:
+        user_id:
+          oneOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
+          description: Null once the user is deleted; the label is frozen.
+        label:
+          type: string
+          maxLength: 200
+        approved_at:
+          type: string
+          format: date-time
+      description: One person's approval.
+
+    RemedyTransitionDTO:
+      type: object
+      required: [from, to, actor_kind, actor_label, at, failure_reason, detail, declared_incident_id]
+      properties:
+        from:
+          type: ['string', 'null']
+          enum: [proposed, approved, executing, null]
+          description: Null for the proposal itself.
+        to:
+          type: string
+          enum: [proposed, approved, executing, executed, failed, declined, expired]
+        actor_kind:
+          type: string
+          enum: [investigator, user, system]
+        actor_label:
+          type: string
+          maxLength: 200
+        at:
+          type: string
+          format: date-time
+        failure_reason:
+          type: ['string', 'null']
+          enum: [tool_error, outcome_unknown, tool_unavailable, arguments_changed, approvals_withdrawn, null]
+        detail:
+          type: ['string', 'null']
+          maxLength: 2000
+        declared_incident_id:
+          oneOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
+          description: |
+            The Incident this transition was declared to as a fact; null when the Remedy's subject was in no
+            Incident — recorded, never invented. The executor's claim (`executing`) is never declared.
+      description: One transition of one Remedy, by a named actor.
+
+    ApproveRemedyRequest:
+      type: object
+      additionalProperties: false
+      required: [arguments_sha256]
+      properties:
+        arguments_sha256:
+          type: string
+          minLength: 64
+          maxLength: 64
+          pattern: '^[0-9a-f]{64}$'
+          description: The `arguments_sha256` of the arguments the approver was shown — what they approve.
+      description: Approving a Remedy names the exact arguments approved, by their hash.
+
+    RemedyListResponse:
+      type: object
+      required: [data, page, meta]
+      additionalProperties: false
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/RemedyDTO'
+        page:
+          $ref: '#/components/schemas/PageInfo'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    RemedyResponse:
+      type: object
+      required: [data, meta]
+      additionalProperties: false
+      properties:
+        data:
+          $ref: '#/components/schemas/RemedyDTO'
         meta:
           $ref: '#/components/schemas/Meta'
 
@@ -14094,9 +16909,9 @@ components:
           additionalProperties:
             $ref: '#/components/schemas/SettingBoundDTO'
           description: |
-            Per integer settings key, the range the server will accept. The one key that is not an
-            integer, `default_verbosity`, is absent; its legal values are its own
-            schema's. The bounds apply to a declarative value too: configuration is authoritative about
+            Per integer settings key, the range the server will accept. The two keys that are not
+            integers, `default_verbosity` and `investigations_enabled`, are absent; their legal values are
+            their own schemas'. The bounds apply to a declarative value too: configuration is authoritative about
             *which* value is in force, not about which values are legal.
       description: |
         The effective tuning **and** where each value came from. The pairing is the feature: an effective
@@ -14118,6 +16933,10 @@ components:
         event_retention_months: {type: integer, format: int32}
         default_verbosity:
           $ref: '#/components/schemas/Verbosity'
+        investigations_enabled: {type: boolean}
+        investigation_daily_tokens: {type: integer, format: int32}
+        investigation_concurrency: {type: integer, format: int32}
+        remedy_approval_window_s: {type: integer, format: int32}
       description: |
         A **partial** tuning: every field is optional and an absent field means "this key is not set".
 
@@ -14176,6 +16995,28 @@ components:
           maximum: 120
         default_verbosity:
           $ref: '#/components/schemas/Verbosity'
+        investigations_enabled:
+          type: boolean
+          description: |
+            `false` pulls the org's Investigation kill switch (ADR 0053 §6); `true` releases it.
+        investigation_daily_tokens:
+          type: integer
+          format: int32
+          minimum: 1000
+          maximum: 1000000000
+          description: The org's daily Investigation token budget (ADR 0053 §6).
+        investigation_concurrency:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 32
+          description: The most Investigations running at once (ADR 0053 §6).
+        remedy_approval_window_s:
+          type: integer
+          format: int32
+          minimum: 60
+          maximum: 86400
+          description: How long a Remedy waits for its approvals, and then for its execution, before it expires (ADR 0054 §2).
         reset:
           type: array
           maxItems: 32
@@ -14213,6 +17054,41 @@ components:
       properties:
         data:
           $ref: '#/components/schemas/ApiTokenCreatedDTO'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    SlackIdentityListResponse:
+      type: object
+      required: [data, page, meta]
+      additionalProperties: false
+      properties:
+        data:
+          type: array
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/SlackIdentityDTO'
+        page:
+          $ref: '#/components/schemas/PageInfo'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    SlackIdentityResponse:
+      type: object
+      required: [data, meta]
+      additionalProperties: false
+      properties:
+        data:
+          $ref: '#/components/schemas/SlackIdentityDTO'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    SlackLinkPreviewResponse:
+      type: object
+      required: [data, meta]
+      additionalProperties: false
+      properties:
+        data:
+          $ref: '#/components/schemas/SlackLinkPreviewDTO'
         meta:
           $ref: '#/components/schemas/Meta'
 

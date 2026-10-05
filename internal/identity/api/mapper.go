@@ -33,6 +33,12 @@ func toOrgSettingsDTO(s domain.Settings) OrgSettingsDTO {
 		EventRetentionMonth: int(s.EventRetention / (30 * 24 * time.Hour)),
 
 		DefaultVerbosity: s.DefaultVerbosity,
+
+		InvestigationsEnabled:    s.InvestigationsEnabled,
+		InvestigationDailyTokens: s.InvestigationDailyTokens,
+		InvestigationConcurrency: s.InvestigationConcurrency,
+
+		RemedyApprovalWindowS: int(s.RemedyApprovalWindow / time.Second),
 	}
 }
 

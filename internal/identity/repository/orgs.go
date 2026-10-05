@@ -49,6 +49,18 @@ type settingsJSON struct {
 	// stores `{}` and still reports every value as a DEFAULT.
 	DefaultVerbosity *string `json:"default_verbosity,omitempty"`
 
+	// InvestigationsEnabled is the org's Investigation kill switch (ADR 0053 §6).
+	// A POINTER, like every key here: an absent key is "never written" and reads as
+	// the shipped default (true), while a stored `false` is the switch pulled.
+	InvestigationsEnabled *bool `json:"investigations_enabled,omitempty"`
+	// The org's daily token budget and concurrency (ADR 0053 §6). Absent reads as
+	// the shipped default — a finite ceiling, never "unlimited".
+	InvestigationDailyTokens *int `json:"investigation_daily_tokens,omitempty"`
+	InvestigationConcurrency *int `json:"investigation_concurrency,omitempty"`
+	// The Remedy approval window (ADR 0054 §2, migration 00104). Absent reads as the
+	// shipped hour.
+	RemedyApprovalWindowS *int `json:"remedy_approval_window_s,omitempty"`
+
 	// ⛔ `broadcast_on_resolved` FOLLOWED `default_verbosity` AND IS DELETED
 	// (git-bug 7570090). It was the last non-integer key besides the verbosity, and
 	// the only boolean this blob ever held.
@@ -58,8 +70,10 @@ type settingsJSON struct {
 	//
 	// ⛔⛔ AND `refire_grace_s` AND `group_close_delay_s` LED THE INTEGER BLOCK
 	// ABOVE — the first and third fields — AND BOTH ARE DELETED (git-bug 7287b28,
-	// migration 00071). The struct closes here; the seven keys above are the whole
-	// of `orgs.settings`.
+	// migration 00071). The struct closes here; the ten keys above are the whole
+	// of `orgs.settings` (`investigations_enabled`, ADR 0053 §6, made it eight;
+	// `investigation_daily_tokens` and `investigation_concurrency` made it ten;
+	// `remedy_approval_window_s`, ADR 0054 §2, made it eleven).
 	//
 	// ⚠️ NOTHING HERE DELETES A STORED KEY. `orgs.settings` is one JSONB document,
 	// so a row written before this commit still HOLDS `broadcast_on_resolved`,
@@ -84,6 +98,11 @@ func (s settingsJSON) toPatch() domain.SettingsPatch {
 		RawRetentionDays:    s.RawRetentionDays,
 		EventRetentionMonth: s.EventRetentionMonth,
 		DefaultVerbosity:    s.DefaultVerbosity,
+
+		InvestigationsEnabled:    s.InvestigationsEnabled,
+		InvestigationDailyTokens: s.InvestigationDailyTokens,
+		InvestigationConcurrency: s.InvestigationConcurrency,
+		RemedyApprovalWindowS:    s.RemedyApprovalWindowS,
 	}
 }
 
@@ -97,6 +116,11 @@ func fromPatch(p domain.SettingsPatch) settingsJSON {
 		RawRetentionDays:    p.RawRetentionDays,
 		EventRetentionMonth: p.EventRetentionMonth,
 		DefaultVerbosity:    p.DefaultVerbosity,
+
+		InvestigationsEnabled:    p.InvestigationsEnabled,
+		InvestigationDailyTokens: p.InvestigationDailyTokens,
+		InvestigationConcurrency: p.InvestigationConcurrency,
+		RemedyApprovalWindowS:    p.RemedyApprovalWindowS,
 	}
 }
 
