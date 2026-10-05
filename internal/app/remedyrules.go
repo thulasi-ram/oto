@@ -92,7 +92,7 @@ type RemedyRulesResult struct {
 	WrittenAt      time.Time
 }
 
-// ErrRiskModelNotFound: the file names a risk model that is not one of the org's endpoints.
+// ErrRiskModelNotFound means the file names a risk model that is not one of the org's endpoints.
 var ErrRiskModelNotFound = errors.New("no model endpoint with that name in this org " +
 	"(risk_model names one of the org's model endpoints by its name; omit it for none)")
 

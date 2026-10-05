@@ -260,7 +260,7 @@ func (s *Service) ListMySlackIdentities(
 }
 
 // slackLinkSubject is the ONE user a write may act on: the human behind a SESSION.
-func (s *Service) slackLinkSubject(ctx context.Context, scope db.TenantScope, p authn.Principal) (uuid.UUID, error) {
+func (s *Service) slackLinkSubject(_ context.Context, scope db.TenantScope, p authn.Principal) (uuid.UUID, error) {
 	if s.links == nil {
 		return uuid.Nil, slackLinksUnavailable()
 	}

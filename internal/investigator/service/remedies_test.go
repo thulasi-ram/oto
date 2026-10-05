@@ -95,7 +95,7 @@ func (m *memRemedies) LockRemedy(ctx context.Context, s db.TenantScope, id uuid.
 	return m.GetRemedy(ctx, s, id)
 }
 
-func (m *memRemedies) AddApproval(_ context.Context, s db.TenantScope, remedyID uuid.UUID, a domain.RemedyApproval) error {
+func (m *memRemedies) AddApproval(_ context.Context, _ db.TenantScope, remedyID uuid.UUID, a domain.RemedyApproval) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	r := m.rows[remedyID]

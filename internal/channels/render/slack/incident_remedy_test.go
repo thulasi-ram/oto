@@ -45,7 +45,7 @@ func TestARemedyReplySaysTheExactCommandBeforeTheDescription(t *testing.T) {
 	body := payload.Attachments[0].Blocks[0].Text.Text
 	command, args, why := strings.Index(body, "`k8s-write__rollout_restart`"),
 		strings.Index(body, `{"namespace":"checkout","deployment":"api"}`), strings.Index(body, "Restart the api")
-	if command < 0 || args < 0 || why < 0 || !(command < args && args < why) {
+	if command < 0 || args < 0 || why < 0 || command >= args || args >= why {
 		t.Fatalf("the reply does not say the command, then its arguments, then the description:\n%s", body)
 	}
 	if !strings.Contains(body, "*Remedy approved* by Grace Hopper — 2 of 2 approvals") {
@@ -136,7 +136,7 @@ func TestGoldenARemedyProposalSaysTheCommandFirstAndOffersApproveAndDecline(t *t
 	command := strings.Index(body, "`k8s-write__rollout_restart`")
 	tier := strings.Index(body, "*Needs 1 approval* — set by the rule `restart-is-reversible`")
 	why := strings.Index(body, "Restart the api")
-	if command < 0 || tier < 0 || why < 0 || !(command < tier && tier < why) {
+	if command < 0 || tier < 0 || why < 0 || command >= tier || tier >= why {
 		t.Fatalf("the reply does not say the command, then the tier and its rule, then the description:\n%s", body)
 	}
 	if len(buttons) != 2 || buttons[0].ActionID != domain.ActionRemedyApprove || buttons[1].ActionID != domain.ActionRemedyDecline {

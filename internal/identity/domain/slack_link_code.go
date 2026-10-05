@@ -170,9 +170,9 @@ func (c SlackLinkCode) String() string { return "[redacted]" }
 type SlackLinkChange string
 
 const (
-	// SlackLinkLinked: a member was linked to the signed-in user by a code.
+	// SlackLinkLinked means a member was linked to the signed-in user by a code.
 	SlackLinkLinked SlackLinkChange = "linked"
-	// SlackLinkUnlinked: the signed-in user unlinked a member linked to them.
+	// SlackLinkUnlinked means the signed-in user unlinked a member linked to them.
 	SlackLinkUnlinked SlackLinkChange = "unlinked"
 )
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -112,36 +113,39 @@ flags:
 	if err != nil {
 		return remedyRulesRefusal(verb, *orgSlug, err)
 	}
-	printRemedyRulesSummary(os.Stdout, *orgSlug, res)
-	return nil
+	return printRemedyRulesSummary(os.Stdout, *orgSlug, res)
 }
 
 // printRemedyRulesSummary says what now stands: each rule in order with its tier, the risk
-// model, and how many rules it replaced.
-func printRemedyRulesSummary(w io.Writer, org string, res app.RemedyRulesResult) {
+// model, and how many rules it replaced. It builds the whole summary first and writes it once,
+// so a failed write is one error the command returns rather than nine it drops.
+func printRemedyRulesSummary(w io.Writer, org string, res app.RemedyRulesResult) error {
 	one := 0
 	for _, r := range res.Rules {
 		if r.Approvals == 1 {
 			one++
 		}
 	}
-	fmt.Fprintf(w, "org_id     %s\n", res.OrgID)
-	fmt.Fprintf(w, "rules      %d (%d say one approval, %d say two); replaced %d\n",
+	var b strings.Builder
+	fmt.Fprintf(&b, "org_id     %s\n", res.OrgID)
+	fmt.Fprintf(&b, "rules      %d (%d say one approval, %d say two); replaced %d\n",
 		len(res.Rules), one, len(res.Rules)-one, res.Replaced)
 	if res.RiskModel.Name != "" {
-		fmt.Fprintf(w, "risk_model %s (%s)\n", res.RiskModel.Name, res.RiskModel.Identity())
+		fmt.Fprintf(&b, "risk_model %s (%s)\n", res.RiskModel.Name, res.RiskModel.Identity())
 	} else {
-		fmt.Fprintf(w, "risk_model none: the rules' answer stands\n")
+		b.WriteString("risk_model none: the rules' answer stands\n")
 	}
 	for i, r := range res.Rules {
-		fmt.Fprintf(w, "  %2d. %-32s %d approval(s)\n", i+1, r.Name, r.Approvals)
+		fmt.Fprintf(&b, "  %2d. %-32s %d approval(s)\n", i+1, r.Name, r.Approvals)
 	}
 	if len(res.Rules) == 0 {
-		fmt.Fprintf(w, "\nOrg %s has no Remedy risk rules: every Remedy needs two approvals.\n", org)
-		return
+		fmt.Fprintf(&b, "\nOrg %s has no Remedy risk rules: every Remedy needs two approvals.\n", org)
+	} else {
+		fmt.Fprintf(&b, "\nApplied to org %s. The most severe matching rule wins; no match is two approvals.\n"+
+			"No Remedy already proposed was re-tiered.\n", org)
 	}
-	fmt.Fprintf(w, "\nApplied to org %s. The most severe matching rule wins; no match is two approvals.\n"+
-		"No Remedy already proposed was re-tiered.\n", org)
+	_, err := io.WriteString(w, b.String())
+	return err
 }
 
 func printRemedyRulesYAML(w io.Writer, res app.RemedyRulesResult) error {
@@ -149,12 +153,14 @@ func printRemedyRulesYAML(w io.Writer, res app.RemedyRulesResult) error {
 	if err != nil {
 		return fmt.Errorf("remedy-rules show: %w", err)
 	}
+	var b strings.Builder
 	if res.WrittenByLabel != "" {
-		fmt.Fprintf(w, "# Applied by %s at %s.\n", res.WrittenByLabel, res.WrittenAt.Format(time.RFC3339))
+		fmt.Fprintf(&b, "# Applied by %s at %s.\n", res.WrittenByLabel, res.WrittenAt.Format(time.RFC3339))
 	} else {
-		fmt.Fprintf(w, "# No rules were ever applied: every Remedy needs two approvals.\n")
+		b.WriteString("# No rules were ever applied: every Remedy needs two approvals.\n")
 	}
-	_, err = w.Write(body)
+	b.Write(body)
+	_, err = io.WriteString(w, b.String())
 	return err
 }
 

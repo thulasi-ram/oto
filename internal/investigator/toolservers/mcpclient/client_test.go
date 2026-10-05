@@ -120,7 +120,7 @@ func TestARefusedTokenIsSaidAsOne(t *testing.T) {
 
 func TestARedirectIsNotFollowed(t *testing.T) {
 	var hits int
-	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits++
 		http.Error(w, "should not be reached", http.StatusTeapot)
 	}))
@@ -189,7 +189,7 @@ func TestASessionOutlivesTheCallThatOpenedIt(t *testing.T) {
 
 // TestAToolServerThatNeverAnswersIsBoundedByTheCallersDeadline.
 func TestAToolServerThatNeverAnswersIsBoundedByTheCallersDeadline(t *testing.T) {
-	stuck := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	stuck := httptest.NewTLSServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 		case <-time.After(2 * time.Second): // past every deadline below, short enough to close
@@ -213,7 +213,7 @@ func TestAToolServerThatNeverAnswersIsBoundedByTheCallersDeadline(t *testing.T) 
 // nowhere but the origin the operator configured.
 func TestAnEndpointOffTheConfiguredOriginIsRefused(t *testing.T) {
 	var hits atomic.Int32
-	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits.Add(1)
 		w.WriteHeader(http.StatusAccepted)
 	}))

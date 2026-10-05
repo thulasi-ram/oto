@@ -348,7 +348,7 @@ func TestTheModelOnlyRaises(t *testing.T) {
 			t.Fatalf("a clean 1 recorded %s", got.Model)
 		case a.Err == nil && a.Approvals == 2 && (got.Model != domain.ModelRaised || got.SetBy() != "risk_model" || got.Detail == ""):
 			t.Fatalf("a raise recorded %+v", got)
-		case !clean && !(a.Err == nil && a.Approvals == 2) && (got.Model != domain.ModelFailed || got.SetBy() != "risk_model_failed" || got.Detail == ""):
+		case !clean && (a.Err != nil || a.Approvals != 2) && (got.Model != domain.ModelFailed || got.SetBy() != "risk_model_failed" || got.Detail == ""):
 			t.Fatalf("a failure recorded %+v", got)
 		}
 		if got.Rule != "restart-payments" {

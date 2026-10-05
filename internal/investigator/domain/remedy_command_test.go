@@ -59,7 +59,7 @@ func TestEveryWordIsOnTheAllowlist(t *testing.T) {
 	for _, args := range []string{
 		cmdArgs("kubectl rollout restart deployment/api -n pаyments"),
 		cmdArgs("kubectl rollout restart deployment/api －n payments"),
-		cmdArgs("kubectl rollout restart deployment/api -n payments​"),
+		cmdArgs("kubectl rollout restart deployment/api -n payments\u200b"),
 	} {
 		if c := domain.ParseRemedyCommand(k8sKubectl, args); c.Parsed() || !strings.Contains(c.Unparseable, "U+") {
 			t.Fatalf("%q read as %+v", args, c)
