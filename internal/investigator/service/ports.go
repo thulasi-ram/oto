@@ -106,6 +106,11 @@ type InvestigationStore interface {
 	// given ("" for none). The row is frozen from then on.
 	Finish(ctx context.Context, s db.TenantScope, id uuid.UUID, end domain.Ending, spent domain.Usage,
 		toolCalls int, finding, classification string, at time.Time) error
+	// SpentOn sums one run's Steps: the tokens of its model turns, and its Tool calls —
+	// every call Step except those to the named answer-shaping Tools and those the step
+	// budget refused unrun. A run's own counters are written only when it ends, so this
+	// is how an ending that its worker never reached records what was spent (review A5).
+	SpentOn(ctx context.Context, s db.TenantScope, id uuid.UUID, answerShaping []string) (domain.Usage, int, error)
 	// AppendStep writes one transcript entry. There is no method that changes one.
 	AppendStep(ctx context.Context, s db.TenantScope, investigationID uuid.UUID, step domain.Step) error
 	Steps(ctx context.Context, s db.TenantScope, investigationID uuid.UUID) ([]domain.Step, error)

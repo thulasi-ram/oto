@@ -45,10 +45,15 @@ func DefaultQueueWorkers() map[string]int {
 		QueueReconcile:      8,
 		QueueLifecycle:      4,
 		QueueMaintenance:    1,
-		// ADR 0053 §3: Investigations, off every other queue. Two because a run is a
-		// chain of paid model calls of up to MaxWallSeconds; the org-level
-		// concurrency control (§6) narrows it per tenant, this bounds the deployment.
-		QueueInvestigate: 2,
+		// ADR 0053 §3: Investigations (and an approved Remedy's one write call), off
+		// every other queue. A run is a chain of paid model calls of up to
+		// MaxWallSeconds that mostly WAITS on the model, so a slot costs a goroutine and
+		// a connection, not a core. The org-level concurrency control (§6, default 2)
+		// narrows it per tenant; this bounds the deployment, and at 2 it equalled one
+		// tenant's default, so one org's two half-hour runs held every slot in the
+		// deployment (review A10). Eight is four tenants' defaults at once;
+		// `jobs.queue_investigate` moves it.
+		QueueInvestigate: 8,
 	}
 }
 
@@ -121,6 +126,12 @@ func FromPlatformConfig(cfg config.JobsConfig) Config {
 	}
 	if cfg.QueueReconcile > 0 {
 		queues[QueueReconcile] = cfg.QueueReconcile
+	}
+	// `investigate` is the other single-queue knob, for the same kind of reason: its
+	// width is how many tenants' Investigations run at once, not a latency preference
+	// for any of the queues `queue_default` moves.
+	if cfg.QueueInvestigate > 0 {
+		queues[QueueInvestigate] = cfg.QueueInvestigate
 	}
 
 	return Config{

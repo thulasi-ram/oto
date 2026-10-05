@@ -5,6 +5,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
 )
 
 // Payload carries the payload version every job in oto is required to have
@@ -855,7 +856,19 @@ func (InvestigationsRunArgs) InsertOpts() river.InsertOpts {
 // membership change coalesces under the Investigator's minimum interval — and
 // enqueues each run's `investigations.run` in its own transaction.
 //
-// Queue: lifecycle · Priority: normal · Retry: retryable (12) · Payload v1
+// Queue: lifecycle · Priority: BACKGROUND · Retry: retryable (12) · Payload v1 ·
+// Unique: by args, while available, pending, scheduled or running
+//
+// ⭐ BACKGROUND, AND ONE PENDING TRIGGER PER (org, Incident, trigger) (review B1). It
+// shares `lifecycle` with `notify.digest` and `case.reap`, and a Correlator storm
+// enqueues one of these per membership change; at the digest's priority they would
+// queue ahead of the digest tick on a four-worker queue. Background priority puts them
+// behind it, and uniqueness folds a burst into the one trigger already waiting —
+// which loses nothing, because the handler reads CURRENT state: the run it queues
+// reads the Incident when that run starts, and a trigger for an Incident whose
+// trigger job is mid-flight resolves into the run that job queued. River requires
+// `running` among the unique states; `completed`, `cancelled` and `discarded` are
+// left out so a later change always gets a trigger of its own.
 //
 // ⛔ NOT `investigate`, NOT `notify`, AND NOT THE INCIDENT'S OWN WRITE. The membership
 // change enqueues this and returns: it never waits for an Investigator to be read, a
@@ -886,8 +899,15 @@ func (InvestigationsIncidentArgs) Kind() string { return KindInvestigationsIncid
 func (InvestigationsIncidentArgs) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{
 		Queue:       QueueLifecycle,
-		Priority:    PriorityNormal,
+		Priority:    PriorityBackground,
 		MaxAttempts: MaxAttemptsRetryable,
+		UniqueOpts: river.UniqueOpts{
+			ByArgs: true,
+			ByState: []rivertype.JobState{
+				rivertype.JobStateAvailable, rivertype.JobStatePending,
+				rivertype.JobStateScheduled, rivertype.JobStateRunning,
+			},
+		},
 	}
 }
 

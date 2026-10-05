@@ -545,6 +545,11 @@ config:
     # reservation, 15 at the defaults).
     # Left unset like its neighbours: the fall-through value IS 8. Set it to depart.
     queue_reconcile: 0
+    # How many Investigations the whole deployment runs at once (ADR 0053 §3); each
+    # org's investigation_concurrency narrows its own share. A run mostly waits on its
+    # model endpoint, so a slot is a goroutine and a db connection, not a core.
+    # Left unset like its neighbours: the fall-through value IS 8. Set it to depart.
+    queue_investigate: 0
     fetch_interval: 1s
     job_timeout: 1m
     # How long a job may sit `running` before the rescuer reclaims it — the

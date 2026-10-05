@@ -288,6 +288,41 @@ func TestTheDaysSpendIsTodaysModelTurns(t *testing.T) {
 	require.Zero(t, other, "another org's spend is not this org's")
 }
 
+// TestARunsSpendIsSummedFromItsSteps — review A5: an ending its worker never reached
+// records what the Steps spent; answer-shaping calls and calls the step budget refused
+// unrun are Steps but not Tool calls.
+func TestARunsSpendIsSummedFromItsSteps(t *testing.T) {
+	t.Parallel()
+	w := newWorld(t)
+	now := w.h.Now()
+	turn := func(in, out int64) domain.Turn {
+		tr, err := domain.NewTurn(domain.ModelIdentity{}, "x", nil, &domain.Usage{InputTokens: in, OutputTokens: out}, domain.FinishStop)
+		require.NoError(t, err)
+		return tr
+	}
+	run := w.queued(t, "k", now)
+	w.start(t, run.ID, now, 2)
+	steps := []domain.Step{
+		domain.NewModelTurnStep(1, turn(100, 10), 0, now),
+		domain.NewToolStep(2, domain.ToolCall{ID: "a", Name: "oto_case_timeline", Arguments: "{}"}, domain.OutcomeOK, "ok", 0, now),
+		domain.NewToolStep(3, domain.ToolCall{ID: "b", Name: domain.ClassifyTool, Arguments: "{}"}, domain.OutcomeOK, "recorded", 0, now),
+		domain.NewModelTurnStep(4, turn(200, 20), 0, now),
+		domain.NewToolStep(5, domain.ToolCall{ID: "c", Name: "k8s__pods_list", Arguments: "{}"}, domain.OutcomeRefused,
+			"not run: the step budget of 1 Tool calls is spent", 0, now),
+	}
+	for _, st := range steps {
+		require.NoError(t, w.runs.AppendStep(w.h.Ctx, w.scope, run.ID, st))
+	}
+	u, calls, err := w.runs.SpentOn(w.h.Ctx, w.scope, run.ID, []string{domain.ClassifyTool})
+	require.NoError(t, err)
+	require.Equal(t, domain.Usage{InputTokens: 300, OutputTokens: 30}, u)
+	require.Equal(t, 1, calls, "only the call that ran counts")
+
+	_, none, err := w.runs.SpentOn(w.h.Ctx, w.h.Org().Scope, run.ID, nil)
+	require.NoError(t, err)
+	require.Zero(t, none, "another org reads nothing of this run")
+}
+
 func TestStartHoldsTheOrgsConcurrencyAndNeedsATransaction(t *testing.T) {
 	t.Parallel()
 	w := newWorld(t)

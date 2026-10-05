@@ -277,3 +277,31 @@ func TestADigestRunIsNotOfferedACaseOrMembershipTool(t *testing.T) {
 		t.Fatalf("the refusal does not say why: %q", steps[1].Result)
 	}
 }
+
+// TestADigestRunStillQueuedWhenItsWindowClosedIsSkipped — owner ruling O4: the digest
+// went out at the close without it, so a Finding now is read by nothing; it ends
+// `skipped/window_closed` on the record, and no model is called.
+func TestADigestRunStillQueuedWhenItsWindowClosedIsSkipped(t *testing.T) {
+	r := newRig(t)
+	inv := r.digestInvestigator(t, "digest", true, digestBudgets(t, 10, 100_000, 300), ToolDigestCases)
+	d := r.summarise(t, inv)
+	r.clock.Set(d.Window.End.Add(-7 * time.Minute))
+	if n := r.arm(t); n != 1 {
+		t.Fatalf("armed %d", n)
+	}
+	run, err := r.investigations.DigestRun(context.Background(), r.scope, d.PolicyID, d.Window)
+	if err != nil || run == nil {
+		t.Fatal("no run armed", err)
+	}
+	r.dial.script = []modelfake.Step{modelfake.Text("never asked", 1, 1)}
+
+	r.clock.Set(d.Window.End.Add(time.Second)) // it waited behind the org's concurrency past the close
+	got, steps := r.run(t, run.ID)
+	if got.Status != domain.StatusSkipped || got.Ending.Reason != domain.ReasonWindowClosed ||
+		!strings.Contains(got.Ending.Detail, "window closed") {
+		t.Fatalf("ended %+v, want skipped/window_closed", got.Ending)
+	}
+	if len(steps) != 0 || r.dial.model() != nil {
+		t.Fatal("a model was called for a window nothing will read")
+	}
+}

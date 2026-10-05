@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -34,6 +35,7 @@ import (
 	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/idempotency"
 	"github.com/thulasiram/oto/internal/platform/jobs"
+	"github.com/thulasiram/oto/internal/platform/log"
 	rulesdomain "github.com/thulasiram/oto/internal/rules/domain"
 	rulesservice "github.com/thulasiram/oto/internal/rules/service"
 	sourcesapi "github.com/thulasiram/oto/internal/sources/api"
@@ -437,13 +439,30 @@ func (a incidentAnnouncer) Announce(
 // never an empty Incident: a card about a story oto could not read would be a
 // positive false statement.
 type incidentFacts struct {
-	svc *incidentsservice.Service
+	svc incidentDetails
 	// investigations reads the Incident's latest Finding for its card (ADR 0053 §4,
 	// git-bug 74ea849). Late-bound too: investigator is built after incidents. An
 	// unfilled one answers "no Finding" rather than an error, for caseEndings' reason:
 	// before it exists nothing can have investigated anything.
-	investigations *investigatorservice.Service
+	investigations latestIncidentFinding
 }
+
+// incidentDetails is the half of `*incidents/service.Service` incidentFacts reads.
+type incidentDetails interface {
+	GetByID(ctx context.Context, s db.TenantScope, id uuid.UUID) (incidentsdomain.Detail, error)
+	ConversationFor(ctx context.Context, s db.TenantScope, caseID uuid.UUID) (incidentsdomain.Ref, bool, error)
+}
+
+// latestIncidentFinding is the one `*investigator/service.Service` method incidentFacts
+// reads.
+type latestIncidentFinding interface {
+	LatestIncidentFinding(ctx context.Context, s db.TenantScope, incidentID uuid.UUID) (investigatordomain.PriorFinding, bool, error)
+}
+
+var (
+	_ incidentDetails       = (*incidentsservice.Service)(nil)
+	_ latestIncidentFinding = (*investigatorservice.Service)(nil)
+)
 
 func (r *incidentFacts) Incident(
 	ctx context.Context, s db.TenantScope, id uuid.UUID,
@@ -490,9 +509,18 @@ func (r *incidentFacts) Incident(
 		})
 	}
 	if r.investigations != nil {
+		// ⛔ A FINDING THAT CANNOT BE READ IS NO FINDING, NOT A FAILED INCIDENT (review B2,
+		// D15). This read is on the notification evaluation and claim path: returning
+		// its error would fail or retry the Incident's and its member Cases' deliveries
+		// because an Investigation table could not answer — an Investigation deciding
+		// delivery, which ADR 0016 c1 and ADR 0053 §2 forbid. It is logged, and the card
+		// goes without, as the digest's findingFor does.
 		f, ok, err := r.investigations.LatestIncidentFinding(ctx, s, d.ID)
 		if err != nil {
-			return notifdomain.IncidentFacts{}, err
+			log.From(ctx).WarnContext(ctx, "notification: could not read an Incident's latest Finding; the card goes without it",
+				slog.String("org_id", s.OrgID().String()), slog.String("incident_id", d.ID.String()),
+				slog.String("error", err.Error()))
+			ok = false
 		}
 		if ok {
 			out.Finding = &notifdomain.IncidentFinding{

@@ -752,3 +752,62 @@ func TestAnswerShapingCallsAreFreeOnlyUpToTheCap(t *testing.T) {
 		t.Fatalf("%d refused, class %q; want calls 51-60 refused and the pick kept", refused, got.Classification)
 	}
 }
+
+// TestAnInterruptedRunRecordsWhatItsStepsSpent — review A5: the run's own counters are
+// written only at its end, so the ending its worker never reached sums its Steps.
+func TestAnInterruptedRunRecordsWhatItsStepsSpent(t *testing.T) {
+	r := newRig(t)
+	inv, c := r.setup(t, domain.DefaultBudgets())
+	run := r.request(t, inv, c)
+	ctx := context.Background()
+	if got, err := r.investigations.Start(ctx, r.scope, run.ID, r.clock.Now(), 2); got != domain.StartBegan || err != nil {
+		t.Fatal("could not start", err)
+	}
+	now := r.clock.Now()
+	for _, st := range []domain.Step{
+		domain.NewModelTurnStep(1, domain.Turn{ToolCalls: []domain.ToolCall{call("c1", ToolCaseTimeline, `{}`)},
+			Usage: domain.Usage{InputTokens: 100, OutputTokens: 10}}, 0, now),
+		domain.NewToolStep(2, call("c1", ToolCaseTimeline, `{}`), domain.OutcomeOK, "[]", 0, now),
+		domain.NewModelTurnStep(3, domain.Turn{ToolCalls: []domain.ToolCall{classify("c2", "capacity")},
+			Usage: domain.Usage{InputTokens: 200, OutputTokens: 20}}, 0, now),
+		domain.NewToolStep(4, classify("c2", "capacity"), domain.OutcomeOK, "recorded", 0, now),
+	} {
+		if err := r.investigations.AppendStep(ctx, r.scope, run.ID, st); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, _ := r.run(t, run.ID)
+	if got.Ending.Reason != domain.ReasonInterrupted || got.Spent.Total() != 330 || got.ToolCalls != 1 {
+		t.Fatalf("ended %s with %d tokens and %d Tool calls, want interrupted with 330 and 1",
+			got.Ending.Reason, got.Spent.Total(), got.ToolCalls)
+	}
+}
+
+// TestAnAbandonedRunEndsFailedAndAnEndedOneStands — review A5 / D3: a run whose job gives
+// up is ended `failed/internal` rather than left `queued` (polled forever) or `running`
+// (holding a concurrency slot forever); a run that already ended is not touched.
+func TestAnAbandonedRunEndsFailedAndAnEndedOneStands(t *testing.T) {
+	r := newRig(t)
+	inv, c := r.setup(t, domain.DefaultBudgets())
+	ctx := context.Background()
+	cause := errs.Internal("db_down", errors.New("dial tcp: connection refused"))
+
+	queued := r.request(t, inv, c)
+	if err := r.svc.AbandonInvestigation(ctx, r.scope, queued.ID, cause); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := r.investigations.Get(ctx, r.scope, queued.ID)
+	if got.Status != domain.StatusFailed || got.Ending.Reason != domain.ReasonInternal ||
+		!strings.Contains(got.Ending.Detail, "stopped retrying") || strings.Contains(got.Ending.Detail, "dial tcp") {
+		t.Fatalf("abandoned queued run = %+v", got.Ending)
+	}
+
+	r.dial.script = []modelfake.Step{modelfake.Text("The deploy.", 10, 1)}
+	done, _ := r.run(t, r.request(t, inv, c).ID)
+	if err := r.svc.AbandonInvestigation(ctx, r.scope, done.ID, cause); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := r.investigations.Get(ctx, r.scope, done.ID); again.Status != domain.StatusCompleted || again.Ending != done.Ending {
+		t.Fatalf("a completed run was rewritten: %+v", again.Ending)
+	}
+}

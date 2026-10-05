@@ -19,6 +19,7 @@ package app
 
 import (
 	"context"
+	"log/slog"
 	"slices"
 	"time"
 
@@ -39,6 +40,7 @@ import (
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/jobs"
+	"github.com/thulasiram/oto/internal/platform/log"
 	rulesservice "github.com/thulasiram/oto/internal/rules/service"
 	sourcesdomain "github.com/thulasiram/oto/internal/sources/domain"
 	sourcesservice "github.com/thulasiram/oto/internal/sources/service"
@@ -388,12 +390,45 @@ func (c *Container) runInvestigation(ctx context.Context, job *jobs.Job[jobs.Inv
 	}
 	return jobs.ForTenant(ctx, jobs.KindInvestigationsRun, c.orgs, job.Args.OrgID,
 		func(ctx context.Context, scope db.TenantScope) error {
-			err := c.Investigator.RunInvestigation(ctx, scope, job.Args.InvestigationID)
-			if errs.IsKind(err, errs.KindValidation) {
-				return jobs.Permanent(err)
-			}
-			return err
+			return abandonOnGivingUp(ctx, c.Investigator, scope, job.Args.InvestigationID, job.LastAttempt(),
+				c.Investigator.RunInvestigation(ctx, scope, job.Args.InvestigationID))
 		})
+}
+
+// runAbandoner is the one service method abandonOnGivingUp needs.
+type runAbandoner interface {
+	AbandonInvestigation(ctx context.Context, scope db.TenantScope, id uuid.UUID, cause error) error
+}
+
+// abandonOnGivingUp classifies what RunInvestigation returned and, when this is the job
+// giving up on the run, ends the run on the record first (review A5, D3).
+//
+// ⛔ A JOB THAT GIVES UP MUST NOT LEAVE ITS RUN WAITING. River discards a job on its last
+// attempt or on a permanent error, and the run it was for would otherwise stay `queued` —
+// the UI polling "waiting to start" forever — or `running`, holding one of the org's
+// concurrency slots forever. So on either, the run is ended `failed/internal` with the
+// safe sentence of why, on a context the job's own cancellation cannot reach, and the
+// error is still returned so the dead-letter logs it. A snooze is a wait, never a giving
+// up.
+func abandonOnGivingUp(
+	ctx context.Context, svc runAbandoner, scope db.TenantScope, id uuid.UUID, lastAttempt bool, err error,
+) error {
+	if err == nil || jobs.IsSnooze(err) {
+		return err
+	}
+	if errs.IsKind(err, errs.KindValidation) {
+		err = jobs.Permanent(err)
+	}
+	if lastAttempt || jobs.Classify(err).Terminal() {
+		bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		if aerr := svc.AbandonInvestigation(bg, scope, id, err); aerr != nil {
+			log.From(ctx).ErrorContext(ctx, "investigator: could not end a run its job is giving up on",
+				slog.String("org_id", scope.OrgID().String()), slog.String("investigation_id", id.String()),
+				slog.String("error", aerr.Error()))
+		}
+	}
+	return err
 }
 
 // triggerIncidentInvestigations is `investigations.incident` (ADR 0053 §4, git-bug

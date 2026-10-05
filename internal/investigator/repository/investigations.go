@@ -240,6 +240,37 @@ SELECT coalesce(sum(tokens_in + tokens_out), 0)::bigint
 	return n, nil
 }
 
+// SpentOn sums one run's Steps: the input and output tokens of its model turns, and its
+// Tool calls — every call Step but those to the named answer-shaping Tools and those the
+// step budget refused unrun (the loop writes those as "not run: …"). A run's own
+// tokens_in / tokens_out / tool_calls are written only when it ends, so an ending its
+// worker never reached — `interrupted`, or abandoned by its job — is recorded with this.
+func (r *InvestigationRepository) SpentOn(
+	ctx context.Context, s db.TenantScope, nid uuid.UUID, answerShaping []string,
+) (domain.Usage, int, error) {
+	if err := db.RequireScope(s); err != nil {
+		return domain.Usage{}, 0, err
+	}
+	if answerShaping == nil {
+		answerShaping = []string{}
+	}
+	var (
+		u     domain.Usage
+		calls int
+	)
+	if err := r.db(ctx).QueryRow(ctx, `
+SELECT coalesce(sum(tokens_in) FILTER (WHERE kind = 'model_turn'), 0)::bigint,
+       coalesce(sum(tokens_out) FILTER (WHERE kind = 'model_turn'), 0)::bigint,
+       count(*) FILTER (WHERE kind = 'tool_call' AND NOT (tool_name = ANY($3))
+                          AND NOT (outcome = 'refused' AND result LIKE 'not run:%'))::int
+  FROM investigation_steps
+ WHERE org_id = $1 AND investigation_id = $2`, s.OrgID(), nid, answerShaping).Scan(
+		&u.InputTokens, &u.OutputTokens, &calls); err != nil {
+		return domain.Usage{}, 0, mapInvestigationErr(err, "sum an Investigation's Steps")
+	}
+	return u, calls, nil
+}
+
 // LockSubjectRuns takes the advisory lock for one (Investigator, subject) and reads
 // what the minimum interval decides on: the latest `queued` run, and the latest run
 // that neither waits nor skipped. Inside a transaction only, for Start's reason: two

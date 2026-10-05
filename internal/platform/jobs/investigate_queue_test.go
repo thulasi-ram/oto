@@ -3,6 +3,9 @@ package jobs_test
 import (
 	"testing"
 
+	"github.com/riverqueue/river/rivertype"
+
+	"github.com/thulasiram/oto/internal/platform/config"
 	"github.com/thulasiram/oto/internal/platform/jobs"
 )
 
@@ -84,4 +87,45 @@ func TestAnIncidentTriggerNeverWaitsOnARunOrANotification(t *testing.T) {
 		}
 	}
 	t.Fatalf("%s is not registered", jobs.KindInvestigationsIncident)
+}
+
+// TestAnIncidentTriggerWaitsBehindTheDigestAndFoldsABurst — review B1: the trigger rides
+// `lifecycle` beside `notify.digest`, so it is BACKGROUND (behind the digest tick) and
+// unique by args while one is waiting or running, so a Correlator storm folds into it.
+func TestAnIncidentTriggerWaitsBehindTheDigestAndFoldsABurst(t *testing.T) {
+	t.Parallel()
+
+	o := jobs.InvestigationsIncidentArgs{}.InsertOpts()
+	if o.Priority != jobs.PriorityBackground || o.Priority <= (jobs.NotifyDigestArgs{}).InsertOpts().Priority {
+		t.Fatalf("priority %d, want background, behind notify.digest", o.Priority)
+	}
+	if !o.UniqueOpts.ByArgs {
+		t.Fatal("not unique by args: a burst of membership changes would queue one trigger each")
+	}
+	states := map[rivertype.JobState]bool{}
+	for _, s := range o.UniqueOpts.ByState {
+		states[s] = true
+	}
+	for _, s := range []rivertype.JobState{rivertype.JobStateAvailable, rivertype.JobStatePending,
+		rivertype.JobStateScheduled, rivertype.JobStateRunning} {
+		if !states[s] {
+			t.Fatalf("unique states %v lack %s", o.UniqueOpts.ByState, s)
+		}
+	}
+	if states[rivertype.JobStateCompleted] || states[rivertype.JobStateDiscarded] || states[rivertype.JobStateCancelled] {
+		t.Fatalf("unique states %v would swallow a later change's trigger", o.UniqueOpts.ByState)
+	}
+}
+
+// TestTheInvestigateQueueHasAKnob — review A10: the deployment-wide width defaults to 8
+// and `jobs.queue_investigate` moves it.
+func TestTheInvestigateQueueHasAKnob(t *testing.T) {
+	t.Parallel()
+
+	if got := jobs.FromPlatformConfig(config.JobsConfig{}).Queues[jobs.QueueInvestigate]; got != 8 {
+		t.Fatalf("default investigate width = %d, want 8", got)
+	}
+	if got := jobs.FromPlatformConfig(config.JobsConfig{QueueInvestigate: 5}).Queues[jobs.QueueInvestigate]; got != 5 {
+		t.Fatalf("queue_investigate 5 gave %d", got)
+	}
 }

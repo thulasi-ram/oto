@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -311,6 +312,26 @@ func (m *memInvestigations) AppendStep(_ context.Context, _ db.TenantScope, id u
 	return nil
 }
 
+func (m *memInvestigations) SpentOn(_ context.Context, _ db.TenantScope, id uuid.UUID, answerShaping []string) (domain.Usage, int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var (
+		u     domain.Usage
+		calls int
+	)
+	for _, st := range m.steps[id] {
+		switch {
+		case st.Kind == domain.StepModelTurn:
+			u = u.Add(st.Usage)
+		case slices.Contains(answerShaping, st.Call.Name),
+			st.Outcome == domain.OutcomeRefused && strings.HasPrefix(st.Result, "not run:"):
+		default:
+			calls++
+		}
+	}
+	return u, calls, nil
+}
+
 func (m *memInvestigations) Steps(_ context.Context, _ db.TenantScope, id uuid.UUID) ([]domain.Step, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -360,6 +381,9 @@ type memIncidents struct {
 	mu        sync.Mutex
 	incidents map[uuid.UUID]domain.IncidentSubject
 	holding   map[uuid.UUID]uuid.UUID // case → incident
+	// reads counts InvestigationIncident calls, so a test can say the Incident was never
+	// read.
+	reads int
 }
 
 func newMemIncidents() *memIncidents {
@@ -369,6 +393,7 @@ func newMemIncidents() *memIncidents {
 func (m *memIncidents) InvestigationIncident(_ context.Context, _ db.TenantScope, id uuid.UUID) (domain.IncidentSubject, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.reads++
 	i, ok := m.incidents[id]
 	if !ok {
 		return domain.IncidentSubject{}, errs.NotFound("incident_not_found", "no such incident")

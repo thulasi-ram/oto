@@ -162,14 +162,26 @@ func (s *Service) IncidentChanged(
 		return 0, errs.Validation("investigation_trigger_invalid", "an Incident starts Investigations when it is drawn or its membership changes",
 			errs.Violation{Field: "trigger", Code: "enum", Message: string(trigger)})
 	}
+	// ⭐ THE SUBSCRIBERS FIRST, THE INCIDENT ONLY IF ANYONE IS SUBSCRIBED (review B1). Most
+	// orgs opt no Investigator into Incidents, and a Correlator storm is a trigger per
+	// membership change: each one reads the Investigator list and stops there.
+	investigators, err := s.investigators.List(ctx, scope)
+	if err != nil {
+		return 0, err
+	}
+	subscribed := investigators[:0:0]
+	for _, inv := range investigators {
+		if inv.Enabled && inv.InvestigatesIncidents {
+			subscribed = append(subscribed, inv)
+		}
+	}
+	if len(subscribed) == 0 {
+		return 0, nil
+	}
 	incident, err := s.incidents.InvestigationIncident(ctx, scope, incidentID)
 	if errs.IsKind(err, errs.KindNotFound) {
 		return 0, nil
 	}
-	if err != nil {
-		return 0, err
-	}
-	investigators, err := s.investigators.List(ctx, scope)
 	if err != nil {
 		return 0, err
 	}
@@ -178,10 +190,7 @@ func (s *Service) IncidentChanged(
 		return 0, err
 	}
 	n := 0
-	for _, inv := range investigators {
-		if !inv.Enabled || !inv.InvestigatesIncidents {
-			continue
-		}
+	for _, inv := range subscribed {
 		if _, err := s.request(ctx, scope, incidentRef(incident), inv.ID, by, trigger); err != nil {
 			return n, err
 		}
@@ -406,11 +415,27 @@ func (s *Service) RunInvestigation(ctx context.Context, scope db.TenantScope, id
 	case domain.StatusRunning:
 		// ⛔ A RUN FOUND `running` IS ONE WHOSE WORKER DIED, AND IT IS NOT RE-RUN. Every
 		// turn it took was paid for; running it again pays twice and records a second
-		// transcript over the first. It ends `interrupted`, with the Steps it wrote.
+		// transcript over the first. It ends `interrupted`, with the Steps it wrote —
+		// and with what they spent, summed from them, because the run's own counters
+		// are written only at its end (review A5).
+		spent, calls, err := s.investigations.SpentOn(ctx, scope, inv.ID, answerShapingTools())
+		if err != nil {
+			return err
+		}
 		return s.finish(ctx, scope, inv, outcome{ending: domain.EndedBy(domain.ReasonInterrupted,
-			"the worker running this Investigation stopped before it ended; it is not re-run, because a re-run would pay for every turn again")})
+			"the worker running this Investigation stopped before it ended; it is not re-run, because a re-run would pay for every turn again"),
+			spent: spent, toolCalls: calls})
 	default:
 		return nil // ended: frozen.
+	}
+	if inv.SubjectKind == domain.SubjectDigest && !s.now().Before(inv.DigestWindow.End) {
+		// ⭐ A DIGEST WINDOW'S RUN STILL WAITING WHEN ITS WINDOW CLOSED IS SKIPPED, ON THE
+		// RECORD (owner ruling O4, 2026-10-05). The digest went out at the close with the
+		// built-in body — it never waits for a Finding — so a Finding now would be read by
+		// nothing, and its tokens would be spent for nothing.
+		return s.finish(ctx, scope, inv, outcome{ending: domain.EndedBy(domain.ReasonWindowClosed, fmt.Sprintf(
+			"the digest window closed at %s while this run was still waiting to start; the digest went out without it",
+			inv.DigestWindow.End.UTC().Format(time.RFC3339)))})
 	}
 
 	investigator, err := s.investigators.Get(ctx, scope, inv.InvestigatorID)
@@ -544,6 +569,44 @@ func (s *Service) RunInvestigation(ctx context.Context, scope db.TenantScope, id
 	inv.StartedAt = startedAt
 	out.remedyWindow = controls.RemedyWindow()
 	return s.finish(ctx, scope, inv, out)
+}
+
+// answerShapingTools are the Tools the loop answers itself, which are Steps but not Tool
+// calls against the step budget (loop.go).
+func answerShapingTools() []string {
+	return []string{domain.ClassifyTool, ToolSuggestCountCondition, ToolSuggestMembership, ToolProposeRemedy}
+}
+
+// AbandonInvestigation ends a run that its job is giving up on — the last attempt failed,
+// or the failure is one no retry can fix — `failed` with reason `internal`, the safe
+// sentence of why, and what its Steps spent (review A5, D3). Without it a run whose job
+// was discarded stays `queued` (and the UI waits on it forever) or `running` (and holds
+// one of the org's concurrency slots forever). A run that has already ended is left as
+// it is: its record stands.
+func (s *Service) AbandonInvestigation(ctx context.Context, scope db.TenantScope, id uuid.UUID, cause error) error {
+	if err := db.RequireScope(scope); err != nil {
+		return err
+	}
+	inv, err := s.investigations.Get(ctx, scope, id)
+	if errs.IsKind(err, errs.KindNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if inv.Status.Terminal() {
+		return nil
+	}
+	spent, calls, err := s.investigations.SpentOn(ctx, scope, id, answerShapingTools())
+	if err != nil {
+		return err
+	}
+	err = s.investigations.Finish(ctx, scope, id, domain.EndedBy(domain.ReasonInternal,
+		"oto stopped retrying this Investigation's job: "+safeMessage(cause)), spent, calls, "", "", s.now())
+	if errs.IsKind(err, errs.KindConflict) {
+		return nil // it ended meanwhile; that record stands.
+	}
+	return err
 }
 
 // readSubject reads what one run is about and renders the message that tells the

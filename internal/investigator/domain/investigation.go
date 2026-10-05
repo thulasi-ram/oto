@@ -128,6 +128,12 @@ const (
 	// for, or when it would have begun (ADR 0053 §6: "recorded as skipped with reason
 	// budget, not queued. Resets at UTC midnight"). git-bug bf172fe.
 	ReasonBudget Reason = "budget"
+	// ReasonWindowClosed: a digest window's run was still `queued` when its window
+	// closed — behind the org's concurrency or the Investigator's interval — so the
+	// digest it was for has already gone out with the built-in body, and a Finding now
+	// would be read by nothing. It ends without calling a model (owner ruling O4,
+	// 2026-10-05): recorded, never silent, and never spent for nothing.
+	ReasonWindowClosed Reason = "window_closed"
 )
 
 func (r Reason) status() Status {
@@ -136,7 +142,7 @@ func (r Reason) status() Status {
 		return StatusExhausted
 	case ReasonUsageMissing, ReasonModelError, ReasonModelChanged, ReasonSubjectGone, ReasonInterrupted, ReasonInternal:
 		return StatusFailed
-	case ReasonDisabled, ReasonBudget:
+	case ReasonDisabled, ReasonBudget, ReasonWindowClosed:
 		return StatusSkipped
 	default:
 		return ""

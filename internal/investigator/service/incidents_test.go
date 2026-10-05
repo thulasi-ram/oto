@@ -353,3 +353,19 @@ func (r *rig) requestIncident(t *testing.T, inv domain.Investigator, i domain.In
 	}
 	return run
 }
+
+// TestATriggerWithNoSubscriberNeverReadsTheIncident — review B1: a Correlator storm is a
+// trigger per membership change, and an org that opted no Investigator into Incidents
+// pays for one list of Investigators each, never a read of the Incident.
+func TestATriggerWithNoSubscriberNeverReadsTheIncident(t *testing.T) {
+	r := newRig(t)
+	r.incidentInvestigator(t, "cases-only", true, false)
+	r.incidentInvestigator(t, "switched-off", false, true)
+	i := r.drawIncident()
+	if n := r.changed(t, i, domain.TriggerMembership); n != 0 {
+		t.Fatalf("%d runs with no subscriber", n)
+	}
+	if r.incidents.reads != 0 {
+		t.Fatalf("the Incident was read %d time(s) for nobody", r.incidents.reads)
+	}
+}
