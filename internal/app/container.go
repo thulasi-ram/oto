@@ -603,6 +603,7 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		AlertBatch:       alertRepo,
 		OccBatch:         caseRepo,
 		OccSources:       caseRepo,
+		CaseCover:        caseRepo,
 		CasePolicies:     casePolicyRepo,
 		CasePolicyConfig: casePolicyConfigRepo,
 		SnoozeHistory:    snoozeRepo,
@@ -1136,6 +1137,10 @@ func (c *Container) buildRouters(
 			// not be read back from anywhere but `psql`. It is the SAME
 			// `ingestion/service.Service` the webhook handler writes through.
 			Feeds: ingestFeeds{svc: c.Ingestion.Service},
+			// The open Cases on each source's cluster and how many the reaper is
+			// holding because of it (ADR 0056 §1) — the per-source form of the
+			// `held` count the sweep only ever logged.
+			Cases: sourceCases{svc: c.Alerts},
 			// Configuration-time SSRF feedback. The DIALER is the control; this is
 			// so an operator who pastes a metadata-service URL sees a 422 naming the
 			// field rather than a probe that mysteriously returns someone else's data.

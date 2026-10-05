@@ -74,6 +74,18 @@ type CaseSourceResolver interface {
 	SourceIDs(ctx context.Context, s db.TenantScope, caseIDs []uuid.UUID) (map[uuid.UUID]uuid.UUID, error)
 }
 
+// CaseCoverReader is the READ half of ADR 0056 §1, "staleness is shown": what a
+// Case's cluster says about who can still speak for it, and how many open Cases
+// sit on a source's cluster. Satisfied by the same concrete case repository.
+//
+// ⛔ IT IS NEVER A VERDICT. The reaper decides from its own scans and its own
+// in-transaction re-read; these feed screens that say why a Case can or cannot
+// expire, and a wrong answer here can mislead a reader but can end nothing.
+type CaseCoverReader interface {
+	CoverFor(ctx context.Context, s db.TenantScope, caseIDs []uuid.UUID) (map[uuid.UUID]domain.CaseCover, error)
+	OpenCasesBySource(ctx context.Context, s db.TenantScope, sourceIDs []uuid.UUID) (map[uuid.UUID]domain.SourceCases, error)
+}
+
 // ⛔ THERE IS NO `EventCounter` PORT ANY MORE. It counted lifecycle transitions per
 // Alert inside `flap_window` for the `flap.score` job, and the job is retired: the
 // case retention window W (migration 00057) damps a flap at case formation, so a

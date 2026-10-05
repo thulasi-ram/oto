@@ -569,6 +569,36 @@ export const RuleSnapshotDTOSchema = v.looseObject({
   "captured_at": TimestampSchema,
 });
 
+export const CaseSourceDTOSchema = v.looseObject({
+  "id": UuidSchema,
+  "name": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(120),
+  ),
+  "healthy": v.boolean(),
+  "max_silence_seconds": v.nullable(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(3600),
+    v.maxValue(2592000),
+  )),
+});
+
+export const CaseSourcesDTOSchema = v.looseObject({
+  "live": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+  ),
+  "removed": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+  ),
+  "source": v.nullable(CaseSourceDTOSchema),
+});
+
 export const CaseDetailDTOSchema = v.intersect([
   CaseDTOSchema,
   v.looseObject({
@@ -580,6 +610,7 @@ export const CaseDetailDTOSchema = v.intersect([
       v.maxLength(32),
     ),
     "delivery_summary": DeliverySummaryDTOSchema,
+    "sources": v.nullable(CaseSourcesDTOSchema),
   }),
 ]);
 
@@ -587,6 +618,7 @@ export const CaseListItemDTOSchema = v.intersect([
   CaseDTOSchema,
   v.looseObject({
     "alert": AlertRefDTOSchema,
+    "sources": v.nullable(CaseSourcesDTOSchema),
   }),
 ]);
 
@@ -1365,6 +1397,16 @@ export const SourceDTOSchema = v.looseObject({
   )),
   "ingest_path": v.string(),
   "health": v.exactOptional(v.nullable(SourceHealthDTOSchema)),
+  "open_case_count": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+  )),
+  "held_case_count": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+  )),
   "created_at": TimestampSchema,
   "updated_at": TimestampSchema,
 });

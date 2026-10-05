@@ -69,6 +69,13 @@ type SourceDTO struct {
 
 	Health *SourceHealthDTO `json:"health"`
 
+	// OpenCaseCount and HeldCaseCount are the open Cases on this source's cluster
+	// and how many of them the reaper is holding because of this source — all of
+	// them while it is not healthy, or while its cluster has another live source
+	// (ADR 0056 §1). Served on the list only; absent means not counted, never 0.
+	OpenCaseCount *int32 `json:"open_case_count,omitempty"`
+	HeldCaseCount *int32 `json:"held_case_count,omitempty"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }

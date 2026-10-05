@@ -3534,6 +3534,54 @@ export interface components {
             rule?: components["schemas"]["RuleSnapshotDTO"] | null;
             enrichments: components["schemas"]["EnrichmentDTO"][];
             delivery_summary: components["schemas"]["DeliverySummaryDTO"];
+            /**
+             * @description Who can still speak for this episode, so a screen can say whether it can expire and,
+             *     when it cannot, why (ADR 0056 §1). `null` means oto could not read it, which is **not**
+             *     the same as "no source".
+             */
+            sources: components["schemas"]["CaseSourcesDTO"] | null;
+        };
+        /**
+         * @description What an episode's cluster says about who can still speak for it (ADR 0056 §1). It is the
+         *     reaper's own reading, shown — the same counts its `source_removed` and `silent` passes rest
+         *     on, and the same §B.4 health verdict. It is read for display and decides nothing.
+         */
+        CaseSourcesDTO: {
+            /**
+             * Format: int32
+             * @description How many live sources feed the episode's cluster. The reaper expires a case as `timeout`
+             *     or `silent` only under **exactly one** live source: under two or more (an HA pair) it
+             *     cannot tell which one carried the alert, so it holds the case.
+             * @example 1
+             */
+            live: number;
+            /**
+             * Format: int32
+             * @description How many sources were removed from the cluster. With `live == 0` and `removed > 0` the
+             *     episode expires as `source_removed` on the reaper's next pass.
+             * @example 0
+             */
+            removed: number;
+            /** @description The one live source when `live == 1`, and `null` otherwise. */
+            source: components["schemas"]["CaseSourceDTO"] | null;
+        };
+        /** @description The one live source an episode's expiry waits on. */
+        CaseSourceDTO: {
+            id: components["schemas"]["Uuid"];
+            /** @example alertmanager-prod-eu */
+            name: string;
+            /**
+             * @description The §B.4 guard's verdict on this source. `false` — any status but `healthy`, or one oto
+             *     could not read — holds every open case under it: it can expire only once the source
+             *     recovers.
+             */
+            healthy: boolean;
+            /**
+             * Format: int32
+             * @description The source's max silence (ADR 0056 §3): an open case it has said nothing about for this
+             *     long expires as `silent`, while the source is healthy. `null` turns that expiry off.
+             */
+            max_silence_seconds: number | null;
         };
         /**
          * @description One row of `GET /api/v1/cases`: a firing episode, plus the identity it belongs to.
@@ -3547,6 +3595,11 @@ export interface components {
          */
         CaseListItemDTO: components["schemas"]["CaseDTO"] & {
             alert: components["schemas"]["AlertRefDTO"];
+            /**
+             * @description Who can still speak for this episode (ADR 0056 §1), read for the whole page in one
+             *     query. `null` means it was not read, never "no source".
+             */
+            sources: components["schemas"]["CaseSourcesDTO"] | null;
         };
         /**
          * @description What an Incident's member Cases say about it, and nothing else (ADR 0052 §3). **Derived on every
@@ -4649,6 +4702,23 @@ export interface components {
              */
             ingest_path: string;
             health?: components["schemas"]["SourceHealthDTO"] | null;
+            /**
+             * Format: int32
+             * @description How many cases are open on this source's cluster (ADR 0056 §1). Served on the list;
+             *     absent means not counted, never zero.
+             * @example 12
+             */
+            open_case_count?: number;
+            /**
+             * Format: int32
+             * @description How many of those open cases the reaper is **holding** because of this source (§B.4):
+             *     all of them while it is not `healthy`, or while its cluster has another live source —
+             *     the reaper expires a case only under its cluster's one live source. A held case ends
+             *     only when upstream resolves it or the hold lifts. Absent exactly when
+             *     `open_case_count` is.
+             * @example 12
+             */
+            held_case_count?: number;
             created_at: components["schemas"]["Timestamp"];
             updated_at: components["schemas"]["Timestamp"];
         };

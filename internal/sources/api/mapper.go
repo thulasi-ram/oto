@@ -523,3 +523,9 @@ func nonNilMap(in map[string]string) map[string]string {
 	}
 	return in
 }
+
+// countPtr renders a count of rows in one org as the contract's int32.
+func countPtr(n int) *int32 {
+	v := int32(n) //nolint:gosec // a count of rows in one org
+	return &v
+}

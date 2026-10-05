@@ -99,6 +99,10 @@ var bindings = []binding{
 	{"alerts", "CaseDTO", alertsapi.CaseDTO{}},
 	{"alerts", "CaseDetailDTO", alertsapi.CaseDetailDTO{}},
 	{"alerts", "CaseListItemDTO", alertsapi.CaseListItemDTO{}},
+	// ADR 0056 §1: who can still speak for a Case, so its screen can say whether
+	// it can expire and why not. Carried by both case shapes above.
+	{"alerts", "CaseSourcesDTO", alertsapi.CaseSourcesDTO{}},
+	{"alerts", "CaseSourceDTO", alertsapi.CaseSourceDTO{}},
 	// The CASE RETENTION WINDOW W (migration 00057). It is bound in the alerts tag
 	// rather than a settings one because the module that owns the Case owns the rule
 	// that shapes it.

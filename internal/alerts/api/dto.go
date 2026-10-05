@@ -179,6 +179,35 @@ type CaseDetailDTO struct {
 	// DeliverySummary is a value type for the same reason as on AlertDetailDTO:
 	// an optional field that nothing emitted is a contract that lies quietly.
 	DeliverySummary DeliverySummaryDTO `json:"delivery_summary"`
+	// Sources says who can still speak for this Case, so the screen can say
+	// whether it can expire and why not (ADR 0056 §1). null means oto could not
+	// read it, which is not the same as "no source".
+	Sources *CaseSourcesDTO `json:"sources"`
+}
+
+// CaseSourcesDTO renders `CaseSourcesDTO`: what a Case's cluster says about who
+// can still speak for it (ADR 0056 §1). It is the reaper's own reading, shown —
+// the same counts its `source_removed` and `silent` passes rest on, and the same
+// §B.4 health verdict — and it decides nothing.
+type CaseSourcesDTO struct {
+	// Live is how many live sources feed the Case's cluster. The reaper acts
+	// only under exactly one.
+	Live int32 `json:"live"`
+	// Removed is how many sources were removed from the cluster.
+	Removed int32 `json:"removed"`
+	// Source is the one live source when Live == 1, and null otherwise.
+	Source *CaseSourceDTO `json:"source"`
+}
+
+// CaseSourceDTO renders `CaseSourceDTO`: the one live source a Case's expiry
+// waits on.
+type CaseSourceDTO struct {
+	ID   uuid.UUID `json:"id"`
+	Name string    `json:"name"`
+	// Healthy is the §B.4 guard's verdict: false holds every Case under it.
+	Healthy bool `json:"healthy"`
+	// MaxSilenceSeconds is the source's `max_silence_s`; null turns `silent` off.
+	MaxSilenceSeconds *int32 `json:"max_silence_seconds"`
 }
 
 // CaseListItemDTO renders `CaseListItemDTO`: one row of `GET /api/v1/cases`.
@@ -197,6 +226,8 @@ type CaseDetailDTO struct {
 type CaseListItemDTO struct {
 	CaseDTO
 	Alert AlertRefDTO `json:"alert"`
+	// Sources is CaseDetailDTO's, batch-read for the whole page in one query.
+	Sources *CaseSourcesDTO `json:"sources"`
 }
 
 // AlertRefDTO renders `AlertRefDTO`: a compact Alert reference.

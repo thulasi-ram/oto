@@ -7465,7 +7465,7 @@ components:
       allOf:
         - $ref: '#/components/schemas/CaseDTO'
         - type: object
-          required: [delivery_summary, enrichments]
+          required: [delivery_summary, enrichments, sources]
           properties:
             alert:
               $ref: '#/components/schemas/AlertRefDTO'
@@ -7484,16 +7484,89 @@ components:
                 $ref: '#/components/schemas/EnrichmentDTO'
             delivery_summary:
               $ref: '#/components/schemas/DeliverySummaryDTO'
+            sources:
+              oneOf:
+                - $ref: '#/components/schemas/CaseSourcesDTO'
+                - type: 'null'
+              description: |
+                Who can still speak for this episode, so a screen can say whether it can expire and,
+                when it cannot, why (ADR 0056 §1). `null` means oto could not read it, which is **not**
+                the same as "no source".
       description: One episode expanded with its alert, group, rule snapshot and enrichment results.
+
+    CaseSourcesDTO:
+      type: object
+      required: [live, removed, source]
+      properties:
+        live:
+          type: integer
+          format: int32
+          minimum: 0
+          description: |
+            How many live sources feed the episode's cluster. The reaper expires a case as `timeout`
+            or `silent` only under **exactly one** live source: under two or more (an HA pair) it
+            cannot tell which one carried the alert, so it holds the case.
+          examples: [1]
+        removed:
+          type: integer
+          format: int32
+          minimum: 0
+          description: |
+            How many sources were removed from the cluster. With `live == 0` and `removed > 0` the
+            episode expires as `source_removed` on the reaper's next pass.
+          examples: [0]
+        source:
+          oneOf:
+            - $ref: '#/components/schemas/CaseSourceDTO'
+            - type: 'null'
+          description: The one live source when `live == 1`, and `null` otherwise.
+      description: |
+        What an episode's cluster says about who can still speak for it (ADR 0056 §1). It is the
+        reaper's own reading, shown — the same counts its `source_removed` and `silent` passes rest
+        on, and the same §B.4 health verdict. It is read for display and decides nothing.
+
+    CaseSourceDTO:
+      type: object
+      required: [id, name, healthy, max_silence_seconds]
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+          examples: ['alertmanager-prod-eu']
+        healthy:
+          type: boolean
+          description: |
+            The §B.4 guard's verdict on this source. `false` — any status but `healthy`, or one oto
+            could not read — holds every open case under it: it can expire only once the source
+            recovers.
+        max_silence_seconds:
+          type: ['integer', 'null']
+          format: int32
+          minimum: 3600
+          maximum: 2592000
+          description: |
+            The source's max silence (ADR 0056 §3): an open case it has said nothing about for this
+            long expires as `silent`, while the source is healthy. `null` turns that expiry off.
+      description: The one live source an episode's expiry waits on.
 
     CaseListItemDTO:
       allOf:
         - $ref: '#/components/schemas/CaseDTO'
         - type: object
-          required: [alert]
+          required: [alert, sources]
           properties:
             alert:
               $ref: '#/components/schemas/AlertRefDTO'
+            sources:
+              oneOf:
+                - $ref: '#/components/schemas/CaseSourcesDTO'
+                - type: 'null'
+              description: |
+                Who can still speak for this episode (ADR 0056 §1), read for the whole page in one
+                query. `null` means it was not read, never "no source".
       description: |
         One row of `GET /api/v1/cases`: a firing episode, plus the identity it belongs to.
 
@@ -9076,6 +9149,25 @@ components:
           oneOf:
             - $ref: '#/components/schemas/SourceHealthDTO'
             - type: 'null'
+        open_case_count:
+          type: integer
+          format: int32
+          minimum: 0
+          description: |
+            How many cases are open on this source's cluster (ADR 0056 §1). Served on the list;
+            absent means not counted, never zero.
+          examples: [12]
+        held_case_count:
+          type: integer
+          format: int32
+          minimum: 0
+          description: |
+            How many of those open cases the reaper is **holding** because of this source (§B.4):
+            all of them while it is not `healthy`, or while its cluster has another live source —
+            the reaper expires a case only under its cluster's one live source. A held case ends
+            only when upstream resolves it or the hold lifts. Absent exactly when
+            `open_case_count` is.
+          examples: [12]
         created_at:
           $ref: '#/components/schemas/Timestamp'
         updated_at:
