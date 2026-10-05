@@ -361,3 +361,26 @@ func TestAStaleCountSuggestionIsRefusedAndWritesNothing(t *testing.T) {
 		t.Fatalf("the stale Suggestion was marked applied: %+v", list)
 	}
 }
+
+// TestACountSuggestionComparesThePolicyUnderItsLock — judgment 2, E6: the stale check reads the
+// policy through its row lock, so a hand edit that committed just before the lock was taken is
+// SEEN, and the apply is refused stale instead of overwriting it.
+func TestACountSuggestionComparesThePolicyUnderItsLock(t *testing.T) {
+	r := newRig(t)
+	s := r.proposeCount(t)
+	by := r.applier(t)
+	r.policies.beforeLock = func() {
+		if err := r.policies.ApplyCountCondition(context.Background(), r.scope, crashPolicy.ID, 5, 30*time.Minute); err != nil {
+			t.Error(err)
+		}
+	}
+	edits := len(r.policies.edits) + 1 // the hand edit's
+
+	_, err := r.svc.ApplySuggestion(context.Background(), r.scope, s.ID, by, 0)
+	if errs.CodeOf(err) != "suggestion_stale" {
+		t.Fatalf("apply = %v, want suggestion_stale", err)
+	}
+	if r.policies.locks != 1 || len(r.policies.edits) != edits {
+		t.Fatalf("%d locked reads, %d edits (want 1 and %d)", r.policies.locks, len(r.policies.edits), edits)
+	}
+}

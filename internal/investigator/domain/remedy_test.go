@@ -55,6 +55,14 @@ func TestADraftThatCouldNotBeExecutedAsWrittenIsRefused(t *testing.T) {
 		"a target past 500":         {writeTool, `{}`, strings.Repeat("t", domain.MaxRemedyTarget+1)},
 		"no Tool and no target":     {domain.RemedyTool{}, ``, ""},
 		"a Tool with no arguments ": {writeTool, ``, "x"},
+		// ⛔ judgment 2, C7: what jsonb or a TEXT column refuses would roll back the whole Finding.
+		"a NUL in the target":            {writeTool, `{}`, "x\x00"},
+		"a target that is not UTF-8":     {writeTool, `{}`, "x\xff"},
+		"a NUL escape":                   {writeTool, `{"a":"\u0000"}`, "x"},
+		"an upper-case surrogate escape": {writeTool, `{"a":"\uD800"}`, "x"},
+		"a lone surrogate":               {writeTool, `{"a":"\ud800"}`, "x"},
+		"an escaped surrogate pair":      {writeTool, `{"a":"\ud83d\ude00"}`, "x"},
+		"a surrogate escape in a key":    {writeTool, `{"\uDC00":"x"}`, "x"},
 	} {
 		_, err := domain.NewRemedyDraft(c.tool, json.RawMessage(c.args), c.tgt, "why")
 		if !errs.IsKind(err, errs.KindValidation) {
@@ -63,6 +71,13 @@ func TestADraftThatCouldNotBeExecutedAsWrittenIsRefused(t *testing.T) {
 	}
 	if _, err := domain.NewRemedyDraft(writeTool, json.RawMessage(`{}`), "x", " "); !errs.IsKind(err, errs.KindValidation) {
 		t.Errorf("a draft with no description was accepted: %v", err)
+	}
+	// The rune itself, as UTF-8, and an escaped backslash before a `u`, are ordinary arguments.
+	for _, args := range []string{`{"a":"😀"}`, `{"a":"\\u0000"}`, `{"a":"\u00e9"}`} {
+		d, err := domain.NewRemedyDraft(writeTool, json.RawMessage(args), "x", "why")
+		if err != nil || d.Arguments != args {
+			t.Errorf("%s: %+v, %v", args, d, err)
+		}
 	}
 	none, err := domain.NewRemedyDraft(domain.RemedyTool{}, nil, "node pool eu-1", "add a node")
 	if err != nil || none.Arguments != "" || none.ArgumentsSHA256() != "" || none.Tool.Named() {

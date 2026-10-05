@@ -395,9 +395,14 @@ func (s *Service) ApplySuggestion(
 
 // applyCount makes the ordinary policy edit. A policy deleted since the proposal is
 // `suggestion_target_gone`, read before the edit and again from it.
+//
+// ⭐ THE POLICY IS LOCKED BEFORE IT IS COMPARED (judgment 2, E6). The stale check is a read and
+// the edit a write; without the row lock a hand edit committing between them was overwritten
+// by a change nobody proposed against it. Under it, that edit waits for this one, or this one
+// waits for it and then reads what it wrote — and refuses `suggestion_stale`.
 func (s *Service) applyCount(ctx context.Context, scope db.TenantScope, c domain.CountChange) error {
 	gone := func() error { return domain.SuggestionTargetGone("the notification policy " + c.PolicyName) }
-	target, err := s.policies.SuggestionPolicy(ctx, scope, c.PolicyID)
+	target, err := s.policies.LockSuggestionPolicy(ctx, scope, c.PolicyID)
 	if err != nil {
 		if errs.IsKind(err, errs.KindNotFound) {
 			return gone()

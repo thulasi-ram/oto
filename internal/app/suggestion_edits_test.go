@@ -39,6 +39,10 @@ func (p *policyRows) GetPolicy(_ context.Context, _ db.TenantScope, id uuid.UUID
 	return pol, nil
 }
 
+func (p *policyRows) LockPolicy(ctx context.Context, s db.TenantScope, id uuid.UUID) (notifdomain.Policy, error) {
+	return p.GetPolicy(ctx, s, id)
+}
+
 func (p *policyRows) ListPolicies(context.Context, db.TenantScope, db.Keyset) ([]notifdomain.Policy, db.Cursor, error) {
 	out := make([]notifdomain.Policy, 0, len(p.rows))
 	for _, pol := range p.rows {

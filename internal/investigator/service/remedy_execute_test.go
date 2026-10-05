@@ -318,6 +318,47 @@ func TestARemedyWhoseApproversLostTheGrantIsNotExecuted(t *testing.T) {
 	}
 }
 
+// TestAnApproverWhoLostTheGrantIsNotCountedAtApproval — judgment 2, C8: approval counts as the
+// executor does. A approves, A's grant is revoked, B approves: one standing approver is not two,
+// so it stays `proposed` and no execution is enqueued. C approves: two standing, `approved`.
+func TestAnApproverWhoLostTheGrantIsNotCountedAtApproval(t *testing.T) {
+	r := newRig(t)
+	rc := &recorder{}
+	_, cfg := r.withWriteServer(t, rc.tool("restarted", false))
+	inv, c := r.remedyInvestigator(t)
+	_, list := r.propose(t, inv, c, restartProposal(proposedArgs))
+	rem := list[0]
+	ctx := context.Background()
+	a, b := r.grant(cfg.ID, "Ada Lovelace"), r.grant(cfg.ID, "Grace Hopper")
+	if _, err := r.svc.ApproveRemedy(ctx, r.scope, rem.ID, a, rem.ArgumentsSHA256); err != nil {
+		t.Fatal(err)
+	}
+	r.approvers.mu.Lock()
+	kept := r.approvers.rows[cfg.ID][:0]
+	for _, x := range r.approvers.rows[cfg.ID] {
+		if x.UserID != a.UserID {
+			kept = append(kept, x)
+		}
+	}
+	r.approvers.rows[cfg.ID] = kept
+	r.approvers.mu.Unlock()
+
+	got, err := r.svc.ApproveRemedy(ctx, r.scope, rem.ID, b, rem.ArgumentsSHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != domain.RemedyProposed || executeJobs(r, rem.ID) != 0 {
+		t.Fatalf("a revoked approver counted: %s with %d execution jobs", got.State, executeJobs(r, rem.ID))
+	}
+	got, err = r.svc.ApproveRemedy(ctx, r.scope, rem.ID, r.grant(cfg.ID, "Katherine Johnson"), rem.ArgumentsSHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != domain.RemedyApproved || executeJobs(r, rem.ID) != 1 {
+		t.Fatalf("two standing approvers: %s with %d execution jobs", got.State, executeJobs(r, rem.ID))
+	}
+}
+
 // TestAnApprovedRemedyPastItsWindowExpiresInsteadOfRunning — an approval is good for the
 // window and no longer: a job that runs after it records `expired` and sends nothing.
 func TestAnApprovedRemedyPastItsWindowExpiresInsteadOfRunning(t *testing.T) {

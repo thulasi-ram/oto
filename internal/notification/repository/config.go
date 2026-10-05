@@ -171,6 +171,23 @@ func (r *ConfigRepository) GetPolicy(
 	return p, nil
 }
 
+const lockPolicySQL = getPolicyLiveSQL + `
+   FOR UPDATE`
+
+// LockPolicy is GetPolicy holding the policy's row lock for the caller's transaction: a
+// read-then-write that must not overwrite an edit committed between the two (an applied
+// count Suggestion's stale check, judgment 2 E6) reads through this, so a concurrent edit
+// waits for it, or it waits for the edit and compares what that edit wrote.
+func (r *ConfigRepository) LockPolicy(
+	ctx context.Context, s db.TenantScope, policyID uuid.UUID,
+) (domain.Policy, error) {
+	p, err := scanPolicy(r.db(ctx).QueryRow(ctx, lockPolicySQL, s.OrgID(), policyID).Scan)
+	if err != nil {
+		return domain.Policy{}, mapErr(err, "policy_not_found", "notification policy")
+	}
+	return p, nil
+}
+
 const insertPolicySQL = `
 INSERT INTO notification_policies (
   id, org_id, name, priority, enabled, matchers, reasons, channel_ids,

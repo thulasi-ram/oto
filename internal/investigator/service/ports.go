@@ -179,6 +179,10 @@ type PolicyEditor interface {
 	// SuggestionPolicy reads one live policy; a deleted one, or one this org does not have,
 	// is KindNotFound.
 	SuggestionPolicy(ctx context.Context, s db.TenantScope, policyID uuid.UUID) (domain.PolicyTarget, error)
+	// LockSuggestionPolicy is SuggestionPolicy holding the policy's row lock for the caller's
+	// transaction (judgment 2, E6): an applied count Suggestion compares and writes under it,
+	// so a hand edit cannot commit between the stale check and the edit.
+	LockSuggestionPolicy(ctx context.Context, s db.TenantScope, policyID uuid.UUID) (domain.PolicyTarget, error)
 	// SuggestionPolicies reads the org's live policies, in evaluation order.
 	SuggestionPolicies(ctx context.Context, s db.TenantScope) ([]domain.PolicyTarget, error)
 	// ApplyCountCondition sets the policy's count_min and count_window_seconds through the

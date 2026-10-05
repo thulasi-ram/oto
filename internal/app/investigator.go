@@ -543,6 +543,8 @@ func (c *Container) triggerIncidentInvestigations(ctx context.Context, job *jobs
 type policyReads interface {
 	ListPolicies(ctx context.Context, s db.TenantScope, p db.Keyset) ([]notifdomain.Policy, db.Cursor, error)
 	GetPolicy(ctx context.Context, s db.TenantScope, id uuid.UUID) (notifdomain.Policy, error)
+	// LockPolicy is GetPolicy holding the row lock for the caller's transaction (judgment 2, E6).
+	LockPolicy(ctx context.Context, s db.TenantScope, id uuid.UUID) (notifdomain.Policy, error)
 }
 
 // policyEdits is the policy edit a human's `PATCH /notification-policies/{id}` goes
@@ -565,7 +567,17 @@ type suggestionPolicies struct {
 }
 
 func (a suggestionPolicies) SuggestionPolicy(ctx context.Context, s db.TenantScope, policyID uuid.UUID) (investigatordomain.PolicyTarget, error) {
-	p, err := a.reads.GetPolicy(ctx, s, policyID)
+	return livePolicyTarget(a.reads.GetPolicy(ctx, s, policyID))
+}
+
+// LockSuggestionPolicy reads the policy under its row lock, in the caller's transaction: the
+// applied Suggestion's stale check and its edit see no hand edit commit between them.
+func (a suggestionPolicies) LockSuggestionPolicy(ctx context.Context, s db.TenantScope, policyID uuid.UUID) (investigatordomain.PolicyTarget, error) {
+	return livePolicyTarget(a.reads.LockPolicy(ctx, s, policyID))
+}
+
+// livePolicyTarget is a policy read as a Suggestion names it; a deleted one is KindNotFound.
+func livePolicyTarget(p notifdomain.Policy, err error) (investigatordomain.PolicyTarget, error) {
 	if err != nil {
 		return investigatordomain.PolicyTarget{}, err
 	}

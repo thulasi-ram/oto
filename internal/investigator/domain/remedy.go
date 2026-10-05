@@ -44,6 +44,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -323,6 +324,9 @@ func NewRemedyDraft(tool RemedyTool, args json.RawMessage, target, description s
 			return RemedyDraft{}, invalidRemedy("arguments",
 				fmt.Sprintf("arguments are at most %d bytes of UTF-8 JSON", MaxRemedyArgumentsBytes))
 		}
+		if why := unstorableEscape(compact.Bytes()); why != "" {
+			return RemedyDraft{}, invalidRemedy("arguments", why)
+		}
 		d.Arguments = compact.String()
 	} else if len(raw) > 0 && string(raw) != "null" {
 		return RemedyDraft{}, invalidRemedy("arguments",
@@ -330,6 +334,10 @@ func NewRemedyDraft(tool RemedyTool, args json.RawMessage, target, description s
 	}
 	t := strings.TrimSpace(target)
 	switch {
+	case strings.ContainsRune(t, 0) || !utf8.ValidString(t):
+		// ⛔ Refused, never cleaned (judgment 2, C7): a changed target names a different thing,
+		// and one the database cannot store would roll back the whole Finding.
+		return RemedyDraft{}, invalidRemedy("target", "the target holds a NUL or bytes that are not UTF-8; say it in plain text")
 	case t == "":
 		return RemedyDraft{}, invalidRemedy("target", "say what the change is made to: the target, e.g. a Deployment and its namespace")
 	case utf8.RuneCountInString(t) > MaxRemedyTarget:
@@ -342,6 +350,33 @@ func NewRemedyDraft(tool RemedyTool, args json.RawMessage, target, description s
 	}
 	d.Target, d.Description = t, clip(desc, MaxRemedyDescription)
 	return d, nil
+}
+
+// unstorableEscape is why compact JSON holds an escape Postgres's jsonb refuses — "" when it
+// holds none (judgment 2, C7). `\u0000` and a lone surrogate (`\ud800`) are valid JSON and
+// valid UTF-8 bytes, but `remedies_arguments_ck` casts the arguments to jsonb, which refuses
+// both — and the insert runs in the Finding's transaction, so one such escape would make the
+// model's whole Finding unrecordable. ⛔ FAIL CLOSED: every `\uD800`–`\uDFFF` escape is
+// refused, a correct surrogate PAIR too; a model can write that rune as raw UTF-8.
+func unstorableEscape(compact []byte) string {
+	for i := 0; i < len(compact); i++ {
+		if compact[i] != '\\' {
+			continue
+		}
+		if i+1 < len(compact) && compact[i+1] == 'u' && i+5 < len(compact) {
+			if code, err := strconv.ParseUint(string(compact[i+2:i+6]), 16, 32); err == nil {
+				switch {
+				case code == 0:
+					return "arguments hold a \\u0000 escape, which oto cannot store; drop the NUL"
+				case code >= 0xd800 && code <= 0xdfff:
+					return "arguments hold a \\u" + strings.ToLower(string(compact[i+2:i+6])) +
+						" surrogate escape, which oto cannot store; write the character itself, as UTF-8"
+				}
+			}
+		}
+		i++ // the escaped character: `\\` must not start another escape
+	}
+	return ""
 }
 
 // RemedyApproval is one human's approval: who, when, and the hash of the arguments they

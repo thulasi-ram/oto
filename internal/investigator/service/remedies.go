@@ -501,8 +501,9 @@ func (s *Service) remedyBinding(ctx context.Context, scope db.TenantScope, t dom
 // they send. The checks, in order, each a typed refusal and none of them a write: the Remedy
 // names a Tool and is waiting for approval; its Tool can carry it out NOW; the human holds the
 // grant on its ToolServer; they have not approved it already; and the arguments they were
-// shown are its arguments. Then the approval is recorded, and when DIFFERENT approvers reach
-// its RequiredApprovals it is `approved` — its window to execution starts — and declared.
+// shown are its arguments. Then the approval is recorded, and when DIFFERENT approvers who
+// STILL hold the grant reach its RequiredApprovals it is `approved` — its window to execution
+// starts — and declared.
 func (s *Service) ApproveRemedy(
 	ctx context.Context, scope db.TenantScope, remedyID uuid.UUID, by domain.Requester, argumentsSHA256 string,
 ) (domain.Remedy, error) {
@@ -551,7 +552,14 @@ func (s *Service) ApproveRemedy(
 			return err
 		}
 		r.Approvals = append(r.Approvals, a)
-		if r.Counted() >= r.RequiredApprovals {
+		// ⭐ COUNTED AS THE EXECUTOR COUNTS (judgment 2, C8): DIFFERENT people who approved these
+		// arguments and STILL hold the grant. An approver whose grant went since does not move
+		// it to `approved` — which the executor would only fail as `approvals_withdrawn`.
+		standing, err := s.standingApprovers(ctx, scope, r)
+		if err != nil {
+			return err
+		}
+		if standing >= r.RequiredApprovals {
 			if r, err = s.moveRemedy(ctx, scope, r, domain.RemedyApproved, domain.UserActor(by), now, "", "",
 				now.Add(controls.RemedyWindow()), ""); err != nil {
 				return err

@@ -617,6 +617,10 @@ type memPolicies struct {
 	mu       sync.Mutex
 	policies []domain.PolicyTarget
 	edits    []countEdit
+	// locks counts LockSuggestionPolicy reads: the apply path compares under the lock (E6).
+	locks int
+	// beforeLock, when set, runs as the lock is taken — a hand edit that committed first.
+	beforeLock func()
 }
 
 func (m *memPolicies) SuggestionPolicy(_ context.Context, _ db.TenantScope, id uuid.UUID) (domain.PolicyTarget, error) {
@@ -628,6 +632,18 @@ func (m *memPolicies) SuggestionPolicy(_ context.Context, _ db.TenantScope, id u
 		}
 	}
 	return domain.PolicyTarget{}, errs.NotFound("policy_not_found", "no such notification policy")
+}
+
+func (m *memPolicies) LockSuggestionPolicy(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.PolicyTarget, error) {
+	m.mu.Lock()
+	m.locks++
+	before := m.beforeLock
+	m.beforeLock = nil
+	m.mu.Unlock()
+	if before != nil {
+		before()
+	}
+	return m.SuggestionPolicy(ctx, s, id)
 }
 
 func (m *memPolicies) SuggestionPolicies(context.Context, db.TenantScope) ([]domain.PolicyTarget, error) {
