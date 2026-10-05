@@ -473,6 +473,11 @@ export const FRESHNESS: Readonly<Record<string, Freshness>> = {
   "settings.channels": { by: "mutation" },
   "settings.channelConnections": { by: "mutation" },
   "settings.policies": { by: "mutation" },
+  // A policy's digest Investigations sit under `policies()`, so every policy write
+  // invalidates them with the list. A digest run that lands while the disclosure is
+  // open is not announced — no frame is about a policy — and shows on the next open,
+  // which `DigestInvestigations` asks afresh because it fetches only while open.
+  "settings.policyInvestigations": { by: "mutation" },
   "settings.correlators": { by: "mutation" },
   // The Classification set is written on the screen that reads it, and its save
   // writes the server's answer back; no frame is about it.
