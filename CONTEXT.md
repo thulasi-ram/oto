@@ -284,6 +284,7 @@ No import exists in either direction, and nothing enforces the arrow:
 | `rules/service.RuleLookup` | `sources/service.ResolveRule` | adapters.go |
 | `silences/service.SilenceSource`, `silences/api.SourceBaseURLs` | `sources` | `app/silencesource.go` |
 | `alerts/service.CaseOpenings` | the outbox (`incidents.correlate`) — never `incidents` itself | `app.caseOpenings` (adapters.go) |
+| `sources/api.CaseCounts` — open and held Cases per source (ADR 0056 §1) | `alerts` | `app.sourceCases` (adapters.go) |
 
 **3. River job enqueues — a STRING in `internal/platform/jobs/kinds.go`, not a call.** The
 producer never names the consumer, so there is nothing to enforce at all:

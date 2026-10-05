@@ -100,6 +100,19 @@ func (rt *Router) decorate(
 		keys = k
 	}
 
+	// The open Cases each source's cluster holds, and how many the reaper is
+	// holding because of it (ADR 0056 §1). A source the count did not reach
+	// carries neither number: absent is "not counted", and a zero would claim the
+	// source is holding nothing.
+	cases := map[uuid.UUID]CaseCount{}
+	if rt.cases != nil {
+		c, err := rt.cases.OpenCasesBySource(ctx, scope, ids)
+		if err != nil {
+			return nil, err
+		}
+		cases = c
+	}
+
 	for _, s := range sources {
 		h, ok := health[s.ID]
 		if !ok {
@@ -108,7 +121,12 @@ func (rt *Router) decorate(
 			// state an operator most needs to see on a freshly added source.
 			h = domain.SourceHealth{SourceID: s.ID, OrgID: s.OrgID, Status: domain.HealthUnknown}
 		}
-		out = append(out, sourceDTO(s, keys[s.ClusterID], &h))
+		dto := sourceDTO(s, keys[s.ClusterID], &h)
+		if n, ok := cases[s.ID]; ok {
+			dto.OpenCaseCount = countPtr(n.Open)
+			dto.HeldCaseCount = countPtr(n.Held)
+		}
+		out = append(out, dto)
 	}
 	return out, nil
 }

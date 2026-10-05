@@ -1281,6 +1281,126 @@ func (r *CaseRepository) Sources(
 	return out, nil
 }
 
+// caseCoverSQL is caseSourceCountSQL for a PAGE of Cases, plus the one live
+// source's name, for the screens that show why a Case can or cannot expire
+// (ADR 0056 §1). It is the same walk — case → alert → cluster → sources — and the
+// same counts, so the screen and the reaper read one answer.
+//
+// ⛔ IT IS A READ FOR DISPLAY AND NEVER A VERDICT. The reaper keeps its own
+// in-transaction re-read (`Sources`); nothing here is consulted before a write.
+const caseCoverSQL = `
+SELECT o.id,
+       count(s.id) FILTER (WHERE s.deleted_at IS NULL)::int,
+       count(s.id) FILTER (WHERE s.deleted_at IS NOT NULL)::int,
+       (array_agg(s.id) FILTER (WHERE s.deleted_at IS NULL))[1],
+       (array_agg(s.name) FILTER (WHERE s.deleted_at IS NULL))[1],
+       (array_agg(s.max_silence_s) FILTER (WHERE s.deleted_at IS NULL))[1]
+  FROM alert_cases o
+  JOIN alerts al ON al.id = o.alert_id AND al.org_id = o.org_id
+  LEFT JOIN alert_sources s ON s.org_id = al.org_id AND s.cluster_id = al.cluster_id
+ WHERE o.org_id = $1 AND o.id = ANY($2)
+ GROUP BY o.id`
+
+// CoverFor reads, for a page of Cases in one round trip, what each Case's cluster
+// says about who can still speak for it. A Case that does not exist in this org
+// is absent from the result. Healthy is left false: the §B.4 verdict is the
+// service's to add, through the same port the reaper asks.
+func (r *CaseRepository) CoverFor(
+	ctx context.Context, s db.TenantScope, caseIDs []uuid.UUID,
+) (map[uuid.UUID]domain.CaseCover, error) {
+	if err := db.RequireScope(s); err != nil {
+		return nil, err
+	}
+	out := make(map[uuid.UUID]domain.CaseCover, len(caseIDs))
+	if len(caseIDs) == 0 {
+		return out, nil
+	}
+	rows, err := r.db(ctx).Query(ctx, caseCoverSQL, s.OrgID(), caseIDs)
+	if err != nil {
+		return nil, mapErr(err, "read case cover")
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			caseID   uuid.UUID
+			c        domain.CaseCover
+			sourceID *uuid.UUID
+			name     *string
+			silence  *int32
+		)
+		if err := rows.Scan(&caseID, &c.Live, &c.Removed, &sourceID, &name, &silence); err != nil {
+			return nil, mapErr(err, "scan case cover")
+		}
+		if c.Live == 1 && sourceID != nil {
+			c.SourceID = *sourceID
+			if name != nil {
+				c.SourceName = *name
+			}
+			if silence != nil {
+				c.MaxSilence = time.Duration(*silence) * time.Second
+			}
+		}
+		out[caseID] = c
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapErr(err, "read case cover")
+	}
+	return out, nil
+}
+
+// openCasesBySourceSQL counts, for each named live source, the open Cases on its
+// cluster and how many live sources that cluster has. The open count is taken
+// once per cluster over the open episodes — the reaper's own population — and
+// never by walking every alert a cluster has ever had.
+const openCasesBySourceSQL = `
+WITH open AS (
+  SELECT al.cluster_id, count(*)::int AS n
+    FROM alert_cases o
+    JOIN alerts al ON al.id = o.alert_id AND al.org_id = o.org_id
+   WHERE o.org_id = $1 AND o.ended_at IS NULL
+   GROUP BY al.cluster_id)
+SELECT s.id,
+       COALESCE(open.n, 0),
+       (SELECT count(*)::int FROM alert_sources l
+         WHERE l.org_id = s.org_id AND l.cluster_id = s.cluster_id
+           AND l.deleted_at IS NULL)
+  FROM alert_sources s
+  LEFT JOIN open ON open.cluster_id = s.cluster_id
+ WHERE s.org_id = $1 AND s.id = ANY($2) AND s.deleted_at IS NULL`
+
+// OpenCasesBySource counts the open Cases on each named live source's cluster,
+// and the live sources beside it there. A removed or foreign source is absent.
+func (r *CaseRepository) OpenCasesBySource(
+	ctx context.Context, s db.TenantScope, sourceIDs []uuid.UUID,
+) (map[uuid.UUID]domain.SourceCases, error) {
+	if err := db.RequireScope(s); err != nil {
+		return nil, err
+	}
+	out := make(map[uuid.UUID]domain.SourceCases, len(sourceIDs))
+	if len(sourceIDs) == 0 {
+		return out, nil
+	}
+	rows, err := r.db(ctx).Query(ctx, openCasesBySourceSQL, s.OrgID(), sourceIDs)
+	if err != nil {
+		return nil, mapErr(err, "count open cases by source")
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			id uuid.UUID
+			c  domain.SourceCases
+		)
+		if err := rows.Scan(&id, &c.Open, &c.LiveInCluster); err != nil {
+			return nil, mapErr(err, "scan open cases by source")
+		}
+		out[id] = c
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapErr(err, "count open cases by source")
+	}
+	return out, nil
+}
+
 // ---------------------------------------------------- the delayed close (00057)
 
 var closeDueCandidatesSQL = `

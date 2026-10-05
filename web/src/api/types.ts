@@ -94,6 +94,12 @@ export type Case = S["CaseDTO"];
 export type CaseListItem = S["CaseListItemDTO"];
 export type CaseDetail = S["CaseDetailDTO"];
 /**
+ * Who can still speak for a Case (ADR 0056 §1): the live and removed sources on
+ * its cluster and, when exactly one is live, that source with the reaper's
+ * health verdict and its max silence. `null` on a Case means it was not read.
+ */
+export type CaseSources = S["CaseSourcesDTO"];
+/**
  * An Incident: a set of one or more Cases drawn together as one story (ADR 0052).
  *
  * ⛔ `state` IS DERIVED AND THE UI NEVER SENDS IT. It is `active` while any

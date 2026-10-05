@@ -112,11 +112,36 @@ func caseDTO(o domain.Case, now time.Time) CaseDTO {
 // caller's org before returning it — and `alertRefDTO` of a zero value would
 // still marshal, so the honest thing is to render what was handed over rather
 // than to invent a fallback for a state the query cannot produce.
-func caseListItemDTO(o domain.Case, a domain.Alert, now time.Time) CaseListItemDTO {
+func caseListItemDTO(o domain.Case, a domain.Alert, cover map[uuid.UUID]domain.CaseCover, now time.Time) CaseListItemDTO {
 	return CaseListItemDTO{
 		CaseDTO: caseDTO(o, now),
 		Alert:   alertRefDTO(a),
+		Sources: caseSourcesDTO(cover, o.ID()),
 	}
+}
+
+// caseSourcesDTO renders one Case's cover, or nil when it was not read — an
+// unwired reader, a failed read, or a Case the read did not reach. nil is
+// rendered as `null`, which the screen reads as "unknown" and says nothing about
+// expiry; it is never "no source".
+func caseSourcesDTO(cover map[uuid.UUID]domain.CaseCover, caseID uuid.UUID) *CaseSourcesDTO {
+	c, ok := cover[caseID]
+	if !ok {
+		return nil
+	}
+	out := &CaseSourcesDTO{
+		Live:    int32(c.Live),    //nolint:gosec // a count of rows in one org
+		Removed: int32(c.Removed), //nolint:gosec // a count of rows in one org
+	}
+	if c.Live == 1 && c.SourceID != uuid.Nil {
+		src := &CaseSourceDTO{ID: c.SourceID, Name: c.SourceName, Healthy: c.Healthy}
+		if c.MaxSilence > 0 {
+			secs := int32(c.MaxSilence / time.Second) //nolint:gosec // bounded by alert_sources_silence_ck
+			src.MaxSilenceSeconds = &secs
+		}
+		out.Source = src
+	}
+	return out
 }
 
 func eventDTO(e domain.Event) AlertEventDTO {

@@ -33,6 +33,9 @@ type AlertService interface {
 	// different question from `Cases` above, which is one identity's history.
 	ListCases(ctx context.Context, s db.TenantScope, q service.CaseListQuery) (service.CaseListResult, error)
 	GetCase(ctx context.Context, s db.TenantScope, caseID uuid.UUID) (domain.Case, error)
+	// CaseCover is who can still speak for each Case, for the expiry line the
+	// case screens show (ADR 0056 §1). A nil map means it was not read.
+	CaseCover(ctx context.Context, s db.TenantScope, caseIDs []uuid.UUID) (map[uuid.UUID]domain.CaseCover, error)
 	AlertTimeline(ctx context.Context, s db.TenantScope, alertID uuid.UUID, w db.TimeWindow, p db.Keyset) (service.TimelineResult, error)
 	CaseTimeline(ctx context.Context, s db.TenantScope, caseID uuid.UUID, w db.TimeWindow, p db.Keyset) (service.TimelineResult, error)
 	Enrichments(ctx context.Context, s db.TenantScope, alertID uuid.UUID) ([]service.EnrichmentSummary, error)

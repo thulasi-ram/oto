@@ -469,6 +469,30 @@ type CaseSources struct {
 	MaxSilence time.Duration
 }
 
+// CaseCover is CaseSources as a screen reads it (ADR 0056 §1, "staleness is
+// shown"): the same counts, the one live source's name, and the §B.4 guard's
+// verdict on it — so a Case can say whether it can expire and, when it cannot,
+// which source it is waiting on. It is a read for display; the reaper never
+// consults it.
+type CaseCover struct {
+	CaseSources
+	// SourceName is the one live source's name when Live == 1, "" otherwise.
+	SourceName string
+	// Healthy is the §B.4 guard's verdict on SourceID, asked through the same
+	// port the reaper asks. False means "not proven healthy", which is also what
+	// it reads when the port is unwired or could not answer: the reaper holds.
+	Healthy bool
+}
+
+// SourceCases is what the open Cases on one source's cluster look like from the
+// source's side (ADR 0056 §1): how many are open, and how many live sources the
+// cluster has — the reaper speaks for a cluster's Cases only through its ONE
+// live source, so two or more holds every one of them.
+type SourceCases struct {
+	Open          int
+	LiveInCluster int
+}
+
 // Transition is the persisted effect of one edge. It is produced by the domain
 // state machine (Apply) and NEVER assembled by hand in a repository or a handler
 // — assembling one by hand is how a case acquires a state no §B.3 row

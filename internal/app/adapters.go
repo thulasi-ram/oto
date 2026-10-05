@@ -1088,6 +1088,31 @@ func (l orgLister) LiveScope(ctx context.Context, orgID uuid.UUID) (db.TenantSco
 	return db.NewTenantScope(found)
 }
 
+// sourceCases is `sources/api.CaseCounts` over `alerts/service` (ADR 0056 §1).
+// `sources` may not import `alerts/domain` beyond the kernel rule, and the count
+// is the alerts module's — it owns the reaper whose holds are being counted — so
+// the numbers cross as plain ints.
+type sourceCases struct {
+	svc *alertsservice.Service
+}
+
+func (c sourceCases) OpenCasesBySource(
+	ctx context.Context, s db.TenantScope, sourceIDs []uuid.UUID,
+) (map[uuid.UUID]sourcesapi.CaseCount, error) {
+	if c.svc == nil {
+		return nil, nil
+	}
+	counts, err := c.svc.OpenCasesBySource(ctx, s, sourceIDs)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[uuid.UUID]sourcesapi.CaseCount, len(counts))
+	for id, n := range counts {
+		out[id] = sourcesapi.CaseCount{Open: n.Open, Held: n.Held}
+	}
+	return out, nil
+}
+
 // ---------------------------------------------------------------- ingestion
 
 // alertObserver is `ingestion/service.AlertObserver` — THE ONLY WRITE PATH INTO
