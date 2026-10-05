@@ -22,7 +22,11 @@ package domain
 //
 //   - MCP's `readOnlyHint` is a HINT the server writes about itself, defaulting to false
 //     and set by nobody; trusting it would let a ToolServer promote its own Tools into
-//     an Investigator's hands. It is recorded (and shown), never obeyed.
+//     an Investigator's hands. ⛔ It NEVER PROMOTES a Tool. It may only REFUSE one: a
+//     Tool its own server marks not read-only (`readOnlyHint: false`) is not held while
+//     investigating even on a `read` ToolServer (HeldWhileInvestigating, review D1) —
+//     a lie in that direction gains a server nothing. A Tool with no annotations is
+//     holdable, and then the declaration is the only guard; a mixed server is `write`.
 //   - ADR 0054 §5 recommends a write ToolServer "run commands under RBAC narrower than
 //     the read one" — two servers, two ServiceAccounts. The declaration names which is
 //     which; a mixed server is configured as `write`, and so is never read through.
@@ -394,6 +398,24 @@ func (t DiscoveredTool) Usable(server string) (qualified, reason string) {
 	default:
 		return q, ""
 	}
+}
+
+// HeldWhileInvestigating is Usable plus the one thing a Tool's own server can say against
+// itself (review D1): a Tool marked `readOnlyHint: false` is refused even on a `read`
+// ToolServer, because ADR 0053 §3 holds an Investigator to read-only Tools and the server
+// has just said this one is not. The hint never promotes: a nil hint (no annotations) or
+// a true one leaves the per-server declaration as the guard. A Remedy's write Tool is
+// bound with Usable, never with this.
+func (t DiscoveredTool) HeldWhileInvestigating(server string) (qualified, reason string) {
+	q, why := t.Usable(server)
+	if why != "" {
+		return "", why
+	}
+	if t.ReadOnlyHint != nil && !*t.ReadOnlyHint {
+		return "", "the ToolServer says this Tool is not read-only (MCP readOnlyHint is false); an Investigator " +
+			"holds only read-only Tools — move it to a write ToolServer"
+	}
+	return q, ""
 }
 
 // SplitQualifiedToolName reads `<toolserver>__<tool>`. ok is false for any name that is

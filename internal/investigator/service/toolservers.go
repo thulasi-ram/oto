@@ -249,13 +249,17 @@ func (s *Service) checkToolServerAllowlist(ctx context.Context, scope db.TenantS
 	return nil
 }
 
-// usableTool finds `tool` among what `server` listed and says why it cannot be held.
+// usableTool finds `tool` among what the read ToolServer `server` listed and says why
+// an Investigator cannot hold it — including its own server marking it not read-only
+// (review D1). Both the allowlist write (422) and the run (a refused Step, through
+// `unavailable`) ask here, so a version written before a re-discovery flipped the hint
+// is refused at run time too.
 func usableTool(listed []domain.DiscoveredTool, server, tool string) (domain.DiscoveredTool, string) {
 	for _, t := range listed {
 		if t.Name != tool {
 			continue
 		}
-		if _, why := t.Usable(server); why != "" {
+		if _, why := t.HeldWhileInvestigating(server); why != "" {
 			return domain.DiscoveredTool{}, why
 		}
 		return t, ""

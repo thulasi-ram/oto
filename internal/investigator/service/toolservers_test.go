@@ -479,3 +479,41 @@ func TestTheDraftAndConfigNeverRenderTheToken(t *testing.T) {
 		t.Fatal("the draft rendered its token")
 	}
 }
+
+// TestAToolItsServerMarksWritableIsRefusedOnAReadServer — review D1: `readOnlyHint:
+// false` keeps a Tool out of an Investigator's hands even on a read ToolServer — at the
+// allowlist write (422), and at the run for a version written before re-discovery
+// flipped the hint (a refused Step; nothing reaches the ToolServer).
+func TestAToolItsServerMarksWritableIsRefusedOnAReadServer(t *testing.T) {
+	r := newRig(t)
+	inv, c := r.setup(t, domain.DefaultBudgets())
+	writes := false
+	del := echoTool("pods_delete", "deleted")
+	del.ReadOnly = &writes
+	srv, cfg := r.withToolServer(t, domain.AccessRead, defaultLimits(t), echoTool("pods_get", "{}"), del)
+
+	list, _ := domain.NewAllowlist([]string{"k8s__pods_delete"})
+	_, err := r.svc.UpdateInvestigator(context.Background(), r.scope, inv.ID, domain.InvestigatorChange{Tools: &list})
+	if v := errs.ViolationsOf(err); len(v) != 1 || v[0].Code != "unusable_tool" || !strings.Contains(v[0].Message, "readOnlyHint") {
+		t.Fatalf("err = %v", err)
+	}
+
+	// A version holding pods_get, and then a re-discovery says pods_get writes too.
+	inv = r.allow(t, inv, "k8s__pods_get")
+	r.toolServers.mu.Lock()
+	for i, d := range r.toolServers.tools[cfg.ID] {
+		if d.Name == "pods_get" {
+			r.toolServers.tools[cfg.ID][i].ReadOnlyHint = &writes
+		}
+	}
+	r.toolServers.mu.Unlock()
+	r.dial.script = []modelfake.Step{
+		modelfake.Calls(100, 10, call("c1", "k8s__pods_get", `{}`)),
+		modelfake.Text("could not look", 100, 10),
+	}
+	_, steps := r.run(t, r.request(t, inv, c).ID)
+	if kinds(steps) != "model_turn tool_call:k8s__pods_get:refused model_turn" ||
+		!strings.Contains(steps[1].Result, "readOnlyHint") || srv.Calls() != 0 {
+		t.Fatalf("transcript %s, refusal %q, %d calls reached the ToolServer", kinds(steps), steps[1].Result, srv.Calls())
+	}
+}

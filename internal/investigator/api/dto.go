@@ -373,7 +373,13 @@ type ToolServerToolDTO struct {
 }
 
 func toolServerToolDTO(server domain.ToolServerConfig, t domain.DiscoveredTool) ToolServerToolDTO {
+	// A read server's Tool is usable only if an Investigator may hold it, which its own
+	// `readOnlyHint: false` refuses (review D1); a write server's keeps plain Usable,
+	// because a Remedy binds those Tools.
 	qualified, why := t.Usable(server.Name)
+	if why == "" && server.Readable() {
+		_, why = t.HeldWhileInvestigating(server.Name)
+	}
 	if why == "" && !server.Readable() {
 		// ⛔ Listed, named, and never held: a write ToolServer's Tools are not an
 		// Investigator's (ADR 0054 §5). The qualified name is still shown — it is how

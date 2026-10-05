@@ -158,3 +158,36 @@ func TestARedactorReplacesMatchedValuesInJSONAndProse(t *testing.T) {
 		t.Fatalf("re-redacted %q", twice)
 	}
 }
+
+// TestAToolItsServerMarksWritableIsNeverHeldWhileInvestigating — review D1: the hint
+// never promotes a Tool, but `readOnlyHint: false` refuses one even on a read server;
+// no annotations or `true` leave the declaration as the guard.
+func TestAToolItsServerMarksWritableIsNeverHeldWhileInvestigating(t *testing.T) {
+	no, yes := false, true
+	for name, tc := range map[string]struct {
+		hint *bool
+		held bool
+	}{
+		"says it writes": {hint: &no},
+		"says it reads":  {hint: &yes, held: true},
+		"says nothing":   {hint: nil, held: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			d, err := NewDiscoveredTool("pods_delete", "", json.RawMessage(`{"type":"object"}`), tc.hint)
+			if err != nil {
+				t.Fatal(err)
+			}
+			q, why := d.HeldWhileInvestigating("k8s")
+			if (why == "") != tc.held || (tc.held && q != "k8s__pods_delete") {
+				t.Fatalf("held %q, why %q; want held=%v", q, why, tc.held)
+			}
+			if !tc.held && !strings.Contains(why, "readOnlyHint") {
+				t.Fatalf("the refusal does not say why: %q", why)
+			}
+			// ⛔ Usable — what a Remedy binds a write Tool with — never reads the hint.
+			if q, why := d.Usable("k8s"); q == "" || why != "" {
+				t.Fatalf("Usable refused on the hint: %q", why)
+			}
+		})
+	}
+}
