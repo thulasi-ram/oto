@@ -5066,6 +5066,7 @@ Use `slack.NewSecretsVerifier`. **Do not hand-roll this.** Pin `github.com/slack
 | `oto.ack` | Resolve the Slack user via `slack_identities` (by `slack_user_id`, falling back to email match, else an unlinked identity recording the handle). Call **`AlertService.Ack` — the same service the REST API calls. There is exactly one ack code path.** Respond via `response_url` with `replace_original: true` for the optimistic update, then let `notify.evaluate(reason=acked)` do the durable `chat.update`. |
 | `oto.unack` | Same, inverse. |
 | `oto.more` | Overflow. If the chosen option carries a `url`, ack with 200 and do nothing else. If it carries a `value` (`labels|<case_id>`, the `Show all labels` option), **answer with an ephemeral listing every label** — sorted by name, bounded to the notice limit, and stating how many it dropped when it drops any. ⛔ **NOT a modal.** `views.open` needs a `trigger_id` on the 3-second synchronous path this split exists to keep clear, and it is a second interaction type `parseSlackEnvelope` refuses by design; the option carried that value for a modal nobody ever built, so pressing it did nothing at all (git-bug `60e6e10`). |
+| `oto.remedy.approve` / `oto.remedy.decline` | A proposed Remedy's two buttons (ADR 0054 §2, §4; git-bug `ac9b492`); the value is the Remedy's id. Applied **only** for a Slack member linked to a real oto user (a shadow member does not count), as that user, through the same `ApproveRemedy` / `DeclineRemedy` the REST API calls — so the grant, the window and the count of different approvers are decided in one place. An unlinked member is refused with an ephemeral naming their member and workspace ids, and nothing is written. Approve carries a `confirm` dialog. A partial approval is answered with an ephemeral (it moves no state, so no fact is posted); every transition is posted as its own reply. |
 | `oto.noop.*` | **Explicit no-op branch. Ack 200. Do nothing.** Required for every URL button and every URL overflow option (S9). |
 | *(unknown)* | Ack 200, log at warn, emit `slack_unknown_action_total`. Never 4xx — Slack disables event subscriptions when >95 % of deliveries fail in a 60-minute window. |
 
@@ -6281,7 +6282,7 @@ Checks, in the order they run:
 | V6 | `section.fields` | `<= 10` items, each `<= 2000` chars | `render_invalid` |
 | V7 | `context.elements` | `<= 10` | `render_invalid` |
 | V8 | `actions.elements` | `<= 25` (oto renders `<= 5` — [ADR 0043](../adr/0043-the-slack-action-row-renders-five-elements.md); this cell said `<= 4` and contradicted §H.7 in the same document) | `render_invalid` |
-| V9 | `button.text` | `<= 75` chars, `plain_text` | `render_invalid` |
+| V9 | `button.text`; a button's `confirm` dialog | `<= 75` chars, `plain_text`; `confirm` (only a Remedy's Approve carries one): `title <= 100`, `text <= 300`, `confirm`/`deny <= 30`, all non-empty `plain_text` | `render_invalid` |
 | V10 | `button.url` / `image.image_url` | `<= 3000` chars, absolute http(s) | `render_invalid` |
 | V11 | `button.value` | `<= 2000`; oto asserts it is a bare UUID (S8) | `render_invalid` |
 | V12 | `action_id` / `block_id` | `<= 255`; `action_id` matches `^oto\.[a-z0-9._]+$` | `render_invalid` |

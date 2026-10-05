@@ -129,6 +129,13 @@ const (
 	// every one of them and oto must acknowledge it; there is nothing to do
 	// beyond that, and the explicit namespace is what says so out loud.
 	ActionNoopPrefix = "oto.noop."
+	// ActionRemedyApprove and ActionRemedyDecline are a proposed Remedy's two buttons
+	// (ADR 0054 §2, §4; git-bug ac9b492), and the first on this surface that do not act
+	// on a signal. ⛔ THEY ARE NOT FOR ANYBODY WHO CAN SEE THE CHANNEL: an approval is a
+	// grant holder's, so a press is applied only for a Slack member LINKED to an oto user,
+	// through the same service the UI calls — see interactions_remedy.go.
+	ActionRemedyApprove = domain.ActionRemedyApprove
+	ActionRemedyDecline = domain.ActionRemedyDecline
 )
 
 // snoozeValueSeparator joins the preset token to the alert id in a snooze
@@ -413,7 +420,10 @@ type InteractionOptions struct {
 	// `slackSnoozeActions` and pinned by a line in `app.assertions` — which that file
 	// earns here, because a nil port degrades to the ephemeral above instead of
 	// failing a build, so nothing else would notice the wiring being dropped.
-	Labels   Labels
+	Labels Labels
+	// Remedies is OPTIONAL for `Snoozes`' reason: a press at a deployment that has not
+	// wired it is answered with a sentence saying so (`applyRemedy`).
+	Remedies Remedies
 	Enqueuer db.Enqueuer
 	Notice   SlackNotice
 	// Metrics is optional. A nil one costs the `oto_slack_unknown_action_total`
@@ -438,6 +448,7 @@ type InteractionService struct {
 	cases         Cases
 	snoozes       Snoozes
 	labels        Labels
+	remedies      Remedies
 	enqueuer      db.Enqueuer
 	notice        SlackNotice
 	metrics       *InteractionMetrics
@@ -465,6 +476,7 @@ func NewInteractionService(o InteractionOptions) (*InteractionService, error) {
 		cases:         o.Cases,
 		snoozes:       o.Snoozes,
 		labels:        o.Labels,
+		remedies:      o.Remedies,
 		enqueuer:      o.Enqueuer,
 		notice:        o.Notice,
 		metrics:       o.Metrics,
@@ -519,8 +531,14 @@ func (s *InteractionService) Handle(ctx context.Context, payload json.RawMessage
 		// its answer under `selected_option.value` where the three buttons send
 		// theirs under `value`, and reading only the latter would enqueue every
 		// snooze press with an empty subject.
+		//
+		// ⭐ A REMEDY'S TWO BUTTONS RIDE THE SAME ARM. The member who pressed is the one
+		// the VERIFIED envelope names (`env.User.ID`) — the transport checked Slack's
+		// signature over these exact bytes before `Handle` ran — and nothing else on the
+		// press is read as who it was.
 		case id == ActionAcknowledge, id == ActionUnacknowledge,
-			id == ActionSnooze, id == ActionUnsnooze:
+			id == ActionSnooze, id == ActionUnsnooze,
+			id == ActionRemedyApprove, id == ActionRemedyDecline:
 			reqs = append(reqs, db.JobRequest{
 				Args: jobs.SlackInteractionArgs{
 					ActionID:      id,
@@ -663,6 +681,8 @@ func (s *InteractionService) Apply(ctx context.Context, args jobs.SlackInteracti
 		return s.applySnooze(ctx, logger, scope, args)
 	case ActionUnsnooze:
 		return s.applyUnsnooze(ctx, logger, scope, args)
+	case ActionRemedyApprove, ActionRemedyDecline:
+		return s.applyRemedy(ctx, logger, scope, args)
 	case ActionOverflow:
 		// ⭐ THE ONLY READ ON THIS SWITCH. `Handle` enqueues an overflow press only
 		// when its value is a `labels|<case id>`, so an arm reached here has already

@@ -507,6 +507,19 @@ const SnoozeValueSeparator = "|"
 // to tell the two apart from the value alone.
 const ShowLabelsValuePrefix = "labels" + SnoozeValueSeparator
 
+// The two buttons a proposed Remedy's reply carries in Slack (ADR 0054 §2, §4; git-bug
+// ac9b492). Each button's value is the Remedy's id and nothing else (V11, S8): who may
+// approve is decided by the grant on its ToolServer, read when the press is applied.
+//
+// ⭐ THEY LIVE HERE FOR `ShowLabelsValuePrefix`'S REASON. `channels/render/slack` mints them
+// and `channels/service` routes them, and a card already sitting in Slack carries the
+// literal, so these are a DURABLE WIRE CONTRACT: renaming one turns every posted button
+// into the silent no-op `interactions.go` exists to abolish.
+const (
+	ActionRemedyApprove = "oto.remedy.approve"
+	ActionRemedyDecline = "oto.remedy.decline"
+)
+
 // SnoozePreset is one of the durations a card may offer to go quiet for.
 //
 // ⛔ THE FIVE ARE BINDING AND THERE IS NO SIXTH, LEAST OF ALL "INDEFINITELY"

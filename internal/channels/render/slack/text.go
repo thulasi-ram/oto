@@ -41,6 +41,11 @@ const (
 	// DOCUMENTED: button element, "maximum length for the text in this field is
 	// 75 characters".
 	maxButtonText = 75
+	// DOCUMENTED: confirmation dialog object — `title` "maximum length … is 100
+	// characters", `text` 300, and the `confirm` and `deny` button labels 30 each.
+	maxConfirmTitle  = 100
+	maxConfirmText   = 300
+	maxConfirmButton = 30
 	// DOCUMENTED: button `url` and overflow option `url`, "maximum length is 3000
 	// characters".
 	maxURL = 3000

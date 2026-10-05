@@ -155,7 +155,10 @@ var (
 	// Optional like `Snoozes`: a nil `Labels` answers a press with an honest
 	// ephemeral rather than failing a build, so only this line catches the drift
 	// that would quietly revert `Show all labels` to that ephemeral forever.
-	_ channelsservice.Labels             = slackLabelReads{}
+	_ channelsservice.Labels = slackLabelReads{}
+	// Optional for the same reason: a nil `Remedies` answers a Remedy's Approve and Decline
+	// with "not in this deployment yet" instead of failing a build (git-bug ac9b492).
+	_ channelsservice.Remedies           = slackRemedyActions{}
 	_ channelsservice.SlackActors        = slackActors{}
 	_ channelsservice.Cases              = slackCaseActions{}
 	_ channelsservice.SlackConversations = slackConversations{}

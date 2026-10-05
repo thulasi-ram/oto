@@ -76,6 +76,24 @@ configure a Tool and ask for another Investigation.
 When the last approval it needs lands the Remedy is `approved`, and its window starts again: it
 must be executed within `remedy_approval_window_s` of its approval.
 
+### From Slack
+
+When the Incident is a Slack conversation, a proposed Remedy's reply in its thread says the exact
+command first, then its target, how many approvals it needs and what set that, who has approved
+so far, and only then the Investigator's description — with **Approve** and **Decline** under it.
+
+- A press is applied as the **oto user your Slack account is linked to**, through the same
+  approval and decline the UI makes: the grant, the window, the Tool check and the count of
+  different people are the same, and approving in Slack and again in the UI counts once.
+- **An unlinked Slack account is refused**, and nothing is recorded: the reply names your Slack
+  member and workspace ids for whoever runs oto to link, or you decide it in oto. A linked account
+  without the grant gets `remedy_approver_required`'s answer.
+- **Approve asks for confirmation first.** It is not offered for a Remedy no configured Tool can
+  carry out, nor for one whose arguments the reply had to cut — approve those in oto, where the
+  arguments are shown whole. Decline is always offered.
+- The buttons stay on the reply after the Remedy moves on; a late press is answered with why it no
+  longer applies. Each transition is its own reply, as it is to every other destination.
+
 ## Execution
 
 When the last approval it needs lands, oto enqueues the Remedy's execution in the same

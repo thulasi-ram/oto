@@ -551,6 +551,33 @@ func TestTwoDifferentHoldersMustApproveAndTheSameOneCountsOnce(t *testing.T) {
 	}
 }
 
+// TestOnePersonApprovingInSlackAndInTheUICountsOnce — ADR 0054 §4, git-bug ac9b492. The Slack
+// card approves through this same call as the linked user, so the two surfaces differ only in
+// how the person is labelled; the count is by user id, and the second is refused.
+func TestOnePersonApprovingInSlackAndInTheUICountsOnce(t *testing.T) {
+	r := newRig(t)
+	var (
+		sent []json.RawMessage
+		mu   sync.Mutex
+	)
+	_, cfg := r.withWriteServer(t, restartTool(&sent, &mu))
+	inv, c := r.remedyInvestigator(t)
+	_, list := r.propose(t, inv, c, restartProposal(proposedArgs))
+	rem := list[0]
+	inUI := r.grant(cfg.ID, "Ada Lovelace")
+	fromSlack := domain.Requester{UserID: inUI.UserID, Label: "ada@example.com"}
+	ctx := context.Background()
+
+	if _, err := r.svc.ApproveRemedy(ctx, r.scope, rem.ID, fromSlack, rem.ArgumentsSHA256); err != nil {
+		t.Fatal(err)
+	}
+	_, err := r.svc.ApproveRemedy(ctx, r.scope, rem.ID, inUI, rem.ArgumentsSHA256)
+	wantCode(t, err, "remedy_already_approved")
+	if got, _ := r.svc.GetRemedy(ctx, r.scope, rem.ID); got.Counted() != 1 || got.State != domain.RemedyProposed {
+		t.Fatalf("one person in two places counted as %d and moved it to %s", got.Counted(), got.State)
+	}
+}
+
 // TestARemedyWhoseToolWasRemovedCannotBeApproved — a ToolServer re-declared read, one that
 // stopped listing the Tool, and one removed outright.
 func TestARemedyWhoseToolWasRemovedCannotBeApproved(t *testing.T) {

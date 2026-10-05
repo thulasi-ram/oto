@@ -26,6 +26,7 @@ import (
 	"github.com/google/uuid"
 
 	alertsservice "github.com/thulasiram/oto/internal/alerts/service"
+	channelsservice "github.com/thulasiram/oto/internal/channels/service"
 	enrichdomain "github.com/thulasiram/oto/internal/enrichment/domain"
 	enrichrepo "github.com/thulasiram/oto/internal/enrichment/repository"
 	identityservice "github.com/thulasiram/oto/internal/identity/service"
@@ -339,6 +340,70 @@ func (a remedyApprovers) RemedyApprovers(ctx context.Context, s db.TenantScope, 
 
 func (a remedyApprovers) RequireRemedyApprover(ctx context.Context, s db.TenantScope, toolServerID, userID uuid.UUID) error {
 	return a.identity.RequireRemedyApprover(ctx, s, toolServerID, userID)
+}
+
+// slackRemedyActions is `channels/service.Remedies` (git-bug ac9b492): a Remedy approved or
+// declined from its Slack card, as the linked oto user, through the SAME two service calls
+// `POST /remedies/{id}/approve|decline` make — so the grant, the window, the Tool's
+// availability and the count of different approvers are decided in one place, and one person
+// approving in Slack and again in the UI is one user id twice: refused, and counted once.
+//
+// ⭐ THE ARGUMENTS HASH IS THE REMEDY'S OWN, AND THAT IS NOT A SHORTCUT. The UI sends the hash
+// of the arguments its screen showed; a Slack button may carry only the Remedy's id (V11). The
+// card quoted the proposal's arguments, `remedies_frozen` refuses any UPDATE of them, and the
+// renderer offers no Approve on a card that cut them — so the arguments the card showed ARE
+// the Remedy's, and its hash is the one an approval of that card names.
+type slackRemedyActions struct {
+	investigator *investigatorservice.Service
+	identity     *identityservice.Service
+}
+
+// requester names the user as the UI names a signed-in one (`authn.Principal.ActorLabel`:
+// display name, else email), and refuses one the directory has disabled — who cannot sign in
+// to decide in the UI either.
+func (a slackRemedyActions) requester(ctx context.Context, s db.TenantScope, userID uuid.UUID) (investigatordomain.Requester, error) {
+	u, err := a.identity.GetUser(ctx, s, userID)
+	if err != nil {
+		return investigatordomain.Requester{}, err
+	}
+	if !u.Active() {
+		return investigatordomain.Requester{}, errs.Forbidden("slack_member_disabled",
+			"the oto account this Slack member is linked to is disabled")
+	}
+	label := u.DisplayName
+	if label == "" {
+		label = u.Email.String()
+	}
+	return investigatordomain.NewRequester(userID, label)
+}
+
+func (a slackRemedyActions) ApproveRemedy(
+	ctx context.Context, s db.TenantScope, remedyID, userID uuid.UUID,
+) (channelsservice.RemedyApproval, error) {
+	by, err := a.requester(ctx, s, userID)
+	if err != nil {
+		return channelsservice.RemedyApproval{}, err
+	}
+	r, err := a.investigator.GetRemedy(ctx, s, remedyID)
+	if err != nil {
+		return channelsservice.RemedyApproval{}, err
+	}
+	out, err := a.investigator.ApproveRemedy(ctx, s, remedyID, by, r.ArgumentsSHA256)
+	if err != nil {
+		return channelsservice.RemedyApproval{}, err
+	}
+	return channelsservice.RemedyApproval{
+		Approvals: out.Counted(), Required: out.RequiredApprovals, Approved: out.State == investigatordomain.RemedyApproved,
+	}, nil
+}
+
+func (a slackRemedyActions) DeclineRemedy(ctx context.Context, s db.TenantScope, remedyID, userID uuid.UUID) error {
+	by, err := a.requester(ctx, s, userID)
+	if err != nil {
+		return err
+	}
+	_, err = a.investigator.DeclineRemedy(ctx, s, remedyID, by)
+	return err
 }
 
 // toolResultRedaction is `investigator/service.RedactionRules` (git-bug 2e9a086): the

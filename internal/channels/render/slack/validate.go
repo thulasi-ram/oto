@@ -444,6 +444,27 @@ func validateActions(payload json.RawMessage, idx int, b Block) error {
 				return fail(payload, "V9", "button %d in block %d label is %d chars, limit %d",
 					j, idx, len([]rune(el.Text.Text)), maxButtonText)
 			}
+			// V9, the button's confirmation dialog: four plain_text labels, each under
+			// its own documented limit. Slack refuses a dialog missing any of them.
+			if c := el.Confirm; c != nil {
+				for _, part := range []struct {
+					name  string
+					text  *Text
+					limit int
+				}{
+					{"title", c.Title, maxConfirmTitle}, {"text", c.Text, maxConfirmText},
+					{"confirm", c.Confirm, maxConfirmButton}, {"deny", c.Deny, maxConfirmButton},
+				} {
+					if part.text == nil || strings.TrimSpace(part.text.Text) == "" || part.text.Type != TypePlainText {
+						return fail(payload, "V9", "button %d in block %d confirm %s must be non-empty plain_text",
+							j, idx, part.name)
+					}
+					if n := len([]rune(part.text.Text)); n > part.limit {
+						return fail(payload, "V9", "button %d in block %d confirm %s is %d chars, limit %d",
+							j, idx, part.name, n, part.limit)
+					}
+				}
+			}
 			// V10.
 			if err := checkURL(payload, "V10", "button.url", el.URL); err != nil {
 				return err

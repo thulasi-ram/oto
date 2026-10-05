@@ -502,6 +502,7 @@ file paste its contents over the sample payload.
 | 6 | `broadcast_unacked_reminder.blockkit.json` | One section. | — |
 | 7 | `incident_root.blockkit.json` | An Incident's card ([ADR 0052](../adr/0052-an-incident-is-drawn-over-cases-and-its-response-is-handed-off.md) §6): title `Incident #N` is a **bold clickable link**, a field grid, one bullet per current member Case each **linking to its own Case**, and **no buttons**. | A button on it means an action was attached to the story rather than to one of its signals. |
 | 8 | `thread_reply_incident_pointer.blockkit.json` | One section, posted in a member Case's own thread: `Now part of Incident #N` is a clickable link. | A link that does not click means the pointer cannot take a reader to where the Case's updates went. |
+| 9 | `thread_reply_remedy_proposed.blockkit.json` | A Remedy's reply: the Tool and its arguments come **before** the description, then `Needs 2 approvals …` with what set it. Two buttons, **Approve** and **Decline**; pressing Approve opens a **confirmation dialog** naming the command. | A dialog that does not open means `confirm` was rejected and Approve would act on one tap. |
 
 > A seventh file, `storm_notice.blockkit.json`, was deleted with storm damping
 > ([ADR 0042](../adr/0042-storm-damping-is-removed.md)).

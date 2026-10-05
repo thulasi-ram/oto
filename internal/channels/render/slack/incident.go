@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/thulasiram/oto/internal/channels/domain"
 )
 
@@ -31,7 +33,9 @@ import (
 //
 // ⛔ NO ACTIONS. Every action on a card acts on a signal; the Incident card is about
 // the story, and a button on it would have to pick one of its Cases. Each member
-// links to its own Case, which is where the buttons are.
+// links to its own Case, which is where the buttons are. ⭐ The one exception is not the
+// card: a PROPOSED Remedy's reply in the thread carries Approve and Decline, and they act
+// on that Remedy and nothing else (`remedyActions`, git-bug ac9b492).
 //
 // ⭐ THE OUTBOUND LINK SITS IN THE CONTEXT LINE, BESIDE OTO'S OWN (git-bug 506ff21).
 // ADR 0052 §5's outbound mapping is recorded when an incident tool echoes its own
@@ -383,6 +387,10 @@ func (r *Renderer) renderIncidentReply(v *domain.NotificationView, o domain.Rend
 	}
 	text := truncateClause(oneLine(endSentence(incidentEmoji+" "+sentence)), otoTopLevelText)
 
+	blocks := []Block{sectionBlock(blockID("incidentreply", nonce), truncateSection(body, iv.Link))}
+	if b, ok := remedyActions(v.Reason, iv, nonce); ok {
+		blocks = append(blocks, b)
+	}
 	return Payload{
 		Text:        text,
 		UnfurlLinks: false,
@@ -390,8 +398,7 @@ func (r *Renderer) renderIncidentReply(v *domain.NotificationView, o domain.Rend
 		Attachments: []Attachment{{
 			Color:    incidentColour(iv),
 			Fallback: truncateRunes(text, 200),
-			Blocks: []Block{sectionBlock(blockID("incidentreply", nonce),
-				truncateSection(body, iv.Link))},
+			Blocks:   blocks,
 		}},
 	}, text, text
 }
@@ -465,7 +472,8 @@ func incidentCaseClause(v *domain.NotificationView) string {
 
 // incidentRemedy is a Remedy fact's reply: the transition and who made it, then ⭐ THE EXACT
 // COMMAND — the write Tool and its arguments, or that no configured Tool can carry it out —
-// then what it is made to, and only then the Investigator's description of it (ADR 0054 §3).
+// then what it is made to, how many approvals it needs and what set that, who has approved
+// so far, and only then the Investigator's description of it (ADR 0054 §3).
 func incidentRemedy(reason string, iv domain.IncidentView) (body, sentence string) {
 	verb := strings.ReplaceAll(strings.TrimPrefix(reason, remedyReasonPrefix), "_", " ")
 	sentence = "A Remedy on " + incidentName(iv) + " was " + verb
@@ -484,16 +492,34 @@ func incidentRemedy(reason string, iv domain.IncidentView) (body, sentence strin
 	}
 	if r.Tool != "" {
 		b.WriteString("\n" + code(r.ToolServer+"__"+r.Tool))
-		args := r.Arguments
-		cut := truncateRunes(args, maxRemedyArgumentsRunes)
-		b.WriteString("\n```" + strings.ReplaceAll(escape(cut), "```", "'''") + "```")
-		if cut != args {
+		b.WriteString("\n```" + strings.ReplaceAll(escape(remedyArgumentsOnCard(*r)), "```", "'''") + "```")
+		switch {
+		case remedyArgumentsWhole(*r):
+		case remedyAwaitingApproval(reason, *r):
+			// ⭐ NO APPROVE BUTTON BELOW, AND THIS IS WHY: nobody approves a command from a
+			// card that did not show all of it (`remedyActions`).
+			b.WriteString("\n_the arguments are cut here, so it is approved on the Remedy's page, which shows them whole_")
+		default:
 			b.WriteString("\n_the arguments are cut here; the Remedy's page shows them whole_")
 		}
 	} else {
 		b.WriteString("\n_" + escape(r.NoTool) + "_")
 	}
 	b.WriteString("\non " + escape(r.Target))
+	if u := safeURL(iv.Link); u != "" {
+		// Where the whole Remedy is read — every argument, its history — and decided in oto.
+		b.WriteString("  ·  " + link(u, "open "+incidentName(iv)+" in oto"))
+	}
+	if tier := remedyTier(*r); tier != "" {
+		b.WriteString("\n" + tier)
+	}
+	if len(r.Approvals) > 0 {
+		names := make([]string, 0, len(r.Approvals))
+		for _, a := range r.Approvals {
+			names = append(names, escape(firstNonEmpty(a.Label, "a person")))
+		}
+		b.WriteString("\nApproved so far by " + strings.Join(names, ", "))
+	}
 	if r.FailureReason != "" {
 		b.WriteString("\n*" + escape(r.FailureReason) + "*")
 		if r.Detail != "" {
@@ -506,6 +532,115 @@ func incidentRemedy(reason string, iv domain.IncidentView) (body, sentence strin
 		b.WriteString("\n>" + strings.ReplaceAll(escape(truncateRunes(text, maxFindingRunes)), "\n", "\n>"))
 	}
 	return b.String(), sentence
+}
+
+// remedyArgumentsOnCard is the arguments as the reply quotes them: whole, or cut at
+// maxRemedyArgumentsRunes.
+func remedyArgumentsOnCard(r domain.IncidentRemedyView) string {
+	return truncateRunes(r.Arguments, maxRemedyArgumentsRunes)
+}
+
+// remedyArgumentsWhole reports whether the reply quotes every byte of the arguments.
+func remedyArgumentsWhole(r domain.IncidentRemedyView) bool {
+	return remedyArgumentsOnCard(r) == r.Arguments
+}
+
+// remedyAwaitingApproval reports whether this reply is the proposal of a Remedy that is
+// still waiting for a decision — the one reply that offers one.
+func remedyAwaitingApproval(reason string, r domain.IncidentRemedyView) bool {
+	return reason == remedyReasonPrefix+"proposed" && r.State == "proposed"
+}
+
+// remedyTier is how many approvals the Remedy needs and what set that number, in the
+// approval screen's words (git-bug eb4f21b): a named rule, no rule, an unparseable command,
+// or the risk model raising it. "" for a Remedy that needs none recorded.
+func remedyTier(r domain.IncidentRemedyView) string {
+	if r.RequiredApprovals <= 0 {
+		return ""
+	}
+	need := "*Needs 1 approval*"
+	if r.RequiredApprovals > 1 {
+		need = "*Needs " + strconv.Itoa(r.RequiredApprovals) + " approvals from different people*"
+	}
+	rule := ""
+	if strings.TrimSpace(r.ApprovalsRule) != "" {
+		rule = code(r.ApprovalsRule)
+	}
+	var why string
+	switch r.ApprovalsSetBy {
+	case "rule":
+		why = "set by the rule " + firstNonEmpty(rule, "an operator wrote")
+	case "no_rule":
+		why = "no rule matched this command"
+	case "unparseable":
+		why = "the rules could not parse this command"
+	case "risk_model":
+		why = "raised by the risk model"
+		if rule != "" {
+			why += "; the rule " + rule + " said one"
+		}
+	case "risk_model_failed":
+		why = "the risk model gave no answer oto could take"
+		if rule != "" {
+			why += "; the rule " + rule + " said one"
+		}
+	}
+	if why == "" {
+		return need
+	}
+	return need + " — " + why
+}
+
+// remedyRunsWhen is the confirmation's last sentence: when the approval the reader is about to
+// give makes the change happen.
+func remedyRunsWhen(required int) string {
+	if required <= 1 {
+		return "It runs once you approve."
+	}
+	return "It runs once " + strconv.Itoa(required) + " different people have approved, you among them."
+}
+
+// remedyActions is the row under a PROPOSED Remedy's reply: Approve and Decline (ADR 0054
+// §2, git-bug ac9b492). Each button's value is the Remedy's id (V11); the press is applied by
+// `channels/service` through the same approval the UI makes, for a Slack member LINKED to an
+// oto user, and refused with a sentence otherwise.
+//
+// ⛔ NO APPROVE BUTTON FOR A REMEDY THAT NAMES NO TOOL (ADR 0054 §1): nothing can carry it
+// out, so it cannot be approved — only declined. ⛔ NOR FOR ONE WHOSE ARGUMENTS THE REPLY CUT:
+// an approval in Slack is an approval of what the card showed, and it did not show it all.
+//
+// ⭐ APPROVE ASKS FIRST. It is the one button on any oto card that changes a cluster, so it
+// carries Slack's confirmation dialog (S10: destructive things live behind a confirm). Decline
+// does not: saying no is the safe direction.
+//
+// ⚠️ THE ROW IS NOT TAKEN DOWN WHEN THE REMEDY MOVES. A reply is posted, never amended, so a
+// button on a Remedy that has since been approved, declined or expired stays on screen; its
+// press is answered with why it no longer applies. The transition itself is a new reply.
+func remedyActions(reason string, iv domain.IncidentView, nonce string) (Block, bool) {
+	r := iv.Remedy
+	if r == nil || !remedyAwaitingApproval(reason, *r) {
+		return Block{}, false
+	}
+	if _, err := uuid.Parse(r.RemedyID); err != nil {
+		return Block{}, false
+	}
+	elements := make([]Action, 0, 2)
+	if r.Tool != "" && remedyArgumentsWhole(*r) {
+		elements = append(elements, Action{
+			Type: ElementButton, Text: plain("Approve"), ActionID: domain.ActionRemedyApprove, Value: r.RemedyID,
+			Confirm: &Confirm{
+				Title: plain(truncateRunes("Approve this Remedy?", maxConfirmTitle)),
+				Text: plain(truncateRunes("You approve "+r.ToolServer+"__"+r.Tool+" on "+r.Target+
+					" with exactly the arguments on this card. "+remedyRunsWhen(r.RequiredApprovals), maxConfirmText)),
+				Confirm: plain("Approve"),
+				Deny:    plain("Not yet"),
+			},
+		})
+	}
+	elements = append(elements, Action{
+		Type: ElementButton, Text: plain("Decline"), ActionID: domain.ActionRemedyDecline, Value: r.RemedyID,
+	})
+	return actionsBlock(blockID("remedyactions", nonce), elements...), true
 }
 
 // incidentFinding is an Investigation's latest Finding as a card says it (ADR 0053

@@ -188,6 +188,16 @@ func SlackCards() []SlackCard {
 			View:    incidentPointerView(),
 			Options: cardOptions(chdomain.ModeThreadReply),
 		},
+		{
+			Name: "thread_reply_remedy_proposed",
+			What: "A Remedy an Investigator proposed, as a reply in its Incident's thread (ADR 0054 " +
+				"§2, §3): the exact command first, then its target, the approvals it needs and the " +
+				"rule that set that, then the Investigator's description — and the only buttons in " +
+				"an Incident's thread, Approve (behind a confirmation) and Decline.",
+			Mode:    chdomain.ModeThreadReply,
+			View:    remedyProposedView(),
+			Options: cardOptions(chdomain.ModeThreadReply),
+		},
 	}
 }
 
@@ -498,6 +508,31 @@ func incidentPointerView() *chdomain.NotificationView {
 	v := incidentCardView()
 	v.Reason = "case_added"
 	v.Incident.PointsFrom = "019fe297-d84f-7599-b5b2-1f231749104a"
+	return v
+}
+
+// remedyProposedView is a Remedy proposed on the same Incident after both its Cases closed —
+// an Investigation can run on a quiet Incident — so the reply wears the neutral bar the pointer
+// wears rather than a third firing one (`TestEachCardStateCarriesItsOwnColourForAHumanToVerify`).
+func remedyProposedView() *chdomain.NotificationView {
+	v := incidentCardView()
+	v.Reason = "remedy_proposed"
+	v.Incident.State = "quiet"
+	for i := range v.Incident.Members {
+		v.Incident.Members[i].CaseState = "closed"
+	}
+	at := v.RenderedAt.Add(20 * time.Minute)
+	v.Incident.Remedy = &chdomain.IncidentRemedyView{
+		RemedyID: "019fe297-d84f-7599-b5b2-1f23174910e1", InvestigationID: "019fe297-d84f-7599-b5b2-1f23174910e2",
+		State: "proposed", ToolServer: "k8s-write", Tool: "rollout_restart",
+		Arguments:       `{"namespace":"checkout","deployment":"api"}`,
+		ArgumentsSHA256: "9c1b5a1e4b8c2f3d6e7a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e",
+		Target:          "Deployment checkout/api",
+		Description:     "The error rate rose when config v41 rolled out; v40 is restored in the ConfigMap but the pods still run v41. Restarting picks it up.",
+		ProposedBy:      "firstlook v3", RequiredApprovals: 2, ApprovalsSetBy: "no_rule",
+		ActorKind: "investigator", ActorLabel: "firstlook v3", At: at, ExpiresAt: at.Add(time.Hour),
+	}
+	v.RenderedAt = at.Add(time.Second)
 	return v
 }
 

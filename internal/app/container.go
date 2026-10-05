@@ -939,8 +939,11 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		// therefore not a crash, which is exactly what made it possible to ship the
 		// handlers and the menu with nothing behind them. Wiring it is what turns
 		// "oto cannot snooze from Slack in this deployment yet" back into a snooze.
-		Snoozes:  slackSnoozeActions{alerts: c.Alerts},
-		Labels:   slackLabelReads{alerts: c.Alerts},
+		Snoozes: slackSnoozeActions{alerts: c.Alerts},
+		Labels:  slackLabelReads{alerts: c.Alerts},
+		// A Remedy's Approve and Decline (git-bug ac9b492): the linked user, through the
+		// approval and decline the UI's routes make.
+		Remedies: slackRemedyActions{investigator: c.Investigator, identity: c.Identity},
 		Enqueuer: c.enqueuer,
 		// The ephemeral reply goes to Slack's own `response_url`, which needs no
 		// token and no scope — which is why oto can tell a user "that already
