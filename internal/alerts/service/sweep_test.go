@@ -157,8 +157,8 @@ func (f *fixture) alertStateOf(caseID uuid.UUID) string {
 		`SELECT CASE
 		          WHEN state = 'open' AND suppression_reason IS NOT NULL THEN 'suppressed'
 		          WHEN state = 'open'                                    THEN 'firing'
-		          WHEN resolve_reason = 'timeout'                        THEN 'expired'
-		          ELSE 'resolved'
+		          WHEN resolve_reason = 'upstream'                       THEN 'resolved'
+		          ELSE 'expired'
 		        END
 		   FROM alert_cases WHERE org_id = $1 AND id = $2`,
 		f.orgID, caseID).Scan(&state); err != nil {

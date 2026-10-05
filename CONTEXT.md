@@ -191,7 +191,9 @@ Rules you must not get wrong:
 - **`ended_at` is clamped to `started_at`.** A backward-skewed upstream clock must never abort an
   ingest transaction. Clamp, flag `clamped: true`, measure the skew — never reject.
 - **Losing sight of an alert is not the alert resolving.** The reaper is *blocked* while
-  `source_health.status != 'healthy'`.
+  `source_health.status != 'healthy'` — for `timeout` and `silent` alike. `source_removed` is the
+  one expiry it does not ask, because there is no source left to be blind to: it fires only when no
+  live source feeds the case's cluster, so deleting one HA replica ends nothing (ADR 0056).
 
 ---
 

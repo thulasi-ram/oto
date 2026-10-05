@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -66,7 +67,7 @@ func TestReaperDoesNotExpireAnAlertAWebhookJustRefreshed(t *testing.T) {
 		"the webhook should have moved source_ends_at into the future")
 
 	// 3. The sweep now reaches `expire`, still holding the snapshot from step 1.
-	expired, err := f.svc.expire(ctx, f.scope, stale, now, cfg)
+	expired, err := f.svc.expire(ctx, f.scope, stale, now, cfg, domain.ResolveTimeout, uuid.Nil)
 	require.NoError(t, err)
 	assert.False(t, expired, "the reaper must stand down, not expire a refreshed alert")
 
@@ -121,7 +122,7 @@ func TestReaperDoesNotClobberAGenuineResolution(t *testing.T) {
 	}
 	reaped := make(chan reapResult, 1)
 	go func() {
-		ok, err := f.svc.expire(context.Background(), f.scope, candidates[0], now, cfg)
+		ok, err := f.svc.expire(context.Background(), f.scope, candidates[0], now, cfg, domain.ResolveTimeout, uuid.Nil)
 		reaped <- reapResult{ok, err}
 	}()
 
@@ -374,7 +375,7 @@ func TestOutOfOrderWebhookCannotRewindSourceEndsAt(t *testing.T) {
 	candidates, err := f.cases.ReapCandidates(ctx, f.scope, now.Add(-cfg.ResolveGrace), 10)
 	require.NoError(t, err)
 	for _, c := range candidates {
-		_, err := f.svc.expire(ctx, f.scope, c, now, cfg)
+		_, err := f.svc.expire(ctx, f.scope, c, now, cfg, domain.ResolveTimeout, uuid.Nil)
 		require.NoError(t, err)
 	}
 

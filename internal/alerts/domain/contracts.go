@@ -444,9 +444,30 @@ const (
 	TransitionUnsuppress TransitionKind = "unsuppress"
 	// TransitionResolve is T5: an explicit upstream status="resolved".
 	TransitionResolve TransitionKind = "resolve"
-	// TransitionExpire is T6: the reaper, and only while the source is healthy.
+	// TransitionExpire is T6: the reaper, and only while the source is healthy —
+	// or, as `source_removed`, once no source is left to be (ADR 0056 §2).
 	TransitionExpire TransitionKind = "expire"
 )
+
+// CaseSources is what a Case's cluster says about who can still speak for it,
+// read by the reaper inside the transaction that would expire the Case
+// (ADR 0056). The cluster is the only surviving edge from a Case to its sources
+// (`caseSourcesSQL`), and Alertmanager HA replicas are several sources on one
+// cluster, so the answer is a count before it is an id.
+type CaseSources struct {
+	// Live is how many live (not soft-deleted) sources feed the cluster.
+	Live int
+	// Removed is how many soft-deleted sources the cluster has. `source_removed`
+	// needs Live == 0 AND Removed > 0: a cluster nothing was ever removed from is
+	// not one whose source was removed.
+	Removed int
+	// SourceID is the one live source when Live == 1, and uuid.Nil otherwise —
+	// the same refusal to guess `caseSourcesSQL` makes.
+	SourceID uuid.UUID
+	// MaxSilence is that source's `max_silence_s`. Zero when the source turned it
+	// off, or when there is not exactly one live source.
+	MaxSilence time.Duration
+}
 
 // Transition is the persisted effect of one edge. It is produced by the domain
 // state machine (Apply) and NEVER assembled by hand in a repository or a handler

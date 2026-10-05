@@ -345,21 +345,34 @@ func (r SuppressionReason) IsZero() bool { return r.s == "" }
 type ResolveReason struct{ s string }
 
 // The closed ResolveReason set.
+//
+// ⭐ ONE OF THEM IS `resolved` AND THE OTHER THREE ARE `expired` (ADR 0056 §4).
+// The three expiries are three different facts about WHY oto stopped being able
+// to say the alert is firing, and the reason is shown wherever the state is; but
+// none of them is a resolution, and IsExpiry is the one place that says so.
 var (
 	// ResolveUpstream pairs with StateResolved: Alertmanager said so.
 	ResolveUpstream = ResolveReason{"upstream"}
-	// ResolveTimeout pairs with StateExpired: the reaper swept it.
+	// ResolveTimeout pairs with StateExpired: the reaper swept it, because
+	// `source_ends_at + resolve_grace` passed under a healthy source.
 	ResolveTimeout = ResolveReason{"timeout"}
+	// ResolveSilent pairs with StateExpired: the source is healthy and has said
+	// nothing about this Case for longer than its `max_silence_s` (ADR 0056 §3).
+	ResolveSilent = ResolveReason{"silent"}
+	// ResolveSourceRemoved pairs with StateExpired: no live source feeds the
+	// Case's cluster any more, so nothing is left that could say it ended
+	// (ADR 0056 §2).
+	ResolveSourceRemoved = ResolveReason{"source_removed"}
 )
 
 // NewResolveReason parses a resolve reason.
 func NewResolveReason(s string) (ResolveReason, error) {
 	switch s {
-	case ResolveUpstream.s, ResolveTimeout.s:
+	case ResolveUpstream.s, ResolveTimeout.s, ResolveSilent.s, ResolveSourceRemoved.s:
 		return ResolveReason{s: s}, nil
 	default:
 		return ResolveReason{}, errs.Newf(errs.KindValidation, "enum",
-			"resolve_reason must be one of: upstream, timeout (got %q)", s)
+			"resolve_reason must be one of: upstream, timeout, silent, source_removed (got %q)", s)
 	}
 }
 
@@ -368,6 +381,12 @@ func (r ResolveReason) String() string { return r.s }
 
 // IsZero reports whether no resolve reason is set.
 func (r ResolveReason) IsZero() bool { return r.s == "" }
+
+// IsExpiry reports whether this reason reads as `expired`: every reason except
+// `upstream`. Only an explicit upstream `status="resolved"` is a resolution.
+func (r ResolveReason) IsExpiry() bool {
+	return r == ResolveTimeout || r == ResolveSilent || r == ResolveSourceRemoved
+}
 
 // ActorKind names who or what caused an AlertEvent (alert_events.actor_kind).
 // It is also the authority check on the lifecycle machine: `suppressed` can only

@@ -77,8 +77,10 @@ const orgFactsSQL = `SELECT id, slug, name FROM orgs WHERE id = $1`
 // from the two axes rather than from a column that stopped carrying it.
 const caseStateSQL = `CASE WHEN o.state = 'open' AND a.suppression_reason IS NOT NULL THEN 'suppressed'
                            WHEN o.state = 'open' THEN a.state
-                           WHEN o.resolve_reason = 'timeout' THEN 'expired'
-                           ELSE 'resolved' END`
+                           -- ADR 0056 §4: only upstream is a resolution; timeout, silent and
+                           -- source_removed are all expired, so the default is the safe word.
+                           WHEN o.resolve_reason = 'upstream' THEN 'resolved'
+                           ELSE 'expired' END`
 
 // alertFactsColumns is the ONE column list `scanAlertFacts` reads, named once
 // because two statements fill an `AlertFacts` and a positional scan cannot notice
