@@ -11,6 +11,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -602,5 +603,152 @@ func TestCreatingAnInvestigatorPinsTheEndpointsIdentity(t *testing.T) {
 	if _, err := r.svc.CreateInvestigator(context.Background(), r.scope, domain.InvestigatorDraft{
 		Name: "second", Enabled: true, Budgets: domain.DefaultBudgets(), Spec: spec}); !errs.IsKind(err, errs.KindNotFound) {
 		t.Fatalf("an unknown endpoint gave %v", err)
+	}
+}
+
+// TestATurnAsksForNoMoreThanOneAnswerCanBe — review A1: an endpoint asked for the whole
+// budget as one answer refuses the request, so each turn asks for the per-turn cap or
+// what is left, whichever is less; a turn cut at the cap with budget left is not the
+// budget speaking.
+func TestATurnAsksForNoMoreThanOneAnswerCanBe(t *testing.T) {
+	budgets := func(tokens int64) domain.Budgets {
+		b, err := domain.NewBudgets(20, tokens, 300)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+
+	t.Run("a large budget sends the per-turn cap", func(t *testing.T) {
+		r := newRig(t)
+		inv, c := r.setup(t, budgets(200_000))
+		r.dial.script = []modelfake.Step{modelfake.Text("The deploy.", 300, 40)}
+		r.run(t, r.request(t, inv, c).ID)
+		if mo := r.dial.model().Requests()[0].MaxOutputTokens; mo != domain.MaxTurnOutputTokens {
+			t.Fatalf("output cap = %d, want %d", mo, domain.MaxTurnOutputTokens)
+		}
+	})
+
+	t.Run("a small remainder sends the remainder", func(t *testing.T) {
+		r := newRig(t)
+		inv, c := r.setup(t, budgets(3000))
+		r.dial.script = []modelfake.Step{
+			modelfake.Calls(900, 100, call("c1", ToolCaseTimeline, `{}`)),
+			modelfake.Text("The deploy.", 300, 40),
+		}
+		r.run(t, r.request(t, inv, c).ID)
+		if mo := r.dial.model().Requests()[1].MaxOutputTokens; mo != 2000 {
+			t.Fatalf("second turn's output cap = %d, want the 2000 left", mo)
+		}
+	})
+
+	t.Run("cut at the per-turn cap with budget left is a model error", func(t *testing.T) {
+		r := newRig(t)
+		inv, c := r.setup(t, budgets(200_000))
+		r.dial.script = []modelfake.Step{{Text: "The cause is", Usage: domain.Usage{InputTokens: 300, OutputTokens: 4096},
+			Finish: domain.FinishLength}}
+		got, steps := r.run(t, r.request(t, inv, c).ID)
+		if got.Status != domain.StatusFailed || got.Ending.Reason != domain.ReasonModelError ||
+			!strings.Contains(got.Ending.Detail, "per-turn output cap") {
+			t.Fatalf("ended %+v, want model_error naming the per-turn cap", got.Ending)
+		}
+		if got.Finding != "" || len(r.findings.published) != 0 || steps[0].Text != "The cause is" {
+			t.Fatalf("finding %q, %d published, step text %q: the cut text stays in the Step only",
+				got.Finding, len(r.findings.published), steps[0].Text)
+		}
+	})
+}
+
+// TestAFinalTurnThatSaysNothingHasNoFinding — review A6: earlier narration is not a
+// conclusion, so a run whose last turn is empty fails rather than publish "let me check".
+func TestAFinalTurnThatSaysNothingHasNoFinding(t *testing.T) {
+	r := newRig(t)
+	inv, c := r.setup(t, domain.DefaultBudgets())
+	r.dial.script = []modelfake.Step{
+		{Text: "Let me check the timeline.", ToolCalls: []domain.ToolCall{call("c1", ToolCaseTimeline, `{}`)},
+			Usage: domain.Usage{InputTokens: 100, OutputTokens: 10}},
+		modelfake.Text("", 200, 1),
+	}
+	got, _ := r.run(t, r.request(t, inv, c).ID)
+	if got.Status != domain.StatusFailed || got.Ending.Reason != domain.ReasonModelError ||
+		!strings.Contains(got.Ending.Detail, "without an answer") {
+		t.Fatalf("ended %+v, want model_error: the model ended without an answer", got.Ending)
+	}
+	if got.Finding != "" || len(r.findings.published) != 0 {
+		t.Fatalf("finding %q, %d published: stale narration became the answer", got.Finding, len(r.findings.published))
+	}
+}
+
+// TestARefusedTurnIsCountedAndRecorded — review A7: an answer the endpoint billed and oto
+// could not take still costs the run its tokens, on a model-turn Step.
+func TestARefusedTurnIsCountedAndRecorded(t *testing.T) {
+	r := newRig(t)
+	inv, c := r.setup(t, domain.DefaultBudgets())
+	r.dial.script = []modelfake.Step{modelfake.Fail(domain.RefusedTurn(domain.Usage{InputTokens: 100, OutputTokens: 20},
+		errs.UpstreamDown("model_no_choice", "the model endpoint answered with no choice", nil)))}
+	got, steps := r.run(t, r.request(t, inv, c).ID)
+	if got.Status != domain.StatusFailed || got.Ending.Reason != domain.ReasonModelError {
+		t.Fatalf("ended %+v", got.Ending)
+	}
+	if got.Spent.Total() != 120 || len(steps) != 1 || steps[0].Kind != domain.StepModelTurn ||
+		steps[0].Usage.Total() != 120 || !strings.Contains(steps[0].Text, "model_no_choice") {
+		t.Fatalf("spent %d, steps %+v: the billed turn is not on the record", got.Spent.Total(), steps)
+	}
+}
+
+// TestANulFromAToolDoesNotEndTheRun — review A4: Postgres refuses U+0000, so a result
+// holding one is cleaned before it is recorded, and the per-call result never ends a run.
+func TestANulFromAToolDoesNotEndTheRun(t *testing.T) {
+	r := newRig(t)
+	inv, c := r.setup(t, domain.DefaultBudgets())
+	r.svc.tools = append(r.svc.tools, funcTool{name: "nul", fn: func(context.Context) (string, error) {
+		return "pod\x00name\xff", nil
+	}})
+	tools, _ := domain.NewAllowlist([]string{"nul"})
+	if _, err := r.svc.UpdateInvestigator(context.Background(), r.scope, inv.ID, domain.InvestigatorChange{Tools: &tools}); err != nil {
+		t.Fatal(err)
+	}
+	inv, _ = r.svc.investigators.Get(context.Background(), r.scope, inv.ID)
+	r.dial.script = []modelfake.Step{modelfake.Calls(100, 10, call("c1", "nul", `{}`)), modelfake.Text("done", 100, 10)}
+	got, steps := r.run(t, r.request(t, inv, c).ID)
+	if got.Status != domain.StatusCompleted {
+		t.Fatalf("ended %+v", got.Ending)
+	}
+	if strings.Contains(steps[1].Result, "\x00") {
+		t.Fatalf("result %q still holds a NUL", steps[1].Result)
+	}
+	// The model read the same bytes the Step kept.
+	sent := r.dial.model().Requests()[1].Messages
+	if last := sent[len(sent)-1]; last.Content != steps[1].Result {
+		t.Fatalf("the model read %q, the Step kept %q", last.Content, steps[1].Result)
+	}
+}
+
+// TestAnswerShapingCallsAreFreeOnlyUpToTheCap — review A11: classifications cost no step
+// up to MaxFreeCallsPerRun; past it each is refused on the record and counted.
+func TestAnswerShapingCallsAreFreeOnlyUpToTheCap(t *testing.T) {
+	r := newRig(t)
+	r.writeClasses(t, deployRegression, capacity)
+	inv, c := r.setup(t, domain.DefaultBudgets())
+	calls := make([]domain.ToolCall, 0, domain.MaxFreeCallsPerRun+10)
+	for i := range domain.MaxFreeCallsPerRun + 10 {
+		calls = append(calls, classify(fmt.Sprintf("c%d", i), "capacity"))
+	}
+	r.dial.script = []modelfake.Step{modelfake.Calls(300, 200, calls...), modelfake.Text("Out of memory.", 300, 20)}
+	got, steps := r.run(t, r.request(t, inv, c).ID)
+	if got.Status != domain.StatusCompleted || got.ToolCalls != 10 {
+		t.Fatalf("ended %+v with %d Tool calls, want completed with the 10 past the cap counted", got.Ending, got.ToolCalls)
+	}
+	refused := 0
+	for _, s := range steps {
+		if s.Kind == domain.StepToolCall && s.Outcome == domain.OutcomeRefused {
+			refused++
+			if !strings.Contains(s.Result, "answer-shaping") {
+				t.Fatalf("refusal says %q", s.Result)
+			}
+		}
+	}
+	if refused != 10 || got.Classification != "capacity" {
+		t.Fatalf("%d refused, class %q; want calls 51-60 refused and the pick kept", refused, got.Classification)
 	}
 }

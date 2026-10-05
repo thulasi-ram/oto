@@ -38,6 +38,10 @@ type Step struct {
 	NoUsage bool
 	// Err, when set, is returned instead of a turn — a 5xx, a timeout, a refusal.
 	Err error
+	// Finish, when set, is the finish reason the turn reports — `length` for an answer
+	// cut at its output cap, `content_filter` for a filtered one. Unset, it is the one an
+	// endpoint reports for the turn's shape.
+	Finish domain.FinishReason
 }
 
 // Text scripts a turn that only speaks.
@@ -116,6 +120,9 @@ func (p *Provider) Complete(ctx context.Context, req domain.ModelRequest) (domai
 	finish := domain.FinishStop
 	if len(step.ToolCalls) > 0 {
 		finish = domain.FinishToolCalls
+	}
+	if step.Finish != "" {
+		finish = step.Finish
 	}
 	var usage *domain.Usage
 	if !step.NoUsage {

@@ -388,8 +388,17 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $
 	return nil
 }
 
-// MaxSteps bounds one transcript read. A run's step budget is at most 100 Tool calls,
-// each with its turn; this is that ceiling with room, not a page size.
+// MaxSteps bounds one transcript read. It is a ceiling with room, not a page size, and
+// the arithmetic that keeps every transcript under it is (review A11):
+//
+//   - Tool calls that count are at most domain.MaxStepBudget (100) — a refused
+//     answer-shaping call past its cap counts too;
+//   - answer-shaping calls that do not count are at most domain.MaxFreeCallsPerRun (50);
+//   - every turn but the last makes at least one call, so turns are at most 151.
+//
+// So a run records at most 2×(100+50)+1 = 301 Steps, plus the calls of the one turn the
+// step budget stopped mid-way, which domain.MaxTurnOutputTokens bounds. 1000 is that with
+// room; a run never reaches it, so no read is ever silently cut.
 const MaxSteps = 1000
 
 // Steps reads a run's transcript, in order.

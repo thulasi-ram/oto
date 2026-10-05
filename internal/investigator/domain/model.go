@@ -244,26 +244,62 @@ func NewTurn(identity ModelIdentity, text string, calls []ToolCall, usage *Usage
 	seen := make(map[string]struct{}, len(calls))
 	for i, c := range calls {
 		if c.ID == "" || c.Name == "" {
-			return Turn{}, errs.Newf(errs.KindUpstreamDown, "model_tool_call_invalid",
-				"the model endpoint %s returned Tool call %d without an id or a name", identity, i)
+			return Turn{}, RefusedTurn(*usage, errs.Newf(errs.KindUpstreamDown, "model_tool_call_invalid",
+				"the model endpoint %s returned Tool call %d without an id or a name", identity, i))
 		}
 		if _, dup := seen[c.ID]; dup {
-			return Turn{}, errs.Newf(errs.KindUpstreamDown, "model_tool_call_invalid",
-				"the model endpoint %s returned two Tool calls with the id %q", identity, c.ID)
+			return Turn{}, RefusedTurn(*usage, errs.Newf(errs.KindUpstreamDown, "model_tool_call_invalid",
+				"the model endpoint %s returned two Tool calls with the id %q", identity, c.ID))
 		}
 		seen[c.ID] = struct{}{}
 	}
 	return Turn{Text: text, ToolCalls: append([]ToolCall(nil), calls...), Usage: *usage, Finish: finish}, nil
 }
 
+// TurnRefusedError is an answer the endpoint gave — and billed, because its usage was
+// read — that oto could not take as a Turn: no choice, a Tool call that is not a
+// function, a call without an id or a name, two calls sharing an id (review A7).
+//
+// ⭐ THE TOKENS WERE SPENT EVEN THOUGH THE TURN WAS REFUSED. Returning a bare error would
+// drop them, and a billed turn invisible to the run's spend and to the org's daily
+// budget is exactly what "usage is mandatory" forbids. So once usage is known, a refusal
+// carries it: the loop adds it to the run, records a model-turn Step holding it, and
+// ends the run `model_error`. Err is the refusal itself; errors.As and errs.CodeOf see
+// through to it.
+type TurnRefusedError struct {
+	Usage Usage
+	Err   error
+}
+
+// RefusedTurn wraps a refusal of an answer whose usage was already read.
+func RefusedTurn(usage Usage, err error) error { return &TurnRefusedError{Usage: usage, Err: err} }
+
+func (e *TurnRefusedError) Error() string { return e.Err.Error() }
+
+// Unwrap exposes the refusal, so its errs.Error code and message are what is recorded.
+func (e *TurnRefusedError) Unwrap() error { return e.Err }
+
+// MaxTurnOutputTokens is oto's cap on what one turn may write (review A1).
+//
+// ⚠️ IT IS NOT THE TOKEN BUDGET. A run's budget runs to millions; a model's own ceiling
+// on one answer is a few thousand to a few tens of thousands, and an endpoint asked for
+// more than its ceiling refuses the request outright (a 400 before any token is spent).
+// So each turn asks for the smaller of this and what is left of the budget. A turn cut
+// at THIS cap — with budget still left — is the model running past oto's per-turn limit,
+// recorded `model_error` with that said; a turn cut at what was left of the budget is the
+// token budget speaking, recorded `exhausted`. 4096 is under every tool-calling model's
+// ceiling and above any sane single answer or batch of Tool calls.
+const MaxTurnOutputTokens int64 = 4096
+
 // ModelRequest is one turn's question: the conversation so far and the Tools the
 // model may ask for.
 type ModelRequest struct {
 	Messages []Message
 	Tools    []ToolSchema
-	// MaxOutputTokens caps this turn's output. Zero sends no cap. The loop derives it
-	// from what is left of the Investigation's token budget, so a turn cannot spend
-	// past the budget by more than its own input.
+	// MaxOutputTokens caps this turn's output. Zero sends no cap. The loop sends the
+	// smaller of MaxTurnOutputTokens and what is left of the Investigation's token
+	// budget, so a turn cannot spend past the budget by more than its own input, and
+	// never asks an endpoint for more than one answer can be.
 	MaxOutputTokens int64
 }
 

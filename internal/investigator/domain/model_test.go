@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
+	"unicode/utf8"
 
 	"github.com/thulasiram/oto/internal/platform/errs"
 )
@@ -165,5 +167,43 @@ func TestUsageMissingNamesTheIdentityNotASecret(t *testing.T) {
 	msg := fmt.Sprint(UsageMissing(testIdentity))
 	if !strings.Contains(msg, testIdentity.String()) {
 		t.Fatalf("message %q does not name the endpoint", msg)
+	}
+}
+
+// TestARefusedTurnStillCarriesItsUsage — review A7: once usage was read, the turn was
+// billed, so a refusal carries the tokens for the loop to count.
+func TestARefusedTurnStillCarriesItsUsage(t *testing.T) {
+	u, _ := NewUsage(100, 20)
+	_, err := NewTurn(testIdentity, "", []ToolCall{{ID: "c1", Name: "a"}, {ID: "c1", Name: "b"}}, &u, FinishToolCalls)
+	var refused *TurnRefusedError
+	if !errors.As(err, &refused) || refused.Usage != u {
+		t.Fatalf("err = %#v, want a TurnRefusedError carrying %+v", err, u)
+	}
+	if errs.CodeOf(err) != "model_tool_call_invalid" || IsUsageMissing(err) {
+		t.Fatalf("code = %q; the refusal's own code must show through", errs.CodeOf(err))
+	}
+}
+
+// TestNoStepOrFindingHoldsANul — review A4: Postgres TEXT and jsonb refuse U+0000, so a
+// Step or a Finding built from one would fail its write and end the run `internal`.
+func TestNoStepOrFindingHoldsANul(t *testing.T) {
+	bad := "a\x00b\xffc"
+	call := ToolCall{ID: "c\x001", Name: "t\x00", Arguments: `{"q":"` + bad + `"}`}
+	tool := NewToolStep(1, call, OutcomeOK, bad, 0, time.Time{})
+	turn := NewModelTurnStep(2, Turn{Text: bad, ToolCalls: []ToolCall{call}}, 0, time.Time{})
+	for name, s := range map[string]string{
+		"result": tool.Result, "arguments": tool.Call.Arguments, "call id": tool.Call.ID, "call name": tool.Call.Name,
+		"turn text": turn.Text, "turn call": turn.Calls[0].Arguments + turn.Calls[0].ID + turn.Calls[0].Name,
+		"finding": NewFinding(bad), "ending": EndedBy(ReasonModelError, bad).Detail,
+	} {
+		if strings.Contains(s, "\x00") || !utf8.ValidString(s) {
+			t.Errorf("%s = %q, still holds a NUL or invalid UTF-8", name, s)
+		}
+	}
+	if got := CleanText(bad); got != "a�b�c" {
+		t.Fatalf("CleanText = %q", got)
+	}
+	if s := "plain é"; CleanText(s) != s {
+		t.Fatal("clean text was changed")
 	}
 }

@@ -113,7 +113,7 @@ func New(cfg Config) (*Provider, error) {
 	opts := []option.RequestOption{
 		// The SDK joins paths onto the base with a trailing slash.
 		option.WithBaseURL(base + "/"),
-		option.WithHTTPClient(cfg.HTTPClient),
+		option.WithHTTPClient(guarded(cfg.HTTPClient, DefaultMaxResponseBytes)),
 		option.WithMaxRetries(cfg.MaxRetries),
 	}
 	if cfg.APIKey != "" {
@@ -221,9 +221,11 @@ func (p *Provider) turn(c *openai.ChatCompletion) (domain.Turn, error) {
 	if usage == nil {
 		return domain.Turn{}, domain.UsageMissing(p.identity)
 	}
+	// ⭐ FROM HERE THE ANSWER IS PAID FOR, so a refusal carries its usage
+	// (domain.TurnRefusedError) and the loop still counts the tokens (review A7).
 	if len(c.Choices) == 0 {
-		return domain.Turn{}, errs.Newf(errs.KindUpstreamDown, "model_no_choice",
-			"the model endpoint %s answered with no choice", p.identity)
+		return domain.Turn{}, domain.RefusedTurn(*usage, errs.Newf(errs.KindUpstreamDown, "model_no_choice",
+			"the model endpoint %s answered with no choice", p.identity))
 	}
 
 	// One choice is asked for (`n` is never sent), so the first is the answer.
@@ -233,12 +235,19 @@ func (p *Provider) turn(c *openai.ChatCompletion) (domain.Turn, error) {
 		if tc.Type != "" && tc.Type != "function" {
 			// oto offers only function Tools, so a `custom` call is an endpoint that
 			// answered a question it was not asked.
-			return domain.Turn{}, errs.Newf(errs.KindUpstreamDown, "model_tool_call_unsupported",
-				"the model endpoint %s returned a %q Tool call; oto offers only function Tools", p.identity, tc.Type)
+			return domain.Turn{}, domain.RefusedTurn(*usage, errs.Newf(errs.KindUpstreamDown, "model_tool_call_unsupported",
+				"the model endpoint %s returned a %q Tool call; oto offers only function Tools", p.identity, tc.Type))
 		}
 		calls = append(calls, domain.ToolCall{ID: tc.ID, Name: tc.Function.Name, Arguments: tc.Function.Arguments})
 	}
-	return domain.NewTurn(p.identity, choice.Message.Content, calls, usage, domain.FinishReason(choice.FinishReason))
+	text, finish := choice.Message.Content, domain.FinishReason(choice.FinishReason)
+	if choice.Message.Refusal != "" && strings.TrimSpace(text) == "" {
+		// ⭐ A MODEL THAT DECLINED SAID SO IN `refusal`, NOT IN `content` (review A6).
+		// Dropping it would make a refusal look like an empty answer; it is kept as the
+		// turn's text, and the turn is a filtered one, which the loop ends `model_error`.
+		text, finish = "refused: "+choice.Message.Refusal, domain.FinishFiltered
+	}
+	return domain.NewTurn(p.identity, text, calls, usage, finish)
 }
 
 // mapErr turns a transport or API failure into an errs.Error.
@@ -260,6 +269,16 @@ func (p *Provider) mapErr(ctx context.Context, err error) error {
 			"the model request was cancelled or ran out of time before it was answered")
 	}
 
+	if errors.Is(err, errRedirectRefused) {
+		return errs.UpstreamDown("model_request_refused",
+			fmt.Sprintf("the model endpoint %s answered with a redirect; oto does not follow one, because the API key "+
+				"would go with it — configure the URL it redirects to", p.identity), errRedirectRefused)
+	}
+	if errors.Is(err, errAnswerTooLarge) {
+		return errs.UpstreamDown("model_answer_too_large",
+			fmt.Sprintf("the model endpoint %s answered with more than the %d bytes oto will read", p.identity,
+				DefaultMaxResponseBytes), errAnswerTooLarge)
+	}
 	var apiErr *openai.Error
 	if errors.As(err, &apiErr) {
 		cause := fmt.Errorf("model endpoint answered %d: type=%q code=%q message=%q",

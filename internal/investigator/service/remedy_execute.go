@@ -251,7 +251,9 @@ func (s *Service) callWriteTool(ctx context.Context, scope db.TenantScope, c *cl
 // at MaxRemedyResult with a note saying so. "" is kept as a sentence, so an executed Remedy
 // always says what came back.
 func keptResult(text string, redact domain.ResultRedactor) string {
-	out, redacted := redact.Redact(text)
+	// Cleaned first (review A4): a NUL from the ToolServer would fail the record of a call
+	// that was MADE, leaving the Remedy for the sweep's `outcome_unknown`.
+	out, redacted := redact.Redact(domain.CleanText(text))
 	note := ""
 	if n := len([]rune(out)); n > domain.MaxRemedyResult-200 {
 		out = clipText(out, domain.MaxRemedyResult-200)

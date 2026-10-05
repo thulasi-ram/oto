@@ -351,3 +351,18 @@ func TestTheExecuteJobOutlastsTheLongestCall(t *testing.T) {
 			domain.RemedyOutcomeDeadline, jobs.RemedyExecuteJobTimeout)
 	}
 }
+
+// TestAWriteToolAnswerWithANulIsStillRecorded — review A4 on the executor: a call that was
+// MADE must be recorded, and Postgres refuses U+0000, so the answer is cleaned first.
+func TestAWriteToolAnswerWithANulIsStillRecorded(t *testing.T) {
+	r := newRig(t)
+	rc := &recorder{}
+	rem, _, _, _ := r.approvedRemedy(t, rc.tool("deployment.apps/api\x00 restarted", false))
+	if err := r.svc.ExecuteRemedy(context.Background(), r.scope, rem.ID); err != nil {
+		t.Fatal(err)
+	}
+	got := r.remedyNow(t, rem.ID)
+	if got.State != domain.RemedyExecuted || strings.Contains(got.Result, "\x00") || !strings.Contains(got.Result, "restarted") {
+		t.Fatalf("executed = %s, result %q", got.State, got.Result)
+	}
+}

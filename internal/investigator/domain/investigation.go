@@ -333,10 +333,19 @@ type Step struct {
 	RecordedAt time.Time
 }
 
+// MaxFreeCallsPerRun bounds the answer-shaping calls one run may make for nothing:
+// `oto_classify` and the proposing Tools cost no step, because they are the shape of the
+// answer rather than a look at anything (review A11). Past this many, each one is
+// REFUSED on the record and counted against the step budget like any Tool call, so a
+// model that loops on them meets a budget like any other loop. Fifty is ten times
+// MaxSuggestionsPerRun and far past any honest re-ask of a classification.
+const MaxFreeCallsPerRun = 50
+
 // NewModelTurnStep records one model turn.
 func NewModelTurnStep(seq int, t Turn, took time.Duration, at time.Time) Step {
 	calls := make([]ToolCall, len(t.ToolCalls))
 	for i, c := range t.ToolCalls {
+		c.ID, c.Name = CleanText(c.ID), CleanText(c.Name)
 		c.Arguments = clip(c.Arguments, MaxStepText)
 		calls[i] = c
 	}
@@ -352,13 +361,28 @@ func NewModelTurnStep(seq int, t Turn, took time.Duration, at time.Time) Step {
 // bytes the model wrote, kept even when they did not parse — that is a fact about the
 // model.
 func NewToolStep(seq int, call ToolCall, outcome ToolOutcome, result string, took time.Duration, at time.Time) Step {
+	call.ID, call.Name = CleanText(call.ID), CleanText(call.Name)
 	call.Arguments = clip(call.Arguments, MaxStepText)
 	return Step{Seq: seq, Kind: StepToolCall, Call: call, Outcome: outcome,
 		Result: clip(result, MaxStepText), Duration: nonNegative(took), RecordedAt: at.UTC()}
 }
 
-// clip cuts s to at most n characters on a rune boundary.
+// CleanText is text as Postgres will store it (review A4): invalid UTF-8 and U+0000 each
+// become U+FFFD. TEXT refuses a NUL (22021) and jsonb refuses `\u0000` (22P05), so a
+// ToolServer or a model that answered with one would otherwise fail the write of the
+// Step — and a Step oto cannot write ends the run `internal`, when a per-call result is
+// never supposed to end a run at all. Every Step text, argument, result, ending and
+// Finding passes through it (clip calls it).
+func CleanText(s string) string {
+	if utf8.ValidString(s) && !strings.Contains(s, "\x00") {
+		return s
+	}
+	return strings.ReplaceAll(strings.ToValidUTF8(s, "\uFFFD"), "\x00", "\uFFFD")
+}
+
+// clip cuts s to at most n characters on a rune boundary, after CleanText.
 func clip(s string, n int) string {
+	s = CleanText(s)
 	if utf8.RuneCountInString(s) <= n {
 		return s
 	}

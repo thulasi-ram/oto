@@ -428,8 +428,11 @@ func mapKeys(m map[string][]string) []string {
 
 func quoteName(s string) string { return fmt.Sprintf("%q", s) }
 
-// clipText cuts s to at most n characters on a rune boundary.
+// clipText cuts s to at most n characters on a rune boundary, after domain.CleanText —
+// a ToolServer's own error text can carry a NUL, and a Remedy's detail or a discovery
+// error holding one could not be written.
 func clipText(s string, n int) string {
+	s = domain.CleanText(s)
 	r := []rune(s)
 	if len(r) <= n {
 		return s

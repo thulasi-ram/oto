@@ -20,8 +20,14 @@ package service
 //   - STEPS: the most Tool calls one run may make. A call asked for past it is recorded
 //     as a refused Step, so the transcript shows what the model wanted next, and the run
 //     ends.
-//   - TOKENS: the most input + output tokens. Each turn is capped at what is left, and a
-//     turn that reaches the budget ends the run — even one cut short mid-answer.
+//   - TOKENS: the most input + output tokens. Each turn is capped at what is left — or
+//     at domain.MaxTurnOutputTokens, whichever is less — and a turn that reaches the
+//     budget ends the run, even one cut short mid-answer. A turn cut at the per-turn cap
+//     with budget still left is NOT the budget: it ends `model_error` and says so.
+//
+// ⛔ A COMPLETED RUN'S FINDING IS ITS FINAL TURN'S TEXT, AND NOTHING ELSE. A final turn
+// that says nothing, is filtered, or is the model declining ends `model_error` with no
+// Finding — the narration of an earlier turn is never promoted to a conclusion.
 //   - WALL TIME: from the moment the run starts, on the injected clock and on a context
 //     deadline, so a model call that never returns is cut off at the budget.
 //
@@ -48,7 +54,9 @@ package service
 //
 // The classify call is the shape of the answer, not a look at anything, so it does not
 // count against the step budget and is not one of the run's Tool calls; it is still a
-// Step, because what the model said is the record. With no classes nothing is offered,
+// Step, because what the model said is the record. ⛔ Free only up to
+// domain.MaxFreeCallsPerRun answer-shaping calls (classifications and proposals
+// together): past it each is refused and costs a step, so no loop of them is unbounded. With no classes nothing is offered,
 // the prompt is the Investigator's own, and the Finding carries no classification.
 //
 // ⭐ A SUGGESTION IS PROPOSED THE SAME WAY (ADR 0053 §2, git-bug 8327c00). The two
@@ -185,27 +193,43 @@ func (s *Service) runLoop(ctx context.Context, p plan, startedAt time.Time, reco
 	var (
 		out outcome
 		seq int
+		// lastText is the last thing the model said, in any turn: the partial Finding a
+		// budget keeps. ⛔ It is never the Finding of a run that COMPLETED — that is the
+		// final turn's own text, or there is none (review A6).
+		lastText string
+		// freeCalls counts the answer-shaping calls taken for nothing, against
+		// domain.MaxFreeCallsPerRun (review A11).
+		freeCalls int
 	)
 	next := func() int { seq++; return seq }
 	end := func(e domain.Ending) (outcome, error) {
+		if e.Status == domain.StatusExhausted {
+			out.finding = lastText
+		}
 		out.ending, out.classification = e, p.classes.Settle(out.picked)
 		return out, nil
 	}
-	// takeClassification answers one `oto_classify` call and records it. It is not a
-	// Tool call against the step budget (the loop comment says why), and never ends
-	// the run.
-	takeClassification := func(call domain.ToolCall) error {
-		o, result := answerClassify(p.classes, call, &out)
-		if err := record(ctx, domain.NewToolStep(next(), call, o, result, 0, s.now())); err != nil {
-			return err
+	// isFree reports whether a call is answer-shaping — a classification or a proposal —
+	// which the loop answers itself and which costs no step while under the cap.
+	isFree := func(call domain.ToolCall) bool {
+		if classifying && call.Name == domain.ClassifyTool {
+			return true
 		}
-		messages = append(messages, domain.ToolResultMessage(call.ID, result))
-		return nil
+		switch byName[call.Name].(type) {
+		case proposingTool, remedyProposingTool:
+			return true
+		}
+		return false
 	}
-	// takeProposal answers one proposing Tool call — a Suggestion — and records it. Like a
-	// classification it is the shape of the answer, so it is not a Tool call against the
-	// step budget, and it never ends the run (git-bug 8327c00).
-	takeProposal := func(call domain.ToolCall) (bool, error) {
+	// takeFree answers one answer-shaping call and records it, while the run is under
+	// domain.MaxFreeCallsPerRun. It is not a Tool call against the step budget (the loop
+	// comment says why) and never ends the run. It reports false for a call that is not
+	// answer-shaping, or one past the cap, which the caller handles as a Tool call.
+	takeFree := func(call domain.ToolCall) (bool, error) {
+		if !isFree(call) || freeCalls >= domain.MaxFreeCallsPerRun {
+			return false, nil
+		}
+		freeCalls++
 		var (
 			o      domain.ToolOutcome
 			result string
@@ -219,7 +243,7 @@ func (s *Service) runLoop(ctx context.Context, p plan, startedAt time.Time, reco
 			// none.
 			o, result = s.answerRemedy(wallCtx, p, pt, call, &out)
 		default:
-			return false, nil
+			o, result = answerClassify(p.classes, call, &out)
 		}
 		if err := record(ctx, domain.NewToolStep(next(), call, o, result, 0, s.now())); err != nil {
 			return true, err
@@ -245,15 +269,29 @@ func (s *Service) runLoop(ctx context.Context, p plan, startedAt time.Time, reco
 			return end(domain.EndedBy(domain.ReasonTokenBudget,
 				fmt.Sprintf("the token budget of %d was spent", p.budgets.MaxTokens)))
 		}
+		// ⭐ A TURN ASKS FOR NO MORE THAN ONE ANSWER CAN BE (review A1): an endpoint asked
+		// for the whole budget as one answer refuses the request outright.
+		turnCap := min(left, domain.MaxTurnOutputTokens)
 
 		began := s.now()
 		turn, err := p.model.Complete(wallCtx, domain.ModelRequest{
-			Messages: messages, Tools: schemas, MaxOutputTokens: left,
+			Messages: messages, Tools: schemas, MaxOutputTokens: turnCap,
 		})
 		if err != nil {
+			var refused *domain.TurnRefusedError
 			switch {
 			case ctx.Err() != nil:
 				return out, ctx.Err()
+			case errors.As(err, &refused):
+				// ⭐ A REFUSED TURN WAS STILL BILLED (review A7): its tokens are the run's,
+				// and a model-turn Step holds them, so the day's spend sees them too.
+				out.spent = out.spent.Add(refused.Usage)
+				why := safeMessage(err)
+				if err := record(ctx, domain.NewModelTurnStep(next(), domain.Turn{Text: why, Usage: refused.Usage},
+					s.now().Sub(began), s.now())); err != nil {
+					return out, err
+				}
+				return end(domain.EndedBy(domain.ReasonModelError, why))
 			case domain.IsUsageMissing(err):
 				return end(domain.EndedBy(domain.ReasonUsageMissing, safeMessage(err)))
 			case pastWall():
@@ -267,18 +305,42 @@ func (s *Service) runLoop(ctx context.Context, p plan, startedAt time.Time, reco
 		if err := record(ctx, domain.NewModelTurnStep(next(), turn, s.now().Sub(began), s.now())); err != nil {
 			return out, err
 		}
-		if f := domain.NewFinding(turn.Text); f != "" {
-			out.finding = f
+		said := domain.NewFinding(turn.Text)
+		if said != "" {
+			lastText = said
 		}
 
 		overBudget := out.spent.Total() > p.budgets.MaxTokens
 		if len(turn.ToolCalls) == 0 {
-			// ⭐ AN ANSWER CUT AT THE OUTPUT CAP IS THE TOKEN BUDGET SPEAKING, not the
-			// model finishing: the cap is what was left of the budget.
-			if turn.Finish == domain.FinishLength || overBudget {
+			switch {
+			case overBudget || (turn.Finish == domain.FinishLength && turnCap == left):
+				// ⭐ AN ANSWER CUT AT WHAT WAS LEFT OF THE BUDGET IS THE TOKEN BUDGET
+				// SPEAKING, not the model finishing.
 				return end(domain.EndedBy(domain.ReasonTokenBudget, fmt.Sprintf(
 					"the token budget of %d ran out at %d tokens, during the answer", p.budgets.MaxTokens, out.spent.Total())))
+			case turn.Finish == domain.FinishLength:
+				// ⛔ ONE CUT AT oto'S PER-TURN CAP, WITH BUDGET LEFT, IS NOT AN ANSWER
+				// (review A1): half a sentence is not a conclusion, and the budget did not
+				// stop it. The cut text stays in the Step.
+				return end(domain.EndedBy(domain.ReasonModelError, fmt.Sprintf(
+					"the answer was cut at oto's per-turn output cap of %d tokens, before the model finished",
+					domain.MaxTurnOutputTokens)))
+			case turn.Finish == domain.FinishFiltered:
+				// The endpoint filtered the answer, or the model declined (its refusal is
+				// the turn's text, and the Step keeps it).
+				detail := "the model endpoint filtered the answer (finish=content_filter)"
+				if said != "" {
+					detail += ": " + said
+				}
+				return end(domain.EndedBy(domain.ReasonModelError, detail))
+			case said == "":
+				// ⛔ A FINAL TURN THAT SAYS NOTHING HAS NO FINDING (review A6). An earlier
+				// turn's narration ("let me check…") is not a conclusion, and recording it
+				// as one would publish it as the answer.
+				return end(domain.EndedBy(domain.ReasonModelError,
+					fmt.Sprintf("the model ended without an answer (finish=%s)", finishOf(turn))))
 			}
+			out.finding = said
 			return end(domain.Completed())
 		}
 		if out.spent.Total() >= p.budgets.MaxTokens {
@@ -289,13 +351,7 @@ func (s *Service) runLoop(ctx context.Context, p plan, startedAt time.Time, reco
 
 		messages = append(messages, domain.AssistantMessage(turn))
 		for i, call := range turn.ToolCalls {
-			if classifying && call.Name == domain.ClassifyTool {
-				if err := takeClassification(call); err != nil {
-					return out, err
-				}
-				continue
-			}
-			if took, err := takeProposal(call); err != nil {
+			if took, err := takeFree(call); err != nil {
 				return out, err
 			} else if took {
 				continue
@@ -306,13 +362,7 @@ func (s *Service) runLoop(ctx context.Context, p plan, startedAt time.Time, reco
 				// oto stopped listening. A classification among them is still taken:
 				// it costs no step, and the partial Finding is classified by it.
 				for _, rest := range turn.ToolCalls[i:] {
-					if classifying && rest.Name == domain.ClassifyTool {
-						if err := takeClassification(rest); err != nil {
-							return out, err
-						}
-						continue
-					}
-					if took, err := takeProposal(rest); err != nil {
+					if took, err := takeFree(rest); err != nil {
 						return out, err
 					} else if took {
 						continue
@@ -324,6 +374,18 @@ func (s *Service) runLoop(ctx context.Context, p plan, startedAt time.Time, reco
 				}
 				return end(domain.EndedBy(domain.ReasonStepBudget,
 					fmt.Sprintf("the step budget of %d Tool calls was spent", p.budgets.MaxSteps)))
+			}
+			if isFree(call) {
+				// ⛔ PAST THE CAP, AN ANSWER-SHAPING CALL IS REFUSED AND COSTS A STEP (review
+				// A11): a model looping on them meets the step budget like any loop.
+				out.toolCalls++
+				msg := fmt.Sprintf("refused: past the %d answer-shaping calls one run may make; this one counted "+
+					"against the step budget", domain.MaxFreeCallsPerRun)
+				if err := record(ctx, domain.NewToolStep(next(), call, domain.OutcomeRefused, msg, 0, s.now())); err != nil {
+					return out, err
+				}
+				messages = append(messages, domain.ToolResultMessage(call.ID, msg))
+				continue
 			}
 			if pastWall() {
 				return wallSpent()
@@ -406,7 +468,9 @@ func (s *Service) callTool(ctx context.Context, p plan, served map[string]Tool, 
 		outcome, result = domain.OutcomeFailed, "failed: "+safeMessage(err)
 	}
 
-	result, redacted := p.redact.Redact(result)
+	// ⭐ CLEANED FIRST (review A4): a NUL or invalid UTF-8 from a ToolServer would fail the
+	// Step's write, and the model must read the same bytes the Step keeps.
+	result, redacted := p.redact.Redact(domain.CleanText(result))
 	note := ""
 	if len(result) > limits.MaxToolResult {
 		cut := truncateUTF8(result, limits.MaxToolResult)
@@ -420,6 +484,14 @@ func (s *Service) callTool(ctx context.Context, p plan, served map[string]Tool, 
 		note += fmt.Sprintf("\n[redacted: %d value(s) matched this org's redaction rules]", redacted)
 	}
 	return outcome, result + note
+}
+
+// finishOf is a turn's finish reason as a sentence names it.
+func finishOf(t domain.Turn) domain.FinishReason {
+	if t.Finish == "" {
+		return domain.FinishStop
+	}
+	return t.Finish
 }
 
 // safeMessage is an error as a Step or an ending may record it: oto's own code and

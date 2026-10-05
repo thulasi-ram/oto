@@ -3,6 +3,7 @@ package openaicompat
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -402,5 +403,91 @@ func TestDialerPinsTheStoredIdentity(t *testing.T) {
 	if _, err := p.Complete(context.Background(),
 		domain.ModelRequest{Messages: []domain.Message{domain.UserMessage("x")}}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func userAsks() domain.ModelRequest {
+	return domain.ModelRequest{Messages: []domain.Message{domain.UserMessage("x")}}
+}
+
+// TestAnAnswerPastTheBodyLimitIsRefused — review A3: the SDK reads a body whole, so the
+// adapter bounds it; an endpoint answering past the limit is a failed turn, not an
+// exhausted worker.
+func TestAnAnswerPastTheBodyLimitIsRefused(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"x","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"`)
+		chunk := strings.Repeat("a", 1<<20)
+		for range DefaultMaxResponseBytes>>20 + 1 {
+			if _, err := io.WriteString(w, chunk); err != nil {
+				return
+			}
+		}
+		_, _ = io.WriteString(w, `"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+	}))
+	t.Cleanup(srv.Close)
+	p, err := New(Config{BaseURL: srv.URL + "/v1", Model: "m", HTTPClient: srv.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = p.Complete(context.Background(), userAsks())
+	if errs.CodeOf(err) != "model_answer_too_large" || errs.KindOf(err) != errs.KindUpstreamDown {
+		t.Fatalf("err = %v, want model_answer_too_large", err)
+	}
+}
+
+// TestARedirectIsNotFollowed — review A8: Go re-sends Authorization on a same-host
+// redirect, a scheme downgrade included, so the adapter refuses every redirect before it
+// is followed; the place it pointed at hears nothing.
+func TestARedirectIsNotFollowed(t *testing.T) {
+	var reached sync.Map
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached.Store(r.URL.Path, r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(elsewhere.Close)
+	moved := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, elsewhere.URL+r.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(moved.Close)
+	p, err := New(Config{BaseURL: moved.URL + "/v1", Model: "m", APIKey: testKey, HTTPClient: moved.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = p.Complete(context.Background(), userAsks())
+	if errs.CodeOf(err) != "model_request_refused" {
+		t.Fatalf("err = %v, want model_request_refused", err)
+	}
+	reached.Range(func(path, auth any) bool {
+		t.Fatalf("the redirect was followed to %v (Authorization %q)", path, auth)
+		return false
+	})
+}
+
+// TestARefusalIsAFilteredTurnThatSaysSo — review A6: a model that declines says so in
+// `refusal`, with no content; the turn keeps it as its text and is a filtered one.
+func TestARefusalIsAFilteredTurnThatSaysSo(t *testing.T) {
+	e := newEndpoint(t, canned{http.StatusOK, []byte(`{"id":"x","object":"chat.completion","created":1,"model":"m",
+		"choices":[{"index":0,"message":{"role":"assistant","content":null,"refusal":"I can't help with that."},
+		"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":7}}`)})
+	turn, err := e.provider(t, testKey).Complete(context.Background(), userAsks())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if turn.Finish != domain.FinishFiltered || !strings.Contains(turn.Text, "I can't help with that.") ||
+		turn.Usage.Total() != 19 {
+		t.Fatalf("turn = %+v, want a filtered turn carrying the refusal and its usage", turn)
+	}
+}
+
+// TestAnAnswerWithNoChoiceStillCarriesItsUsage — review A7: the answer was billed, so
+// the refusal of it carries the tokens.
+func TestAnAnswerWithNoChoiceStillCarriesItsUsage(t *testing.T) {
+	e := newEndpoint(t, canned{http.StatusOK, []byte(`{"id":"x","object":"chat.completion","created":1,"model":"m",
+		"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":20}}`)})
+	_, err := e.provider(t, testKey).Complete(context.Background(), userAsks())
+	var refused *domain.TurnRefusedError
+	if !errors.As(err, &refused) || refused.Usage.Total() != 120 || errs.CodeOf(err) != "model_no_choice" {
+		t.Fatalf("err = %v, want model_no_choice carrying 120 tokens", err)
 	}
 }
