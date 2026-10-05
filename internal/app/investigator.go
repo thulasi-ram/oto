@@ -725,6 +725,8 @@ func (d remedyDeclarer) DeclareRemedy(ctx context.Context, _ db.TenantScope, inc
 		Description:       r.Description,
 		ProposedBy:        r.ProposedBy,
 		RequiredApprovals: r.RequiredApprovals,
+		ApprovalsSetBy:    r.Risk.SetBy(),
+		ApprovalsRule:     r.Risk.Rule,
 		Approvals:         make([]jobs.RemedyFactApproval, 0, len(r.Approvals)),
 		ActorKind:         string(t.Actor.Kind),
 		ActorLabel:        t.Actor.Label,

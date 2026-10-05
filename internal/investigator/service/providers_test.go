@@ -89,13 +89,25 @@ type recordingDialer struct {
 	skew   bool
 	script []modelfake.Step
 	last   *modelfake.Provider
+	// byModel scripts an endpoint by its model name instead — the risk model's, which is
+	// dialled beside the Investigation's — and dialled keeps each one it built.
+	byModel map[string][]modelfake.Step
+	dialled map[string][]*modelfake.Provider
 }
 
 func (d *recordingDialer) Dial(cfg domain.ProviderConfig, key string) (domain.ModelProvider, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.gotKey = key
 	id := cfg.Identity()
+	if steps, ok := d.byModel[cfg.Model]; ok {
+		p := modelfake.NewWithIdentity(id, steps...)
+		if d.dialled == nil {
+			d.dialled = map[string][]*modelfake.Provider{}
+		}
+		d.dialled[cfg.Model] = append(d.dialled[cfg.Model], p)
+		return p, nil
+	}
+	d.gotKey = key
 	if d.skew {
 		id.Endpoint += "/"
 	}
@@ -136,6 +148,7 @@ type rig struct {
 	approvers      *memApprovers
 	remedies       *memRemedies
 	remedyFacts    *memRemedyDeclarer
+	remedyRisk     *memRemedyRisk
 }
 
 func (r *rig) deps() Deps {
@@ -147,7 +160,7 @@ func (r *rig) deps() Deps {
 		Limits:      Limits{ToolTimeout: 50 * time.Millisecond, MaxToolResult: 4096},
 		ToolServers: r.toolServers, Tokens: r.creds, ToolDialer: r.toolDialer, Redaction: r.redaction,
 		Suggestions: r.suggestions, Policies: r.policies, Memberships: r.memberships, Approvers: r.approvers,
-		Remedies: r.remedies, RemedyDeclarer: r.remedyFacts}
+		Remedies: r.remedies, RemedyDeclarer: r.remedyFacts, RemedyRisk: r.remedyRisk}
 }
 
 func newRig(t *testing.T) *rig {
@@ -177,6 +190,7 @@ func newRig(t *testing.T) *rig {
 		approvers:      &memApprovers{},
 		remedies:       newMemRemedies(),
 		remedyFacts:    &memRemedyDeclarer{},
+		remedyRisk:     &memRemedyRisk{},
 	}
 	scope, err := db.NewTenantScope(uuid.New())
 	if err != nil {
@@ -298,6 +312,7 @@ func TestNewRequiresEveryPort(t *testing.T) {
 		"tokens":         func(d *Deps) { d.Tokens = nil },
 		"tool dialer":    func(d *Deps) { d.ToolDialer = nil },
 		"redaction":      func(d *Deps) { d.Redaction = nil },
+		"remedy risk":    func(d *Deps) { d.RemedyRisk = nil },
 	} {
 		d := r.deps()
 		drop(&d)

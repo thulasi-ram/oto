@@ -25,9 +25,11 @@ package domain
 // the schema checks it (`remedies_arguments_hash_ck`) and freezes both (`remedies_frozen`).
 // An approver approves a hash they were shown; the executor sends only when every hash agrees.
 //
-// ⭐ EVERY REMEDY NEEDS TWO APPROVALS FROM TWO DIFFERENT GRANT HOLDERS until operator-written
-// risk rules exist (git-bug eb4f21b). RequiredApprovals is set at proposal, so the rules can
-// lower it per Remedy; one person approving twice counts once (`remedy_approvals_user_uniq`).
+// ⭐ A REMEDY NEEDS ONE OR TWO APPROVALS FROM DIFFERENT GRANT HOLDERS, AS THE OPERATOR'S RISK
+// RULES SAY (git-bug eb4f21b, remedy_risk.go). RequiredApprovals is set at proposal from the
+// rules' verdict — two when no rule matches or the command is unparseable — and a risk model
+// may only raise it; Risk records which rule (or which of those) set it. One person approving
+// twice counts once (`remedy_approvals_user_uniq`).
 //
 // ⭐ EXPIRY IS READ OFF THE CLOCK AT ONCE AND RECORDED BY THE SWEEP. A proposed or approved
 // Remedy past ExpiresAt reads as expired (StateAt) — it cannot be approved, declined or
@@ -81,9 +83,10 @@ const (
 // change may or may not have been made — and ⛔ IT IS NEVER SENT AGAIN.
 const RemedyOutcomeDeadline = MaxCallTimeoutSeconds*time.Second + 5*time.Minute
 
-// DefaultRequiredApprovals is how many different grant holders must approve a Remedy until
-// operator-written risk rules exist (git-bug eb4f21b): two, for every Remedy.
-const DefaultRequiredApprovals = 2
+// DefaultRequiredApprovals is how many different grant holders must approve a Remedy the risk
+// rules did not lower (git-bug eb4f21b) — and every Remedy that names no Tool, which nobody
+// can approve at all: two.
+const DefaultRequiredApprovals = DoubleApproval
 
 // DefaultRemedyApprovalWindow is `remedy_approval_window_s`'s shipped default: how long a
 // proposed Remedy waits for its approvals, and an approved one for its execution.
@@ -380,14 +383,17 @@ type Remedy struct {
 	Target            string
 	Description       string
 	RequiredApprovals int
-	State             RemedyState
-	ProposedAt        time.Time
-	ExpiresAt         time.Time
-	ApprovedAt        time.Time
-	ExecutingAt       time.Time
-	EndedAt           time.Time
-	Failure           RemedyFailure
-	Detail            string
+	// Risk is how RequiredApprovals was set: the rule, or why no rule could, and what the
+	// risk model did. Zero for a Remedy with no Tool.
+	Risk        RemedyRisk
+	State       RemedyState
+	ProposedAt  time.Time
+	ExpiresAt   time.Time
+	ApprovedAt  time.Time
+	ExecutingAt time.Time
+	EndedAt     time.Time
+	Failure     RemedyFailure
+	Detail      string
 	// Result is what the write Tool answered, redacted and capped; "" until it was sent.
 	Result      string
 	Approvals   []RemedyApproval

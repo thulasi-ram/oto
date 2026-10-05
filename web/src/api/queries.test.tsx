@@ -46,6 +46,7 @@ import {
   channelTypesQuery,
   clustersQuery,
   investigatorsQuery,
+  modelProvidersQuery,
   labelNamesQuery,
   mappingCatalogQuery,
   recentAlertsQuery,
@@ -389,6 +390,7 @@ describe("every key names one source of freshness", () => {
     const declared: Readonly<Record<string, number | undefined>> = {
       "labels.names": labelNamesQuery().staleTime,
       "settings.investigators": investigatorsQuery().staleTime,
+      "settings.modelProviders": modelProvidersQuery().staleTime,
       "settings.channelTypes": channelTypesQuery().staleTime,
       "settings.mappingCatalog": mappingCatalogQuery().staleTime,
       // Read off the query the drift panel actually mounts. It used to be the

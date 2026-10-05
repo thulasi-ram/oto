@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 102 {
-		t.Fatalf("latest migration is %d, want 102 — this test pins the number so that a "+
+	if latest != 103 {
+		t.Fatalf("latest migration is %d, want 103 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1633,6 +1633,65 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// accepts a kind the release below it cannot interpret. No column reading can
 	// see that, and it is the half most likely to be forgotten because nothing
 	// references it.
+	// ⭐ 00103 LETS AN OPERATOR'S RULES SAY HOW MANY APPROVALS A REMEDY NEEDS (ADR 0054 §3,
+	// git-bug eb4f21b): two tables, six columns on `remedies` with seven CHECKs, a new body for
+	// `remedies_refuse_rewrite`, and the required_approvals comment. The tier CHECK is read for
+	// its BODY, for 00075's reason — it IS the rule that one approval stands only on a rule — and
+	// so is the trigger function, because a Down that left the new body would compare columns
+	// that no longer exist and refuse every approval of every Remedy.
+	riskFrozen := func() int {
+		t.Helper()
+		var n int
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT count(*) FROM pg_proc WHERE proname = 'remedies_refuse_rewrite' AND prosrc LIKE '%risk_basis%'`).
+			Scan(&n); err != nil {
+			t.Fatalf("introspect remedies_refuse_rewrite: %v", err)
+		}
+		return n
+	}
+	if n := countTables("remedy_risk_rules", "remedy_risk_settings"); n != 2 {
+		t.Fatalf("%d of 00103's two tables exist at migration 103", n)
+	}
+	if n := countConstraints("remedy_risk_rules_name_ck", "remedy_risk_rules_condition_ck", "remedy_risk_rules_approvals_ck",
+		"remedies_risk_basis_ck", "remedies_risk_model_ck", "remedies_risk_set_ck", "remedies_risk_rule_ck",
+		"remedies_risk_detail_ck", "remedies_risk_model_used_ck", "remedies_risk_tier_ck"); n != 10 {
+		t.Fatalf("%d of 00103's ten named CHECKs exist at migration 103, want 10", n)
+	}
+	if def := constraintDef("remedies_risk_tier_ck", "remedies"); !strings.Contains(def, "required_approvals = 1") ||
+		!strings.Contains(def, "'kept'") {
+		t.Fatalf("remedies_risk_tier_ck does not tie one approval to a rule the model kept: %s", def)
+	}
+	if n := countColumns("remedies", "risk_basis"); n != 1 {
+		t.Fatalf("remedies.risk_basis exists %d time(s) at migration 103", n)
+	}
+	if n := riskFrozen(); n != 1 {
+		t.Fatalf("remedies_refuse_rewrite does not freeze the risk record at migration 103")
+	}
+	if c := columnComment("remedies", "required_approvals"); !strings.Contains(c, "00103") {
+		t.Fatalf("remedies.required_approvals's comment at migration 103 does not say the rules set it: %s", c)
+	}
+
+	down(103)
+
+	if n := countTables("remedy_risk_rules", "remedy_risk_settings"); n != 0 {
+		t.Fatalf("%d of 00103's two tables survived its Down", n)
+	}
+	for _, col := range []string{"risk_basis", "risk_rule", "risk_detail", "risk_model_check", "risk_model", "risk_model_tokens"} {
+		if n := countColumns("remedies", col); n != 0 {
+			t.Fatalf("remedies.%s survived 00103's Down", col)
+		}
+	}
+	if n := countConstraints("remedies_risk_tier_ck", "remedies_risk_set_ck"); n != 0 {
+		t.Fatalf("%d of 00103's remedies CHECKs survived its Down", n)
+	}
+	if n := riskFrozen(); n != 0 {
+		t.Fatalf("00103's Down left remedies_refuse_rewrite comparing the dropped risk columns")
+	}
+	if c := columnComment("remedies", "required_approvals"); strings.Contains(c, "00103") ||
+		!strings.Contains(c, "until operator-written risk rules exist") {
+		t.Fatalf("00103's Down did not restore 00100's required_approvals comment: %s", c)
+	}
+
 	// ⭐ 00102 ENDS A DIGEST WINDOW'S RUN THAT WAS STILL QUEUED WHEN ITS WINDOW CLOSED AS
 	// `skipped`/`window_closed` (owner ruling O4): one reason added to one arm of
 	// `investigations_reason_ck`, and the table comment restated. The CHECK is read for its

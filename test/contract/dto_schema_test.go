@@ -179,6 +179,12 @@ var bindings = []binding{
 	// Remedies (git-bug 4148256): read, approved by the hash of the arguments approved, declined.
 	{"investigator", "RemedyDTO", investigatorapi.RemedyDTO{}},
 	{"investigator", "RemedyToolDTO", investigatorapi.RemedyToolDTO{}},
+	// Remedy risk rules (git-bug eb4f21b).
+	{"investigator", "RemedyRiskDTO", investigatorapi.RemedyRiskDTO{}},
+	{"investigator", "RemedyRiskRuleDTO", investigatorapi.RemedyRiskRuleDTO{}},
+	{"investigator", "RemedyRiskRulesDTO", investigatorapi.RemedyRiskRulesDTO{}},
+	{"investigator", "RemedyRiskRuleRequest", investigatorapi.RemedyRiskRuleRequest{}},
+	{"investigator", "ReplaceRemedyRiskRulesRequest", investigatorapi.ReplaceRemedyRiskRulesRequest{}},
 	{"investigator", "RemedyApprovalDTO", investigatorapi.RemedyApprovalDTO{}},
 	{"investigator", "RemedyTransitionDTO", investigatorapi.RemedyTransitionDTO{}},
 	{"investigator", "ApproveRemedyRequest", investigatorapi.ApproveRemedyRequest{}},

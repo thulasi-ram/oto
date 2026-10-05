@@ -1628,6 +1628,42 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/remedy-risk-rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the org's Remedy risk rules
+         * @description The operator's rules over a Remedy's command — its write Tool, verb, resource kind, namespace and
+         *     whether its verb is known reversible — each saying one or two approvals, and the org's risk model
+         *     (ADR 0054 §3). **oto ships no rule**: with none, every Remedy needs two approvals.
+         */
+        get: operations["getRemedyRiskRules"];
+        /**
+         * Replace the org's Remedy risk rules
+         * @description Writes the whole rule list and the risk model, replacing the old ones, and records who wrote them;
+         *     a human writes them, and a system principal is refused (`403`). An empty `rules` is legal and makes
+         *     every Remedy need two approvals. A rule is refused (`422`, `remedy_risk_rules_invalid`, naming its
+         *     field) when it has no condition, a name outside the alphabet or used twice, a verb, kind or namespace
+         *     no command could name, a Tool that is not `<toolserver>__<tool>`, or approvals other than 1 or 2. A
+         *     risk model that is not one of this org's model endpoints is a `422` (`risk_model_not_found`).
+         *
+         *     The **most severe matching rule wins**; no match is two; a command the rules cannot parse (`sh -c`, a
+         *     pipe, `;`, `&&`, backticks, `$(…)`, a redirect, a quote, an unknown flag) is two whatever they say;
+         *     a risk model may then raise one to two and never lower. A Remedy's tier is set at its proposal and
+         *     frozen: **no Remedy already proposed is re-tiered by a change here**.
+         */
+        put: operations["replaceRemedyRiskRules"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/rule-snapshots": {
         parameters: {
             query?: never;
@@ -8738,9 +8774,13 @@ export interface components {
             proposed_by_label: string;
             /**
              * Format: int32
-             * @description How many DIFFERENT holders of the grant on its ToolServer must approve it. Two, until risk rules exist.
+             * @description How many DIFFERENT holders of the grant on its ToolServer must approve it, set at proposal from the
+             *     org's risk rules (ADR 0054 §3): one only when a rule said so and the risk model, if any, kept it; two
+             *     otherwise. `risk` says what set it.
              */
             required_approvals: number;
+            /** @description How `required_approvals` was set; null for a Remedy that names no Tool, or one proposed before the risk rules existed. */
+            risk: components["schemas"]["RemedyRiskDTO"] | null;
             approvals: components["schemas"]["RemedyApprovalDTO"][];
             /** Format: date-time */
             proposed_at: string;
@@ -8768,6 +8808,107 @@ export interface components {
             /** @description What the write Tool answered, redacted with the org's rules and capped. Null until it was sent. */
             result: string | null;
             transitions: components["schemas"]["RemedyTransitionDTO"][];
+        };
+        /** @description How a Remedy's required approvals were set (ADR 0054 §3). */
+        RemedyRiskDTO: {
+            /**
+             * @description What set the tier, as the approval screen says it under the exact command: `rule` (`rule` names it),
+             *     `no_rule` (two: no rule matched), `unparseable` (two, whatever the rules say: `detail` says why),
+             *     `risk_model` (the risk model raised one to two: `detail` is its reason) or `risk_model_failed` (two:
+             *     the risk model gave no answer oto could take; `detail` says why).
+             * @enum {string}
+             */
+            set_by: "rule" | "no_rule" | "unparseable" | "risk_model" | "risk_model_failed";
+            /** @description The rule behind the baseline, as the rules stood at proposal — a copy of its name. */
+            rule: string | null;
+            detail: string | null;
+            /**
+             * @description What the risk model did: `unset` (the org names none, and the rules' tier stands), `not_asked` (the
+             *     rules already said two, which nothing lowers), `kept`, `raised` or `failed`. The risk model sees only
+             *     the command, its target and the rules' verdict — never the Investigation.
+             * @enum {string}
+             */
+            risk_model_check: "unset" | "not_asked" | "kept" | "raised" | "failed";
+            /** @description The endpoint and model asked, `<endpoint>#<model>`; null when none was. */
+            risk_model: string | null;
+            /**
+             * Format: int64
+             * @description Input and output tokens the question cost; null when no model was asked.
+             */
+            risk_model_tokens: number | null;
+        };
+        /** @description One rule, normalised as stored. Every condition must hold for it to match. */
+        RemedyRiskRuleDTO: {
+            name: string;
+            /** @description A qualified write Tool, `<toolserver>__<tool>`; null for any. */
+            tool: string | null;
+            /** @description The command's verb is one of these (`rollout restart`, `delete`); empty for any. */
+            verbs: string[];
+            /** @description The command's resource kind is one of these, folded to kubectl's singular name; empty for any. */
+            kinds: string[];
+            /** @description The command names one of these namespaces; empty for any. */
+            namespaces: string[];
+            /**
+             * @description The command's verb is (or is not) one oto knows to be reversible; null for either.
+             * @enum {string|null}
+             */
+            reversibility: "reversible" | "irreversible" | null;
+            /**
+             * Format: int32
+             * @enum {integer}
+             */
+            approvals: 1 | 2;
+        };
+        /**
+         * @description The org's Remedy risk rules and risk model (ADR 0054 §3). The MOST SEVERE matching rule wins and is
+         *     named after the first such in order; no match is two approvals; a command the rules cannot parse is
+         *     two whatever they say; a risk model may raise one to two and never lower.
+         */
+        RemedyRiskRulesDTO: {
+            /** @description The rules in the operator's order. Empty — oto ships none — means every Remedy needs two approvals. */
+            rules: components["schemas"]["RemedyRiskRuleDTO"][];
+            /** @description The model endpoint asked whether a single-approval Remedy should need two; null for none. */
+            risk_model_provider_id: components["schemas"]["Uuid"] | null;
+            /** @description Who last replaced the rules; null when nobody has. */
+            written_by_label: string | null;
+            /** Format: date-time */
+            written_at: string | null;
+            /** @description The verbs oto knows to be reversible — what `reversibility` reads. Every other verb is irreversible. */
+            reversible_verbs: string[];
+        };
+        RemedyRiskRulesResponse: {
+            data: components["schemas"]["RemedyRiskRulesDTO"];
+            meta: components["schemas"]["Meta"];
+        };
+        /** @description One rule, as the operator writes it. It names at least one condition. */
+        RemedyRiskRuleRequest: {
+            /** @description Lower-case letters, digits, `_` and `-`, starting with a letter. Unique; the approval screen names it. */
+            name: string;
+            /** @description A qualified write Tool, `<toolserver>__<tool>`. Omit for any. */
+            tool?: string;
+            /** @description One or two lower-case words each, e.g. `rollout restart`. Omit for any. */
+            verbs?: string[];
+            /** @description Resource kinds; kubectl's plurals and short names fold onto one (`deploy` is `deployment`). Omit for any. */
+            kinds?: string[];
+            /** @description Namespace names. A command naming no namespace, or `-A`, matches none. Omit for any. */
+            namespaces?: string[];
+            /**
+             * @description Omit for either.
+             * @enum {string}
+             */
+            reversibility?: "reversible" | "irreversible";
+            /**
+             * Format: int32
+             * @enum {integer}
+             */
+            approvals: 1 | 2;
+        };
+        /** @description The org's whole Remedy risk rule list and its risk model, replacing the old ones. */
+        ReplaceRemedyRiskRulesRequest: {
+            /** @description The whole list, in order. Empty makes every Remedy need two approvals. */
+            rules: components["schemas"]["RemedyRiskRuleRequest"][];
+            /** @description One of this org's model endpoints, asked to raise a single-approval Remedy. Absent or null for none. */
+            risk_model_provider_id?: components["schemas"]["Uuid"] | null;
         };
         /** @description The write Tool a Remedy would be carried out by. */
         RemedyToolDTO: {
@@ -12651,6 +12792,65 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["InvestigationClassSetResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    getRemedyRiskRules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The rules, in the operator's order, and the risk model. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemedyRiskRulesResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    replaceRemedyRiskRules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReplaceRemedyRiskRulesRequest"];
+            };
+        };
+        responses: {
+            /** @description The rules and risk model as they now stand. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemedyRiskRulesResponse"];
                 };
             };
             400: components["responses"]["BadRequest"];

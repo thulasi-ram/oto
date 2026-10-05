@@ -247,6 +247,8 @@ type IncidentRemedy struct {
 	At                time.Time                `json:"at"`
 	ExpiresAt         time.Time                `json:"expires_at"`
 	RequiredApprovals int                      `json:"required_approvals"`
+	ApprovalsSetBy    string                   `json:"approvals_set_by,omitempty"`
+	ApprovalsRule     string                   `json:"approvals_rule,omitempty"`
 	Approvals         []IncidentRemedyApproval `json:"approvals"`
 	FailureReason     string                   `json:"failure_reason,omitempty"`
 	Detail            string                   `json:"detail,omitempty"`

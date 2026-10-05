@@ -93,7 +93,11 @@ type IncidentRemedy struct {
 	Description       string
 	ProposedBy        string
 	RequiredApprovals int
-	Approvals         []IncidentRemedyApproval
+	// ApprovalsSetBy and ApprovalsRule say what set RequiredApprovals (git-bug eb4f21b); ""
+	// when nothing was recorded.
+	ApprovalsSetBy string
+	ApprovalsRule  string
+	Approvals      []IncidentRemedyApproval
 	// ActorKind is investigator, user or system; ActorLabel names them.
 	ActorKind  string
 	ActorLabel string

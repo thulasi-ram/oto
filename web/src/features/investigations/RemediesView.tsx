@@ -1,7 +1,8 @@
 /**
  * A Finding's Remedies (ADR 0054, git-bug 4148256): changes to a cluster the Investigator
- * proposed, which oto executes only once two DIFFERENT people holding the approval grant on
- * the write ToolServer approve them.
+ * proposed, which oto executes only once one or two DIFFERENT people holding the approval
+ * grant on the write ToolServer approve them — as many as the operator's risk rules said
+ * when it was proposed (git-bug eb4f21b).
  *
  * ⭐⭐ THE EXACT COMMAND COMES FIRST, ABOVE THE INVESTIGATOR'S DESCRIPTION (ADR 0054 §3). An
  * approver approves the write Tool and its exact arguments — shown as the server sent them,
@@ -15,7 +16,11 @@
  * Remedy whose Tool was removed from configuration since it was proposed says why it cannot
  * be approved, and offers no approve control either.
  *
- * ⭐ APPROVALS SO FAR, AND WHO. The count against the two it needs and every name, so a
+ * ⭐ WHAT SET THE TIER IS SAID DIRECTLY UNDER THE COMMAND (ADR 0054 §3): the rule by name,
+ * "no rule matched", "the rules could not parse this command", or "raised by the risk
+ * model" — so an approver reading a one-approval Remedy can see which rule lowered it.
+ *
+ * ⭐ APPROVALS SO FAR, AND WHO. The count against what it needs and every name, so a
  * second approver can see they would be the second — and the first can see that approving
  * again counts once.
  *
@@ -26,12 +31,12 @@
  * no stream frame, so while any Remedy on screen is proposed, approved or executing, the
  * list is re-read every `pollMs`; once none is, polling stops.
  */
-import { For, Show, createSignal, type Component } from "solid-js";
+import { For, Match, Show, Switch, createSignal, type Component } from "solid-js";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/solid-query";
 
 import { approveRemedy, declineRemedy, listInvestigationRemedies } from "~/api/endpoints";
 import { qk } from "~/api/keys";
-import type { ListEnvelope, Remedy } from "~/api/types";
+import type { ListEnvelope, Remedy, RemedyRisk } from "~/api/types";
 import { Button } from "~/components/ui/Button";
 import { SECTION_LABEL } from "~/components/ui/surfaces";
 import { ErrorBanner } from "~/components/ui/states";
@@ -120,9 +125,9 @@ export const RemediesView: Component<RemediesViewProps> = (props) => {
       <section class="mt-sm" data-remedies aria-label="Remedies the Finding proposes">
         <h3 class={cn(SECTION_LABEL, "text-ink-muted")}>Remedies</h3>
         <p class="mt-2xs text-meta text-ink-subtle">
-          Changes to the cluster the model proposed. Nothing runs unless two different people
-          holding the approval grant on the write ToolServer approve exactly the command shown —
-          the command, not the description.
+          Changes to the cluster the model proposed. Nothing runs unless the people it needs —
+          one or two different holders of the approval grant on the write ToolServer, as your
+          risk rules say — approve exactly the command shown: the command, not the description.
         </p>
         <Show when={refusal()}>{(err) => <ErrorBanner class="mt-2xs" error={err()} />}</Show>
         <ul class="mt-2xs space-y-sm">
@@ -130,6 +135,9 @@ export const RemediesView: Component<RemediesViewProps> = (props) => {
             {(r) => (
               <li class="border-l-2 border-line-strong pl-sm" data-remedy={r.id} data-state={r.state}>
                 <RemedyCommand remedy={r} />
+                <Show when={r.tool !== null}>
+                  <RemedyTier remedy={r} />
+                </Show>
                 <p class="mt-2xs text-body leading-snug text-ink">
                   On <span class="font-medium">{r.target}</span>
                 </p>
@@ -173,7 +181,11 @@ export const RemediesView: Component<RemediesViewProps> = (props) => {
                         busy={approve.isPending && approve.variables?.id === r.id}
                         disabled={busy()}
                         onClick={() => approve.mutate(r)}
-                        title="Approve exactly the command and arguments shown above. You are recorded as one of the approvers; a second, different approver is needed before it runs."
+                        title={
+                          r.required_approvals > 1
+                            ? "Approve exactly the command and arguments shown above. You are recorded as one of the approvers; a second, different approver is needed before it runs."
+                            : "Approve exactly the command and arguments shown above. Your risk rules say one approval is enough: it runs after yours."
+                        }
                       >
                         Approve
                       </Button>
@@ -236,3 +248,56 @@ const RemedyCommand: Component<{ readonly remedy: Remedy }> = (props) => (
     )}
   </Show>
 );
+
+/** How many approvals, in words. */
+function approvalsInWords(n: number): string {
+  return n === 1 ? "Needs one approval" : "Needs two approvals, from different people";
+}
+
+/**
+ * What set a Remedy's tier, said under its command: the rule, or why no rule could, and what
+ * the risk model did. A Remedy proposed before the risk rules existed has no record and says so.
+ */
+const RemedyTier: Component<{ readonly remedy: Remedy }> = (props) => {
+  const rule = (risk: RemedyRisk) => (
+    <span class="font-mono text-ink" data-rule>
+      {risk.rule}
+    </span>
+  );
+  return (
+    <p class="mt-2xs text-meta text-ink" data-tier data-set-by={props.remedy.risk?.set_by ?? "none"}>
+      <span class="font-medium">{approvalsInWords(props.remedy.required_approvals)}</span>
+      {" — "}
+      <Show
+        when={props.remedy.risk}
+        fallback={<span class="text-ink-muted">proposed before risk rules existed.</span>}
+      >
+        {(risk) => (
+          <Switch>
+            <Match when={risk().set_by === "rule"}>
+              set by the rule {rule(risk())}.
+              <Show when={risk().risk_model_check === "kept"}>
+                <span class="text-ink-muted"> The risk model was asked and kept it.</span>
+              </Show>
+            </Match>
+            <Match when={risk().set_by === "no_rule"}>no rule matched this command.</Match>
+            <Match when={risk().set_by === "unparseable"}>
+              the rules could not parse this command, so it needs two whatever they say
+              <Show when={risk().detail}>{(d) => <span class="text-ink-muted">: {d()}</span>}</Show>.
+            </Match>
+            <Match when={risk().set_by === "risk_model"}>
+              raised by the risk model
+              <Show when={risk().detail}>{(d) => <span class="text-ink-muted"> ({d()})</span>}</Show>; the rule{" "}
+              {rule(risk())} said one.
+            </Match>
+            <Match when={risk().set_by === "risk_model_failed"}>
+              the risk model gave no answer oto could take, so it needs two; the rule {rule(risk())} said
+              one.
+              <Show when={risk().detail}>{(d) => <span class="text-ink-muted"> {d()}</span>}</Show>
+            </Match>
+          </Switch>
+        )}
+      </Show>
+    </p>
+  );
+};

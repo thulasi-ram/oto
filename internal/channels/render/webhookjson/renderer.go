@@ -358,6 +358,8 @@ func mapRemedy(r domain.IncidentRemedyView) *IncidentRemedy {
 		Description:       r.Description,
 		ProposedBy:        r.ProposedBy,
 		RequiredApprovals: r.RequiredApprovals,
+		ApprovalsSetBy:    r.ApprovalsSetBy,
+		ApprovalsRule:     r.ApprovalsRule,
 		Approvals:         make([]IncidentRemedyApproval, 0, len(r.Approvals)),
 		Actor:             IncidentRemedyActor{Kind: r.ActorKind, Label: r.ActorLabel},
 		At:                r.At.UTC(),

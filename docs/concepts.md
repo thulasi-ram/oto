@@ -522,7 +522,8 @@ stage that once existed was withdrawn, and it was the last one — there is no f
 second to follow); human writes to a signal's `state` (no resolve, close, merge, dismiss or reopen
 endpoint; `ack_state` is the only state axis a human may write); any write path into your cluster
 other than a **Remedy** — proposed by an Investigator, executed once through the operator's own write
-ToolServer, and only after two different holders of the approver grant say yes (ADR 0054,
+ToolServer, and only after one or two different holders of the approver grant say yes — two unless
+the operator's risk rules say one (ADR 0054,
 [`setup/remedies.md`](setup/remedies.md)); an AI that decides who is told — an **Investigator** reads
 and proposes and never decides delivery (ADR 0053, [`setup/investigators.md`](setup/investigators.md));
 and measuring people (firing duration measures the signal — `MTTR`, `MTTA` and `SLA` measure humans

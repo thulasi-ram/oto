@@ -17,7 +17,9 @@ package service
 // that records its Finding — none for a run that reached none — each `proposed` by the
 // Investigator, with its proposal transition declared outbound in that same transaction.
 //
-// ⭐⭐ APPROVAL IS A HUMAN HOLDING THE GRANT ON THAT REMEDY'S TOOLSERVER, AND IT TAKES TWO.
+// ⭐⭐ APPROVAL IS A HUMAN HOLDING THE GRANT ON THAT REMEDY'S TOOLSERVER, AND IT TAKES ONE OR TWO
+// DIFFERENT ONES, as its RequiredApprovals says — set at proposal from the operator's risk
+// rules (remedy_risk.go, git-bug eb4f21b).
 // ApproveRemedy refuses, each with a typed error: a Remedy with no Tool (`remedy_has_no_tool`);
 // one past its window (`remedy_expired`) or not waiting for approval (`remedy_not_proposed`);
 // one whose Tool can no longer carry it out (`remedy_tool_unavailable` — checked against the
@@ -136,9 +138,9 @@ func (s *Service) answerRemedy(
 			len(out.remedies), domain.MaxRemediesPerRun, domain.NoToolCanCarryItOut)
 	}
 	return domain.OutcomeOK, fmt.Sprintf("recorded: Remedy %d of at most %d, through %s. It is kept with your Finding; "+
-		"it runs only if %d different people holding the approval grant on %s approve exactly these arguments, and "+
-		"you never execute it.", len(out.remedies), domain.MaxRemediesPerRun, draft.Tool.Qualified(),
-		domain.DefaultRequiredApprovals, draft.Tool.ToolServerName)
+		"it runs only if the people holding the approval grant on %s approve exactly these arguments — one or two of "+
+		"them, as the operator's risk rules say — and you never execute it.", len(out.remedies), domain.MaxRemediesPerRun,
+		draft.Tool.Qualified(), draft.Tool.ToolServerName)
 }
 
 // ------------------------------------------------------------ the write Tools listing
@@ -288,12 +290,16 @@ func (s *Service) writeToolsSentence(ctx context.Context, scope db.TenantScope) 
 }
 
 // proposeRemedies writes the Remedies a run proposed, in the transaction that records its
-// Finding: each `proposed` by the Investigator, with RequiredApprovals two and its window
-// starting at the Finding, and each proposal declared outbound.
+// Finding: each `proposed` by the Investigator, needing the approvals its assessed risk says
+// (two for one that names no Tool), with its window starting at the Finding, and each proposal
+// declared outbound.
 func (s *Service) proposeRemedies(
 	ctx context.Context, scope db.TenantScope, inv domain.Investigation, drafts []domain.RemedyDraft,
-	at time.Time, window time.Duration,
+	risks []domain.RemedyRisk, at time.Time, window time.Duration,
 ) error {
+	if len(risks) != len(drafts) {
+		return errs.New(errs.KindInternal, "remedy_risk_unassessed", "every proposed Remedy is assessed before it is written")
+	}
 	if window <= 0 {
 		window = domain.DefaultRemedyApprovalWindow
 	}
@@ -310,6 +316,12 @@ func (s *Service) proposeRemedies(
 			RequiredApprovals: domain.DefaultRequiredApprovals,
 			State:             domain.RemedyProposed, ProposedAt: proposed, ExpiresAt: proposed.Add(window),
 			Approvals: []domain.RemedyApproval{},
+		}
+		if d.Tool.Named() {
+			if !risks[i].Recorded() {
+				return errs.New(errs.KindInternal, "remedy_risk_unassessed", "a Remedy naming a Tool is assessed before it is written")
+			}
+			r.Risk, r.RequiredApprovals = risks[i], risks[i].Approvals
 		}
 		t := domain.RemedyTransition{ID: id.New(), To: domain.RemedyProposed,
 			Actor: domain.RemedyActor{Kind: domain.ActorInvestigator, Label: by}, At: proposed}

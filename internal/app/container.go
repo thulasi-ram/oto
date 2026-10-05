@@ -861,6 +861,7 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		// a write Tool: a Remedy only names one.
 		Remedies:       investigatorrepo.NewRemedyRepository(general),
 		RemedyDeclarer: remedyDeclarer{enq: c.enqueuer},
+		RemedyRisk:     investigatorrepo.NewRemedyRiskRepository(general),
 	})
 	if err != nil {
 		return nil, err

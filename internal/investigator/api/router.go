@@ -63,6 +63,10 @@ type InvestigatorService interface {
 
 	ClassSet(ctx context.Context, s db.TenantScope) (domain.ClassSet, error)
 	ReplaceClassSet(ctx context.Context, s db.TenantScope, set domain.ClassSet) (domain.ClassSet, error)
+
+	// The Remedy risk rules and risk model (ADR 0054 §3, git-bug eb4f21b), read and replaced whole.
+	RemedyRisk(ctx context.Context, s db.TenantScope) (domain.RemedyRiskSettings, error)
+	ReplaceRemedyRisk(ctx context.Context, s db.TenantScope, set domain.RemedyRiskSettings, by domain.Requester) (domain.RemedyRiskSettings, error)
 }
 
 // Compile-time proof that the service satisfies the port this layer declares.
@@ -135,6 +139,11 @@ func (rt *Router) Mount(r chi.Router) {
 	r.Post("/remedies/{id}/decline", rt.declineRemedy)
 	r.Get("/investigation-classes", rt.getInvestigationClasses)
 	r.Put("/investigation-classes", rt.replaceInvestigationClasses)
+	// ⭐ HOW MANY APPROVALS A REMEDY NEEDS (ADR 0054 §3, git-bug eb4f21b): the operator's rules
+	// and risk model, read and replaced whole. A Remedy's tier is set from them at its proposal
+	// and frozen; replacing them re-tiers nothing already proposed.
+	r.Get("/remedy-risk-rules", rt.getRemedyRiskRules)
+	r.Put("/remedy-risk-rules", rt.replaceRemedyRiskRules)
 }
 
 func (rt *Router) now() time.Time { return rt.clk.Now().UTC() }

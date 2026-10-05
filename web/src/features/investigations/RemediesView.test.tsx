@@ -8,6 +8,9 @@
  *
  * ⛔ A REMEDY WITH NO TOOL OFFERS NO APPROVE CONTROL, and neither does one whose Tool was
  * removed since it was proposed: both say why instead.
+ *
+ * ⭐ WHAT SET THE TIER IS SAID UNDER THE COMMAND (git-bug eb4f21b): the rule by name, "no
+ * rule matched", "could not parse", or "raised by the risk model" — above the description.
  */
 import { fireEvent, screen, within } from "@solidjs/testing-library";
 import { describe, expect, it } from "vitest";
@@ -41,6 +44,14 @@ function remedy(patch: Partial<Remedy> = {}): Remedy {
     description: "Restart the api to pick up the reverted config.",
     proposed_by_label: "Investigator firstlook v2",
     required_approvals: 2,
+    risk: {
+      set_by: "no_rule",
+      rule: null,
+      detail: null,
+      risk_model_check: "unset",
+      risk_model: null,
+      risk_model_tokens: null,
+    },
     approvals: [],
     proposed_at: "2026-08-09T09:12:00.000Z",
     expires_at: "2026-08-09T10:12:00.000Z",
@@ -64,6 +75,7 @@ const noTool = (): Remedy =>
     arguments: null,
     arguments_display: null,
     arguments_sha256: null,
+    risk: null,
     target: "node pool eu-1",
     description: "Add a node: the pool is out of memory.",
   });
@@ -152,6 +164,56 @@ describe("a Finding's Remedies", () => {
     await until(() => expect(shown(r.id)).toBeTruthy());
     fireEvent.click(within(shown(r.id)).getByRole("button", { name: "Approve" }));
     await until(() => expect(screen.getByText(/do not hold the approval grant/)).toBeTruthy());
+  });
+
+  it("⭐ says which rule set a one-approval tier, under the command and above the description", async () => {
+    const r = remedy({
+      required_approvals: 1,
+      risk: {
+        set_by: "rule",
+        rule: "restart-payments",
+        detail: null,
+        risk_model_check: "kept",
+        risk_model: "https://risk.test/v1#risk-m",
+        risk_model_tokens: 135,
+      },
+    });
+    mount([r]);
+    await until(() => expect(shown(r.id).querySelector("[data-tier]")).not.toBeNull());
+    const el = shown(r.id);
+    const tier = el.querySelector("[data-tier]")!;
+    expect(tier.textContent).toMatch(/Needs one approval — set by the rule restart-payments\./);
+    expect(tier.textContent).toMatch(/risk model was asked and kept it/);
+    const text = el.textContent ?? "";
+    expect(text.indexOf("12345678901234567890")).toBeLessThan(text.indexOf("restart-payments"));
+    expect(text.indexOf("restart-payments")).toBeLessThan(text.indexOf("Restart the api"));
+    expect(el.querySelector("[data-approvals]")!.textContent).toMatch(/0 of 1 approvals/);
+    expectNoUndefined(el);
+  });
+
+  it("says no rule matched, an unparseable command, and a raise by the risk model", async () => {
+    const base = remedy().risk!;
+    const none = remedy({ id: "aaaaaaaa-0000-4000-8000-000000000001" });
+    const sh = remedy({
+      id: "aaaaaaaa-0000-4000-8000-000000000002",
+      risk: { ...base, set_by: "unparseable", detail: "it runs \"sh\", and the rules read only kubectl's command lines" },
+    });
+    const raised = remedy({
+      id: "aaaaaaaa-0000-4000-8000-000000000003",
+      risk: { ...base, set_by: "risk_model", rule: "restart-payments", risk_model_check: "raised", detail: "one replica" },
+    });
+    const failed = remedy({
+      id: "aaaaaaaa-0000-4000-8000-000000000004",
+      risk: { ...base, set_by: "risk_model_failed", rule: "restart-payments", risk_model_check: "failed", detail: "timeout" },
+    });
+    mount([none, sh, raised, failed]);
+    await until(() => expect(shown(failed.id)).toBeTruthy());
+    expect(shown(none.id).querySelector("[data-tier]")!.textContent).toMatch(/Needs two approvals.*no rule matched/);
+    expect(shown(sh.id).querySelector("[data-tier]")!.textContent).toMatch(/could not parse this command.*sh/);
+    expect(shown(raised.id).querySelector("[data-tier]")!.textContent).toMatch(
+      /raised by the risk model \(one replica\); the rule restart-payments said one/,
+    );
+    expect(shown(failed.id).querySelector("[data-tier]")!.textContent).toMatch(/risk model gave no answer/);
   });
 
   it("renders nothing when the Finding proposed nothing", async () => {

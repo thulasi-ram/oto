@@ -258,7 +258,12 @@ type IncidentRemedyView struct {
 	Description       string
 	ProposedBy        string
 	RequiredApprovals int
-	Approvals         []IncidentRemedyApprovalView
+	// ApprovalsSetBy and ApprovalsRule say what set RequiredApprovals — a rule (named), no
+	// rule, an unparseable command, or the risk model (git-bug eb4f21b); "" when nothing was
+	// recorded.
+	ApprovalsSetBy string
+	ApprovalsRule  string
+	Approvals      []IncidentRemedyApprovalView
 	// ActorKind is investigator, user or system; ActorLabel names who.
 	ActorKind     string
 	ActorLabel    string

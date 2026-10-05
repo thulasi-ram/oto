@@ -689,6 +689,15 @@ func (s *Service) finish(ctx context.Context, scope db.TenantScope, inv domain.I
 		// A class belongs to what was concluded: no Finding, no classification.
 		classification = out.classification
 	}
+	// ⭐ A REMEDY'S TIER IS SET BEFORE THE TRANSACTION (git-bug eb4f21b): the rules are pure,
+	// but the risk model is a call to an endpoint, and no row is held while it answers.
+	var risks []domain.RemedyRisk
+	if finding != "" && len(out.remedies) > 0 {
+		var err error
+		if risks, err = s.assessRemedies(ctx, scope, out.remedies); err != nil {
+			return err
+		}
+	}
 	return s.tx.InTx(ctx, func(ctx context.Context) error {
 		if err := s.investigations.Finish(ctx, scope, inv.ID, out.ending, out.spent, out.toolCalls,
 			finding, classification, at); err != nil {
@@ -708,7 +717,7 @@ func (s *Service) finish(ctx context.Context, scope db.TenantScope, inv domain.I
 		if len(out.remedies) > 0 {
 			// ⭐ NO FINDING, NO REMEDY, for the Suggestion's reason; each one proposed here is
 			// declared outbound in this same transaction (git-bug 4148256).
-			if err := s.proposeRemedies(ctx, scope, inv, out.remedies, at, out.remedyWindow); err != nil {
+			if err := s.proposeRemedies(ctx, scope, inv, out.remedies, risks, at, out.remedyWindow); err != nil {
 				return err
 			}
 		}

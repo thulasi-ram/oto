@@ -236,26 +236,31 @@ type NotifyIncidentArgs struct {
 // configured Tool can carry it out — and who made the transition when. A snapshot: nothing
 // downstream re-reads the Remedy.
 type RemedyFact struct {
-	RemedyID          uuid.UUID            `json:"remedy_id"`
-	InvestigationID   uuid.UUID            `json:"investigation_id"`
-	State             string               `json:"state"`
-	From              string               `json:"from,omitempty"`
-	ToolServer        string               `json:"tool_server,omitempty"`
-	Tool              string               `json:"tool,omitempty"`
-	NoTool            string               `json:"no_tool,omitempty"`
-	Arguments         string               `json:"arguments,omitempty"`
-	ArgumentsSHA256   string               `json:"arguments_sha256,omitempty"`
-	Target            string               `json:"target"`
-	Description       string               `json:"description"`
-	ProposedBy        string               `json:"proposed_by"`
-	RequiredApprovals int                  `json:"required_approvals"`
-	Approvals         []RemedyFactApproval `json:"approvals"`
-	ActorKind         string               `json:"actor_kind"`
-	ActorLabel        string               `json:"actor_label"`
-	At                time.Time            `json:"at"`
-	ExpiresAt         time.Time            `json:"expires_at"`
-	FailureReason     string               `json:"failure_reason,omitempty"`
-	Detail            string               `json:"detail,omitempty"`
+	RemedyID          uuid.UUID `json:"remedy_id"`
+	InvestigationID   uuid.UUID `json:"investigation_id"`
+	State             string    `json:"state"`
+	From              string    `json:"from,omitempty"`
+	ToolServer        string    `json:"tool_server,omitempty"`
+	Tool              string    `json:"tool,omitempty"`
+	NoTool            string    `json:"no_tool,omitempty"`
+	Arguments         string    `json:"arguments,omitempty"`
+	ArgumentsSHA256   string    `json:"arguments_sha256,omitempty"`
+	Target            string    `json:"target"`
+	Description       string    `json:"description"`
+	ProposedBy        string    `json:"proposed_by"`
+	RequiredApprovals int       `json:"required_approvals"`
+	// ApprovalsSetBy is what set RequiredApprovals (rule, no_rule, unparseable, risk_model,
+	// risk_model_failed) and ApprovalsRule the rule behind it; both "" when nothing was
+	// recorded (git-bug eb4f21b).
+	ApprovalsSetBy string               `json:"approvals_set_by,omitempty"`
+	ApprovalsRule  string               `json:"approvals_rule,omitempty"`
+	Approvals      []RemedyFactApproval `json:"approvals"`
+	ActorKind      string               `json:"actor_kind"`
+	ActorLabel     string               `json:"actor_label"`
+	At             time.Time            `json:"at"`
+	ExpiresAt      time.Time            `json:"expires_at"`
+	FailureReason  string               `json:"failure_reason,omitempty"`
+	Detail         string               `json:"detail,omitempty"`
 }
 
 // RemedyFactApproval is one approval a Remedy had when the fact was made.

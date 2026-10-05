@@ -391,3 +391,13 @@ type RemedyStore interface {
 type RemedyDeclarer interface {
 	DeclareRemedy(ctx context.Context, s db.TenantScope, incidentID uuid.UUID, fact domain.RemedyFact) error
 }
+
+// RemedyRiskStore is an org's Remedy risk rules and its risk model (ADR 0054 §3, git-bug
+// eb4f21b), satisfied by `investigator/repository.RemedyRiskRepository`.
+type RemedyRiskStore interface {
+	// RemedyRisk reads the rules in the operator's order, the risk model, and who last wrote
+	// them; no rules and no model for an org that never wrote any.
+	RemedyRisk(ctx context.Context, s db.TenantScope) (domain.RemedyRiskSettings, error)
+	// ReplaceRemedyRisk writes the whole set and who wrote it, in the caller's transaction.
+	ReplaceRemedyRisk(ctx context.Context, s db.TenantScope, set domain.RemedyRiskSettings, by domain.Requester, at time.Time) error
+}

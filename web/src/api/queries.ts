@@ -45,6 +45,7 @@ import {
   listChannels,
   listClusters,
   listInvestigators,
+  listModelProviders,
   listLabelNames,
   listNotifications,
   listPayloadMappingCatalog,
@@ -258,6 +259,19 @@ export function investigatorsQuery() {
   };
 }
 
+/**
+ * The org's model endpoints — what the Remedy risk screen offers as a risk model. Bounded at
+ * the reference staleness: an endpoint is configured through the API, no frame announces
+ * one, and the server refuses a risk model this org does not have.
+ */
+export function modelProvidersQuery() {
+  return {
+    queryKey: qk.settings.modelProviders(),
+    queryFn: ({ signal }: { signal: AbortSignal }) => listModelProviders({ signal }),
+    staleTime: REFERENCE_STALE_MS,
+  };
+}
+
 /** The label names offered as matcher completions. */
 export function labelNamesQuery() {
   return {
@@ -463,6 +477,9 @@ export const FRESHNESS: Readonly<Record<string, Freshness>> = {
   // The Classification set is written on the screen that reads it, and its save
   // writes the server's answer back; no frame is about it.
   "settings.investigationClasses": { by: "mutation" },
+  // The Remedy risk rules, likewise: written on the screen that reads them, and the save
+  // writes the server's answer back.
+  "settings.remedyRiskRules": { by: "mutation" },
   // Settings, like the policies beside them: creating, editing and deleting a
   // A template is written, edited and deleted on the screen that reads the list,
   // and all three invalidate it. No stream frame can change one — a template is
@@ -485,6 +502,11 @@ export const FRESHNESS: Readonly<Record<string, Freshness>> = {
     by: "bounded",
     ms: CAPABILITY_STALE_MS,
     why: "the payload-mapping catalog embedded in this build, which changes on deploy and not on any action an operator can take here — importing an entry writes the connection, never the catalog",
+  },
+  "settings.modelProviders": {
+    by: "bounded",
+    ms: REFERENCE_STALE_MS,
+    why: "the org's model endpoints are configured through the API and no screen writes one yet; a list five minutes behind costs a reload when choosing a risk model, and the server refuses an endpoint this org does not have",
   },
   "settings.investigators": {
     by: "bounded",

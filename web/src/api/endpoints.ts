@@ -78,6 +78,9 @@ import type {
   Rejection,
   RejectionListQuery,
   ReplaceInvestigationClassesRequest,
+  ReplaceRemedyRiskRulesRequest,
+  RemedyRiskRules,
+  ModelProvider,
   Remedy,
   Suggestion,
   ResolvedConversation,
@@ -644,8 +647,9 @@ export function listInvestigationRemedies(
 /**
  * Approve one Remedy, naming the hash of the arguments this human was shown: an approval
  * of any other arguments is refused (`409 remedy_arguments_changed`). Only a holder of the
- * grant on the Remedy's ToolServer may, and it takes two DIFFERENT holders; the same one
- * twice counts once. A Remedy with no Tool is refused (`409 remedy_has_no_tool`).
+ * grant on the Remedy's ToolServer may, and it takes as many DIFFERENT holders as its
+ * `required_approvals` — one or two, set at proposal by the risk rules; the same one twice
+ * counts once. A Remedy with no Tool is refused (`409 remedy_has_no_tool`).
  */
 export function approveRemedy(id: Uuid, argumentsSha256: string): Promise<Remedy> {
   return postItem<Remedy>(`${V1}/remedies/${id}/approve`, { arguments_sha256: argumentsSha256 });
@@ -672,6 +676,27 @@ export function replaceInvestigationClasses(
   body: ReplaceInvestigationClassesRequest,
 ): Promise<InvestigationClassSet> {
   return putItem<InvestigationClassSet>(`${V1}/investigation-classes`, body);
+}
+
+/**
+ * The org's Remedy risk rules and risk model (ADR 0054 §3), in the operator's order. Empty
+ * until an operator writes some — oto ships no rule, and every Remedy then needs two.
+ */
+export function getRemedyRiskRules(c: Ctx = {}): Promise<RemedyRiskRules> {
+  return getItem<RemedyRiskRules>(`${V1}/remedy-risk-rules`, ctx(c));
+}
+
+/**
+ * Replace the whole rule list and the risk model. ⛔ No Remedy already proposed is
+ * re-tiered: a Remedy's approvals are set once, at its proposal.
+ */
+export function replaceRemedyRiskRules(body: ReplaceRemedyRiskRulesRequest): Promise<RemedyRiskRules> {
+  return putItem<RemedyRiskRules>(`${V1}/remedy-risk-rules`, body);
+}
+
+/** The org's model endpoints — what the risk model is chosen from. Keys are never returned. */
+export function listModelProviders(c: Ctx = {}): Promise<ListEnvelope<ModelProvider>> {
+  return getList<ModelProvider>(`${V1}/model-providers`, ctx(c));
 }
 
 /* -------------------------------------------------------------------------- */

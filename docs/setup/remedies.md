@@ -1,8 +1,8 @@
 # Remedies
 
 A **Remedy** is a change to a cluster that an Investigator proposes with its Finding, and that oto
-executes through one of **your** write Tools only after two different people approve it
-([ADR 0054](../adr/0054-a-remedy-earns-the-write-path.md)). It is the one place oto writes to a
+executes through one of **your** write Tools only after one or two different people approve it —
+two unless **your** risk rules say one ([ADR 0054](../adr/0054-a-remedy-earns-the-write-path.md)). It is the one place oto writes to a
 cluster, and this page is what you need to set one up, to know what each part does, and to know
 where oto's control ends and your ToolServer's begins.
 
@@ -38,13 +38,18 @@ declines, oto (`system`) expires — and every transition is sent to the Inciden
    built in; neither calls a ToolServer.
 4. **How long a Remedy waits.** `remedy_approval_window_s` (Settings → Tuning → Remedies), 60 to
    86400 seconds, default 3600 — see [tuning](tuning.md).
+5. **Optionally, risk rules** that let a harmless command need only one approval, and a risk model
+   that may ask for two (Settings → Remedy risk) — see [Risk rules](#risk-rules) below. With none,
+   every Remedy needs two.
 
 ## What a Remedy says
 
 **The exact command first.** A Remedy names the write Tool that would carry it out —
 `<toolserver>__<tool>` — and the exact arguments it would be sent, byte for byte, with their
-SHA-256. Below them: what it is made to (`target`), and only then the Investigator's own
-description of the change. Read the command; the description is a model's words.
+SHA-256. Directly under them: how many approvals it needs and **what set that** — the rule by name,
+*no rule matched*, *the rules could not parse this command*, or *raised by the risk model*. Then
+what it is made to (`target`), and only then the Investigator's own description of the change.
+Read the command; the description is a model's words.
 
 **Or it says that no configured Tool can carry it out.** The Investigator proposes the change it
 judges right whether or not one of your Tools can make it. A Remedy that names no Tool says *"no
@@ -55,9 +60,10 @@ configure a Tool and ask for another Investigation.
 
 ## Approving
 
-- **Two approvals, from two different people**, each holding the grant on the Remedy's ToolServer.
-  Until operator-written risk rules exist, every Remedy needs two. The same person approving twice
-  — in the UI and again from somewhere else — counts once (`409 remedy_already_approved`).
+- **One or two approvals, from different people**, each holding the grant on the Remedy's
+  ToolServer. How many is set when the Remedy is proposed, by your [risk rules](#risk-rules), and
+  never changes after. The same person approving twice — in the UI and again from somewhere else —
+  counts once (`409 remedy_already_approved`).
 - **You approve the arguments you were shown.** The approval names their SHA-256; if it is not the
   Remedy's, it is refused (`409 remedy_arguments_changed`).
 - **The Tool is checked again, against your configuration as it is now.** If the ToolServer was
@@ -67,19 +73,19 @@ configure a Tool and ask for another Investigation.
 - **Decline** is any member's: saying no is the safe direction. A Remedy that is proposed, or
   approved and not yet being executed, can be declined.
 
-When the second approval lands the Remedy is `approved`, and its window starts again: it must be
-executed within `remedy_approval_window_s` of its approval.
+When the last approval it needs lands the Remedy is `approved`, and its window starts again: it
+must be executed within `remedy_approval_window_s` of its approval.
 
 ## Execution
 
-When the second approval lands, oto enqueues the Remedy's execution in the same transaction. The
-executor then:
+When the last approval it needs lands, oto enqueues the Remedy's execution in the same
+transaction. The executor then:
 
 1. **Checks everything again, against now.** An approved Remedy past its window is recorded
    `expired`. If the ToolServer was removed or re-declared `read`, or no longer lists the Tool, it
    is `failed` with `tool_unavailable`. If its arguments no longer hash to what was approved,
-   `arguments_changed`. If fewer than two **different** approvers of these arguments still hold the
-   grant — one was revoked, or disabled — `approvals_withdrawn`. In every one of these **nothing is
+   `arguments_changed`. If fewer **different** approvers of these arguments than it needs still
+   hold the grant — one was revoked, or disabled — `approvals_withdrawn`. In every one of these **nothing is
    sent**, and the Remedy says so.
 2. **Claims it.** The Remedy moves `approved → executing`, and that is committed **before** the
    write Tool is called.
@@ -100,13 +106,112 @@ A ToolServer that could not be reached at all is `tool_unavailable`: no session,
 **A failed Remedy is never retried.** `failed` is final. If the change still matters, ask for
 another Investigation: a retry is a **new** Remedy and a **new** approval.
 
+## Risk rules
+
+How many approvals a Remedy needs is set **once, when it is proposed**, from rules you write
+(Settings → Remedy risk, or `GET`/`PUT /api/v1/remedy-risk-rules`). oto ships no rule: with none,
+every Remedy needs two.
+
+### What a rule says
+
+A rule has a **name** (lower-case letters, digits, `_`, `-`; it is what the approval screen shows),
+**1 or 2 approvals**, and one or more **conditions**, every one of which must hold:
+
+| Condition | Holds when |
+|---|---|
+| `tool` | the Remedy's write Tool is exactly this `<toolserver>__<tool>`. |
+| `verbs` | the command's verb is one of these — `delete`, `scale`, `rollout restart`, `set image`. |
+| `kinds` | the command's resource kind is one of these. kubectl's plurals and short names for the built-in kinds fold onto one name (`deploy`, `deployments`, `deployment.apps` are all `deployment`); any other kind matches as written, lower-cased. |
+| `namespaces` | the command **names** one of these namespaces. A command that names no namespace, or names all of them (`-A`), matches no namespace condition. |
+| `reversibility` | `reversible`: the verb is one oto knows to be reversible — `rollout restart`, `rollout pause`, `rollout resume`, `rollout undo`, `scale`, `cordon`, `uncordon`. `irreversible`: any other verb, including one oto does not know, and a command with no verb. |
+
+A rule with no condition is refused: it would match every command.
+
+### How the rules decide
+
+1. **A command the rules cannot parse needs two, whatever the rules say** — see below. No rule and
+   no model is asked.
+2. Otherwise every rule is checked. **The most severe matching rule wins**: if any matching rule
+   says 2, the Remedy needs two, named after the first such rule in your order; only if every
+   matching rule says 1 does it need one, named after the first of those.
+3. **No rule matches: two.**
+
+Order therefore only decides which rule is *named*, never the tier. This is deliberate: under
+"first match wins", a broad rule placed above a narrow one would silently lower what the narrow one
+guards — `anything in staging → 1` above `delete secret → 2` would let a secret be deleted on one
+approval. Here a rule that says 2 cannot be outvoted, and a rule that says 1 lowers only what no
+2-rule matches. Write broad 1-rules and carve exceptions out of them with 2-rules.
+
+Example:
+
+```json
+{"rules": [
+  {"name": "restart-payments", "verbs": ["rollout restart"], "kinds": ["deployment"],
+   "namespaces": ["payments"], "approvals": 1},
+  {"name": "secrets-need-two", "verbs": ["delete"], "kinds": ["secret"], "approvals": 2}
+]}
+```
+
+`kubectl rollout restart deployment/api -n payments` needs one approval (`restart-payments`);
+the same restart in `checkout` matches nothing and needs two; `kubectl delete secret db -n payments`
+needs two (`secrets-need-two`).
+
+### What the rules read: the command
+
+A Remedy is a write Tool and its JSON arguments. The rules read them in one of two shapes:
+
+- **A command line** — the arguments carry `command` (a string, or an array of words) or `args` (an
+  array of words). It is read as **kubectl's** command line: `kubectl` first, or one of kubectl's
+  own verbs first. Words are split on spaces and tabs and **nothing is interpreted** — no quoting,
+  escaping, expansion or globbing. The verb is kubectl's (two words for `rollout`, `set`, `auth`,
+  `certificate`, `top`); the kind is the next word, or the type in `type/name`; `cordon`, `uncordon`
+  and `drain` name a `node`; the namespace is `-n`/`--namespace`.
+- **Structured arguments** — no command line. The verb is the `verb` member, the kind is `kind`
+  (or `resource`), the namespace is `namespace`, each a string when present. A Tool whose arguments
+  carry none of these can still be matched by a rule on its `tool`.
+
+**Unparseable — two approvals, whatever the rules say:**
+
+- any of `; | & $ < > ( ) { } [ ] * ? ~ # \ ' "` `` ` `` or a newline in a command line — so `sh -c …`,
+  pipes, `;`, `&&`, backticks, `$(…)`, redirects, quotes and globs;
+- `; | & $ < > ` `` ` `` or a newline in **any** string anywhere in the arguments, keys included;
+- a program other than kubectl (`sh`, `bash`, `helm`, …);
+- `--` and whatever follows it (`kubectl exec … -- …`), or `-` (standard input);
+- a flag that names resources in a file (`-f`, `-k`, `--raw`), changes who kubectl runs as
+  (`--as`, `--token`, `--kubeconfig`, …) or where it connects (`--server`);
+- a flag oto does not know, unless written `--flag=value`, so its arity is plain;
+- two kinds (`secret,configmap`, or `deploy/a secret/b`), or two different namespaces.
+
+The Remedy records which of these it was, and the approval screen shows it.
+
+### The risk model
+
+You may name one of your model endpoints as the **risk model**. When — and only when — the rules
+say **one** approval, oto asks it, once, whether the change should need two. It may **raise** one
+to two; it can never lower anything, and a Remedy the rules said needs two is not asked about.
+
+- **It sees only the command** — the write Tool, its exact arguments, what kubectl's verb, kind and
+  namespace were read as — **its target, and the rules' verdict** (the tier and the rule). Never the
+  Investigation, its Steps, its Finding, the Investigator's description, a log line or a Tool's
+  answer: logs are attacker-writable, and a log line is the obvious injection path.
+- **It fails closed.** An error, a timeout (30 s), an answer without token usage, or an answer that
+  is not 1 or 2 leaves the Remedy at **two**, recorded as *the risk model failed* with why.
+- **With no risk model named, the rules' tier stands**, and the Remedy records that none was asked.
+- What it said, which endpoint and model, and the tokens it cost are kept on the Remedy. Those
+  tokens are not counted against the org's daily Investigation budget.
+
+### Who writes the rules
+
+Any member of the org, from the settings screen or the API — the last writer and when are shown.
+⚠️ A rule that says 1 lets one grant holder approve alone, so treat a change to the rules like a
+change to who may approve. Changing the rules **re-tiers no Remedy already proposed**.
+
 ## The trust boundary is your ToolServer
 
 oto holds no cluster credential. It holds your write ToolServer's access token, sealed, and it
 sends that ToolServer the approved arguments. **A ToolServer that accepts oto's credential will run
 whatever oto sends it** — oto ships no ToolServer and does not inspect yours — so **oto's approval
-(two different holders of the grant) and, once they exist, its risk rules are the only gate oto
-owns.** Everything past that is what you granted the ToolServer.
+(one or two different holders of the grant, as your risk rules say) is the only gate oto owns.** Everything past that is what you granted the ToolServer.
 
 So:
 
@@ -135,6 +240,7 @@ Each transition is an Incident fact — `remedy_proposed`, `remedy_approved`, `r
 `remedy_expired`, `remedy_executed`, `remedy_failed` — sent to the Incident the Remedy is about,
 or to the Incident holding its Case at the time. A Remedy on a Case that is in no Incident is
 declared nowhere; its transitions record that. Route them with a notification policy like any
-Incident fact; the envelope's `incident.remedy` carries the transition, the exact command first
+Incident fact; the envelope's `incident.remedy` carries the transition, the exact command first, with
+`required_approvals` and what set it (`approvals_set_by`, `approvals_rule`)
 (see [the webhook envelope](webhook.md)). They are **facts**: approval happens in oto, and oto
 reads nothing back from your incident tool.

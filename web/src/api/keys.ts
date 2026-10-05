@@ -230,6 +230,16 @@ export const qk = {
      * writes it, and its save writes the answer back with `setQueryData`.
      */
     investigationClasses: () => ["settings", "investigation-classes"] as const,
+    /**
+     * The org's Remedy risk rules and risk model (ADR 0054 §3). Only the Remedy risk
+     * section writes them, and its save writes the answer back with `setQueryData`.
+     */
+    remedyRiskRules: () => ["settings", "remedy-risk-rules"] as const,
+    /**
+     * The org's model endpoints, read by the Remedy risk section to offer a risk model.
+     * No screen writes one yet — they are configured through the API.
+     */
+    modelProviders: () => ["settings", "model-providers"] as const,
     /** The org's tuning, its origins and its bounds — one query, one screen. */
     org: () => ["settings", "org"] as const,
     /**

@@ -45,6 +45,8 @@ func fxRemedies() []domain.Remedy {
 		Arguments: fxRemedyArgs, ArgumentsSHA256: domain.HashArguments(fxRemedyArgs),
 		Target: "Deployment checkout/api", Description: "Scale the api back up after the bad deploy.",
 		RequiredApprovals: domain.DefaultRequiredApprovals, State: domain.RemedyProposed, ProposedAt: at, ExpiresAt: expires,
+		Risk: domain.RemedyRisk{Approvals: 2, Basis: domain.BasisRule, Rule: "scale-checkout", Model: domain.ModelRaised,
+			Detail: "checkout runs one replica", ModelIdentity: "https://risk.example.test/v1#risk-m", ModelTokens: 135},
 		Approvals: []domain.RemedyApproval{{UserID: uuid.New(), Label: "Grace Hopper", ArgumentsSHA256: domain.HashArguments(fxRemedyArgs), ApprovedAt: at}},
 		Transitions: []domain.RemedyTransition{{ID: uuid.New(), To: domain.RemedyProposed,
 			Actor: domain.RemedyActor{Kind: domain.ActorInvestigator, Label: "Investigator firstlook v2"}, At: at,

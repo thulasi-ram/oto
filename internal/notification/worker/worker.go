@@ -203,7 +203,8 @@ func incidentRemedy(f *jobs.RemedyFact) *domain.IncidentRemedy {
 		ToolServer: f.ToolServer, Tool: f.Tool, NoTool: f.NoTool,
 		Arguments: f.Arguments, ArgumentsSHA256: f.ArgumentsSHA256,
 		Target: f.Target, Description: f.Description, ProposedBy: f.ProposedBy,
-		RequiredApprovals: f.RequiredApprovals, Approvals: make([]domain.IncidentRemedyApproval, 0, len(f.Approvals)),
+		RequiredApprovals: f.RequiredApprovals, ApprovalsSetBy: f.ApprovalsSetBy, ApprovalsRule: f.ApprovalsRule,
+		Approvals: make([]domain.IncidentRemedyApproval, 0, len(f.Approvals)),
 		ActorKind: f.ActorKind, ActorLabel: f.ActorLabel, At: f.At.UTC(), ExpiresAt: f.ExpiresAt.UTC(),
 		FailureReason: f.FailureReason, Detail: f.Detail,
 	}

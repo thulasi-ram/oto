@@ -47,8 +47,10 @@ const insertRemedySQL = `
 INSERT INTO remedies
   (id, org_id, investigation_id, subject_kind, subject_id, proposed_by_label,
    tool_server_id, tool_server_name, tool_name, arguments, arguments_sha256,
-   target, description, required_approvals, state, proposed_at, expires_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'proposed', $15, $16)`
+   target, description, required_approvals, state, proposed_at, expires_at,
+   risk_basis, risk_rule, risk_detail, risk_model_check, risk_model, risk_model_tokens)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'proposed', $15, $16,
+        $17, $18, $19, $20, $21, $22)`
 
 const insertTransitionSQL = `
 INSERT INTO remedy_transitions
@@ -72,10 +74,23 @@ func (r *RemedyRepository) InsertRemedy(ctx context.Context, s db.TenantScope, r
 		toolServerName, toolName = nullable(rem.Tool.ToolServerName), nullable(rem.Tool.Tool)
 		args, hash = nullable(rem.Arguments), nullable(rem.ArgumentsSHA256)
 	}
+	// ⭐ How the tier was set (migration 00103): all six together, or none for a Remedy with
+	// no Tool. Tokens are kept only when a model was asked.
+	var basis, rule, detail, check, model *string
+	var tokens *int64
+	if rk := rem.Risk; rem.Tool.Named() && rk.Recorded() {
+		basis, rule, detail = nullable(string(rk.Basis)), nullable(rk.Rule), nullable(rk.Detail)
+		check, model = nullable(string(rk.Model)), nullable(rk.ModelIdentity)
+		if rk.Model == domain.ModelKept || rk.Model == domain.ModelRaised || rk.Model == domain.ModelFailed {
+			n := rk.ModelTokens
+			tokens = &n
+		}
+	}
 	if _, err := r.db(ctx).Exec(ctx, insertRemedySQL,
 		rem.ID, s.OrgID(), rem.InvestigationID, string(rem.SubjectKind), rem.SubjectID, rem.ProposedBy,
 		toolServerID, toolServerName, toolName, args, hash,
-		rem.Target, rem.Description, rem.RequiredApprovals, rem.ProposedAt.UTC(), rem.ExpiresAt.UTC()); err != nil {
+		rem.Target, rem.Description, rem.RequiredApprovals, rem.ProposedAt.UTC(), rem.ExpiresAt.UTC(),
+		basis, rule, detail, check, model, tokens); err != nil {
 		return mapRemedyErr(err, "record a Remedy")
 	}
 	return r.insertTransition(ctx, s, rem.ID, proposal)
@@ -98,7 +113,8 @@ const remedyColumns = `
 SELECT r.id, r.org_id, r.investigation_id, r.subject_kind, r.subject_id, r.proposed_by_label,
        r.tool_server_id, r.tool_server_name, r.tool_name, r.arguments, r.arguments_sha256,
        r.target, r.description, r.required_approvals, r.state, r.proposed_at, r.expires_at,
-       r.approved_at, r.executing_at, r.ended_at, r.failure_reason, r.detail, r.result
+       r.approved_at, r.executing_at, r.ended_at, r.failure_reason, r.detail, r.result,
+       r.risk_basis, r.risk_rule, r.risk_detail, r.risk_model_check, r.risk_model, r.risk_model_tokens
   FROM remedies r`
 
 const listRemediesSQL = remedyColumns + `
@@ -389,12 +405,24 @@ func scanRemedy(row pgx.Row) (domain.Remedy, error) {
 		toolServerName, toolName, args, hash *string
 		approvedAt, executingAt, endedAt     *time.Time
 		failure, detail, result              *string
+		riskBasis, riskRule, riskDetail      *string
+		riskCheck, riskModel                 *string
+		riskTokens                           *int64
 	)
 	if err := row.Scan(&out.ID, &out.OrgID, &out.InvestigationID, &subjectKind, &out.SubjectID, &out.ProposedBy,
 		&toolServerID, &toolServerName, &toolName, &args, &hash,
 		&out.Target, &out.Description, &out.RequiredApprovals, &state, &out.ProposedAt, &out.ExpiresAt,
-		&approvedAt, &executingAt, &endedAt, &failure, &detail, &result); err != nil {
+		&approvedAt, &executingAt, &endedAt, &failure, &detail, &result,
+		&riskBasis, &riskRule, &riskDetail, &riskCheck, &riskModel, &riskTokens); err != nil {
 		return domain.Remedy{}, err
+	}
+	if riskBasis != nil {
+		out.Risk = domain.RemedyRisk{Approvals: out.RequiredApprovals, Basis: domain.RiskBasis(*riskBasis),
+			Rule: derefS(riskRule), Detail: derefS(riskDetail), Model: domain.RiskModelCheck(derefS(riskCheck)),
+			ModelIdentity: derefS(riskModel)}
+		if riskTokens != nil {
+			out.Risk.ModelTokens = *riskTokens
+		}
 	}
 	var err error
 	if out.SubjectKind, err = domain.ParseSubjectKind(subjectKind); err != nil {

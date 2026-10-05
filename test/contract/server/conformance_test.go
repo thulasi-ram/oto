@@ -190,7 +190,10 @@ func TestTheRunningServerMatchesTheContract(t *testing.T) {
 // decline — landed, and ONE answers 2xx: the list, empty, because this world works no runs. A
 // Remedy is made only by a run's Finding, so the other three are driven to their typed 404s
 // and not credited, which is why the floor rises by one and not four.
-const minimumSuccessfulOperations = 113
+//
+// ⬆️ 113 → 115 (ADR 0054 §3, git-bug eb4f21b). The org's Remedy risk rules — read and
+// replace — each with a probe that answers 2xx.
+const minimumSuccessfulOperations = 115
 
 /* -------------------------------------------------------------------------- */
 /* The three assertions                                                       */

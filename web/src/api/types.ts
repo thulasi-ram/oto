@@ -285,11 +285,21 @@ export type InvestigationClass = S["InvestigationClassDTO"];
  */
 export type Suggestion = S["SuggestionDTO"];
 /**
- * A change to a cluster an Investigator proposed and oto executes only after two
+ * A change to a cluster an Investigator proposed and oto executes only after one or two
  * DIFFERENT holders of the grant on its ToolServer approve it (ADR 0054). The exact
  * command first: `tool` and the exact `arguments`, or `no_tool`.
  */
 export type Remedy = S["RemedyDTO"];
+/** How a Remedy's required approvals were set (ADR 0054 §3, git-bug eb4f21b). */
+export type RemedyRisk = S["RemedyRiskDTO"];
+/**
+ * The org's Remedy risk rules and its risk model (ADR 0054 §3): the most severe matching
+ * rule wins, no match is two, an unparseable command is two, and a model may only raise.
+ */
+export type RemedyRiskRules = S["RemedyRiskRulesDTO"];
+export type RemedyRiskRule = S["RemedyRiskRuleDTO"];
+/** One configured model endpoint — a candidate risk model. The key is never returned. */
+export type ModelProvider = S["ModelProviderDTO"];
 
 /* ---- requests ----------------------------------------------------------- */
 
@@ -301,6 +311,7 @@ export type MoveIncidentCaseRequest = S["MoveIncidentCaseRequest"];
 export type CreateCorrelatorRequest = S["CreateCorrelatorRequest"];
 export type RequestInvestigationRequest = S["RequestInvestigationRequest"];
 export type ReplaceInvestigationClassesRequest = S["ReplaceInvestigationClassesRequest"];
+export type ReplaceRemedyRiskRulesRequest = S["ReplaceRemedyRiskRulesRequest"];
 export type ApplySuggestionRequest = S["ApplySuggestionRequest"];
 export type ApproveRemedyRequest = S["ApproveRemedyRequest"];
 export type UpdateCorrelatorRequest = S["UpdateCorrelatorRequest"];

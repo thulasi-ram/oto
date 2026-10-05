@@ -568,6 +568,8 @@ func incidentRemedyView(r domain.IncidentRemedy) *IncidentRemedyView {
 		Description:       r.Description,
 		ProposedBy:        r.ProposedBy,
 		RequiredApprovals: r.RequiredApprovals,
+		ApprovalsSetBy:    r.ApprovalsSetBy,
+		ApprovalsRule:     r.ApprovalsRule,
 		Approvals:         make([]IncidentRemedyApprovalView, 0, len(r.Approvals)),
 		ActorKind:         r.ActorKind,
 		ActorLabel:        r.ActorLabel,

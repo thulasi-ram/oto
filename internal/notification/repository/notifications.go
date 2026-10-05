@@ -133,6 +133,8 @@ type remedyJSON struct {
 	Description       string               `json:"description"`
 	ProposedBy        string               `json:"proposed_by"`
 	RequiredApprovals int                  `json:"required_approvals"`
+	ApprovalsSetBy    string               `json:"approvals_set_by,omitempty"`
+	ApprovalsRule     string               `json:"approvals_rule,omitempty"`
 	Approvals         []remedyApprovalJSON `json:"approvals"`
 	ActorKind         string               `json:"actor_kind"`
 	ActorLabel        string               `json:"actor_label"`
@@ -156,7 +158,8 @@ func encodeRemedy(r *domain.IncidentRemedy) ([]byte, error) {
 		ToolServer: r.ToolServer, Tool: r.Tool, NoTool: r.NoTool,
 		Arguments: r.Arguments, ArgumentsSHA256: r.ArgumentsSHA256,
 		Target: r.Target, Description: r.Description, ProposedBy: r.ProposedBy,
-		RequiredApprovals: r.RequiredApprovals, Approvals: make([]remedyApprovalJSON, 0, len(r.Approvals)),
+		RequiredApprovals: r.RequiredApprovals, ApprovalsSetBy: r.ApprovalsSetBy, ApprovalsRule: r.ApprovalsRule,
+		Approvals: make([]remedyApprovalJSON, 0, len(r.Approvals)),
 		ActorKind: r.ActorKind, ActorLabel: r.ActorLabel, At: r.At.UTC(), ExpiresAt: r.ExpiresAt.UTC(),
 		FailureReason: r.FailureReason, Detail: r.Detail,
 	}
@@ -182,7 +185,8 @@ func decodeRemedy(b []byte) *domain.IncidentRemedy {
 		ToolServer: j.ToolServer, Tool: j.Tool, NoTool: j.NoTool,
 		Arguments: j.Arguments, ArgumentsSHA256: j.ArgumentsSHA256,
 		Target: j.Target, Description: j.Description, ProposedBy: j.ProposedBy,
-		RequiredApprovals: j.RequiredApprovals, Approvals: make([]domain.IncidentRemedyApproval, 0, len(j.Approvals)),
+		RequiredApprovals: j.RequiredApprovals, ApprovalsSetBy: j.ApprovalsSetBy, ApprovalsRule: j.ApprovalsRule,
+		Approvals: make([]domain.IncidentRemedyApproval, 0, len(j.Approvals)),
 		ActorKind: j.ActorKind, ActorLabel: j.ActorLabel, At: j.At.UTC(), ExpiresAt: j.ExpiresAt.UTC(),
 		FailureReason: j.FailureReason, Detail: j.Detail,
 	}

@@ -3975,6 +3975,25 @@ export const RemedyToolDTOSchema = v.looseObject({
   ),
 });
 
+export const RemedyRiskDTOSchema = v.looseObject({
+  "set_by": v.picklist(["rule", "no_rule", "unparseable", "risk_model", "risk_model_failed"]),
+  "rule": v.nullable(v.pipe(
+    v.string(),
+    v.regex(/^[a-z][a-z0-9_-]{0,62}$/),
+  )),
+  "detail": v.nullable(v.pipe(
+    v.string(),
+    v.maxLength(1000),
+  )),
+  "risk_model_check": v.picklist(["unset", "not_asked", "kept", "raised", "failed"]),
+  "risk_model": v.nullable(v.string()),
+  "risk_model_tokens": v.nullable(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+  )),
+});
+
 export const RemedyApprovalDTOSchema = v.looseObject({
   "user_id": v.nullable(UuidSchema),
   "label": v.pipe(
@@ -4045,6 +4064,7 @@ export const RemedyDTOSchema = v.looseObject({
     v.minValue(1),
     v.maxValue(2),
   ),
+  "risk": v.nullable(RemedyRiskDTOSchema),
   "approvals": v.array(RemedyApprovalDTOSchema),
   "proposed_at": v.pipe(
     v.string(),
@@ -4076,6 +4096,93 @@ export const RemedyDTOSchema = v.looseObject({
     v.maxLength(16384),
   )),
   "transitions": v.array(RemedyTransitionDTOSchema),
+});
+
+export const RemedyRiskRuleDTOSchema = v.looseObject({
+  "name": v.pipe(
+    v.string(),
+    v.regex(/^[a-z][a-z0-9_-]{0,62}$/),
+  ),
+  "tool": v.nullable(v.string()),
+  "verbs": v.pipe(
+    v.array(v.string()),
+    v.maxLength(20),
+  ),
+  "kinds": v.pipe(
+    v.array(v.string()),
+    v.maxLength(20),
+  ),
+  "namespaces": v.pipe(
+    v.array(v.string()),
+    v.maxLength(20),
+  ),
+  "reversibility": v.nullable(v.picklist(["reversible", "irreversible"])),
+  "approvals": v.picklist([1, 2]),
+});
+
+export const RemedyRiskRulesDTOSchema = v.looseObject({
+  "rules": v.pipe(
+    v.array(RemedyRiskRuleDTOSchema),
+    v.maxLength(100),
+  ),
+  "risk_model_provider_id": v.nullable(UuidSchema),
+  "written_by_label": v.nullable(v.pipe(
+    v.string(),
+    v.maxLength(200),
+  )),
+  "written_at": v.nullable(v.pipe(
+    v.string(),
+    v.isoTimestamp(),
+  )),
+  "reversible_verbs": v.array(v.string()),
+});
+
+export const RemedyRiskRulesResponseSchema = v.looseObject({
+  "data": RemedyRiskRulesDTOSchema,
+  "meta": MetaSchema,
+});
+
+export const RemedyRiskRuleRequestSchema = v.strictObject({
+  "name": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(63),
+  ),
+  "tool": v.exactOptional(v.pipe(
+    v.string(),
+    v.maxLength(160),
+  )),
+  "verbs": v.exactOptional(v.pipe(
+    v.array(v.pipe(
+      v.string(),
+      v.maxLength(63),
+    )),
+    v.maxLength(20),
+  )),
+  "kinds": v.exactOptional(v.pipe(
+    v.array(v.pipe(
+      v.string(),
+      v.maxLength(63),
+    )),
+    v.maxLength(20),
+  )),
+  "namespaces": v.exactOptional(v.pipe(
+    v.array(v.pipe(
+      v.string(),
+      v.maxLength(63),
+    )),
+    v.maxLength(20),
+  )),
+  "reversibility": v.exactOptional(v.picklist(["reversible", "irreversible"])),
+  "approvals": v.picklist([1, 2]),
+});
+
+export const ReplaceRemedyRiskRulesRequestSchema = v.strictObject({
+  "rules": v.pipe(
+    v.array(RemedyRiskRuleRequestSchema),
+    v.maxLength(100),
+  ),
+  "risk_model_provider_id": v.exactOptional(v.nullable(UuidSchema)),
 });
 
 export const ApproveRemedyRequestSchema = v.strictObject({

@@ -48,6 +48,7 @@ type RemedyDTO struct {
 	Description       string                `json:"description"`
 	ProposedByLabel   string                `json:"proposed_by_label"`
 	RequiredApprovals int                   `json:"required_approvals"`
+	Risk              *RemedyRiskDTO        `json:"risk"`
 	Approvals         []RemedyApprovalDTO   `json:"approvals"`
 	ProposedAt        time.Time             `json:"proposed_at"`
 	ExpiresAt         time.Time             `json:"expires_at"`
@@ -101,6 +102,7 @@ func remedyDTO(r domain.Remedy, now time.Time) RemedyDTO {
 		State:  string(r.StateAt(now)),
 		Target: r.Target, Description: r.Description, ProposedByLabel: r.ProposedBy,
 		RequiredApprovals: r.RequiredApprovals,
+		Risk:              remedyRiskDTO(r.Risk),
 		Approvals:         make([]RemedyApprovalDTO, 0, len(r.Approvals)),
 		ProposedAt:        r.ProposedAt, ExpiresAt: r.ExpiresAt,
 		ApprovedAt: optTime(r.ApprovedAt), ExecutingAt: optTime(r.ExecutingAt), EndedAt: optTime(r.EndedAt),

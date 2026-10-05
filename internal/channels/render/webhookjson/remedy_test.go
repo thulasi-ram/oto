@@ -126,3 +126,21 @@ func TestEveryRemedyFactRendersAndValidates(t *testing.T) {
 		}
 	}
 }
+
+// TestARemedyFactSaysWhatSetItsTier — `required_approvals` travels with what set it and the
+// rule's name (git-bug eb4f21b), and both are absent when nothing was recorded.
+func TestARemedyFactSaysWhatSetItsTier(t *testing.T) {
+	t.Parallel()
+	v := remedyView("remedy_proposed", true)
+	v.Incident.Remedy.RequiredApprovals = 1
+	v.Incident.Remedy.ApprovalsSetBy, v.Incident.Remedy.ApprovalsRule = "rule", "restart-payments"
+	rm := remedyOf(t, render(t, v).Payload)
+	if string(rm["required_approvals"]) != "1" || string(rm["approvals_set_by"]) != `"rule"` ||
+		string(rm["approvals_rule"]) != `"restart-payments"` {
+		t.Fatalf("remedy = %s %s %s", rm["required_approvals"], rm["approvals_set_by"], rm["approvals_rule"])
+	}
+	rm = remedyOf(t, render(t, remedyView("remedy_proposed", false)).Payload)
+	if _, ok := rm["approvals_set_by"]; ok {
+		t.Fatalf("a Remedy with no risk record says what set its tier: %s", rm["approvals_set_by"])
+	}
+}
