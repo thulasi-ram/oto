@@ -7,6 +7,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/thulasiram/oto/internal/channels/domain"
 	"github.com/thulasiram/oto/internal/channels/service"
 	"github.com/thulasiram/oto/internal/platform/authn"
 	"github.com/thulasiram/oto/internal/platform/clock"
@@ -52,7 +53,11 @@ type Options struct {
 	// unverified requests: slack-go below v0.23.1 accepted an empty signing secret
 	// and therefore forged requests, and that mistake is not repeated here.
 	SigningSecret string
-	Clock         clock.Clock
+	// Catalog is the payload-mapping catalog embedded in the binary (ADR 0055 §2),
+	// read at boot. Empty lists an empty catalog; it is never a 503, because a
+	// deployment with no catalog still maps whatever its operators write.
+	Catalog []domain.CatalogMapping
+	Clock   clock.Clock
 }
 
 // Router serves the Channels tag and the Slack half of the Integrations tag.
@@ -66,6 +71,7 @@ type Router struct {
 	resolver     ConnectionResolver
 	interactions SlackInteractions
 	signing      []byte
+	catalog      []domain.CatalogMapping
 	clk          clock.Clock
 }
 
@@ -85,6 +91,7 @@ func NewRouter(o Options) *Router {
 		resolver:     o.Resolver,
 		interactions: o.Interactions,
 		signing:      []byte(o.SigningSecret),
+		catalog:      o.Catalog,
 		clk:          clk,
 	}
 }
@@ -129,8 +136,11 @@ func (rt *Router) Register(r chi.Router) {
 			r.Patch("/", rt.updateConnection)
 			r.Delete("/", rt.deleteConnection)
 			r.Post("/slack/resolve", rt.resolveSlackConversation)
+			r.Post("/mapping/test", rt.testConnectionMapping)
 		})
 	})
+
+	r.Get("/payload-mapping-catalog", rt.listMappingCatalog)
 }
 
 // RegisterIntegrations mounts the inbound provider callbacks.

@@ -353,7 +353,7 @@ type CreatePolicyRequest struct {
 	// `test/contract/dto_schema_test.go`'s enum-ceiling gate.
 	//
 	// It moved to 17 when 00067 deleted `unacked_reminder` (git-bug bd0fb1d).
-	Reasons []string `json:"reasons" validate:"required,min=1,max=17,unique"`
+	Reasons []string `json:"reasons" validate:"required,min=1,max=20,unique"`
 	// ChannelIDs references `channels` and NOTHING ELSE.
 	ChannelIDs []uuid.UUID `json:"channel_ids" validate:"required,min=1,max=16,unique"`
 	// TemplateID names a NotificationTemplate. Omit it for oto's built-in card.
@@ -375,7 +375,7 @@ type CreatePolicyRequest struct {
 	// The values are validated against the domain's closed vocabulary in the mapper
 	// rather than by an `oneof` tag, because a duplicated list here would be the
 	// second copy that drifts.
-	SubjectKinds []string `json:"subject_kinds,omitempty" validate:"omitempty,max=3,unique"`
+	SubjectKinds []string `json:"subject_kinds,omitempty" validate:"omitempty,max=4,unique"`
 
 	// CountMin and CountWindowSeconds ask for the count condition. Both are
 	// OPTIONAL, so every payload written before migration 00072 stays valid — the
@@ -408,7 +408,7 @@ type UpdatePolicyRequest struct {
 	Enabled  *bool   `json:"enabled,omitempty"`
 
 	Matchers   *[]MatcherDTO `json:"matchers,omitempty"    validate:"omitempty,max=32,dive"`
-	Reasons    *[]string     `json:"reasons,omitempty"     validate:"omitempty,min=1,max=17,unique"`
+	Reasons    *[]string     `json:"reasons,omitempty"     validate:"omitempty,min=1,max=20,unique"`
 	ChannelIDs *[]uuid.UUID  `json:"channel_ids,omitempty" validate:"omitempty,min=1,max=16,unique"`
 	// TemplateID is nullable: `"template_id": null` CLEARS it and puts the policy
 	// back on oto's built-in card, while omitting the key leaves it alone.
@@ -434,7 +434,7 @@ type UpdatePolicyRequest struct {
 	// `Reasons` is — absent means "leave it alone" and present means "this is the new
 	// value". `{"subject_kinds": null}` is refused by the contract rather than
 	// silently meaning the same thing as `[]`.
-	SubjectKinds *[]string `json:"subject_kinds,omitempty" validate:"omitempty,max=3,unique"`
+	SubjectKinds *[]string `json:"subject_kinds,omitempty" validate:"omitempty,max=4,unique"`
 
 	// The count condition is nullable for the reason the digest and the throttle
 	// are: an explicit `null` TURNS THE CONDITION OFF, which is a different request

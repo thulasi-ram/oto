@@ -23,6 +23,8 @@ import (
 	drilldomain "github.com/thulasiram/oto/internal/drill/domain"
 	enrichmentapi "github.com/thulasiram/oto/internal/enrichment/api"
 	identityapi "github.com/thulasiram/oto/internal/identity/api"
+	incidentsapi "github.com/thulasiram/oto/internal/incidents/api"
+	incidentsdomain "github.com/thulasiram/oto/internal/incidents/domain"
 	ingestionapi "github.com/thulasiram/oto/internal/ingestion/api"
 	notificationapi "github.com/thulasiram/oto/internal/notification/api"
 	notificationdomain "github.com/thulasiram/oto/internal/notification/domain"
@@ -97,6 +99,10 @@ var bindings = []binding{
 	{"alerts", "CaseDTO", alertsapi.CaseDTO{}},
 	{"alerts", "CaseDetailDTO", alertsapi.CaseDetailDTO{}},
 	{"alerts", "CaseListItemDTO", alertsapi.CaseListItemDTO{}},
+	// ADR 0056 §1: who can still speak for a Case, so its screen can say whether
+	// it can expire and why not. Carried by both case shapes above.
+	{"alerts", "CaseSourcesDTO", alertsapi.CaseSourcesDTO{}},
+	{"alerts", "CaseSourceDTO", alertsapi.CaseSourceDTO{}},
 	// The CASE RETENTION WINDOW W (migration 00057). It is bound in the alerts tag
 	// rather than a settings one because the module that owns the Case owns the rule
 	// that shapes it.
@@ -117,6 +123,28 @@ var bindings = []binding{
 	// ⛔ TWELVE `grouping` DTOs WERE HERE AND ARE DELETED (git-bug `7570090`). The
 	// module is gone and so are the nine `/api/v1/alert-groups*` operations they
 	// served, so gate G1 has nothing left to reflect for it.
+
+	// ---------------------------------------------------------- incidents
+	// ADR 0052. `IncidentDetailDTO` embeds `IncidentDTO` exactly as the contract's
+	// `allOf` composes it, so the walk diffs the summary fields once per shape.
+	{"incidents", "IncidentAttributionDTO", incidentsapi.IncidentAttributionDTO{}},
+	{"incidents", "IncidentDTO", incidentsapi.IncidentDTO{}},
+	{"incidents", "IncidentMemberDTO", incidentsapi.IncidentMemberDTO{}},
+	{"incidents", "IncidentDetailDTO", incidentsapi.IncidentDetailDTO{}},
+	// ADR 0052 §5's outbound mapping (migration 00089): the receipt a tool's echo
+	// left, one per destination, carried on `IncidentDetailDTO.outbound`.
+	{"incidents", "IncidentOutboundDTO", incidentsapi.IncidentOutboundDTO{}},
+	{"incidents", "CreateIncidentRequest", incidentsapi.CreateIncidentRequest{}},
+	{"incidents", "AddIncidentCaseRequest", incidentsapi.AddIncidentCaseRequest{}},
+	{"incidents", "MoveIncidentCaseRequest", incidentsapi.MoveIncidentCaseRequest{}},
+	// The Correlator (git-bug 61eeddf). `incidents.MatcherDTO` is the SAME contract
+	// component `notification.MatcherDTO` is bound to — one schema, two Go mirrors,
+	// because an api package may not import another module's — so G1 holds both to
+	// the one grammar.
+	{"incidents", "MatcherDTO", incidentsapi.MatcherDTO{}},
+	{"incidents", "CorrelatorDTO", incidentsapi.CorrelatorDTO{}},
+	{"incidents", "CreateCorrelatorRequest", incidentsapi.CreateCorrelatorRequest{}},
+	{"incidents", "UpdateCorrelatorRequest", incidentsapi.UpdateCorrelatorRequest{}},
 
 	// ------------------------------------------------------------ sources
 	{"sources", "ClusterDTO", sourcesapi.ClusterDTO{}},
@@ -157,6 +185,14 @@ var bindings = []binding{
 	// reopened two Slack scopes for. Settings-time only, never on the send path.
 	{"channels", "ResolveConversationRequest", channelsapi.ResolveConversationRequest{}},
 	{"channels", "ResolveConversationDTO", channelsapi.ResolveConversationDTO{}},
+	// `POST /channel-connections/{id}/mapping/test` — one chosen fact through a
+	// webhook connection's payload mapping (ADR 0055 §2).
+	{"channels", "TestConnectionMappingRequest", channelsapi.TestConnectionMappingRequest{}},
+	// `GET /payload-mapping-catalog` — the catalog Settings → Connections imports a
+	// mapping from by copying it (ADR 0055 §2, git-bug 2b5eecc).
+	{"channels", "PayloadMappingCatalogEntryDTO", channelsapi.PayloadMappingCatalogEntryDTO{}},
+	{"channels", "PayloadMappingCommandDTO", channelsapi.PayloadMappingCommandDTO{}},
+	{"channels", "PayloadMappingChoiceDTO", channelsapi.PayloadMappingChoiceDTO{}},
 	// NotificationTemplates: one whole message an operator wrote, in Markdown-plus
 	// (`card`), one flat string (`text`) or literal Block Kit JSON (`raw`). There is
 	// no MatcherDTO here any more — a template carries no `when` clause, because
@@ -347,6 +383,10 @@ var unenforceableRequired = map[string]string{
 	// stands as the obligation on the CLIENT that it is: every generated client
 	// sends the key.
 	"notification.MatcherDTO.value": "the empty string is a legal matcher value, " +
+		"so `required` would outlaw it to catch an absent key it cannot see",
+	// The Correlator's mirror of the same component, for the same reason: a
+	// Correlator's matcher is a policy's matcher.
+	"incidents.MatcherDTO.value": "the empty string is a legal matcher value, " +
 		"so `required` would outlaw it to catch an absent key it cannot see",
 }
 
@@ -1002,6 +1042,7 @@ var queryBindings = []queryBinding{
 	{pkg: "stats", opIDs: []string{"getStatsOverview"}, v: statsapi.OverviewQuery{}},
 	{pkg: "stats", opIDs: []string{"getAlertQualityStats"}, v: statsapi.AlertQualityQuery{}},
 	{pkg: "identity", opIDs: []string{"listApiTokens"}, v: identityapi.PageQuery{}},
+	{pkg: "incidents", opIDs: []string{"listIncidents"}, v: incidentsapi.ListIncidentsQuery{}},
 }
 
 // TestQueryParamsMatchContract is the half of G1 that covers `*Query` structs.
@@ -1461,6 +1502,10 @@ func domainEnums() []domainEnum {
 	for _, s := range notificationdomain.SuppressorOrder() {
 		suppressed = append(suppressed, s.String())
 	}
+	incidentStates := make([]string, 0, len(incidentsdomain.AllStates()))
+	for _, st := range incidentsdomain.AllStates() {
+		incidentStates = append(incidentStates, st.String())
+	}
 	stages := make([]string, 0, len(drilldomain.AllStages()))
 	for _, s := range drilldomain.AllStages() {
 		stages = append(stages, string(s))
@@ -1477,6 +1522,10 @@ func domainEnums() []domainEnum {
 		{"NotificationSuppressedReason", "alerts/domain.SuppressorPrecedence()",
 			alertsdomain.SuppressorPrecedence()},
 		{"DrillStageName", "drill/domain.AllStages()", stages},
+		// ⭐ THE ONE ENUM HERE WITH NO COLUMN BEHIND IT. An Incident's state is
+		// derived on every read (ADR 0052 §3), so the domain set is the ONLY other
+		// copy of this vocabulary — and the only thing that could drift from the wire.
+		{"IncidentState", "incidents/domain.AllStates()", incidentStates},
 	}
 }
 

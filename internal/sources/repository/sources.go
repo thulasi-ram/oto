@@ -39,6 +39,9 @@ type sourceRow struct {
 	// is not a per-source preference (ADR 0006 and its second amendment). The
 	// interval below is the whole of the tuning surface.
 	reconcileInterval int32
+	// maxSilence is `max_silence_s`, NULL when the `silent` expiry is off
+	// (migration 00094).
+	maxSilence *int32
 
 	createdAt time.Time
 	updatedAt time.Time
@@ -50,14 +53,14 @@ type sourceRow struct {
 const sourceColumns = `
 	id, org_id, cluster_id, name::text, kind, base_url, prometheus_url, auth_credential_id,
 	tls_skip_verify, inject_labels, ignore_labels, redact_labels, redact_annotations,
-	push_enabled, reconcile_interval_s, created_at, updated_at, deleted_at`
+	push_enabled, reconcile_interval_s, max_silence_s, created_at, updated_at, deleted_at`
 
 func (r *sourceRow) scanDest() []any {
 	return []any{
 		&r.id, &r.orgID, &r.clusterID, &r.name, &r.kind, &r.baseURL, &r.prometheusURL,
 		&r.credentialID, &r.tlsSkipVerify, &r.injectLabels, &r.ignoreLabels,
 		&r.redactLabels, &r.redactAnnotations, &r.pushEnabled,
-		&r.reconcileInterval, &r.createdAt, &r.updatedAt, &r.deletedAt,
+		&r.reconcileInterval, &r.maxSilence, &r.createdAt, &r.updatedAt, &r.deletedAt,
 	}
 }
 
@@ -90,6 +93,7 @@ func (r *sourceRow) toDomain() (domain.Source, error) {
 		RedactAnnotations: r.redactAnnotations,
 		PushEnabled:       r.pushEnabled,
 		ReconcileInterval: time.Duration(r.reconcileInterval) * time.Second,
+		MaxSilence:        secondsOrNil(r.maxSilence),
 		CreatedAt:         r.createdAt,
 		UpdatedAt:         r.updatedAt,
 		DeletedAt:         r.deletedAt,
@@ -255,7 +259,7 @@ func (r *SourceRepository) ListByIDs(
 const listDueSQL = `SELECT ` + `s.id, s.org_id, s.cluster_id, s.name::text, s.kind, s.base_url,
 	s.prometheus_url, s.auth_credential_id, s.tls_skip_verify, s.inject_labels, s.ignore_labels,
 	s.redact_labels, s.redact_annotations, s.push_enabled,
-	s.reconcile_interval_s, s.created_at, s.updated_at, s.deleted_at` + `
+	s.reconcile_interval_s, s.max_silence_s, s.created_at, s.updated_at, s.deleted_at` + `
   FROM alert_sources s
   LEFT JOIN source_health h ON h.source_id = s.id
  WHERE s.org_id = $1
@@ -339,8 +343,8 @@ const insertSourceSQL = `
 INSERT INTO alert_sources (id, org_id, cluster_id, name, kind, base_url, prometheus_url,
                            auth_credential_id, tls_skip_verify, inject_labels, ignore_labels,
                            redact_labels, redact_annotations, push_enabled,
-                           reconcile_interval_s, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $16)
+                           reconcile_interval_s, max_silence_s, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $17, $16, $16)
 RETURNING id`
 
 // Create registers one upstream.
@@ -383,6 +387,7 @@ func (r *SourceRepository) Create(ctx context.Context, s db.TenantScope, in doma
 		nonNilStrings(in.IgnoreLabels), nonNilStrings(in.RedactLabels),
 		nonNilStrings(in.RedactAnnotations), in.PushEnabled,
 		int32(interval/time.Second), now, //nolint:gosec // bounded by alert_sources_ivl_ck
+		secondsOf(in.MaxSilence),
 	).Scan(&stored)
 	if err != nil {
 		return domain.Source{}, mapErr(err, "sources_not_found", "create a source")
@@ -407,19 +412,19 @@ func (r *SourceRepository) Create(ctx context.Context, s db.TenantScope, in doma
 // same reason, as `channels`, `orgs` and OrderingStore.Advance.
 const updateSourceSQL = `
 UPDATE alert_sources SET
-    cluster_id         = COALESCE($3, cluster_id),
-    name               = COALESCE($4, name),
-    base_url           = COALESCE($5, base_url),
-    prometheus_url     = CASE WHEN $6  THEN $7  ELSE prometheus_url END,
-    auth_credential_id = CASE WHEN $8  THEN $9  ELSE auth_credential_id END,
-    tls_skip_verify    = COALESCE($10, tls_skip_verify),
-    inject_labels      = COALESCE($11, inject_labels),
-    ignore_labels      = COALESCE($12, ignore_labels),
-    redact_labels      = COALESCE($13, redact_labels),
-    redact_annotations = COALESCE($14, redact_annotations),
-    push_enabled       = COALESCE($15, push_enabled),
-    reconcile_interval_s = COALESCE($16, reconcile_interval_s),
-    updated_at         = GREATEST(updated_at, $17)
+    name               = COALESCE($3, name),
+    base_url           = COALESCE($4, base_url),
+    prometheus_url     = CASE WHEN $5  THEN $6  ELSE prometheus_url END,
+    auth_credential_id = CASE WHEN $7  THEN $8  ELSE auth_credential_id END,
+    tls_skip_verify    = COALESCE($9, tls_skip_verify),
+    inject_labels      = COALESCE($10, inject_labels),
+    ignore_labels      = COALESCE($11, ignore_labels),
+    redact_labels      = COALESCE($12, redact_labels),
+    redact_annotations = COALESCE($13, redact_annotations),
+    push_enabled       = COALESCE($14, push_enabled),
+    reconcile_interval_s = COALESCE($15, reconcile_interval_s),
+    max_silence_s      = CASE WHEN $17 THEN $18 ELSE max_silence_s END,
+    updated_at         = GREATEST(updated_at, $16)
  WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL
 RETURNING id`
 
@@ -471,12 +476,20 @@ func (r *SourceRepository) Update(
 		interval = &v
 	}
 
+	var (
+		setSilence bool
+		silence    *int32
+	)
+	if p.MaxSilence != nil {
+		setSilence, silence = true, secondsOf(*p.MaxSilence)
+	}
+
 	var stored uuid.UUID
 	err := r.db(ctx).QueryRow(ctx, updateSourceSQL,
-		s.OrgID(), sourceID, p.ClusterID, p.Name, p.BaseURL, setProm, promVal,
+		s.OrgID(), sourceID, p.Name, p.BaseURL, setProm, promVal,
 		setCred, credVal, p.TLSSkipVerify, inject, p.IgnoreLabels, p.RedactLabels,
 		p.RedactAnnotations, p.PushEnabled, interval,
-		r.clock.Now().UTC(),
+		r.clock.Now().UTC(), setSilence, silence,
 	).Scan(&stored)
 	if err != nil {
 		if isNoRows(err) {
@@ -517,6 +530,25 @@ func (r *SourceRepository) SoftDelete(ctx context.Context, s db.TenantScope, sou
 		return errs.NotFound("sources_not_found", "no such source")
 	}
 	return nil
+}
+
+// secondsOf renders an optional duration as `max_silence_s`: nil stays NULL,
+// which is the column's "off".
+func secondsOf(d *time.Duration) *int32 {
+	if d == nil {
+		return nil
+	}
+	v := int32(*d / time.Second) //nolint:gosec // bounded by the API and alert_sources_silence_ck
+	return &v
+}
+
+// secondsOrNil is secondsOf's inverse.
+func secondsOrNil(v *int32) *time.Duration {
+	if v == nil {
+		return nil
+	}
+	d := time.Duration(*v) * time.Second
+	return &d
 }
 
 // nonNilStrings normalises a nil slice onto an empty one. The three `TEXT[]`

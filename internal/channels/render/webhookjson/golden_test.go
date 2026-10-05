@@ -255,6 +255,144 @@ func TestADigestAssertsNoGroup(t *testing.T) {
 	}
 }
 
+// incidentView is what `notification/service.ViewService.incidentCard` builds, field
+// for field: a Reason, the Org, an `IncidentView` and a render time, and NOTHING else
+// (ADR 0052 §5). Two current members — one open, one closed — and one tombstone that was
+// moved away, so every member key, set and absent, is on the wire. It is the third fact
+// of the story — drawn, a Case added, then this — so `sequence` is not the trivial 1.
+func incidentView(reason string) *domain.NotificationView {
+	drawn := renderedAt.Add(-20 * time.Minute)
+	return &domain.NotificationView{
+		Org:    domain.OrgRef{ID: "o1", Slug: "acme", Name: "Acme"},
+		Reason: reason,
+		Incident: &domain.IncidentView{
+			ID:       "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
+			Number:   4,
+			Sequence: 3,
+			State:    "active",
+			DrawnAt:  drawn,
+			DrawnBy:  domain.IncidentAuthorView{Label: "Priya R."},
+			Link:     "http://localhost:8080/incidents/4",
+			Members: []domain.IncidentMemberView{
+				{
+					CaseID: "0199a1b2-0000-7000-8000-000000000412", CaseNumber: 412, CaseState: "open",
+					AlertID: "a1", AlertName: "KubePodCrashLooping",
+					Labels:  map[string]string{"alertname": "KubePodCrashLooping", "namespace": "checkout"},
+					AddedAt: drawn, AddedBy: domain.IncidentAuthorView{Label: "Priya R."},
+					Link: "http://localhost:8080/cases/0199a1b2-0000-7000-8000-000000000412",
+				},
+				{
+					CaseID: "0199a1b2-0000-7000-8000-000000000413", CaseNumber: 413, CaseState: "closed",
+					AlertID: "a2", AlertName: "HighErrorRate",
+					Labels:  map[string]string{"alertname": "HighErrorRate", "namespace": "checkout"},
+					AddedAt: drawn.Add(5 * time.Minute), AddedBy: domain.IncidentAuthorView{Label: "Priya R."},
+					Link: "http://localhost:8080/cases/0199a1b2-0000-7000-8000-000000000413",
+				},
+				{
+					CaseID: "0199a1b2-0000-7000-8000-000000000409", CaseNumber: 409, CaseState: "closed",
+					AlertID: "a3", AlertName: "DiskFull",
+					Labels:  map[string]string{"alertname": "DiskFull", "namespace": "storage"},
+					AddedAt: drawn, AddedBy: domain.IncidentAuthorView{Label: "Priya R."},
+					RemovedAt: drawn.Add(10 * time.Minute), RemovedByLabel: "Sam K.", MovedToNumber: 7,
+					Link: "http://localhost:8080/cases/0199a1b2-0000-7000-8000-000000000409",
+				},
+			},
+		},
+		RenderedAt: renderedAt,
+	}
+}
+
+// TestTheIncidentEnvelopeIsFrozen pins the `incident` subject on the wire (ADR 0052
+// §5, git-bug aa6d18b): the Incident, its derived state, who drew it, and every
+// spell of every Case with its labels and its own link.
+func TestTheIncidentEnvelopeIsFrozen(t *testing.T) {
+	t.Parallel()
+	golden(t, "incident_case_added.golden.json", render(t, incidentView("case_added")).Payload)
+}
+
+// TestTheQuietIncidentEnvelopeIsFrozen is the fact an incident tool is most tempted
+// to read as "resolved", frozen so its sentence keeps saying what it is.
+func TestTheQuietIncidentEnvelopeIsFrozen(t *testing.T) {
+	t.Parallel()
+	v := incidentView("quiet")
+	v.Incident.Sequence = 4
+	v.Incident.State = "quiet"
+	v.Incident.Members[0].CaseState = "closed"
+	golden(t, "incident_quiet.golden.json", render(t, v).Payload)
+}
+
+// TestAnIncidentFactCarriesItsSequenceOrNone — ADR 0052 §5, migration 00093. The
+// `sequence` is how a receiver orders facts that arrive out of order, so it is on the
+// wire exactly as the view carries it; and a fact declared before 00093, which nobody
+// numbered, omits the key rather than claiming to be fact zero.
+func TestAnIncidentFactCarriesItsSequenceOrNone(t *testing.T) {
+	t.Parallel()
+	read := func(v *domain.NotificationView) (json.RawMessage, bool) {
+		t.Helper()
+		var envelope struct {
+			Incident map[string]json.RawMessage `json:"incident"`
+		}
+		if err := json.Unmarshal(render(t, v).Payload, &envelope); err != nil {
+			t.Fatalf("unmarshal envelope: %v", err)
+		}
+		raw, ok := envelope.Incident["sequence"]
+		return raw, ok
+	}
+
+	if raw, ok := read(incidentView("case_added")); !ok || string(raw) != "3" {
+		t.Fatalf("incident.sequence is %s (present %v), want 3", raw, ok)
+	}
+	unnumbered := incidentView("case_added")
+	unnumbered.Incident.Sequence = 0
+	if raw, ok := read(unnumbered); ok {
+		t.Fatalf("a fact nobody numbered carries incident.sequence = %s; it must omit the key", raw)
+	}
+}
+
+// TestAnIncidentEnvelopeNamesNoSignalAndNoCommand reads the KEYS and the sentence.
+//
+// ⭐ AN INCIDENT IS NOT A CASE, so `incident` is present and every Case-shaped key is
+// absent — a consumer branches on exactly that, as it does for `digest`.
+//
+// ⛔ AND NOTHING ON IT IS A COMMAND. oto sends facts and never a resolve, a close or
+// a status (ADR 0052 §5), so no word on the envelope may say one — `quiet` included,
+// which is the one most likely to be "helpfully" rendered as resolved.
+func TestAnIncidentEnvelopeNamesNoSignalAndNoCommand(t *testing.T) {
+	t.Parallel()
+	for _, reason := range []string{"drawn", "case_added", "case_removed", "quiet", "active_again"} {
+		payload := render(t, incidentView(reason)).Payload
+
+		var envelope map[string]json.RawMessage
+		if err := json.Unmarshal(payload, &envelope); err != nil {
+			t.Fatalf("%s: unmarshal envelope: %v", reason, err)
+		}
+		if _, ok := envelope["incident"]; !ok {
+			t.Errorf("%s: an Incident fact carries no `incident` key", reason)
+		}
+		// vocab:allow frozen oto.notification.v1 wire key, not oto's own vocabulary — the Go field is `Case` (ADR 0036).
+		for _, absent := range []string{"group", "digest", "occurrence", "focus", "rendered"} {
+			if _, ok := envelope[absent]; ok {
+				t.Errorf("%s: an Incident envelope carries `%s`, which belongs to a signal or a window: %s",
+					reason, absent, envelope[absent])
+			}
+		}
+		lower := strings.ToLower(string(payload))
+		for _, command := range []string{"resolve", "closed_by", "mitigat", "status"} {
+			if strings.Contains(lower, command) {
+				t.Errorf("%s: the envelope says %q — oto declares facts to an incident tool and "+
+					"never commands it", reason, command)
+			}
+		}
+		var summary string
+		if err := json.Unmarshal(envelope["summary"], &summary); err != nil {
+			t.Fatalf("%s: unmarshal summary: %v", reason, err)
+		}
+		if !strings.HasPrefix(summary, "[INCIDENT] #4 ") {
+			t.Errorf("%s: summary is %q, want it to lead with [INCIDENT] #4", reason, summary)
+		}
+	}
+}
+
 // TestEveryFixtureValidates runs the renderer's own validator over each frozen
 // payload, so a golden that was updated on purpose still has to be legal.
 func TestEveryFixtureValidates(t *testing.T) {
@@ -267,6 +405,7 @@ func TestEveryFixtureValidates(t *testing.T) {
 		// it proves only that it is legal — that the keys are absent is the golden's
 		// job — but a legal digest is the precondition for the golden meaning anything.
 		"digest.golden.json", "digest_no_span.golden.json",
+		"incident_case_added.golden.json", "incident_quiet.golden.json",
 	} {
 		raw, err := os.ReadFile(filepath.Join("testdata", name))
 		if err != nil {
@@ -334,5 +473,24 @@ func golden(t *testing.T, name string, payload []byte) {
 	}
 	if !bytes.Equal(bytes.TrimSpace(want), bytes.TrimSpace(pretty.Bytes())) {
 		t.Errorf("%s changed.\n--- want ---\n%s\n--- got ---\n%s", name, want, pretty.String())
+	}
+}
+
+// TestAnEchoedIncidentIsNotSentBackToAnyReceiver: the external incident a tool
+// echoed (ADR 0052 §5, git-bug 506ff21) is a receipt oto keeps for its own card and
+// page. It is not a key on oto.notification.v1 — the envelope an Incident fact
+// carries is byte-identical with or without one — so no receiver ever learns
+// another receiver's incident from oto, and putting it on the wire would be an
+// additive v1 change that has to argue for itself (docs/setup/webhook.md §6).
+func TestAnEchoedIncidentIsNotSentBackToAnyReceiver(t *testing.T) {
+	t.Parallel()
+	for _, reason := range []string{"drawn", "case_added", "case_removed", "quiet", "active_again"} {
+		with := incidentView(reason)
+		with.Incident.External = []domain.IncidentExternalView{
+			{Destination: "incident-tool", URL: "https://tool.example/incidents/42", ID: "INC-42"},
+		}
+		if got, want := render(t, with).Payload, render(t, incidentView(reason)).Payload; string(got) != string(want) {
+			t.Errorf("%s: an echoed external incident changed the envelope:\n%s", reason, got)
+		}
 	}
 }

@@ -29,13 +29,16 @@ const capabilities = domain.CapRichLayout
 // CredSigningSecret is a different kind of credential from the other three: it
 // authenticates oto TO the receiver in the OTHER direction — every one of the
 // other kinds gets oto INTO the receiver, while this one lets the receiver
-// PROVE a payload came from oto. It signs the outbound JSON body with
-// HMAC-SHA256 and sets the result on `X-Oto-Signature` (see Channel.send in
-// channel.go). A connection may carry both a signing secret and a basic/bearer
-// credential — they answer different questions — but `channel_credentials` has
-// one row per kind, so a connection needing both seals two credentials and this
-// provider is only ever handed one Credential at a time; v1 does not need that
-// combination and does not implement it.
+// PROVE a payload came from oto. It signs a timestamp and the outbound JSON body
+// with HMAC-SHA256 and sets the result on `X-Oto-Signature` (see Channel.sign in
+// channel.go).
+//
+// ⭐ A CONNECTION CARRIES BOTH, IN TWO SLOTS (migration 00088). The basic/bearer
+// credential is `channel_connections.credential_id` and arrives here as
+// Credential.Kind/Values; the signing secret is `signing_credential_id` and
+// arrives as Credential.Signing. This kind is still listed in the descriptor's
+// ConnectionCredentialKinds because it is a kind a webhook connection may hold —
+// but channels/api accepts it only in `signing_credential`, never in `credential`.
 const (
 	CredNone          = "none"
 	CredBasic         = "basic"
@@ -213,11 +216,26 @@ func (p *Provider) Open(
 	if err != nil {
 		return nil, err
 	}
-	if err := CheckHeaders(parsed.Headers); err != nil {
+	if err := checkStoredHeaders(parsed.Headers); err != nil {
 		return nil, err
 	}
 	if err := p.checkTarget(ctx, parsed.URL); err != nil {
 		return nil, err
+	}
+
+	// ⛔ A STORED MAPPING THAT NO LONGER PARSES DOES NOT OPEN AN UNMAPPED CHANNEL. It
+	// was checked when it was saved; if it is unreadable now, the honest answer is a
+	// config error on every delivery — visible, retryable once fixed — and not the
+	// plain envelope to a receiver that was configured never to get one.
+	mapped := !domain.IsNullMapping(cfg.PayloadMapping)
+	var mapping domain.PayloadMapping
+	if mapped {
+		if mapping, err = domain.ParsePayloadMapping(cfg.PayloadMapping); err != nil {
+			return nil, &domain.Error{
+				Class: domain.ClassConfigInvalid, Provider: providerName,
+				Code: "payload_mapping_invalid", Cause: err,
+			}
+		}
 	}
 
 	return &Channel{
@@ -226,6 +244,13 @@ func (p *Provider) Open(
 		client: p.httpClient(parsed, cred),
 		guard:  p.guard,
 		clock:  p.clock,
+		mapped: mapped,
+		// ⭐ THE SEAM 35c3f46 LEFT, FILLED (ADR 0055 §2, git-bug 2205620 and 506ff21's
+		// governing comment). A Connection with no mapping, or a mapping that names no
+		// response path, reads the top-level keys; a mapping that names one is read
+		// ONLY there, and the default keys are not looked at at all. Either way the
+		// result passes the same domain.ValidExternalIncident.
+		echo: echoFor(mapping.Response),
 	}, nil
 }
 

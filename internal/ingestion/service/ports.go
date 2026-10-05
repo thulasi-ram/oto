@@ -120,6 +120,17 @@ type SourceConfigs interface {
 	Config(ctx context.Context, s db.TenantScope, sourceID uuid.UUID) (domain.SourceConfig, error)
 }
 
+// PushRecorder stamps `source_health.last_push_at` — the "is this Alertmanager
+// still telling oto anything?" half of a source's health, which the runbooks send
+// an operator to first.
+//
+// RecordPush is expected to run INSIDE the accept transaction, so the stamp and
+// the batch commit together. It must be cheap enough to sit there: one statement,
+// throttled by domain.PushStampEvery, and it never moves `status`.
+type PushRecorder interface {
+	RecordPush(ctx context.Context, s db.TenantScope, sourceID uuid.UUID, at time.Time) error
+}
+
 // AlertObserver is the NARROW port into the alerts module — the only one
 // ingestion has, and the only write path into `alerts` (§G.4, C18).
 //

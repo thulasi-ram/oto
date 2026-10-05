@@ -30,6 +30,8 @@ import { PANEL_HEADER, PANEL_ROW } from "./rhythm";
 const RESOLVE_REASON: Record<NonNullable<ResolveReason>, string> = {
   upstream: "the upstream said it ended",
   timeout: "oto stopped hearing about it",
+  silent: "its source went silent about it",
+  source_removed: "its source was removed",
 };
 
 /**

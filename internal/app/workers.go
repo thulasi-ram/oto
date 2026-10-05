@@ -12,6 +12,7 @@ import (
 	enrichworker "github.com/thulasiram/oto/internal/enrichment/worker"
 	identitydomain "github.com/thulasiram/oto/internal/identity/domain"
 	"github.com/thulasiram/oto/internal/platform/db"
+	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/idempotency"
 	"github.com/thulasiram/oto/internal/platform/jobs"
 	silencesworker "github.com/thulasiram/oto/internal/silences/worker"
@@ -123,6 +124,12 @@ func (c *Container) handlers() jobs.Handlers {
 		// the half of suppression the reconciler cannot see.
 		SilencesSync: silencesworker.SilencesSync(c.Silences, c.Sources, c.Logger),
 
+		// ⭐ incidents.correlate (ADR 0052 §2, §4) — one opened Case through the
+		// org's Correlators. It is on the `lifecycle` queue, never `notify`, so a
+		// Correlator that is slow or failing cannot hold up the Case's own
+		// notification; the scope is resolved through the Case, as `enrich.run`'s is.
+		IncidentsCorrelate: c.correlateCase,
+
 		// stats.rollup (ADR 0014) — what keeps the hygiene report off a scan of
 		// the event stream, and therefore what makes Postgres-only viable.
 		StatsRollup: statsworker.StatsRollup(c.Stats, c.orgs, c.enqueuer, c.Clock, c.Logger),
@@ -145,6 +152,39 @@ func (c *Container) handlers() jobs.Handlers {
 		c.NotifyWorkers.Register(&h, c.orgs, c.enqueuer)
 	}
 	return h
+}
+
+// correlateCase is `incidents.correlate`: run one freshly opened Case through the
+// org's Correlators (ADR 0052 §2, §4).
+//
+// ⭐ A CASE THAT IS GONE IS DONE, NOT RETRIED. The only path that deletes a Case is
+// a drill disposing of its own synthetic signal, and there is nothing to correlate
+// about a Case that no longer exists on the thirteenth attempt either. Every other
+// failure — including a lost race against a human's draw, which the partial unique
+// index answers with a 409 — is retried, and the retry re-decides from the
+// committed state, where that Case is now simply in an Incident and skipped.
+func (c *Container) correlateCase(ctx context.Context, job *jobs.Job[jobs.IncidentsCorrelateArgs]) error {
+	if c.Correlators == nil {
+		return jobs.ErrNotImplemented(jobs.KindIncidentsCorrelate)
+	}
+	scope, err := caseScopes{pool: c.Pools.General}.ScopeForCase(ctx, job.Args.CaseID)
+	if err != nil {
+		if errs.IsKind(err, errs.KindNotFound) {
+			return jobs.Permanent(err)
+		}
+		return err
+	}
+	res, err := c.Correlators.Correlate(ctx, scope, job.Args.CaseID)
+	if err != nil {
+		if errs.IsKind(err, errs.KindNotFound) && errs.CodeOf(err) == "case_not_found" {
+			return jobs.Permanent(err)
+		}
+		return err
+	}
+	c.Logger.DebugContext(ctx, "incidents: correlated",
+		"case_id", job.Args.CaseID, "verdict", string(res.Verdict),
+		"correlator_id", res.CorrelatorID, "incident", res.Incident.Number)
+	return nil
 }
 
 // applySlackInteraction is `slack.interaction` (§H.8).
@@ -277,6 +317,11 @@ func (c *Container) reapOneTenant(ctx context.Context, scope db.TenantScope) err
 			slog.String("org_id", scope.OrgID().String()),
 			slog.Int("considered", res.Considered),
 			slog.Int("expired", res.Expired),
+			// The two ADR 0056 expiries, apart from `timeout`: a burst of
+			// `source_removed` follows a deleted source, a burst of `silent`
+			// follows a `max_silence_s` shorter than upstream's repeat_interval.
+			slog.Int("silent", res.Silent),
+			slog.Int("source_removed", res.SourceRemoved),
 			// Held is the §B.4 `source_degraded_holds` counter and is a FEATURE,
 			// not noise: it is how an operator learns that oto is deliberately
 			// saying nothing about a source it cannot see.

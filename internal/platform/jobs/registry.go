@@ -131,6 +131,8 @@ type Handlers struct {
 	IngestProcessBatch Handler[IngestProcessBatchArgs]
 	EnrichRun          Handler[EnrichRunArgs]
 	NotifyEvaluate     Handler[NotifyEvaluateArgs]
+	NotifyIncident     Handler[NotifyIncidentArgs]
+	IncidentsCorrelate Handler[IncidentsCorrelateArgs]
 	DeliverDispatch    Handler[DeliverDispatchArgs]
 	SourceReconcile    Handler[SourceReconcileArgs]
 	SilencesSync       Handler[SilencesSyncArgs]
@@ -190,6 +192,18 @@ func RegisterAll(r *Registry, h Handlers) error {
 		func() error {
 			return Register(r, Spec{Queue: QueueNotify, PayloadVersion: 1, Timeout: 30 * time.Second},
 				orStub(h.NotifyEvaluate, KindNotifyEvaluate))
+		},
+		func() error {
+			return Register(r, Spec{Queue: QueueNotify, PayloadVersion: 1, Timeout: 30 * time.Second},
+				orStub(h.NotifyIncident, KindNotifyIncident))
+		},
+		func() error {
+			// 30 s, a notify job's budget: one Case, one indexed walk of the org's
+			// Correlators, and at most one draw. A storm's draw over thousands of
+			// claimed Cases is the slow case, and it is still one transaction of
+			// single-row inserts.
+			return Register(r, Spec{Queue: QueueLifecycle, PayloadVersion: 1, Timeout: 30 * time.Second},
+				orStub(h.IncidentsCorrelate, KindIncidentsCorrelate))
 		},
 		func() error {
 			return Register(r, Spec{Queue: QueueDeliverSlack, PayloadVersion: 1, Timeout: 30 * time.Second},

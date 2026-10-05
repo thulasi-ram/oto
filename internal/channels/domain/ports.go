@@ -3,7 +3,11 @@ package domain
 import (
 	"context"
 	"encoding/json"
+	"net/url"
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
@@ -107,6 +111,13 @@ type ChannelConfig struct {
 
 	ThreadUpdates  bool
 	ShowFieldEmoji bool
+
+	// PayloadMapping is the destination's Connection's payload mapping (ADR 0055 §2,
+	// migration 00090), verbatim, or empty when it has none. It is non-secret — a
+	// mapping names its secrets and never holds them — and only the webhook provider
+	// reads it: to refuse an unmapped body, and for the response path it reads an
+	// incident tool's handle from.
+	PayloadMapping json.RawMessage
 }
 
 // Verbosity decides which thread replies a Channel receives (§H.6). Root updates
@@ -132,6 +143,74 @@ const (
 type Credential struct {
 	Kind   string
 	Values map[string]string
+	// Signing is the connection's OUTBOUND signing secret, carried BESIDE the
+	// credential above and never instead of it (migration 00088): Kind/Values get
+	// oto into the receiver, Signing lets the receiver prove a body came from oto,
+	// and a receiver may want both. Zero when the connection does not sign. Only
+	// the webhook provider reads it.
+	Signing SigningSecret
+	// Secrets are the Connection's mapping secrets, name → value, unsealed from its
+	// `mapping_credential_id` slot (migration 00090): what a payload mapping's
+	// `{{ secrets.<name> }}` references are filled with at the moment of sending, and
+	// nowhere earlier. Nil when the Connection seals none. Only the webhook provider
+	// reads it.
+	Secrets map[string]string
+}
+
+// SigningSecretOverlap is how long a rotated-out signing secret keeps signing
+// beside its successor (ADR 0055 §1). It is a stated number because the docs
+// promise it to receivers (docs/setup/webhook.md): a receiver has this long to
+// swap its copy after an operator rotates, and during it every body carries both
+// signatures. 24 hours spans a working day in any timezone and a deploy freeze
+// night, which is what "swap the secret in the receiver's config" actually takes.
+const SigningSecretOverlap = 24 * time.Hour
+
+// SigningSecret is an unsealed outbound signing secret and, for the overlap after a
+// rotation, the one it replaced.
+//
+// ⛔ PLAINTEXT, SAME RULES AS Credential: never rendered, logged or persisted.
+type SigningSecret struct {
+	Current string
+	// Previous is the secret Current replaced, or "" when there has been no
+	// rotation (or the row predates 00088). It signs only while the send instant
+	// is before PreviousUntil — the PROVIDER decides that, against its own clock at
+	// send time, so a Channel opened a second before the overlap ends cannot keep
+	// signing with a retired secret for the life of a slow retry.
+	Previous      string
+	PreviousUntil time.Time
+}
+
+// SigningValue reads the secret out of a `webhook_signing_secret`'s unsealed values.
+//
+// ⚠️ THREE SPELLINGS, BECAUSE THREE WRITERS EXISTED. The provider read `secret` or
+// `value`; the settings form sent every connection credential as `token`, so a
+// signing secret saved from the UI sealed under a key nothing read and the
+// channel went out silently unsigned. All three are honoured, in that order, by
+// both unsealing paths — `channels/repository` for a test send and the
+// notification dispatcher for a real one — through this one copy.
+func SigningValue(values map[string]string) string {
+	for _, k := range []string{"secret", "value", "token"} {
+		if v := values[k]; v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// IsZero reports that there is nothing to sign with.
+func (s SigningSecret) IsZero() bool { return s.Current == "" }
+
+// Secrets returns the secrets that sign a body sent at `at`: the current one first,
+// then the previous one while its overlap lasts.
+func (s SigningSecret) Secrets(at time.Time) []string {
+	if s.Current == "" {
+		return nil
+	}
+	out := []string{s.Current}
+	if s.Previous != "" && s.Previous != s.Current && at.Before(s.PreviousUntil) {
+		out = append(out, s.Previous)
+	}
+	return out
 }
 
 // Provider is registered once at boot and mints Channels from stored config.
@@ -240,8 +319,6 @@ type MessageRef struct {
 	ThreadID       string // Slack root ts
 	// ProviderKey is the provider's own composite handle — `channel:ts` for
 	// Slack, the delivery id for the generic webhook.
-	//
-	//oto:reachable-ok its only reader used to be Tester, which published it as ChannelTestDTO.permalink; the contract declares that member `format: uri` and this value never is one, so gate G2 rejected every successful channel test. The field stays because a provider must be able to round-trip its own key to amend a message, and ConversationID/MessageID are what oto stores.
 	ProviderKey string
 }
 
@@ -251,6 +328,91 @@ type DeliverResult struct {
 	Ref         MessageRef
 	DeliveredAt time.Time
 	Raw         json.RawMessage
+	// External is the incident a receiver says it opened or updated for this
+	// delivery, echoed back in its 2xx response (ADR 0052 §5, git-bug 506ff21) —
+	// zero when it said nothing, which is the ordinary case. It is ALREADY
+	// VALIDATED (ValidExternalIncident) by the provider that read it; the
+	// dispatcher records it once per (Incident, channel) and reads nothing else of
+	// the response. Raw above still carries no receiver byte.
+	External ExternalIncident
+}
+
+// ExternalIncident is an incident tool's own handle on the incident a delivery
+// opened: its link, its id, or both. It is the receipt of a delivery — the way a
+// Slack `ts` is — never the external incident's state.
+type ExternalIncident struct {
+	URL string
+	ID  string
+}
+
+// IsZero reports that the receiver echoed nothing usable.
+func (e ExternalIncident) IsZero() bool { return e.URL == "" && e.ID == "" }
+
+// Bounds on an echoed handle, restated by incident_outbound_mappings' CHECKs.
+const (
+	// MaxExternalURLLength is incident_outbound_mappings_url_ck's length bound.
+	MaxExternalURLLength = 2048
+	// MaxExternalIDLength is incident_outbound_mappings_id_ck's length bound.
+	MaxExternalIDLength = 255
+)
+
+// ValidExternalIncident keeps what a receiver echoed only if it is safe to store
+// and to put in front of a human as a link, and drops each half that is not.
+//
+// ⛔ THESE ARE RECEIVER BYTES, SO NOTHING HERE IS A FAILURE. A receiver that
+// answers with a relative URL, an `http://` one, a `javascript:` one, a 10 kB id
+// or an id with a newline in it gets the delivery recorded `sent` exactly as
+// before, and the bad half is treated as absent — the delivery succeeded, and the
+// echo is a courtesy, not part of the contract. The rules:
+//
+//   - the URL is an ABSOLUTE `https` URL with a host, at most
+//     MaxExternalURLLength bytes, no userinfo and no control characters. `https`
+//     only, because this link is rendered on a Slack card and an oto page for
+//     people to click, and a receiver must not be able to put a `javascript:` or
+//     plaintext link in front of them;
+//   - the id is at most MaxExternalIDLength bytes of printable, valid UTF-8 with
+//     no surrounding space.
+//
+// It is the ONE validator for every source of an echo — the default top-level
+// keys today, and a payload mapping's response path (git-bug 2205620) — so a
+// mapping cannot widen what oto keeps.
+func ValidExternalIncident(rawURL, rawID string) ExternalIncident {
+	return ExternalIncident{URL: validExternalURL(rawURL), ID: validExternalID(rawID)}
+}
+
+func validExternalURL(raw string) string {
+	if raw == "" || len(raw) > MaxExternalURLLength || !printable(raw) || strings.ContainsAny(raw, " \t") {
+		return ""
+	}
+	// The literal, lowercase prefix as well as the parsed scheme: url.Parse folds
+	// `HTTPS://` to `https`, and incident_outbound_mappings_url_ck compares the
+	// stored bytes, so a value that passed here must pass there too.
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || !strings.HasPrefix(raw, "https://") ||
+		u.Host == "" || u.User != nil || u.Opaque != "" {
+		return ""
+	}
+	return raw
+}
+
+func validExternalID(raw string) string {
+	if raw == "" || len(raw) > MaxExternalIDLength || raw != strings.TrimSpace(raw) || !printable(raw) {
+		return ""
+	}
+	return raw
+}
+
+// printable reports valid UTF-8 with no control or otherwise unprintable rune.
+func printable(s string) bool {
+	if !utf8.ValidString(s) {
+		return false
+	}
+	for _, r := range s {
+		if !unicode.IsPrint(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // RenderedMessage is provider-native bytes plus the two strings every provider
@@ -264,6 +426,17 @@ type RenderedMessage struct {
 	Payload  json.RawMessage // channel-native (Slack: {text,attachments,unfurl_*})
 	Hash     string          // sha256 of Payload; skips no-op updates
 	Metadata map[string]string
+	// Mapped marks a Payload a Connection's payload mapping rendered (ADR 0055 §2)
+	// rather than the provider's own renderer. A provider whose Connection carries a
+	// mapping REFUSES a message without it: the plain envelope reaching a vendor that
+	// cannot parse it is the silent missing incident §2 forbids.
+	//
+	// ⚠️ A MAPPED PAYLOAD MAY HOLD SECRET REFERENCES, NEVER SECRETS. The provider fills
+	// them from Credential.Secrets as it sends; what is persisted is the reference.
+	Mapped bool
+	// Headers are the request headers a payload mapping rendered, by name, with the
+	// same secret references unfilled. Nil for every unmapped message.
+	Headers map[string]string
 }
 
 // ErrorClass drives retry policy (§G.6). THE CLASSIFICATION drives retry, never

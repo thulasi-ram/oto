@@ -98,6 +98,14 @@ func (r *Renderer) Render(
 	case v.Digest != nil:
 		payload, fallback = r.renderDigest(v, o)
 		summary = fallback
+	// ⭐ AN INCIDENT IS DECIDED BEFORE THE MODE TOO, and for the digest's reason: it
+	// is not a Case, has no group and no card state, so no Case-shaped arm may draw
+	// it (ADR 0052 §6). It used to be REFUSED here, because no threaded channel
+	// could carry one; since 00087 an Incident whose Correlator says so has a
+	// thread, and `renderIncident` picks between its card, a fact reply under it,
+	// and the pointer posted into a member Case's own thread.
+	case v.Incident != nil:
+		payload, fallback, summary = r.renderIncident(v, o)
 	case o.Mode == domain.ModeThreadReply:
 		payload, fallback, summary = r.renderReply(v, o)
 	default:

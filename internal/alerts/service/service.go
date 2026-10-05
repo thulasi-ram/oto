@@ -39,6 +39,11 @@ type Deps struct {
 	OccBatch      CaseBatchReader
 	OccSources    CaseSourceResolver
 	SnoozeHistory SnoozeHistoryReader
+	// CaseCover reads, for display, who can still speak for a Case and how many
+	// open Cases a source's cluster holds (ADR 0056 §1). ⭐ UNWIRED MEANS THE
+	// SCREENS SAY NOTHING ABOUT EXPIRY, never that a Case can expire: the two
+	// reads answer "unknown", and nothing the reaper decides depends on them.
+	CaseCover CaseCoverReader
 	// CasePolicies reads `case_policy_config` — the case retention window W
 	// (migration 00057). ⭐ UNWIRED MEANS W=0 FOR EVERY ALERT, which is the
 	// pre-00057 close path exactly: a case closes on the resolve. Nothing degrades
@@ -70,6 +75,23 @@ type Deps struct {
 	Settings      SettingsReader
 	Enrichments   EnrichmentReader
 	Notifications NotificationReader
+	// CaseEndings is told which Cases just ENDED, inside the transaction that ended
+	// them (ADR 0052 §3, §5). Optional: unwired, a Case ending tells nobody but the
+	// timeline and `notify.evaluate`, which is what it did before Incidents existed.
+	CaseEndings CaseEndings
+	// CaseOpenings is told which Cases just OPENED, inside the transaction that
+	// opened them, so a Correlator can be asked about each (ADR 0052 §2). Optional
+	// for CaseEndings' reason: unwired, a Case opening does exactly what it did
+	// before Correlators existed.
+	CaseOpenings CaseOpenings
+
+	// ExpireSilentAndRemoved turns on the reaper's two ADR 0056 passes, `silent`
+	// and `source_removed` (config `jobs.expire_silent_and_removed`, env
+	// OTO_JOBS_EXPIRE_SILENT_AND_REMOVED). ⭐ OFF BY DEFAULT, AND THAT IS THE
+	// ROLLOUT: migration 00094 and the readers that understand its two reasons ship
+	// first, and nothing writes either reason until an operator turns this on. Off,
+	// `case.reap` is exactly the `timeout` sweep it was before 00094.
+	ExpireSilentAndRemoved bool
 
 	Clock  clock.Clock
 	Logger *slog.Logger
@@ -92,6 +114,7 @@ type Service struct {
 	cases       CaseRepository
 	occBatch    CaseBatchReader
 	occSources  CaseSourceResolver
+	cover       CaseCoverReader
 	casePolicy  CasePolicyRepository
 	casePolicyW CasePolicyConfigStore
 	events      EventRepository
@@ -106,6 +129,11 @@ type Service struct {
 	settings      SettingsReader
 	enrichments   EnrichmentReader
 	notifications NotificationReader
+	caseEndings   CaseEndings
+	caseOpenings  CaseOpenings
+
+	// expireUnheard is Deps.ExpireSilentAndRemoved.
+	expireUnheard bool
 
 	clock clock.Clock
 	log   *slog.Logger
@@ -142,6 +170,7 @@ func New(d Deps) (*Service, error) {
 		cases:         d.Cases,
 		occBatch:      d.OccBatch,
 		occSources:    d.OccSources,
+		cover:         d.CaseCover,
 		casePolicy:    d.CasePolicies,
 		casePolicyW:   d.CasePolicyConfig,
 		events:        d.Events,
@@ -155,6 +184,9 @@ func New(d Deps) (*Service, error) {
 		settings:      d.Settings,
 		enrichments:   d.Enrichments,
 		notifications: d.Notifications,
+		caseEndings:   d.CaseEndings,
+		caseOpenings:  d.CaseOpenings,
+		expireUnheard: d.ExpireSilentAndRemoved,
 		clock:         clk,
 		log:           logger,
 	}, nil
@@ -419,9 +451,12 @@ type notifyRequest struct {
 // off, the card still goes out, without the rule, at the budget's edge. Silence
 // is never the degradation.
 func (s *Service) enqueueNotify(
-	ctx context.Context, _ db.TenantScope, reqs []notifyRequest,
+	ctx context.Context, scope db.TenantScope, reqs []notifyRequest,
 	awaitingEnrichment map[uuid.UUID]struct{},
 ) (int, error) {
+	if err := s.announceEndings(ctx, scope, reqs); err != nil {
+		return 0, err
+	}
 	if s.enqueuer == nil || len(reqs) == 0 {
 		return 0, nil
 	}
@@ -510,6 +545,52 @@ func (s *Service) enqueueEnrich(ctx context.Context, caseIDs []uuid.UUID) (int, 
 			"could not queue enrichment")
 	}
 	return len(reqs), nil
+}
+
+// announceEndings tells the CaseEndings port which of these requests report a
+// Case ENDING — `all_resolved` and `expired`, the two Reasons minted exactly when
+// an episode closes — inside the transaction that closed it.
+//
+// ⭐ IT RIDES THIS FUNCTION BECAUSE EVERY CLOSE ALREADY DOES. The immediate T5 in
+// the ingest batch, the delayed close once the retention window W lapses, and the
+// reaper's T6 all funnel their announcement through `enqueueNotify` (a deferred T5
+// inside W announces nothing, and is not a close), so this is the one place that
+// sees every ending and nothing else — one call site instead of three to keep in
+// step.
+//
+// ⛔ THE PORT IS THE WHOLE COUPLING, AND IT POINTS INWARD. This module does not
+// know what listens or why: `incidents` reads it to notice an Incident going quiet
+// (ADR 0052 §3), and `internal/app` is what connects the two. alerts imports
+// nothing to make that true (§I.1).
+func (s *Service) announceEndings(ctx context.Context, scope db.TenantScope, reqs []notifyRequest) error {
+	if s.caseEndings == nil {
+		return nil
+	}
+	var ended []uuid.UUID
+	for _, r := range reqs {
+		if r.caseID != uuid.Nil && (r.reason == reasonAllResolved || r.reason == reasonExpired) {
+			ended = append(ended, r.caseID)
+		}
+	}
+	if len(ended) == 0 {
+		return nil
+	}
+	return s.caseEndings.CasesEnded(ctx, scope, ended)
+}
+
+// announceOpenings tells the CaseOpenings port which Cases this batch opened,
+// inside the transaction that opened them.
+//
+// ⭐ IT TAKES THE SAME LIST `enqueueEnrich` TAKES, because that list is already
+// exactly "every episode this batch began": `applyOpen` appends to it once per T1
+// and T7, and those two rows are the whole population of "an episode begins"
+// since ADR 0040 retired T8. A second accumulator would be a second answer to the
+// same question.
+func (s *Service) announceOpenings(ctx context.Context, scope db.TenantScope, caseIDs []uuid.UUID) error {
+	if s.caseOpenings == nil || len(caseIDs) == 0 {
+		return nil
+	}
+	return s.caseOpenings.CasesOpened(ctx, scope, caseIDs)
 }
 
 // ------------------------------------------------------------- notify reasons

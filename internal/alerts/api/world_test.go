@@ -84,10 +84,14 @@ type fakeAlertsService struct {
 	commentEvent     domain.Event
 	snoozeRow        domain.Snooze
 
+	// cover is who can still speak for each Case (ADR 0056 §1), keyed by case id.
+	cover map[uuid.UUID]domain.CaseCover
+
 	// Injected failures, for the branches where oto's silence must stay
 	// distinguishable from an answer.
 	failEnrichments error
 	failCaseRollup  error
+	failCover       error
 	// failVerb is what every human verb answers once the subject has been
 	// resolved — the service's way of saying "this alert is in the wrong state
 	// for that", which is a PRECONDITION failure and not a conflict.
@@ -204,6 +208,22 @@ func (f *fakeAlertsService) GetCase(
 	return f.alertCase, nil
 }
 
+func (f *fakeAlertsService) CaseCover(
+	_ context.Context, s db.TenantScope, caseIDs []uuid.UUID,
+) (map[uuid.UUID]domain.CaseCover, error) {
+	f.note("CaseCover", s)
+	if f.failCover != nil {
+		return nil, f.failCover
+	}
+	out := map[uuid.UUID]domain.CaseCover{}
+	for _, id := range caseIDs {
+		if c, ok := f.cover[id]; ok {
+			out[id] = c
+		}
+	}
+	return out, nil
+}
+
 func (f *fakeAlertsService) AlertTimeline(
 	_ context.Context, s db.TenantScope, alertID uuid.UUID, w db.TimeWindow, p db.Keyset,
 ) (service.TimelineResult, error) {
@@ -278,7 +298,13 @@ func (f *fakeAlertsService) ListCases(
 ) (service.CaseListResult, error) {
 	f.note("ListCases", s)
 	f.lastCaseListQuery = q
-	return f.caseList, nil
+	// The real service batch-reads the page's cover beside it and drops it on a
+	// failed read rather than failing the list; the fake does the same.
+	res := f.caseList
+	if f.failCover == nil {
+		res.Cover = f.cover
+	}
+	return res, nil
 }
 
 func (f *fakeAlertsService) LabelNames(
@@ -509,6 +535,11 @@ var (
 	// The two `case_policy_config` rows the fixture world holds.
 	fxCasePolicyID  = uuid.MustParse("0198f3c1-6a2e-7c31-9b4d-2f5a1c8e0b8c")
 	fxCasePolicy2ID = uuid.MustParse("0198f3c1-6a2e-7c31-9b4d-2f5a1c8e0b8d")
+	// The one live source the open fixture Case's expiry waits on.
+	fxSourceID = uuid.MustParse("0198f3c1-6a2e-7c31-9b4d-2f5a1c8e0b8e")
+	// The HA pair the suppressed fixture Case's cluster is fed by.
+	fxHASourceA = uuid.MustParse("0198f3c1-6a2e-7c31-9b4d-2f5a1c8e0b8f")
+	fxHASourceB = uuid.MustParse("0198f3c1-6a2e-7c31-9b4d-2f5a1c8e0b90")
 )
 
 // fxLabels is the label set every fixture Alert carries. It exercises the
@@ -888,6 +919,33 @@ func newAlertsWorld(t *testing.T) *fakeAlertsService {
 			Cursor: cursor,
 		},
 		alertCase: open,
+		// ⭐ THREE SHAPES OF ADR 0056 §1's ANSWER, one per episode: the open one
+		// under one healthy source with a max silence, the ended one on a
+		// cluster whose only source was removed, and the suppressed one under an
+		// HA pair with one replica the guard cannot vouch for — which the reaper
+		// holds (owner ruling R1), so it names no single source.
+		cover: map[uuid.UUID]domain.CaseCover{
+			fxCase: {
+				CaseSources: domain.CaseSources{
+					Live: 1, LiveIDs: []uuid.UUID{fxSourceID}, MaxSilence: 24 * time.Hour,
+				},
+				Sources: []domain.CoverSource{{
+					ID: fxSourceID, Name: "alertmanager-prod-eu",
+					MaxSilence: 24 * time.Hour, Healthy: true,
+				}},
+				AllHealthy: true,
+			},
+			fxEndedOccID: {CaseSources: domain.CaseSources{Removed: 1}},
+			fxSuppOccID: {
+				CaseSources: domain.CaseSources{
+					Live: 2, LiveIDs: []uuid.UUID{fxHASourceA, fxHASourceB}, MaxSilence: 48 * time.Hour,
+				},
+				Sources: []domain.CoverSource{
+					{ID: fxHASourceA, Name: "am-prod-eu-0", MaxSilence: 24 * time.Hour, Healthy: true},
+					{ID: fxHASourceB, Name: "am-prod-eu-1", MaxSilence: 48 * time.Hour},
+				},
+			},
+		},
 		timelineRes: service.TimelineResult{
 			Events: []domain.Event{
 				fxMachineEvent(t, fxEventOpened, domain.EventCaseOpened,

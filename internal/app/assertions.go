@@ -12,6 +12,8 @@ import (
 	identityapi "github.com/thulasiram/oto/internal/identity/api"
 	identityrepo "github.com/thulasiram/oto/internal/identity/repository"
 	identityservice "github.com/thulasiram/oto/internal/identity/service"
+	incidentsrepo "github.com/thulasiram/oto/internal/incidents/repository"
+	incidentsservice "github.com/thulasiram/oto/internal/incidents/service"
 	ingestservice "github.com/thulasiram/oto/internal/ingestion/service"
 	notifapi "github.com/thulasiram/oto/internal/notification/api"
 	notifrepo "github.com/thulasiram/oto/internal/notification/repository"
@@ -58,6 +60,11 @@ var (
 	_ alertsservice.StreamAppender     = streamAppender{}
 	_ alertsservice.NotificationReader = (*notificationReader)(nil)
 	_ alertsservice.EnrichmentReader   = enrichmentReader{}
+	_ alertsservice.CaseEndings        = (*caseEndings)(nil)
+	_ alertsservice.CaseOpenings       = caseOpenings{}
+	_ incidentsservice.Announcer       = incidentAnnouncer{}
+	_ incidentsservice.CorrelatorStore = (*incidentsrepo.CorrelatorRepository)(nil)
+	_ notifservice.IncidentReader      = (*incidentFacts)(nil)
 	_ alertsservice.SourceHealth       = sourceHealth{}
 	_ alertsservice.SettingsReader     = orgSettings{}
 	_ notifservice.SettingsReader      = orgSettings{}
@@ -159,4 +166,11 @@ var (
 	_ sourcesservice.IdempotencyClaims = (*idempotency.Repository)(nil)
 	_ identityapi.UnitOfWork           = (*identityrepo.TxRunner)(nil)
 	_ sourcesservice.UnitOfWork        = (*sourcesrepo.TxRunner)(nil)
+
+	// --- ADR 0052 §6: the Incident holder also places a Case fact -------------
+	//
+	// The same late-bound `incidentFacts` that reads an Incident for its card answers
+	// which Incident conversation a Case's fact belongs in. A drift here would leave
+	// the field nil in the container and every Case in its own thread, silently.
+	_ notifservice.IncidentConversations = (*incidentFacts)(nil)
 )

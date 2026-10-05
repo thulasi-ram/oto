@@ -275,6 +275,14 @@ type Notification struct {
 	DigestCoveredFrom *time.Time
 	DigestCoveredTo   *time.Time
 
+	// IncidentSequence is the per-Incident order of the Incident fact this row
+	// declares (migration 00093): 1 for `drawn`, one more per fact after, allocated
+	// in the transaction that made the fact true and frozen here when the fact is
+	// evaluated, so every delivery attempt renders the same number. 0 — NULL in the
+	// row — on every non-Incident row, on the pointer into a member Case's thread,
+	// and on an Incident fact enqueued before 00093 (`notifications_incident_seq_ck`).
+	IncidentSequence int64
+
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -283,6 +291,27 @@ type Notification struct {
 // object — and therefore that GroupID is nil, that its thread is keyed by its
 // policy, and that its card is drawn from DigestCount instead of from a snapshot.
 func (n Notification) Digest() bool { return n.SubjectKind == SubjectDigest }
+
+// Incident reports whether this Notification is a fact about an Incident (ADR
+// 0052 §5) — and therefore that it names no alert and no case, and that its card is
+// drawn from the Incident rather than from a snapshot. Where it is DELIVERED is the
+// conversation pair, as for every fact: normally the Incident's own, and for the one
+// "now part of Incident #N" pointer, a member Case's (ADR 0052 §6).
+func (n Notification) Incident() bool { return n.SubjectKind == SubjectIncident }
+
+// InIncidentConversation reports whether this fact is delivered into an Incident's
+// conversation (ADR 0052 §6) — every Incident fact but the pointer, and a Case fact
+// evaluated while its Case was a member of an Incident that is a conversation.
+func (n Notification) InIncidentConversation() bool {
+	return n.ConversationKind == ConversationIncident
+}
+
+// IncidentPointer reports whether this is the one reply an Incident posts into a
+// member Case's OWN thread to say where that Case's later facts now go (ADR 0052
+// §6): an Incident fact whose conversation is the Case.
+func (n Notification) IncidentPointer() bool {
+	return n.Incident() && n.ConversationKind == ConversationCase
+}
 
 // Delivery is ONE MATERIALISATION of a Notification on ONE Channel. It owns the
 // retry state, the provider ids and the rendered payload.
@@ -404,6 +433,19 @@ const (
 	// spans many generations, which is why it could never carry a group id and why
 	// it was the exception the pair exists to retire.
 	ConversationDigest ConversationKind = "digest"
+	// ConversationIncident is an Incident's own conversation (migrations 00084,
+	// 00087).
+	//
+	// ⭐ TWO KINDS OF FACT LAND IN IT (ADR 0052 §6). An INCIDENT fact always names
+	// it. A CASE fact names it when, at the moment the fact was evaluated, its Case
+	// was a current member of an Incident whose Correlator says its Incidents are
+	// conversations — the answer is frozen on the row, so a fact is placed once and
+	// never re-placed. `threads_subjkind_ck` admits it since 00087, so a threaded
+	// channel keys a thread by the Incident when the Incident is a conversation; an
+	// Incident that is not one still SKIPS a threaded destination with a stated
+	// reason (`incidentFanOut`), and the generic webhook, which keeps no thread,
+	// takes every fact as a standalone post either way.
+	ConversationIncident ConversationKind = "incident"
 )
 
 // SubjectKind maps a conversation kind onto the `channel_threads.subject_kind`
@@ -420,6 +462,9 @@ func (k ConversationKind) SubjectKind() SubjectKind {
 		return SubjectCase
 	case ConversationDigest:
 		return SubjectDigest
+	case ConversationIncident:
+		// An Incident conversation's thread is keyed by the Incident (00087).
+		return SubjectIncident
 	}
 	return ""
 }

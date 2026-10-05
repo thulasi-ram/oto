@@ -303,6 +303,9 @@ type CaseListResult struct {
 	// An entry is always present for every row: the repository's `EXISTS` proved
 	// the alert is in the caller's org before the case was returned.
 	Alerts map[uuid.UUID]domain.Alert
+	// Cover is who can still speak for each row, keyed by case id (ADR 0056 §1).
+	// A row absent from it was not read, and renders `sources: null`.
+	Cover  map[uuid.UUID]domain.CaseCover
 	Cursor db.Cursor
 }
 
@@ -353,7 +356,20 @@ func (s *Service) ListCases(
 	if err != nil {
 		return CaseListResult{}, err
 	}
-	return CaseListResult{Cases: rows, Alerts: alerts, Cursor: cur}, nil
+	// Who can still speak for each row (ADR 0056 §1), one query for the page.
+	// A failed read costs the rows their expiry line, never the list: it is an
+	// explanation beside the Cases, not part of them.
+	caseIDs := make([]uuid.UUID, len(rows))
+	for i, c := range rows {
+		caseIDs[i] = c.ID()
+	}
+	cover, err := s.CaseCover(ctx, scope, caseIDs)
+	if err != nil {
+		s.log.WarnContext(ctx, "alerts: could not read case cover for the case list",
+			"org_id", scope.OrgID(), "error", err)
+		cover = nil
+	}
+	return CaseListResult{Cases: rows, Alerts: alerts, Cover: cover, Cursor: cur}, nil
 }
 
 // Cases serves `GET /api/v1/alerts/{id}/cases` — the episode

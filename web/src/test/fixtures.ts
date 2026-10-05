@@ -20,6 +20,11 @@ import type {
   Case,
   CaseDetail,
   CaseListItem,
+  CaseSource,
+  CaseSources,
+  Incident,
+  IncidentDetail,
+  IncidentMember,
   OrgSettingsView,
   Policy,
   RuleSnapshot,
@@ -73,9 +78,54 @@ export function alertRef(patch: Partial<AlertRef> = {}): AlertRef {
   };
 }
 
+/** One live source on a Case's cluster: healthy, with the new-source default of a day. */
+export function caseSource(patch: Partial<CaseSource> = {}): CaseSource {
+  return {
+    id: "2d8e4a5b-3c6f-4d8e-9f0a-1b2c3d4e5f60",
+    name: "prod-eu alertmanager",
+    healthy: true,
+    max_silence_seconds: 86_400,
+    ...patch,
+  };
+}
+
+/**
+ * Who can still speak for a Case, derived from its cluster's live sources the
+ * way the server derives it (owner ruling R1): `all_healthy` only with at least
+ * one live source and every one healthy; the effective max silence the longest
+ * of theirs, or null when any one turned it off; `source` only under exactly one.
+ */
+export function clusterSources(live: readonly CaseSource[], removed = 0): CaseSources {
+  const silences = live.map((s) => s.max_silence_seconds);
+  return {
+    live: live.length,
+    removed,
+    all_healthy: live.length > 0 && live.every((s) => s.healthy),
+    max_silence_seconds:
+      live.length === 0 || silences.some((s) => s === null)
+        ? null
+        : Math.max(...(silences as number[])),
+    live_sources: live.slice(0, 10),
+    source: live.length === 1 ? live[0]! : null,
+  };
+}
+
+/**
+ * Who can still speak for a Case (ADR 0056 §1), in its ordinary shape: one live,
+ * healthy source with the default max silence of a day. `source` patches that
+ * one source (and the cluster facts derived from it); `patch` overrides the
+ * result. For an HA cluster or none, build it with `clusterSources`.
+ */
+export function caseSources(
+  patch: Partial<CaseSources> = {},
+  source: Partial<CaseSource> = {},
+): CaseSources {
+  return { ...clusterSources([caseSource(source)]), ...patch };
+}
+
 /** One row of `GET /api/v1/cases`: a firing episode plus its identity. */
 export function caseListItem(patch: Partial<CaseListItem> = {}): CaseListItem {
-  return { ...alertCase(), alert: alertRef(), ...patch } as CaseListItem;
+  return { ...alertCase(), alert: alertRef(), sources: caseSources(), ...patch } as CaseListItem;
 }
 
 /** One expanded case, as `GET /api/v1/cases/{id}` serves it. */
@@ -83,10 +133,55 @@ export function caseDetail(patch: Partial<CaseDetail> = {}): CaseDetail {
   return {
     ...alertCase(),
     alert: alertRef(),
+    sources: caseSources(),
     enrichments: [],
     delivery_summary: { total: 0, sent: 0, failed: 0, pending: 0, suppressed: 0 },
     ...patch,
   } as CaseDetail;
+}
+
+/**
+ * One Incident as a row of `GET /api/v1/incidents`.
+ *
+ * ⭐ `number` 4 IS NOT ANY CASE'S NUMBER. Incidents count from a counter of their
+ * own, and a fixture that reused the case fixture's 412 would pass against a
+ * screen that rendered the wrong one.
+ */
+export function incident(patch: Partial<Incident> = {}): Incident {
+  return {
+    id: "5a0e9c8e-3c1f-4b8e-9a51-6f0d2c7b1e44",
+    number: 4,
+    state: "active",
+    drawn_at: T0,
+    drawn_by: { kind: "human", label: "Priya R.", correlator_id: null },
+    member_count: 1,
+    open_member_count: 1,
+    alertnames: ["HighErrorRate"],
+    ...patch,
+  };
+}
+
+/** One spell of one Case inside an Incident — current unless `removed_at` is set. */
+export function incidentMember(patch: Partial<IncidentMember> = {}): IncidentMember {
+  return {
+    case_id: "0f8fad5b-d9cb-469f-a165-70867728950e",
+    case_number: 412,
+    case_state: "open",
+    alert_id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d38ae",
+    alertname: "HighErrorRate",
+    labels: { alertname: "HighErrorRate", severity: "critical" },
+    added_at: T0,
+    added_by: { kind: "human", label: "Priya R.", correlator_id: null },
+    removed_at: null,
+    removed_by_label: null,
+    moved_to_number: null,
+    ...patch,
+  };
+}
+
+/** One Incident with its membership history, as `GET /api/v1/incidents/{number}` serves it. */
+export function incidentDetail(patch: Partial<IncidentDetail> = {}): IncidentDetail {
+  return { ...incident(), members: [incidentMember()], outbound: [], ...patch } as IncidentDetail;
 }
 
 export function ruleSnapshot(patch: Partial<RuleSnapshot> = {}): RuleSnapshot {
@@ -226,6 +321,7 @@ export function channelConnection(patch: Partial<ChannelConnection> = {}): Chann
     config: { team_id: "T9TK3CUKW" },
     credential_kind: "slack_bot_token",
     credential_rotated_at: T0,
+    mapping_secret_names: [],
     created_at: T0,
     updated_at: T0,
     ...patch,
@@ -326,6 +422,7 @@ export function source(patch: Partial<Source> = {}, timings: TimingSpec = {}): S
     redact_annotations: [],
     push_enabled: true,
     reconcile_interval_seconds: 60,
+    max_silence_seconds: 86_400,
     ingest_path: "/api/v1/ingest/alertmanager/2d8e4a5b-3c6f-4d8e-9f0a-1b2c3d4e5f60",
     created_at: T0,
     updated_at: T0,

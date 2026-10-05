@@ -111,6 +111,28 @@ infra: am-wire
     docker compose up -d --wait postgres alertmanager prometheus
     @echo "postgres :5432   alertmanager http://localhost:9093   prometheus http://localhost:9090"
 
+# Also start the optional VictoriaMetrics stack (compose profile `vm`):
+# VictoriaMetrics single-node on :8428 and vmalert on :8880, which evaluates
+# deploy/vmalert/rules.yml and notifies the same Alertmanager as Prometheus.
+#
+# Pair a source with it as docs/setup/victoriametrics.md says: base_url is the
+# Alertmanager (http://localhost:9093), prometheus_url is vmalert
+# (http://localhost:8880). `just down` stops these too; the profile only
+# decides what `up` starts.
+[group('run')]
+vm: infra
+    docker compose --profile vm up -d --wait victoriametrics vmalert
+    @echo "victoriametrics http://localhost:8428/vmui   vmalert http://localhost:8880"
+
+# Flip VmDevToggle in deploy/vmalert/rules.yml by writing one sample of
+# `oto_dev_toggle` into VictoriaMetrics. 1 fires it after its 30 s `for`;
+# 0 resolves it after its 2 m `keep_firing_for`.
+# Usage: just vm-toggle 1
+[group('poke')]
+vm-toggle value="1":
+    curl -fsS -X POST http://localhost:8428/api/v1/import/prometheus --data-binary 'oto_dev_toggle {{value}}'
+    @echo "→ oto_dev_toggle = {{value}}"
+
 # Render the dev Alertmanager receiver's URL and ingest token into
 # deploy/alertmanager/local/, which is gitignored and mounted at
 # /etc/alertmanager/local. Both are read by `url_file` / `credentials_file`.
@@ -152,7 +174,7 @@ am-wire:
 # Stop the containers, keeping the data volume.
 [group('run')]
 down:
-    docker compose down
+    docker compose --profile vm down
 
 # Run the API and worker in one process (the default mode).
 [group('run')]
@@ -220,7 +242,7 @@ new-migration name:
 # Destroy the data volume and rebuild from empty. Irreversible.
 [group('db')]
 reset:
-    docker compose down -v
+    docker compose --profile vm down -v
     @just infra
     @just migrate
 
@@ -277,7 +299,11 @@ fire-alert source_id token="dev" status="firing":
       }]
     }
     JSON
-    @echo
+    # A bare `echo`, not `@echo`: this is a shebang recipe, so just hands the body
+    # to bash verbatim and `@` is not a quiet prefix here — bash looked for a
+    # command named `@echo` and failed the recipe with 127 after a good 202. The
+    # newline is for the receipt, which arrives without one.
+    echo
 
 # Watch the SSE stream. Usage: just stream <bearer-token>
 [group('poke')]

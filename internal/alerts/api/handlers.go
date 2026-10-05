@@ -327,7 +327,7 @@ func (rt *Router) listCases(w http.ResponseWriter, r *http.Request) {
 
 	out := make([]CaseListItemDTO, 0, len(res.Cases))
 	for _, c := range res.Cases {
-		out = append(out, caseListItemDTO(c, res.Alerts[c.AlertID()], started))
+		out = append(out, caseListItemDTO(c, res.Alerts[c.AlertID()], res.Cover, started))
 	}
 	httpx.List(w, r, out, pageOf(res.Cursor, req.Query.Limit), started)
 }
@@ -368,6 +368,12 @@ func (rt *Router) getCase(w http.ResponseWriter, r *http.Request) {
 		for _, e := range rows {
 			dto.Enrichments = append(dto.Enrichments, enrichmentDTO(e))
 		}
+	}
+	// Who can still speak for this Case (ADR 0056 §1). A failed read renders
+	// `null`, which the screen shows as nothing about expiry — a missing
+	// explanation, never a wrong one.
+	if cover, err := rt.svc.CaseCover(r.Context(), scope, []uuid.UUID{ac.ID()}); err == nil {
+		dto.Sources = caseSourcesDTO(cover, ac.ID())
 	}
 
 	// The episode-scoped answer to "was anybody told". Unlike the enrichments

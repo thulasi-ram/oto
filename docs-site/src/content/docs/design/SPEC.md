@@ -99,7 +99,7 @@ These names are binding on Go types, table names, JSON fields, API paths and UI 
 | **NotificationPolicy** | `notification.Policy` | `notification_policies` | matchers → channels → reasons. Decides *whether* and *where*. |
 | **Notification** | `notification.Notification` | `notifications` | **The channel-agnostic intent to communicate one fact about one subject.** Idempotent. |
 | **NotificationDelivery** | `notification.Delivery` | `notification_deliveries` | **One materialisation of a Notification on one Channel.** Owns retry state, provider ids, thread sequence, rendered bytes. |
-| **Conversation** | `notification.ConversationKind` + id | *(the pair `(conversation_kind, conversation_id)` on `notifications`)* | What a `channel_threads` row is *about*: a **Case** or a **digest**. A conversation holds exactly **one Case** — a new Case always means a new thread — and a digest's conversation is keyed by the **policy** that asked for it, one per policy per channel. It is what **decides which facts share a message**, and that decision belongs to the `notification` layer, not to a stored grouping row (git-bug `7570090`, migration `00069`). It is **not** a `correlation` (deferred) and **not** an incident (permanently out). |
+| **Conversation** | `notification.ConversationKind` + id | *(the pair `(conversation_kind, conversation_id)` on `notifications`)* | What a `channel_threads` row is *about*: a **Case** or a **digest**. A conversation holds exactly **one Case** — a new Case always means a new thread — and a digest's conversation is keyed by the **policy** that asked for it, one per policy per channel. It is what **decides which facts share a message**, and that decision belongs to the `notification` layer, not to a stored grouping row (git-bug `7570090`, migration `00069`). It is **not** an Incident: an Incident is a set of Cases (ADR 0052), and a conversation is about one Case or one digest — unless the Incident's Correlator says its Incidents are conversations, which ADR 0052 §6 admits as a third `conversation_kind`, `incident` (migrations `00084`, `00087`): a fact about a member Case evaluated after its membership exists posts into the Incident's thread; nothing is held back and nothing already posted moves. |
 | **ChannelThread** | `notification.Thread` | `channel_threads` | Persisted binding of a **Conversation** to a provider conversation anchor (Slack `channel_id` + root `ts`). |
 | **Silence** | `silences.Silence` | `silences` | A **read-only mirror** of an Alertmanager silence. |
 | **UIEvent** | `streaming.UIEvent` | `ui_events` | A monotonic, replayable envelope for the SSE stream. |
@@ -130,7 +130,7 @@ migration 00051.
 **Scope bans** (SCOPE-BOUNDARY §3 — vocabulary is enforcement). These words MUST NOT appear in a Go
 identifier, a table or column name, a JSON field, an API path, or UI copy:
 
-`incident` · `escalation` · `escalation policy` · `on-call` / `oncall` · `rota` · `schedule` ·
+`escalation` · `escalation policy` · `on-call` / `oncall` · `rota` · `schedule` ·
 `assignee` / `assign` / `assigned_to` · `owner` / `owner_id` · `responder` · `triage` · `postmortem` ·
 `war room` · `SLA` · `MTTA` · `MTTR` · `severity override` · `close` (of an alert) · `merge` ·
 `dismiss` · `watcher` / `subscriber`
@@ -138,6 +138,12 @@ identifier, a table or column name, a JSON field, an API path, or UI copy:
 A pull request introducing one of these is **presumed over the line until argued otherwise against
 FR-1 by name** (SCOPE-BOUNDARY §1). AC-49 enforces this with a lint rule, because a vocabulary ban
 that is not mechanically enforced decays in a quarter.
+
+⚠️ **`incident` led this list until 2026-10-02, and ADR 0052 removed the bare word.** An **Incident**
+— a set of Cases drawn as one story by an operator-written Correlator or by a human — is an oto noun
+now, so the word names something oto has. The door it guarded is still shut, by §D.4.0 rather than by
+the word: `incident_id` MUST NOT appear on a signal row (`alerts`, `alert_cases`, `notifications`,
+`notification_deliveries`), and the incident **response** is PERMANENTLY OUT (§I.1.1).
 
 *Permitted uses:* `docs/`, this list, SCOPE-BOUNDARY cross-references, and `river.JobSnooze`
 (a third-party API name, unrelated to §B.8 snooze).
@@ -174,11 +180,11 @@ Nothing is lost, because the four-way reading of a Case is **derived**, and the 
 state='open'   AND suppression_reason IS NULL      ->  firing
 state='open'   AND suppression_reason IS NOT NULL  ->  suppressed
 state='closed' AND resolve_reason = 'upstream'     ->  resolved
-state='closed' AND resolve_reason = 'timeout'      ->  expired
+state='closed' AND resolve_reason IN ('timeout','silent','source_removed')  ->  expired
 ```
 
 `case_resolve_ck` makes `resolve_reason` present exactly when closed and `case_resreason_ck` bounds
-it to those two values, so the closed half is exhaustive; `case_suppress_ck` keeps
+it to those four values (two until 00094, ADR 0056), so the closed half is exhaustive; `case_suppress_ck` keeps
 `suppression_reason` off a closed row, so the open half is. `Case.AlertState()` is that table in Go
 and `Case.check()` is what makes it total.
 
@@ -202,7 +208,7 @@ witness for it is now the Case list, but nobody has re-measured the plan on the 
 | `firing` | no | Alertmanager reports this label set active and not suppressed. | Ingest (webhook), Reconciler |
 | `suppressed` | no | Active but suppressed **upstream**. `suppression_reason ∈ {silence, inhibition, mute_time_interval, active_time_interval}` — Alertmanager's four reasons and no others. **Never observable via webhook (C1); `snoozed` is NOT one of these (§B.8.2).** | **Entered:** reconciler only. **Left:** reconciler *or* ingest (§B.3.1) |
 | `resolved` | yes | An explicit per-alert `status="resolved"` observation was received. | Ingest only |
-| `expired` | yes | oto stopped hearing about it: `now > source_ends_at + resolve_grace` **and** the AlertSource is healthy. Means *"Prometheus or Alertmanager went away"*, not *"the problem went away"*. | Reaper job |
+| `expired` | yes | oto stopped hearing about it, and `resolve_reason` says how (ADR 0056): `timeout` — `now > source_ends_at + resolve_grace` **and** the AlertSource is healthy; `silent` — the AlertSource is healthy and has said nothing about the case for longer than its `max_silence_s`; `source_removed` — no live AlertSource feeds the case's cluster any more. Means *"Prometheus or Alertmanager went away"*, not *"the problem went away"*. | Reaper job |
 
 `alert.state` = the four-way reading of the current open case; if none is open, the reading of the most recent case.
 ⛔ **`alert_group.state` WAS DEFINED HERE AND THERE IS NO SUCH STATE** (git-bug `7570090`,
@@ -226,7 +232,7 @@ they are edges, not columns.
 | T3 | `firing` | `suppressed` | Reconciler observes `status.state == "suppressed"` | Reconciler | Set `suppression_reason` from `silencedBy`/`inhibitedBy`/`mutedBy`; emit `case.suppressed`; enqueue `notify.evaluate(reason=suppressed)` |
 | T4 | `suppressed` | `firing` | **(a)** Reconciler observes `status.state == "active"`, **OR** **(b)** ANY ingest observation with `status == "firing"` arrives for this case | **Reconciler AND Ingest** | Clear `suppression_reason` and `suppressed_by`; emit `case.unsuppressed` with `detected_by ∈ {reconciler, webhook}`; enqueue `notify.evaluate(reason=unsuppressed)` |
 | T5 | `firing`\|`suppressed` | `resolved` | Per-alert `status == "resolved"` | Ingest | Set `ended_at = max(occurred_at, started_at)` **(clamped — see B.3.2)**, `resolve_reason='upstream'`; emit `case.resolved`; enqueue `notify.evaluate(reason=all_resolved\|some_resolved)` |
-| T6 | `firing`\|`suppressed` | `expired` | `now > source_ends_at + resolve_grace` AND `source_health.status = 'healthy'` | Reaper | Set `ended_at = now`, `resolve_reason='timeout'`; emit `case.expired`; enqueue `notify.evaluate(reason=expired)` |
+| T6 | `firing`\|`suppressed` | `expired` | **`timeout`:** `now > source_ends_at + resolve_grace` AND the case's cluster has ≥ 1 live source AND **every** live source's `source_health.status = 'healthy'` (§B.4). **`silent`** (ADR 0056 §3, Amendment 1): the same all-healthy condition AND `now > last_observed_at + T`, where `T` is the cluster's effective max silence — the longest `max_silence_s` among its live sources, and off when any of them is NULL. **`source_removed`** (ADR 0056 §2, Amendment 1): the case's cluster has no live source, had one soft-deleted, and the newest deletion is a `resolve_grace` old. `silent` and `source_removed` run only while `jobs.expire_silent_and_removed` is on (default off) | Reaper | Set `ended_at = now`, `resolve_reason` to the expiry that was proven; emit `case.expired` (payload `resolve_reason`); enqueue `notify.evaluate(reason=expired)` |
 | T7 | `resolved`\|`expired` | *(new case `firing`)* | Same `alert_key` fires again — **always, whatever the clock says** | Ingest | The closed case is left exactly as it is; new case `seq+1`, **`unacked`** → **a new Case is a new conversation, so a new Slack root message, always** (git-bug `7570090`); emit `case.opened`; `alerts.total_cases += 1` |
 | T9 | any | `ack_state = acked` | Human via `POST /cases/{id}/ack`, or Slack `oto.ack` button (the `/alert-groups/{id}/ack` fan-out is deleted with the entity — git-bug `7570090`) | Human | Set `acked_by`, `acked_at`, `ack_note`; emit `case.acknowledged`; enqueue `notify.evaluate(reason=acked)` |
 | T10 | `acked` | `unacked` | Human unack via `POST /cases/{id}/unack` (the `/alert-groups/{id}/unack` fan-out is deleted with the entity), **or** a new case opens (T7) | Human, Ingest | Emit `case.unacknowledged` with `reason ∈ {manual, new_case}`; enqueue `notify.evaluate(reason=unacked)` |
@@ -340,7 +346,11 @@ surfaced, never rejected** (C12). The same clamp applies to T6 (`expired`).
 
 > **Losing sight of an alert is NOT the same as the alert resolving.**
 
-`case.reap` MUST, for each candidate case, load `source_health` for the owning AlertSource. If `status != 'healthy'`, the case is **held in its current state** and a single `source.unreachable` banner is raised for the source. It MUST NOT be expired. A `source_degraded_holds` counter is exported.
+`case.reap` MUST, for each candidate case, load `source_health` for **every live AlertSource on the case's cluster**. If the cluster has no live source, or **any** live source's `status != 'healthy'` (or its health cannot be read), the case is **held in its current state** and a single `source.unreachable` banner is raised for each source that is not healthy. It MUST NOT be expired as `timeout` or `silent`. A `source_degraded_holds` counter is exported.
+
+**An HA cluster expires only on all of its sources** (ADR 0056 Amendment 1, ruling R1). An Alertmanager HA pair is two witnesses to the same alerts, and the replica oto cannot see might be the one still carrying this one, so one unhealthy replica holds every open case on the cluster. A held case names only the sources the guard could not vouch for, never a healthy sibling; a source's `held_case_count` is all of its open cases while it is not healthy and none while it is. The live set is re-read inside the expiring transaction, and the expiry stands down unless it equals the set the guard proved.
+
+The guard applies to `timeout` **and** to `silent` (ADR 0056 §3): under an unhealthy source oto cannot tell "upstream stopped speaking about it" from "Alertmanager is down", so silence proves nothing. It does **not** apply to `source_removed` (ADR 0056 §2), and that is the guard's own reasoning rather than an exception to it: the guard protects a source oto cannot see, and a case whose cluster has **no live source** has none — the one thing that could have said it ended is gone. The test is the CLUSTER, not the deleted source, so deleting one Alertmanager HA replica while another live source feeds the cluster expires nothing; and a cluster no source was ever removed from is not one whose source was removed. The `source_removed` pass runs first in each tick, waits a `resolve_grace` past the cluster's newest deletion, and is re-proved inside the expiring transaction, so a source registered inside that grace, or between the scan and the write, stands it down.
 
 ### B.5 Re-fire policy (stated plainly)
 
@@ -388,7 +398,7 @@ announced *itself* and called that visibility, but the thirty-nine replies it wi
 left no trace an operator could read — which is exactly the failure the rule above
 forbids. The deeper fault is that **the defence had no object.** A storm is many
 *different* alerts arriving together; the thing that owns many different alerts is an
-**Incident**, and correlation is DEFERRED-POST-V1. With no such object, storm detection
+**Incident** — DEFERRED-POST-V1 when storm damping was removed, admitted by ADR 0052 since. With no such object, storm detection
 had nowhere to put its verdict, so it put it in the notification layer — and a detector
 with nowhere to report becomes a damper. Flooding a channel with two hundred real
 firings is a *truthful* report that something is badly wrong.
@@ -528,8 +538,8 @@ stateDiagram-v2
     suppressed --> firing : T4 reconciler sees active OR any webhook arrival
     firing --> resolved : T5 status=resolved
     suppressed --> resolved : T5 status=resolved
-    firing --> expired : T6 reaper (source healthy)
-    suppressed --> expired : T6 reaper (source healthy)
+    firing --> expired : T6 reaper (every live source healthy)
+    suppressed --> expired : T6 reaper (every live source healthy)
 
     resolved --> [*] : T7 refire -> NEW case, seq+1, unacked
     expired --> [*] : T7 refire -> NEW case, seq+1, unacked
@@ -1480,6 +1490,13 @@ CREATE TABLE alert_sources (
   -- reconciler runs for every source (ADR 0006 + its second amendment). The
   -- interval below is the whole of the reconciliation tuning surface.
   reconcile_interval_s INT       NOT NULL DEFAULT 30 CHECK (reconcile_interval_s >= 10),
+  -- ADR 0056 §3 (00094): how long this source may say nothing about an open case before the reaper
+  -- expires it as `silent`. NULL turns it off — for its whole cluster; otherwise the cluster uses the
+  -- longest among its live sources. Added bare, so sources that existed before 00094 read NULL;
+  -- the default of a day applies to sources registered after (ADR 0056 Amendment 1). Asked only
+  -- while every live source on the cluster is healthy (§B.4). Must exceed the Alertmanager's
+  -- repeat_interval, or long-firing cases expire while still firing.
+  max_silence_s      INT         DEFAULT 86400,
   -- no DEFAULT now() (§D conventions); `SourceRepository.Create`/`Update`/`SoftDelete` stamp them.
   created_at         TIMESTAMPTZ NOT NULL,
   updated_at         TIMESTAMPTZ NOT NULL,
@@ -1495,6 +1512,7 @@ CREATE TABLE alert_sources (
   CONSTRAINT alert_sources_redactl_ck CHECK (coalesce(array_length(redact_labels, 1), 0) <= 64),
   CONSTRAINT alert_sources_redacta_ck CHECK (coalesce(array_length(redact_annotations, 1), 0) <= 64),
   CONSTRAINT alert_sources_ivl_ck     CHECK (reconcile_interval_s <= 3600),
+  CONSTRAINT alert_sources_silence_ck CHECK (max_silence_s IS NULL OR max_silence_s BETWEEN 3600 AND 2592000),
   CONSTRAINT alert_sources_time_ck    CHECK (updated_at >= created_at)
 );
 CREATE INDEX alert_sources_cluster_idx ON alert_sources (org_id, cluster_id) WHERE deleted_at IS NULL;
@@ -1773,7 +1791,10 @@ CREATE TABLE alert_cases (
 
   -- Since 00054 this is the SOLE record of resolved-vs-expired on a Case, so case_resolve_ck
   -- below is load-bearing rather than redundant: a closed episode MUST say how it ended.
-  resolve_reason     TEXT        CHECK (resolve_reason IS NULL OR resolve_reason IN ('upstream','timeout')),
+  -- 00094 (ADR 0056) widened it from two values to four: `upstream` is the only resolution, and
+  -- `timeout`, `silent` and `source_removed` are the three expiries.
+  resolve_reason     TEXT        CHECK (resolve_reason IS NULL
+                                        OR resolve_reason IN ('upstream','timeout','silent','source_removed')),
   -- ⛔ NO reopen_count, NO reopen_of (dropped by 00054). A Case is strictly terminal, so there is
   -- nothing to count; and `seq` is 1-based and gapless, so the episode this one succeeds is the
   -- row at `seq - 1` and a column repeating that was a second spelling of the same edge.
@@ -1806,8 +1827,9 @@ CREATE TABLE alert_cases (
   CONSTRAINT case_resolve_ck     CHECK ((state = 'closed') = (resolve_reason IS NOT NULL)),
   -- ⛔ NO case_resolve_map_ck. It locked `state` to `resolve_reason` because the two carried the
   -- SAME fact; 00054 left only one of them carrying it, so there is nothing left to lock together.
-  -- The column CHECK above (`case_resreason_ck`) needs no widening: `upstream` IS resolved and
-  -- `timeout` IS expired, which is precisely why the map constraint could exist in the first place.
+  -- The column CHECK above (`case_resreason_ck`) needed no widening at 00054: `upstream` IS resolved
+  -- and `timeout` IS expired, which is precisely why the map constraint could exist in the first
+  -- place. 00094 widened it for ADR 0056's two further expiries, which read as expired too.
   -- ack fields are all-or-nothing
   CONSTRAINT case_ack_ck         CHECK ((ack_state = 'acked') = (acked_at IS NOT NULL)),
   CONSTRAINT case_acklabel_ck    CHECK ((acked_at IS NULL) = (acked_by_label IS NULL)),
@@ -1824,6 +1846,9 @@ CREATE INDEX case_alert_idx  ON alert_cases (org_id, alert_id, seq DESC);
 -- here and are dropped BY NAME by migration 00069, with the column they indexed.
 CREATE INDEX case_reap_idx   ON alert_cases (source_ends_at)
                              WHERE ended_at IS NULL AND source_ends_at IS NOT NULL;
+-- ADR 0056 (00094): the `silent` and `source_removed` scans walk open episodes oldest-heard-first.
+CREATE INDEX case_silence_idx ON alert_cases (org_id, last_observed_at)
+                             WHERE ended_at IS NULL AND resolve_pending_at IS NULL;
 -- ⭐ THE LAST COLUMN OF EACH IS THE KEYSET TIEBREAK (00053), AND IT IS NOT
 -- DECORATION. One Alertmanager batch opens every episode in it at the SAME
 -- INSTANT, so `started_at` alone is not a total order and a page boundary inside
@@ -2188,13 +2213,17 @@ CREATE TABLE notification_policies (
   CONSTRAINT policies_name_ck     CHECK (length(btrim(name::text)) BETWEEN 1 AND 120),
   CONSTRAINT policies_prio_ck     CHECK (priority BETWEEN 0 AND 10000),
   CONSTRAINT policies_matchers_ck CHECK (jsonb_typeof(matchers) = 'array' AND jsonb_array_length(matchers) <= 32),
-  -- 00046: a SET, and bounded by the enum rather than by a round number. 18 is the
+  -- 00046: a SET, and bounded by the enum rather than by a round number. 20 is the
   -- size of the §H.6 Reason enum, so it is the most a set drawn from it can hold,
-  -- and it is the same number the DTO tag and domain.MaxPolicyReasons carry.
+  -- and it is the same number the DTO tag and domain.MaxPolicyReasons carry. The
+  -- ceiling moves with the enum: 00058 added `digest`, 00060 removed `storm`, 00067
+  -- removed `unacked_reminder`, 00069 removed `new_alerts` and `some_resolved`, and
+  -- 00084 added the five Incident facts. ⛔ IT DOES NOT CONSTRAIN MEMBERSHIP: every
+  -- narrowing of the Reason vocabulary must strip the value from this column by hand.
   -- `oto_array_is_set` is the uniqueness half: the contract publishes uniqueItems
   -- on the RESPONSE, so a duplicate reaching this column comes back on a read as a
   -- row the generated frontend client refuses.
-  CONSTRAINT policies_reasons_ck  CHECK (cardinality(reasons) BETWEEN 1 AND 18
+  CONSTRAINT policies_reasons_ck  CHECK (cardinality(reasons) BETWEEN 1 AND 20
                                          AND array_position(reasons, NULL) IS NULL
                                          AND oto_array_is_set(reasons)),
   CONSTRAINT policies_chan_ck     CHECK (array_length(channel_ids, 1) BETWEEN 1 AND 16
@@ -2209,8 +2238,9 @@ CREATE TABLE notification_policies (
   -- `subject_kinds = '{NULL}'` through. ⚠️ The vocabulary is a LITERAL here and that is the cost of a
   -- closed set in DDL: it is the third copy (with `subjectKinds` in `internal/notification/domain`
   -- and the contract's enum), so narrowing or widening SubjectKind means editing this constraint,
-  -- exactly as 00069 had to edit `notifications_subjkind_ck` and `threads_subjkind_ck`.
-  CONSTRAINT policies_subjkinds_ck CHECK (subject_kinds <@ ARRAY['alert','case','digest']::text[]
+  -- exactly as 00069 had to edit `notifications_subjkind_ck` and `threads_subjkind_ck`, and as
+  -- 00084 widened all three for `incident` (ADR 0052 §5).
+  CONSTRAINT policies_subjkinds_ck CHECK (subject_kinds <@ ARRAY['alert','case','digest','incident']::text[]
                                          AND array_position(subject_kinds, NULL) IS NULL
                                          AND oto_array_is_set(subject_kinds)),
   -- 2..10000. TWO, because the fact being evaluated is itself inside the window, so a threshold of
@@ -2245,9 +2275,12 @@ CREATE TABLE channel_threads (
   id                       UUID        PRIMARY KEY,
   org_id                   UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
   channel_id               UUID        NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
-  subject_kind             TEXT        NOT NULL CHECK (subject_kind IN ('alert','case','digest')),
-  subject_id               UUID        NOT NULL,   -- alerts.id | alert_cases.id | notification_policies.id, per
-                                                   -- subject_kind. ⛔ `alert_group` LEFT THIS SET with the entity
+  subject_kind             TEXT        NOT NULL,   -- threads_subjkind_ck, below.
+  subject_id               UUID        NOT NULL,   -- alerts.id | alert_cases.id | notification_policies.id |
+                                                   -- incidents.id, per subject_kind. `incident` (00087, ADR 0052
+                                                   -- §6): an Incident whose Correlator says its Incidents are
+                                                   -- conversations keys a thread whose ROOT is the Incident's card;
+                                                   -- later facts about its member Cases reply beneath it. ⛔ `alert_group` LEFT THIS SET with the entity
                                                    -- (git-bug 7570090, migration 00069, narrowing threads_subjkind_ck).
                                                    -- v1 keyed EVERY thread by the alert_groups GENERATION, so forty
                                                    -- alerts produced one thread; a conversation now holds exactly one
@@ -2270,6 +2303,9 @@ CREATE TABLE channel_threads (
   created_at               TIMESTAMPTZ NOT NULL,
   updated_at               TIMESTAMPTZ NOT NULL,
   CONSTRAINT threads_subject_uniq UNIQUE (channel_id, subject_kind, subject_id),
+  -- 00087 widened it for `incident` (ADR 0052 §6); 00069 had narrowed it when `alert_group` left.
+  -- `alert` is admitted and nothing keys a thread by it.
+  CONSTRAINT threads_subjkind_ck CHECK (subject_kind IN ('alert','case','digest','incident')),
   CONSTRAINT threads_seq_ck    CHECK (next_seq >= 1 AND last_sent_seq >= 0 AND last_sent_seq < next_seq),
   CONSTRAINT threads_reply_ck  CHECK (reply_count >= 0),
   -- an OPEN thread must have both halves of the provider handle; ts is TEXT, never a float (S7)
@@ -2283,21 +2319,25 @@ CREATE TABLE channel_threads (
   CONSTRAINT threads_time_ck   CHECK (updated_at >= created_at)
 );
 CREATE INDEX threads_open_idx ON channel_threads (org_id, state) WHERE state IN ('opening','open');
+-- 00087. Finds an Incident's thread by its subject, which `threads_subject_uniq` cannot serve
+-- because it leads with `channel_id`.
+CREATE INDEX threads_subject_idx ON channel_threads (org_id, subject_kind, subject_id);
 
 CREATE TABLE notifications (
   id              UUID        PRIMARY KEY,
   org_id          UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
-  subject_kind    TEXT        NOT NULL,            -- notifications_subjkind_ck, below. THREE kinds since 00069:
-                                                   -- 'alert','case','digest'. It was four from 00058 until git-bug
-                                                   -- 7570090 dropped the `alert_group` arm with the table it named.
+  subject_kind    TEXT        NOT NULL,            -- notifications_subjkind_ck, below. FOUR kinds since 00084:
+                                                   -- 'alert','case','digest','incident'. It was four from 00058 until
+                                                   -- git-bug 7570090 dropped the `alert_group` arm with the table it
+                                                   -- named (00069), and 00084 added `incident` (ADR 0052 §5).
                                                    -- WHAT the fact is about. Which Reason declares which subject is the
                                                    -- domain allocation (`notification/domain/reason.go`, proven total by
                                                    -- a test), deliberately NOT a reason → subject CHECK: release N
                                                    -- wrote 'alert_group' for every reason and both releases ran at once.
-  subject_id      UUID        NOT NULL,            -- alerts.id | alert_cases.id, or — for a digest —
+  subject_id      UUID        NOT NULL,            -- alerts.id | alert_cases.id | incidents.id, or — for a digest —
                                                    -- notification_policies.id, the POLICY half of the (policy, window)
-                                                   -- pair. No FK: one column cannot reference three tables — the tie is
-                                                   -- notifications_subject_ck, which has three arms since 00069.
+                                                   -- pair. No FK: one column cannot reference four tables — the tie is
+                                                   -- notifications_subject_ck, which has four arms since 00084.
   -- ⛔ `group_id UUID REFERENCES alert_groups(id) ON DELETE CASCADE` WAS HERE AND IS DROPPED
   -- (git-bug 7570090, migration 00069), along with notifications_group_id_fkey. The delivery target
   -- is the pair (conversation_kind, conversation_id) and nothing else; `conversation_id` holds an
@@ -2314,9 +2354,10 @@ CREATE TABLE notifications (
                                                    -- notifications_convkind_ck, below.
   conversation_id   UUID      NOT NULL,            -- the conversation itself, in the table
                                                    -- conversation_kind names: alert_cases.id for
-                                                   -- `case`, notification_policies.id for `digest`. No
-                                                   -- FK — one column cannot reference two tables, the
-                                                   -- same reason subject_id has none.
+                                                   -- `case`, notification_policies.id for `digest`,
+                                                   -- incidents.id for `incident`. No FK — one column
+                                                   -- cannot reference three tables, the same reason
+                                                   -- subject_id has none.
   alert_id        UUID,                            -- set when the fact is about one alert
   case_id   UUID,
   digest_window_start TIMESTAMPTZ,                 -- 00058. The WINDOW half of a digest's subject: the inclusive start,
@@ -2339,6 +2380,10 @@ CREATE TABLE notifications (
   -- the other is a position (git-bug 893cee4).
   digest_covered_from TIMESTAMPTZ,
   digest_covered_to   TIMESTAMPTZ,
+  -- 00093. An Incident fact's per-Incident order (ADR 0052 §5), handed over by the transaction that
+  -- made the fact true and frozen here, so every delivery renders the same `incident.sequence`.
+  -- NULL on every other row, and on an Incident fact declared before 00093.
+  incident_sequence BIGINT,
   reason          TEXT        NOT NULL,            -- §H.6 Reason enum
   policy_id       UUID        REFERENCES notification_policies(id) ON DELETE SET NULL,
   state_version   INT         NOT NULL,
@@ -2368,14 +2413,20 @@ CREATE TABLE notifications (
   created_at      TIMESTAMPTZ NOT NULL,
   updated_at      TIMESTAMPTZ NOT NULL,
   CONSTRAINT notifications_idem_uniq UNIQUE (org_id, idempotency_key),
-  CONSTRAINT notifications_subjkind_ck CHECK (subject_kind IN ('alert','case','digest')),
+  CONSTRAINT notifications_subjkind_ck CHECK (subject_kind IN ('alert','case','digest','incident')),
   CONSTRAINT notifications_reason_ck CHECK (reason IN
-    ('fired','new_alerts','some_resolved','all_resolved','repeat','suppressed','unsuppressed',
-     'expired','refired','acked','unacked','snoozed','unsnoozed','enriched','rule_changed',
-     'comment','digest')),
-                                                   -- SEVENTEEN reasons: 00018's order, `digest`
+    ('fired','all_resolved','repeat','suppressed','unsuppressed','expired','refired',
+     'acked','unacked','snoozed','unsnoozed','enriched','rule_changed','comment','digest',
+     'drawn','case_added','case_removed','quiet','active_again')),
+                                                   -- TWENTY reasons: 00018's order, `digest`
                                                    -- appended by 00058, `storm` DELETED by 00060,
-                                                   -- `unacked_reminder` DELETED by 00067.
+                                                   -- `unacked_reminder` DELETED by 00067,
+                                                   -- `new_alerts` and `some_resolved` DELETED by
+                                                   -- 00069, and the five Incident facts —
+                                                   -- `drawn`, `case_added`, `case_removed`,
+                                                   -- `quiet`, `active_again` — appended by 00084.
+                                                   -- None of the five is a resolve, a close or a
+                                                   -- status (ADR 0052 §5).
                                                    -- `refired` is RETIRED — nothing writes it since
                                                    -- ADR 0040, the CHECK still admits it, and rows
                                                    -- carrying it still render.
@@ -2394,7 +2445,7 @@ CREATE TABLE notifications (
   -- destination. ⛔ IT READ `CHECK (subject_kind = 'digest' OR group_id IS NOT NULL)` and the
   -- column it named is dropped (git-bug 7570090, migration 00069); the delivery target is the pair
   -- (conversation_kind, conversation_id) and `notifications_convkind_ck` bounds the kind to
-  -- `case | digest`.
+  -- `case | digest | incident`.
   -- ⭐ THE CONVERSATION VOCABULARY IS ITS OWN CHECK AND DELIBERATELY NOT `subject_kind`'s. A subject
   -- is what a fact is ABOUT; a conversation is where it is DELIVERED, and the two sets are not the
   -- same: `alert` is a subject no conversation is ever keyed by. Sharing one CHECK would tie two
@@ -2402,7 +2453,10 @@ CREATE TABLE notifications (
   -- the set in git-bug 7570090 and `case` replaced it. There is no `notifications_target_ck` beside
   -- it any more: every row names a conversation unconditionally, so the digest is no longer the one
   -- exception carved into a CHECK.
-  CONSTRAINT notifications_convkind_ck CHECK (conversation_kind IN ('case','digest')),
+  -- `incident` joined at 00084 (an Incident fact names the Incident's conversation) and since 00087
+  -- a CASE fact may name it too: the Case was a member of an Incident that is a conversation when
+  -- the fact was evaluated, and the answer is frozen on the row (ADR 0052 §6).
+  CONSTRAINT notifications_convkind_ck CHECK (conversation_kind IN ('case','digest','incident')),
   -- the two digest columns are present exactly for a digest, and a stored count is at least 1.
   -- The range test is a SEPARATE conjunct: folding it into the equality would make the whole
   -- predicate NULL for a digest row with a missing count, and a CHECK passes on NULL.
@@ -2421,6 +2475,9 @@ CREATE TABLE notifications (
   --      while carrying a count of episodes that happened inside it.
   --   4. IT CONTAINS THE WINDOW'S START — the clause that makes the pair MEAN something rather than
   --      merely be present. A row that satisfies this cannot claim a span that misses its own window.
+  -- 00093: only an Incident fact is numbered, and from 1
+  CONSTRAINT notifications_incident_seq_ck CHECK (incident_sequence IS NULL
+                                                  OR (subject_kind = 'incident' AND incident_sequence >= 1)),
   CONSTRAINT notifications_digcover_ck CHECK (
         (digest_covered_from IS NULL) = (digest_covered_to IS NULL)
     AND (digest_covered_from IS NULL OR subject_kind = 'digest')
@@ -2436,15 +2493,20 @@ CREATE TABLE notifications (
   -- have, and it is what makes subject_id a usable join key instead of a convention.
   -- Each arm carries its own IS NOT NULL because `subject_id = alert_id` over a NULL alert_id
   -- evaluates to NULL and a CHECK passes on NULL — the group arm gained its guard in 00058, when
-  -- `group_id` stopped being NOT NULL, and left with the entity in 00069. THREE arms now, one per
-  -- surviving subject kind. The digest arm tolerates a NULL policy_id because policy_id is
+  -- `group_id` stopped being NOT NULL, and left with the entity in 00069. FOUR arms since 00084, one
+  -- per subject kind. The digest arm tolerates a NULL policy_id because policy_id is
   -- ON DELETE SET NULL, and enforcing the tie unconditionally would make the first digest ever sent
-  -- turn its own policy undeletable.
+  -- turn its own policy undeletable. The incident arm (00084) names NO typed column at all:
+  -- subject_id is the incidents.id, and alert_id, case_id and the digest window are NULL, because an
+  -- Incident fact is about the story and never about one of its signals — and this table has no
+  -- column naming an Incident, by SCOPE-BOUNDARY §5.6.
   CONSTRAINT notifications_subject_ck CHECK (
-       (subject_kind = 'alert'       AND alert_id IS NOT NULL AND subject_id = alert_id)
-    OR (subject_kind = 'case'        AND case_id  IS NOT NULL AND subject_id = case_id)
-    OR (subject_kind = 'digest'      AND digest_window_start IS NOT NULL
-                                     AND (policy_id IS NULL OR subject_id = policy_id))),
+       (subject_kind = 'alert'    AND alert_id IS NOT NULL AND subject_id = alert_id)
+    OR (subject_kind = 'case'     AND case_id  IS NOT NULL AND subject_id = case_id)
+    OR (subject_kind = 'digest'   AND digest_window_start IS NOT NULL
+        AND (policy_id IS NULL OR subject_id = policy_id))
+    OR (subject_kind = 'incident' AND alert_id IS NULL AND case_id IS NULL
+        AND digest_window_start IS NULL)),
   CONSTRAINT notifications_time_ck   CHECK (updated_at >= created_at)
 );
 CREATE INDEX notif_subject_idx ON notifications (org_id, subject_kind, subject_id, created_at DESC);
@@ -2656,6 +2718,147 @@ CREATE INDEX alert_snoozes_org_idx    ON alert_snoozes (org_id, alert_id, snooze
 > unexpiring snooze is a mute. Both are how a channel dies. Maintenance windows, if ever built, are
 > a separate feature with their own scope review (SCOPE-BOUNDARY §4.40).
 
+### D.8c Incidents and Correlators (ADR 0052) — migrations `00083`, `00085`, `00086`, `00087`
+
+> **Five tables, and not one of them is a signal table.** `alerts` and `alert_cases` gain no column:
+> membership is its own row keyed by the Case, so the signal tables keep saying what fired, when and
+> how it ended, and an Incident is a READING over them (SCOPE-BOUNDARY §5.6 — no
+> `alert_cases.incident_id`, ever). ⛔ **An Incident has no state column** (ADR 0052 §3): it is
+> active while any member Case is open and quiet otherwise, both read off the member Cases at query
+> time. There is no `status`, `severity`, `lead` or `closed_at`; the response lives in the incident
+> tool the Incident is declared to (§5). The DDL below is the post-`00087` state: `00083` created the
+> Incident tables with `drawn_by_correlator_id` / `added_by_correlator_id` unconstrained, `00085`
+> created the Correlator tables and added the two foreign keys `00083` owed, and `00086` / `00087`
+> each added one column to `correlators`.
+
+```sql
+-- 00083. The next incidents.number to hand out, bumped by the single INSERT that draws an
+-- Incident and read by nothing else. A missing row means the org has drawn no Incident yet.
+CREATE TABLE org_incident_numbers (
+  org_id      UUID   PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
+  next_number BIGINT NOT NULL DEFAULT 1,
+  CONSTRAINT org_incident_numbers_next_ck CHECK (next_number >= 1)
+);
+
+-- 00085. An operator-written definition that draws Incidents (ADR 0052 §2): matchers over Cases in
+-- the notification-policy grammar (ADR 0017), optionally a count over a sliding window (00072's
+-- shape). Walked in priority order, LOWER FIRST, on every Case open by the incidents.correlate job —
+-- never on the ingest transaction — and the first whose matchers hold claims the Case. NOT a rule:
+-- in oto that word is the Prometheus alerting rule. Soft-deleted, because the Incidents it drew
+-- name it.
+CREATE TABLE correlators (
+  id             UUID        PRIMARY KEY,
+  org_id         UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  name           CITEXT      NOT NULL,
+  priority       INT         NOT NULL DEFAULT 100,   -- 0..10000, LOWER IS FIRST, ties by created_at then id
+  enabled        BOOLEAN     NOT NULL DEFAULT true,
+  matchers       JSONB       NOT NULL DEFAULT '[]'::jsonb,
+  -- a floor on DRAWING, never on joining: a Case that matches while this Correlator's Incident is
+  -- active joins it whatever the count. NULL for both is "every matching Case draws or joins".
+  count_min      INT,
+  count_window_s INT,
+  created_at     TIMESTAMPTZ NOT NULL,
+  updated_at     TIMESTAMPTZ NOT NULL,
+  deleted_at     TIMESTAMPTZ,
+  -- 00086. How long after this Correlator's latest Incident went QUIET a matching Case still joins
+  -- it (ADR 0052 §4); NULL joins only while it is active. "Went quiet" is read, not stored.
+  quiet_grace_s  INT,
+  -- 00087. The Incidents this Correlator draws are CONVERSATIONS (ADR 0052 §6). Read at delivery,
+  -- never stamped on the Incident: flipping it redirects later facts only.
+  incidents_are_conversations BOOLEAN NOT NULL DEFAULT false,
+  CONSTRAINT correlators_name_ck     CHECK (length(btrim(name::text)) BETWEEN 1 AND 120),
+  CONSTRAINT correlators_prio_ck     CHECK (priority BETWEEN 0 AND 10000),
+  -- `policies_matchers_ck` verbatim. AN EMPTY LIST MATCHES EVERY CASE: with a count it is
+  -- "≥N Cases of anything inside W", which is the storm.
+  CONSTRAINT correlators_matchers_ck CHECK (jsonb_typeof(matchers) = 'array' AND jsonb_array_length(matchers) <= 32),
+  -- 00072's three count constraints, with 00072's arguments. There is no unit rule: a Correlator
+  -- counts Cases and nothing else.
+  CONSTRAINT correlators_count_min_ck    CHECK (count_min IS NULL OR count_min BETWEEN 2 AND 10000),
+  CONSTRAINT correlators_count_window_ck CHECK (count_window_s IS NULL OR count_window_s BETWEEN 60 AND 86400),
+  CONSTRAINT correlators_count_pair_ck   CHECK ((count_min IS NULL) = (count_window_s IS NULL)),
+  CONSTRAINT correlators_time_ck         CHECK (updated_at >= created_at),
+  CONSTRAINT correlators_quiet_grace_ck  CHECK (quiet_grace_s IS NULL OR quiet_grace_s BETWEEN 60 AND 86400)
+);
+-- unique among the LIVE ones: a retired Correlator keeps its name on the Incidents it drew
+CREATE UNIQUE INDEX correlators_name_uniq ON correlators (org_id, name) WHERE deleted_at IS NULL;
+-- the evaluator's walk, first match wins, with the tie-break columns so it needs no Sort node
+CREATE INDEX correlators_eval_idx ON correlators (org_id, priority, created_at, id)
+  WHERE enabled AND deleted_at IS NULL;
+
+-- 00083. A set of one or more Cases drawn together as one story. Its state is NOT stored.
+CREATE TABLE incidents (
+  id                     UUID        PRIMARY KEY,
+  org_id                 UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  number                 BIGINT      NOT NULL,   -- the name within the org: monotonic, not gapless
+  drawn_at               TIMESTAMPTZ NOT NULL,
+  drawn_by               UUID        REFERENCES users(id) ON DELETE SET NULL,   -- ACTOR metadata (R8)
+  drawn_by_label         TEXT,
+  drawn_by_correlator_id UUID,
+  -- 00093. The sequence of the LATEST declared fact: bumped by UPDATE … RETURNING in the transaction
+  -- that enqueues each `notify.incident`, under this row's lock, so facts are numbered in commit order.
+  fact_sequence          BIGINT      NOT NULL DEFAULT 0,
+  CONSTRAINT incidents_number_uniq UNIQUE (org_id, number),
+  CONSTRAINT incidents_number_ck   CHECK (number >= 1),
+  CONSTRAINT incidents_fact_sequence_ck CHECK (fact_sequence >= 0),
+  -- EXACTLY ONE AUTHOR (ADR 0052 §2). The LABEL is the human half's presence marker rather than
+  -- `drawn_by`, because `drawn_by` is nulled when the user is deleted.
+  CONSTRAINT incidents_drawn_by_ck CHECK ((drawn_by_label IS NULL) <> (drawn_by_correlator_id IS NULL)),
+  CONSTRAINT incidents_human_ck    CHECK (drawn_by IS NULL OR drawn_by_label IS NOT NULL),
+  CONSTRAINT incidents_label_ck    CHECK (drawn_by_label IS NULL OR length(btrim(drawn_by_label)) BETWEEN 1 AND 200),
+  -- 00085, the foreign key 00083 owed
+  CONSTRAINT incidents_correlator_fk FOREIGN KEY (drawn_by_correlator_id) REFERENCES correlators(id)
+);
+-- 00085. "This Correlator's latest Incident" — the one a matching Case may join. Partial, because a
+-- human-drawn Incident is never a Correlator's to grow (§4).
+CREATE INDEX incidents_correlator_idx ON incidents (drawn_by_correlator_id, number DESC)
+  WHERE drawn_by_correlator_id IS NOT NULL;
+
+-- 00083. One spell of one Case inside one Incident. Tombstoned (removed_at) when a human removes or
+-- moves it, never deleted: a Correlator must never re-add a Case a human removed (§4).
+CREATE TABLE incident_members (
+  id                     UUID        PRIMARY KEY,
+  org_id                 UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  incident_id            UUID        NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+  case_id                UUID        NOT NULL REFERENCES alert_cases(id) ON DELETE CASCADE,
+  added_at               TIMESTAMPTZ NOT NULL,
+  added_by               UUID        REFERENCES users(id) ON DELETE SET NULL,
+  added_by_label         TEXT,
+  added_by_correlator_id UUID,
+  removed_at             TIMESTAMPTZ,
+  removed_by             UUID        REFERENCES users(id) ON DELETE SET NULL,
+  removed_by_label       TEXT,
+  -- set only when the removal was HALF OF A MOVE, so the tombstone reads "moved to #7"
+  moved_to_incident_id   UUID        REFERENCES incidents(id) ON DELETE SET NULL,
+  CONSTRAINT incident_members_added_by_ck    CHECK ((added_by_label IS NULL) <> (added_by_correlator_id IS NULL)),
+  CONSTRAINT incident_members_added_human_ck CHECK (added_by IS NULL OR added_by_label IS NOT NULL),
+  CONSTRAINT incident_members_added_label_ck CHECK (added_by_label IS NULL OR length(btrim(added_by_label)) BETWEEN 1 AND 200),
+  -- ⛔ ONLY A HUMAN REMOVES (ADR 0052 §4), so there is no correlator column on this half.
+  CONSTRAINT incident_members_removed_ck       CHECK ((removed_at IS NULL) = (removed_by_label IS NULL)),
+  CONSTRAINT incident_members_removed_human_ck CHECK (removed_by IS NULL OR removed_at IS NOT NULL),
+  CONSTRAINT incident_members_removed_label_ck CHECK (removed_by_label IS NULL OR length(btrim(removed_by_label)) BETWEEN 1 AND 200),
+  CONSTRAINT incident_members_moved_ck         CHECK (moved_to_incident_id IS NULL OR removed_at IS NOT NULL),
+  CONSTRAINT incident_members_moved_self_ck    CHECK (moved_to_incident_id IS DISTINCT FROM incident_id),
+  CONSTRAINT incident_members_time_ck          CHECK (removed_at IS NULL OR removed_at >= added_at),
+  -- 00085, the foreign key 00083 owed
+  CONSTRAINT incident_members_correlator_fk FOREIGN KEY (added_by_correlator_id) REFERENCES correlators(id)
+);
+-- ⭐⭐ THE AT-MOST-ONE RULE (ADR 0052 §4), over LIVE memberships only: a tombstone is history.
+CREATE UNIQUE INDEX incident_members_case_live_uniq ON incident_members (case_id) WHERE removed_at IS NULL;
+CREATE INDEX incident_members_incident_idx ON incident_members (incident_id, added_at, id);
+
+-- 00085. Which Correlator claimed which Case. It is the numerator of a count condition and says
+-- nothing about membership: a claimed Case may be below its Correlator's threshold and in no Incident.
+CREATE TABLE correlator_matches (
+  -- ⭐ THE PRIMARY KEY IS THE CASE, and that is first-wins as a constraint.
+  case_id         UUID        PRIMARY KEY REFERENCES alert_cases(id) ON DELETE CASCADE,
+  org_id          UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  correlator_id   UUID        NOT NULL REFERENCES correlators(id),
+  case_started_at TIMESTAMPTZ NOT NULL,   -- a COPY of alert_cases.started_at, so the window read is one range
+  matched_at      TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX correlator_matches_window_idx ON correlator_matches (correlator_id, case_started_at);
+```
+
 ### D.9 Silences (read-only mirror)
 
 ```sql
@@ -2726,7 +2929,8 @@ CREATE TABLE alert_quality_daily (
   deliveries        INT         NOT NULL DEFAULT 0,
   acked_cases INT         NOT NULL DEFAULT 0,
   -- ⭐ BOTH COME FROM `resolve_reason`, NOT FROM A STATE LITERAL: `stats.rollup` counts
-  -- `resolve_reason = 'upstream'` as auto_resolved and `'timeout'` as expired. Since ADR 0040 a
+  -- `resolve_reason = 'upstream'` as auto_resolved and every other reason (`timeout`, `silent`,
+  -- `source_removed` — ADR 0056) as expired. Since ADR 0040 a
   -- Case's state says only that the episode closed, and `resolve_reason` is the sole record of
   -- WHICH — which is exactly why `case_resolve_ck` guarantees a closed episode has one.
   auto_resolved     INT         NOT NULL DEFAULT 0,
@@ -4641,6 +4845,24 @@ exists: an episode above the first succeeded one that had ended.
 
 `rule_changed` is the headline differentiator and is **always** delivered as a reply, regardless of verbosity. There is no exception: the storm-mode carve-out went with ADR 0042.
 
+**An Incident's conversation (ADR 0052 §6, migration `00087`, `render/slack/incident.go`).** When a
+Correlator says its Incidents are conversations, the Incident gets a thread of its own and three
+messages exist beside the Case's:
+
+| Message | Where | Blocks | Literal example |
+|---|---|---|---|
+| Incident card (root) | the Incident's thread | `section` + `fields` + `section` (current members, capped at the instance budget) + `context` | `":jigsaw: *<…/incidents/12\|Incident #12>* — :fire: *Active*, 1 case open"` · fields `Cases`, `Open` (omitted at 0, S11), `Drawn`, `Drawn by` · one bullet per current member, `"• :fire: <…/cases/…\|Case #412>"` plus its alertname as code |
+| Incident fact reply | the Incident's thread | 1 × `section` | `":heavy_plus_sign: *A case joined* — now 3 cases, 2 open"` |
+| Pointer | each member Case's OWN thread, once | 1 × `section` | `":arrow_right: *Now part of <…\|Incident #12>* — later updates about this case are posted in that Incident's thread, not here."` |
+
+The root is **always the Incident's card**, whichever fact posts or amends it — a Case fact that is the
+first to reach a channel posts the card and replies under it. It carries **no actions** (every action
+acts on one signal), the firing colour while a member Case is open and the neutral bar once quiet —
+**never** the resolved green, because quiet is not resolved. A Case fact replying in the Incident's thread
+is its ordinary §H.5 reply with the Case named in front (`*<…\|Case #412>*`, its alertname as code, then
+` · `), and `(case #412 in Incident #12)` in the top-level text. There is no outbound link yet: §5's outbound
+mapping is not stored by any table.
+
 ### H.6 `notification_reason` → Reason → mode decision table (BINDING)
 
 Alertmanager's wire `notification_reason` (AM ≥ 0.32.0) maps to an oto `Reason`, and each `Reason` maps to a delivery mode. ⛔ **THE EMPTY-`notification_reason` FALLBACK NAMED A SET THAT NO LONGER EXISTS** (git-bug `7570090`, migration `00069`). It read: *"falls back to diffing the incoming fingerprint set against the generation's current members (`alert_cases` where `group_id` is the generation and `ended_at IS NULL`)."* There is no `group_id` and no member set; a Case's own transition is the whole diff, which is what an AM below 0.32.0 already produced correctly for every non-plurality Reason.
@@ -4898,7 +5120,7 @@ Capability negotiation (in `DispatchService`, **never** in a provider):
 | `streaming` | **CORE PLATFORM** | Durable UI event log, Postgres `LISTEN/NOTIFY` bridge, SSE hub with `Last-Event-ID` resume. |
 | `silences` | **PERIPHERAL** | Read-only mirror of Alertmanager silences and suppression matching. **No write path (R3).** |
 | `stats` | **PERIPHERAL** | Alert-hygiene accounting: per-alertname volume, notification cost, ack rate, flap leaderboard. **Never per-person (R8).** |
-| `correlation` | **DEFERRED-POST-V1** | Machine-derived groupings over multiple signals, with a **stated algorithm**. No human create endpoint, no human-set severity, no status, no owner, no lifecycle beyond open/closed. Renamed from `incidents` (SCOPE-BOUNDARY §5.5). |
+| `incidents` | **ADR 0052** | An **Incident** is a set of one or more Cases drawn as one story, by an operator-written **Correlator** (matchers over Cases, optionally a count over a window) or by a human recorded as actor metadata; a model only proposes. It is **active** while any member Case is open and **quiet** otherwise — read off its Cases, never set by a hand. It is *declared* outbound as a notification (`subject_kinds` gains `incident`) and may be a conversation (`conversation_kind` gains `incident`); `notifications_subjkind_ck`, `threads_subjkind_ck`, `notifications_convkind_ck` and `policies_subjkinds_ck` widen in the migration that creates its tables, and §D.8's DDL is amended with that migration, not before it. Its **response** is not here — see §I.1.1. This row replaces `correlation` (DEFERRED-POST-V1, renamed from `incidents` by SCOPE-BOUNDARY §5.5), whose *"stated algorithm, no human create endpoint, no status"* charter ADR 0052 supersedes: the stated algorithm is the Correlator, a human may draw one, and its only state is read off its signals. |
 | `k8scontext` | **DEFERRED-POST-V1** | Pod/owner/node/event resolution via informers. Robusta's home turf; needs cluster RBAC; a 6-month sink. |
 | `changefeed` | **DEFERRED-POST-V1** | Deploy/change-event ingestion for correlation. A deploy is a machine event; correlating it is enrichment. |
 | `views` | **DEFERRED-POST-V1** | Saved filters and per-user UI preferences. Subject = a query. |
@@ -4916,7 +5138,7 @@ an argument, because it is always just one column.
 
 | Module / feature | Why permanently out | Hand off to |
 |---|---|---|
-| `incidents` | Human-coordinated response objects with their own human-owned lifecycle, severity, status, roles and comms. Subject = a response effort, not a signal (FR-1). Survives the deletion of every alert (H-2). SCOPE-BOUNDARY §4.6. The legitimate part of this request is `correlation` above. | incident.io, keep, FireHydrant — SCOPE-BOUNDARY §7 |
+| Incident **response** | The incident's status (e.g. "mitigated"), lead and other roles, human-set severity, comms and write-up — everything a human-coordinated response object owns. Subject = a response effort, not a signal (FR-1). Survives the deletion of every alert (H-2). SCOPE-BOUNDARY §4.6, SS-3. ⚠️ *Until ADR 0052 this row was `incidents` and refused the grouping too; the **grouping** is now IN as the `incidents` module above, and only the response stays here. oto declares an Incident to the tool that manages the response, sends it facts and never commands — never a resolve, close or status change — and reads nothing back.* | incident.io, PagerDuty, FireHydrant — SCOPE-BOUNDARY §7, ADR 0052 §5 |
 | `oncall` | Rotas, escalation policies, paging. Subject = people and time; exists with zero alerts (H-2). Drags in telephony vendors, 24/7 reliability obligations and compliance oto cannot meet. SCOPE-BOUNDARY §4.8–4.9. | PagerDuty, incident.io — SCOPE-BOUNDARY §7 |
 | Assignment / ownership | `assigned_to` is a fact about a person's workload, present tense (H-1). SCOPE-BOUNDARY §4.4, §6 SS-1. The sanctioned answer to "who's on it" is **ephemeral presence** derived from live SSE connections, never persisted — a `streaming` feature, not an `alerts` one. | — |
 | Multi-stage escalation | §G.9.1. One stage, forever. SCOPE-BOUNDARY §6 SS-2. | PagerDuty |
@@ -5220,7 +5442,7 @@ Numbered, user-observable. v1 is not done until every one of these is demonstrab
 **Scope boundary (§I.1.1, ADR 0013)**
 
 49. **A lint rule enforces the vocabulary ban.**
-    `grep -rniE '(assign(ee|ed_to)?|on.?call|rota|escalation|postmortem|incident|war.?room|\bMTTA\b|\bMTTR\b|\bSLA\b|watcher|subscriber_id|owner_id|triage|occurrences?)' internal/ web/src/ db/migrations/`
+    `grep -rniE '(assign(ee|ed_to)?|on.?call|rota|escalation|postmortem|war.?room|\bMTTA\b|\bMTTR\b|\bSLA\b|watcher|subscriber_id|owner_id|triage|occurrences?)' internal/ web/src/ db/migrations/`
     returns **no hits** outside `docs/` and explicit SCOPE-BOUNDARY cross-reference comments. It runs
     in CI as `just lint-vocabulary` and fails the build. `occurrence` is the one term here that names
     a concept oto **has** rather than one it refuses: it is §P-5's closing condition for the
@@ -5228,6 +5450,10 @@ Numbered, user-observable. v1 is not done until every one of these is demonstrab
     `occurrence_id` and `total_occurrences` — which a `\b` would let through — cannot come back.
     A vocabulary ban that is not mechanically
     enforced decays in a quarter — the same argument §I.3 makes about layering.
+    `incident` left this grep with ADR 0052: the bare word names an oto noun now, and
+    `incident_id` is banned **on a signal row** instead — `tools/lintvocab` fires on it only where
+    it would sit on `alerts`, `alert_cases`, `notifications` or `notification_deliveries` (§D.4.0),
+    so an Incident's own membership table may key on it.
 50. `alerts` and `alert_cases` contain no column matching
     `assigned|owner|watcher|subscriber|incident|ticket|sla_|^case$|case_status|priority`, asserted by
     a schema introspection test against the live database, not by reading the migration files
@@ -5822,7 +6048,7 @@ Invariants enforced inside `Transition` (each mirrored by a DDL `CHECK` in §D.4
 2. `suppressed` can only be entered by a `reconciler` actor (C1). An `ingest` actor attempting
    T3 is a programming error and returns `KindInternal`.
 3. `resolved` *is* `closed` + `resolve_reason='upstream'`; `expired` *is* `closed` +
-   `resolve_reason='timeout'`. Since ADR 0040 that is a derivation rather than a pair of columns
+   `resolve_reason` ∈ {`timeout`, `silent`, `source_removed`} (ADR 0056). Since ADR 0040 that is a derivation rather than a pair of columns
    agreeing, which is why `case_resolve_ck` — a closed episode HAS a reason — became load-bearing.
 4. `ended_at >= started_at`, always.
 5. Ack fields are all-or-nothing.

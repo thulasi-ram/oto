@@ -501,11 +501,28 @@ func (rt *Router) sealCredential(
 		return nil, errs.Validation("validation_failed", "1 field failed validation.",
 			errs.Violation{Field: "credential/values", Code: "required", Message: "at least one value is required"})
 	}
+	if err := checkCredentialValues(in); err != nil {
+		return nil, err
+	}
 	id, err := rt.creds.CreateCredential(ctx, scope, in.Kind, in.Values)
 	if err != nil {
 		return nil, err
 	}
 	return &id, nil
+}
+
+// checkCredentialValues refuses a credential whose values cannot authenticate.
+//
+// ⛔ A `basic` CREDENTIAL NEEDS A USERNAME. With a blank one the webhook provider
+// sends no Authorization header at all (authTransport), so the connection saves with
+// a password it never uses and every delivery goes out unauthenticated.
+func checkCredentialValues(in *CredentialInputDTO) error {
+	if in.Kind == "basic" && strings.TrimSpace(in.Values["username"]) == "" {
+		return errs.Validation("validation_failed", "1 field failed validation.",
+			errs.Violation{Field: "credential/values/username", Code: "required",
+				Message: "a basic credential needs a username"})
+	}
+	return nil
 }
 
 // rotateCredential re-seals an existing credential in place, or seals a new one
@@ -529,6 +546,9 @@ func (rt *Router) rotateCredential(
 	if len(in.Values) == 0 {
 		return nil, errs.Validation("validation_failed", "1 field failed validation.",
 			errs.Violation{Field: "credential/values", Code: "required", Message: "at least one value is required"})
+	}
+	if err := checkCredentialValues(in); err != nil {
+		return nil, err
 	}
 	if err := rt.creds.RotateCredential(ctx, scope, *existing, in.Kind, in.Values); err != nil {
 		return nil, err

@@ -73,6 +73,9 @@ type ChannelStore interface {
 type CredentialWriter interface {
 	CreateCredential(ctx context.Context, s db.TenantScope, kind string, values map[string]string) (uuid.UUID, error)
 	RotateCredential(ctx context.Context, s db.TenantScope, id uuid.UUID, kind string, values map[string]string) error
+	// DeleteCredential removes a sealed secret a Connection has detached, so a
+	// detached signing key or mapping secret does not outlive the slot that held it.
+	DeleteCredential(ctx context.Context, s db.TenantScope, id uuid.UUID) error
 }
 
 // ChannelWriter owns the two operations whose side effect is worth claiming, and
@@ -92,6 +95,11 @@ type CredentialWriter interface {
 type ChannelWriter interface {
 	CreateChannel(ctx context.Context, s db.TenantScope, in domain.NewInstance, idem service.Idempotency) (domain.Instance, error)
 	TestChannel(ctx context.Context, s db.TenantScope, id uuid.UUID, idem service.Idempotency) (domain.TestResult, error)
+	// TestMapping sends one chosen fact through a mapped connection by way of one of
+	// its channels (ADR 0055 §2) — the same claim-then-send ordering, for the same
+	// reason, and it may open a real incident in the tool.
+	TestMapping(ctx context.Context, s db.TenantScope, connectionID, channelID uuid.UUID, fact string,
+		idem service.Idempotency) (domain.TestResult, error)
 }
 
 // Compile-time proof that the writer satisfies the port this layer declares.

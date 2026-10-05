@@ -1,0 +1,21 @@
+{
+  "text": ":arrow_right: This case is now part of Incident #12; later updates about it are posted in that Incident's thread.",
+  "unfurl_links": false,
+  "unfurl_media": false,
+  "attachments": [
+    {
+      "color": "#6b6b6b",
+      "fallback": ":arrow_right: This case is now part of Incident #12; later updates about it are posted in that Incident's thread.",
+      "blocks": [
+        {
+          "type": "section",
+          "block_id": "oto_incidentpointer_b33f6c4a65",
+          "text": {
+            "type": "mrkdwn",
+            "text": ":arrow_right: *Now part of <http://localhost:8080/incidents/12|Incident #12>* — later updates about this case are posted in that Incident's thread, not here."
+          }
+        }
+      ]
+    }
+  ]
+}

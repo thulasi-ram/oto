@@ -31,6 +31,7 @@ import type {
   AlertRollupQuery,
   CaseListQuery,
   FailedBatchListQuery,
+  IncidentListQuery,
   NotificationListQuery,
   RejectionListQuery,
   RuleSnapshotQuery,
@@ -123,6 +124,31 @@ export const qk = {
     detail: (id: string) => ["cases", "detail", id] as const,
     timeline: (id: string, query: TimelineQuery) => ["cases", "timeline", id, query] as const,
   },
+  /**
+   * Incidents (ADR 0052) — a root of their own, beside `["cases"]` and not under
+   * it.
+   *
+   * ⛔ THE STREAM REACHES THEM EVEN THOUGH NO FRAME IS ABOUT AN INCIDENT. An
+   * Incident's `state` is read off its member Cases, so a Case closing is what
+   * turns an Incident quiet — and that arrives as `case.upserted`, not as any
+   * Incident frame. `api/live.tsx` therefore invalidates this prefix from the
+   * frames that move a Case; the membership writes themselves are local and
+   * invalidate it in their own handlers.
+   *
+   * `detail` is keyed by the NUMBER as a string, because that is what the route
+   * parameter is and what a human quotes; the id never reaches the URL.
+   */
+  incidents: {
+    all: () => ["incidents"] as const,
+    list: (query: IncidentListQuery) => ["incidents", "list", query] as const,
+    detail: (number: string) => ["incidents", "detail", number] as const,
+    /**
+     * The Incident one Case is in now (`?case_id=`), keyed by the CASE id. Under
+     * the `["incidents"]` root, so every membership write — and every frame
+     * `api/live.tsx` already sends that root — refreshes it with the rest.
+     */
+    holding: (caseId: string) => ["incidents", "holding", caseId] as const,
+  },
   labels: {
     names: () => ["labels", "names"] as const,
   },
@@ -149,7 +175,13 @@ export const qk = {
     channelTypes: () => ["settings", "channel-types"] as const,
     channels: () => ["settings", "channels"] as const,
     channelConnections: () => ["settings", "channel-connections"] as const,
+    mappingCatalog: () => ["settings", "payload-mapping-catalog"] as const,
     policies: () => ["settings", "policies"] as const,
+    /**
+     * The org's Correlators (ADR 0052 §2), in evaluation order. Only this
+     * screen writes them, so a mutation invalidates; no frame is about one.
+     */
+    correlators: () => ["settings", "correlators"] as const,
     /** The org's tuning, its origins and its bounds — one query, one screen. */
     org: () => ["settings", "org"] as const,
     /**

@@ -207,6 +207,10 @@ func plan() []probe {
 		// the schema enforces, and the `{{connection}}` fixture below is what
 		// `createChannel` spends.
 		{method: http.MethodGet, tmpl: "/api/v1/channel-connections", want: http.StatusOK},
+		// The payload-mapping catalog embedded in the binary (ADR 0055 §2). It reads no
+		// row, so it needs no fixture; what it proves is that every embedded file
+		// serialises to the contract's entry shape.
+		{method: http.MethodGet, tmpl: "/api/v1/payload-mapping-catalog", want: http.StatusOK},
 		{
 			method: http.MethodPost, tmpl: "/api/v1/channel-connections",
 			body: map[string]any{
@@ -228,6 +232,15 @@ func plan() []probe {
 			url:  "/api/v1/channel-connections/{{connection}}",
 			body: map[string]any{"name": "gate-g2-webhook-connection-renamed"},
 			want: http.StatusOK,
+		},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/channel-connections/{id}/mapping/test",
+			url:  "/api/v1/channel-connections/{{connection}}/mapping/test",
+			body: map[string]any{"channel_id": "00000000-0000-4000-8000-000000000001", "fact": "drawn"},
+			want: http.StatusPreconditionFailed,
+			why: "the fixture connection carries no payload mapping, and the tester refuses that " +
+				"before it looks the channel up — so the 412 is reached without a channel, and " +
+				"without sending anything to a tool this gate has no business reaching",
 		},
 		{
 			method: http.MethodPost, tmpl: "/api/v1/channel-connections/{id}/slack/resolve",
@@ -518,6 +531,114 @@ func plan() []probe {
 			want: http.StatusOK,
 		},
 
+		/* ----------------------------------------------------------- incidents */
+		// ADR 0052: a human draws an Incident over Cases, and a Case belongs to at
+		// most one. The order walks the membership lifecycle — draw, refuse a second
+		// draw over the same Case, draw a second Incident over a second Case, refuse
+		// adding that Case where it is not, move it, remove it, add it back — so
+		// every refusal the at-most-one rule produces is observed on the wire, not
+		// only every success. `{number}` is the per-org number the create captured.
+		{method: http.MethodGet, tmpl: "/api/v1/incidents", want: http.StatusOK},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/incidents",
+			body:    map[string]any{"case_ids": []string{"{{case}}"}},
+			want:    http.StatusCreated,
+			capture: map[string][]string{"incident": {"data", "number"}},
+		},
+		// Which Incident a Case is in now — the read a screen asks before it offers
+		// a move rather than a second draw (git-bug f89c9cc).
+		{
+			method: http.MethodGet, tmpl: "/api/v1/incidents", url: "/api/v1/incidents?case_id={{case}}",
+			want: http.StatusOK,
+		},
+		// Empty Incidents are hidden by default and listed on request (owner ruling
+		// 2026-10-04); the opt-in is a different keyset and must answer the same shape.
+		{
+			method: http.MethodGet, tmpl: "/api/v1/incidents", url: "/api/v1/incidents?include_empty=true",
+			want: http.StatusOK,
+		},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/incidents",
+			body: map[string]any{"case_ids": []string{"{{case}}"}},
+			want: http.StatusConflict,
+			why: "a Case belongs to at most one Incident: the second draw is refused by " +
+				"incident_members_case_live_uniq and its detail points at the move",
+		},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/incidents",
+			body:    map[string]any{"case_ids": []string{"{{case2}}"}},
+			want:    http.StatusCreated,
+			capture: map[string][]string{"incident2": {"data", "number"}},
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/incidents/{number}", url: "/api/v1/incidents/{{incident}}",
+			want: http.StatusOK,
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/incidents/{number}", url: "/api/v1/incidents/999999",
+			want: http.StatusNotFound,
+			why:  "a number this org never drew is indistinguishable from one another org drew",
+		},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/incidents/{number}/cases", url: "/api/v1/incidents/{{incident}}/cases",
+			body: map[string]any{"case_id": "{{case2}}"},
+			want: http.StatusConflict,
+			why:  "the Case is in the second Incident, so adding it here is refused with a pointer to move",
+		},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/incidents/{number}/cases/{case_id}/move",
+			url:     "/api/v1/incidents/{{incident2}}/cases/{{case2}}/move",
+			rawBody: `{"to_number": {{incident}}}`,
+			want:    http.StatusOK,
+		},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/incidents/{number}/cases/{case_id}/remove",
+			url:  "/api/v1/incidents/{{incident}}/cases/{{case2}}/remove",
+			want: http.StatusOK,
+		},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/incidents/{number}/cases/{case_id}/remove",
+			url:  "/api/v1/incidents/{{incident}}/cases/{{case2}}/remove",
+			want: http.StatusNotFound,
+			why:  "the membership is a tombstone now; a second removal finds no current member to remove",
+		},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/incidents/{number}/cases", url: "/api/v1/incidents/{{incident2}}/cases",
+			body: map[string]any{"case_id": "{{case2}}"},
+			want: http.StatusOK,
+		},
+
+		/* --------------------------------------------------------- correlators */
+		// ADR 0052 §2 (git-bug 61eeddf): the operator-written definitions that draw
+		// Incidents. List, write, reorder by `priority`; the DELETE is in the
+		// teardown group with the others.
+		//
+		// ⭐ ITS MATCHER NAMES AN `alertname` NO PROBE INGESTS. A Correlator acts on
+		// every Case that opens after it is written, so one matching the gate's own
+		// alerts would draw Incidents under the Incident probes above depending on
+		// where in the table it ran.
+		{method: http.MethodGet, tmpl: "/api/v1/correlators", want: http.StatusOK},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/correlators",
+			body: map[string]any{
+				"name":                 "GateG2 storm",
+				"matchers":             []map[string]string{{"name": "alertname", "op": "=", "value": "GateG2Correlator"}},
+				"count_min":            5,
+				"count_window_seconds": 600,
+				"quiet_grace_seconds":  1800,
+				// ADR 0052 §6. Harmless here for the matcher's reason above: no probe
+				// ingests the alertname, so no Incident of it ever has a thread.
+				"incidents_are_conversations": true,
+			},
+			want:    http.StatusCreated,
+			capture: map[string][]string{"correlator": {"data", "id"}},
+		},
+		{
+			method: http.MethodPatch, tmpl: "/api/v1/correlators/{id}", url: "/api/v1/correlators/{{correlator}}",
+			body: map[string]any{"priority": 10},
+			want: http.StatusOK,
+		},
+
 		/* ------------------------------------------------------- case policies */
 		// The case RETENTION WINDOW W, per (namespace, alertname). The shape is
 		// `/api/v1/clusters`'s and so is the probe order: list, create by the
@@ -671,6 +792,10 @@ func plan() []probe {
 		{
 			method: http.MethodDelete, tmpl: "/api/v1/notification-policies/{id}",
 			url:  "/api/v1/notification-policies/{{policy}}",
+			want: http.StatusNoContent,
+		},
+		{
+			method: http.MethodDelete, tmpl: "/api/v1/correlators/{id}", url: "/api/v1/correlators/{{correlator}}",
 			want: http.StatusNoContent,
 		},
 		{

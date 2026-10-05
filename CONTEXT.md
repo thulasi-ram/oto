@@ -20,7 +20,9 @@ generic. Grafana OnCall OSS was archived 2026-03-24, leaving a documented vacuum
 OSS Slack-first alert layer over an existing Prometheus/Alertmanager stack.
 
 **What oto is not — permanently:** an incident manager, an on-call/paging system, a workflow engine,
-a rule editor, or anything that tracks who owes work. **oto is a flight recorder.** It records the
+a rule editor, or anything that tracks who owes work. oto **draws** Incidents — a set of Cases told
+as one story (ADR 0052) — but it does not **manage** one: the response (status, lead, severity, comms,
+write-up) lives in the incident tool the Incident is declared to, and oto only sends that tool facts. **oto is a flight recorder.** It records the
 aircraft. It does not fly the plane, roster the crew, decide who is in command, or write the
 accident report — and it is trusted precisely *because* it does none of those things.
 
@@ -82,15 +84,27 @@ Permanently out of scope, with hand-offs: SPEC §I.1.1.
 | **Alert** | The **identity of a label set** within `(org, cluster)`. Created on first sight, survives resolution forever. oto's answer to Sentry's *Issue*. |
 | **AlertCase** | One **contiguous firing episode** of an Alert, `(alert_id, seq)`. What you ack; whose FIRING DURATION is measured. Never "MTTR" — banned (§A.1). **Strictly terminal**: `open → closed`, once. A re-fire opens the next `seq`, never revives this one (ADR 0040). **Two numbers, and they are not interchangeable**: `seq` is the firing ordinal within ONE alert, `number` is the case's name within the ORG — unique, monotonic, what a human quotes, and what `/cases` leads each row with (migration 00081). Forty alerts that have each fired once carry forty `number`s and forty `seq` of 1. |
 | **AlertEvent** | One **immutable thing that happened at one instant**. The timeline. Append-only. |
+| **Incident** | A **set of one or more Cases drawn together as one story** — an Alert has Cases, an Incident spans Cases. A machine (by a stated rule) or a human may draw one. Inside oto it is a fact about **signals**: it is **active** while any of its Cases is open and **quiet** otherwise — read off its Cases, never set by a hand. Its **response** — status, lead, severity, comms, write-up — is managed in an external tool it is *declared* to, and oto holds only the **outbound mapping** to that tool's object; nothing about the response is read back (ADR 0052). _Avoid_: arc, group, cluster, episode, storm, outage, correlation (that names the relationship, not the container). |
+| **Correlator** | An **operator-written definition that draws Incidents** — matchers over Cases, optionally with a count over a window — so that why a Case is in an Incident always has an answer someone can read back. Only a Correlator or a human draws an Incident; a model may **propose** membership, never decide it (ADR 0052). _Avoid_: rule (that is the Prometheus alerting rule), incident rule, policy (that routes notifications). |
 | **RuleSnapshot** | A content-addressed capture of a Prometheus alerting rule at a point in time. The differentiator. |
 | **AlertSource** | One configured Alertmanager (+ optional Prometheus). HA replicas share a Cluster. |
 | **Cluster** | Identity/failure domain. `cluster_key` participates in alert identity. |
 | **Channel** | A **configured destination instance** ("Slack workspace T123, #sre-alerts"). Not a channel *type*. |
+| **Payload mapping** | An optional document on a **webhook Connection** that turns the `oto.notification.v1` envelope into the request a particular incident tool expects, and says where its response names the external incident. It is destination setup, not wording: a failure is a failed delivery, never a fallback. Without one, the plain envelope is sent. (ADR 0055) _Avoid_: template (that is wording, ADR 0050), plugin (a mapping is data, not code), provider. |
 | **Notification** | The channel-agnostic **intent** to communicate one fact. Idempotent. |
 | **NotificationDelivery** | **One materialisation** of a Notification on one Channel. Owns retry state and provider ids. |
-| **Conversation** | What a `channel_threads` row is *about*, as the pair `(conversation_kind, conversation_id)`: a **Case** or a **digest**. A conversation holds exactly **one Case** — a new Case always means a new thread — and a digest's conversation is keyed by the **policy** that asked for it, one per policy per channel. It is what **decides which facts share a message**, and that decision now belongs to the `notification` layer rather than to a stored grouping row (git-bug `7570090`, migration `00069`). It is **not** a `correlation` (deferred, and it would need a stated algorithm) and **not** an incident (permanently out). |
+| **Conversation** | What a `channel_threads` row is *about*, as the pair `(conversation_kind, conversation_id)`: a **Case**, a **digest**, or an **Incident** whose Correlator says its Incidents are conversations (ADR 0052 §6). A Case conversation holds exactly **one Case** — a new Case always means a new thread, unless it joins an Incident that is a conversation, in which case later facts about it share the Incident's thread; nothing already posted moves, and nothing is held back to wait for a Correlator. A digest's conversation is keyed by the **policy** that asked for it, one per policy per channel. It is what **decides which facts share a message**, and that decision belongs to the `notification` layer and to what an operator wrote, never to a stored grouping oto derived on its own (git-bug `7570090`, migration `00069`). The Incident kind is the operator-written exception to ADR 0045's *"N alerts, N conversations"*, not a return of `AlertGroup`. |
 | **ChannelThread** | The binding of a **Conversation** to `(slack_channel_id, root_ts)`. |
 | **Enrichment** | One typed, provenanced result from one named, versioned `Enricher`. |
+| **Investigator** | A **named, versioned configuration of a model-driven investigation**: which model, which prompt, which Tools it may call, and its budgets. The AI-for-SRE category word "agent" may describe it in marketing, never name it. ⚠️ *Proposed (2026-10-02) — ADR 0053.* _Avoid_: agent (that is `vmagent` in a VictoriaMetrics stack, and the in-cluster daemon ADR 0016 rejected), bot, assistant. |
+| **ToolServer** | One **configured MCP server** an Investigator may read through. It is where trust stops: oto holds no cluster credential, the ToolServer's operator does. ⚠️ *Proposed (2026-10-02) — ADR 0053.* _Avoid_: connection (that is a channel's org-wide setup, ADR 0047). |
+| **Tool** | One **capability a ToolServer exposes** that an Investigator is allowed to call. oto's own history — prior Findings, a Case's timeline, the rule as it stood at fire time — is offered as built-in Tools on the same footing. A Tool an Investigator holds while investigating is read-only; a write Tool is called only to execute an approved Remedy. ⚠️ *Proposed (2026-10-02) — ADR 0053.* _Avoid_: action (that is the Slack button row). |
+| **Investigation** | **One run of one Investigator against one subject** — a Case, an Incident, a digest or a policy — frozen once it ends. A subject may have many over time; the latest one's Finding is the one shown. ⚠️ *Proposed (2026-10-02) — ADR 0053.* _Avoid_: analysis, triage (banned), probe (a source health check). |
+| **Step** | One **immutable entry in an Investigation's transcript**: a model turn, a Tool call, or a Tool's result. If you would ever `UPDATE` it, it is not a Step. ⚠️ *Proposed (2026-10-02) — ADR 0053.* _Avoid_: event (unqualified is banned), observation (that is ingestion's). |
+| **Finding** | **What an Investigation concluded** about its subject — a summary, a classification, and the Steps it rests on. A snapshot of what was seen at that time, never a live view, and never an input to whether a notification is sent. It may cite other Cases; citing is not drawing an Incident. ⚠️ *Proposed (2026-10-02) — ADR 0053.* _Avoid_: verdict, evidence (both are drills'), insight, recommendation. |
+| **Remedy** | **A change to a cluster that an Investigator proposes and oto executes only once a human approves it** — any write Tool or command the ToolServer's permissions allow. A Remedy names the write Tool that would carry it out, or says that no configured Tool can — and then it cannot be approved. It is `proposed`, then `approved` and `executed` or `failed`, or `declined`, or `expired`, each by a named actor. Only a user granted approval **on that Remedy's ToolServer** may approve, and a Remedy judged risky needs two different such users. Every transition is sent to the declared Incident as a fact. Responsibility rests with the approvers and with the permissions the ToolServer was granted. ⚠️ *Proposed (2026-10-02) — ADR 0054, which supersedes FR-1's "response effort" refusal for this one noun.* _Avoid_: action (the Slack button row), fix, remediation, runbook, workflow. |
+| **Classification** | **The class a Finding places its subject in, chosen from a closed set the operator wrote** — or `unclassified`, which is always admissible and is the right answer under doubt. oto ships no classes of its own. A Finding keeps the class it was given even if the set later changes. ⚠️ *Proposed (2026-10-02) — ADR 0053.* _Avoid_: severity, priority (both banned as human-set axes), category, label (that is a Prometheus label), noise (oto's opinion of someone else's signal). |
+| **Suggestion** | **A change a Finding proposes and only a human can apply**: to oto's own configuration (a policy's count condition), or to an Incident's membership. It is applied or it lapses; there is no reject verb. Never a change to anything outside oto. ⚠️ *Proposed (2026-10-02) — ADR 0053.* _Avoid_: proposal, recommendation, action, fix, remediation. |
 | **Silence** | A **read-only mirror** of an Alertmanager silence. |
 | **Stanza** | One **named, ordered unit of a rendered message**: `title`, `body`, `fields`, `members`, `trail`, `rule`, `actions`, `footer` (SPEC §H.7's block budget). ⚠️ IT IS AN INTERNAL NOUN AGAIN. It named a customer-facing override slot under ADR 0037; ADR 0050 withdrew that, and a Stanza is now only how the Slack renderer talks about blocks Go builds. Nothing an operator writes names one. It is **not** a `block` — that is Slack Block Kit's own type name, and it cannot name the same unit on the webhook renderer. |
 | **NotificationTemplate** | One **whole notification message an operator wrote** — a document you can read top to bottom, not a set of overrides (ADR 0050). Three formats: `card` is Markdown plus `:::fields` and `{{ actions }}`, parsed to oto's own document IR and compiled per provider, and the only PORTABLE structured one; `text` is one flat string; `raw` is literal Slack Block Kit JSON, pinned to Slack. It carries **no `when` clause** — `notification_policies.template_id` names it, because the policy already has the matchers. Every interpolated value is markdown-escaped unconditionally in `card`, with no opt-out, so a label cannot become syntax. Any failure falls back to oto's built-in card, which is what makes it impossible for a template to mark a delivery dead. It is **not** a "Wording" — that was the retired per-Stanza override. |
@@ -125,11 +139,15 @@ left with it, because arithmetic over a set of one has no answer to give.
 **Scope bans** — these MUST NOT appear in a Go identifier, a table or column name, a JSON field, an
 API path or UI copy. AC-49 greps for them in CI:
 
-`incident` · `escalation` · `on-call`/`oncall` · `rota` · `schedule` · `assignee`/`assigned_to` ·
+`escalation` · `on-call`/`oncall` · `rota` · `schedule` · `assignee`/`assigned_to` ·
 `owner_id` · `responder` · `triage` · `postmortem` · `war room` · `SLA` · `MTTA` · `MTTR` ·
 `severity override` · `close` (of an alert) · `merge` · `dismiss` · `watcher`/`subscriber`
 
-Say **firing duration**, not MTTR. Say **correlation**, not incidents. ⛔ `escalation` has no
+Say **firing duration**, not MTTR. ⚠️ `incident` was on this list until ADR 0052 made an **Incident**
+an oto noun. What it guarded is still shut, and by the right instrument: `incident_id` stays banned
+**on a signal row** (`alerts`, `alert_cases`, `notifications`, `notification_deliveries` —
+`tools/lintvocab` enforces exactly that), and the incident's **response** is PERMANENTLY OUT below.
+⛔ `escalation` has no
 replacement term and this line used to offer one: it said "say **unacked reminder**", and the one
 reminder stage `escalation` had been reshaped into was itself withdrawn (git-bug `bd0fb1d`) — see
 the **No unprompted reminder, at all** row above. The word stays banned with nothing to say
@@ -145,7 +163,7 @@ alert is still firing and must still be rendered as firing** — colouring it ca
 `open | closed` and nothing else (ADR 0040): an episode's only fact about itself is whether it is
 still running. The four-way reading of a Case is derived and total — open + no `suppression_reason` is
 `firing`, open + one is `suppressed`, closed + `resolve_reason='upstream'` is `resolved`, closed +
-`'timeout'` is `expired`. Say **an episode is open or closed**, and **an alert is firing, suppressed,
+`'timeout'`, `'silent'` or `'source_removed'` (ADR 0056) is `expired`. Say **an episode is open or closed**, and **an alert is firing, suppressed,
 resolved or expired**; the two vocabularies are not interchangeable and swapping them is how the
 column acquired four values in the first place.
 
@@ -172,8 +190,13 @@ Rules you must not get wrong:
   release, validating a number nothing read.
 - **`ended_at` is clamped to `started_at`.** A backward-skewed upstream clock must never abort an
   ingest transaction. Clamp, flag `clamped: true`, measure the skew — never reject.
-- **Losing sight of an alert is not the alert resolving.** The reaper is *blocked* while
-  `source_health.status != 'healthy'`.
+- **Losing sight of an alert is not the alert resolving.** The reaper is *blocked* unless the
+  case's cluster has a live source and **every** live source's `source_health.status = 'healthy'`
+  — for `timeout` and `silent` alike, so one unhealthy HA replica holds the whole cluster (ADR 0056
+  Amendment 1). `source_removed` is the one expiry it does not ask, because there is no source left
+  to be blind to: it fires only when no live source has fed the case's cluster for a resolve grace,
+  so deleting one HA replica ends nothing. `silent` and `source_removed` ship behind
+  `jobs.expire_silent_and_removed`, off by default (ADR 0056).
 
 ---
 
@@ -196,8 +219,9 @@ Rules you must not get wrong:
 | `drill` | PERIPHERAL | Synthetic end-to-end delivery drills. It imports **no** other module: it reaches five of them — `alerts`, `ingestion`, `notification`, `channels`, `rules` — by writing their table names into SQL (`alerts`, `alert_cases`, `alert_events`, `ingest_batches`, `ingest_rejections`, `notifications`, `notification_deliveries`, `notification_policies`, `channels`, `channel_threads`, `rule_snapshots`). Those eleven, plus its own `delivery_drills`, are DECLARED in `test/arch/sqltables_test.go` with their owner and how far the drill may go against each. The reads stay SQL on purpose — a port satisfied by the owning module's service would have the drill ask the code under test whether the code under test worked. |
 | ⛔ `grouping` | **DELETED** | It owned durable groups, generations, derived membership and group lifecycle — 20 non-test files, 5 243 LOC — and it is gone (git-bug `7570090`, migration `00069`). ⭐ The measurement is the lesson: deleting it produced **four** build errors, all in `internal/app`. `notification` never imported it and `alerts` carried only a `uuid`. **The module coupling was thin and the concept coupling was broad**, which is why the change touched 187 files and almost none of them were the module. The conversation is now the Case (see the glossary), so nothing replaced it. |
 | `app` | WIRING | The composition root. Constructs every concrete, satisfies every port, registers the workers and routes. THE one place allowed to know every module, and deliberately outside every cross-domain rule. Not a domain. |
-| `correlation` (was `incidents`), `k8scontext`, `changefeed`, `views`, `audit` (config changes only), `authz`, extra channel providers, anything AI | DEFERRED-POST-V1 | Do not build. Do not stub beyond the ports that already exist. |
-| `incidents`, `oncall`, assignment, multi-stage escalation, paging, status pages, postmortems, SLA/MTTA, manual resolve/merge/close, watchers | **PERMANENTLY OUT** | There is no version of oto containing these. Adding one needs an ADR arguing **against FR-1 by name**. See SPEC §I.1.1 for the hand-offs. |
+| `incidents` | ADR 0052 | Incidents drawn over Cases by a Correlator or a human; **active**/**quiet** read off member Cases; declared outbound as a notification, facts only. Replaces the deferred `correlation` row. |
+| `k8scontext`, `changefeed`, `views`, `audit` (config changes only), `authz`, extra channel providers, anything AI | DEFERRED-POST-V1 | Do not build. Do not stub beyond the ports that already exist. |
+| Incident **response** (status, lead, severity, comms, write-up), `oncall`, assignment, multi-stage escalation, paging, status pages, postmortems, SLA/MTTA, manual resolve/merge/close, watchers | **PERMANENTLY OUT** | There is no version of oto containing these. Adding one needs an ADR arguing **against FR-1 by name**. See SPEC §I.1.1 for the hand-offs. |
 
 ### Dependency direction
 
@@ -262,6 +286,8 @@ No import exists in either direction, and nothing enforces the arrow:
 | `notification/service.ChannelRegistry` | `channels` | container.go |
 | `rules/service.RuleLookup` | `sources/service.ResolveRule` | adapters.go |
 | `silences/service.SilenceSource`, `silences/api.SourceBaseURLs` | `sources` | `app/silencesource.go` |
+| `alerts/service.CaseOpenings` | the outbox (`incidents.correlate`) — never `incidents` itself | `app.caseOpenings` (adapters.go) |
+| `sources/api.CaseCounts` — open and held Cases per source (ADR 0056 §1) | `alerts` | `app.sourceCases` (adapters.go) |
 
 **3. River job enqueues — a STRING in `internal/platform/jobs/kinds.go`, not a call.** The
 producer never names the consumer, so there is nothing to enforce at all:
@@ -270,11 +296,18 @@ producer never names the consumer, so there is nothing to enforce at all:
 |---|---|---|
 | `alerts`, `ingestion`, `enrichment` | `notify.evaluate` | `notification` |
 | `alerts`, `enrichment` | `enrich.run` | `enrichment` |
+| `alerts` (through `CaseOpenings`) | `incidents.correlate` — on `lifecycle`, never `notify` | `incidents` (the Correlators) |
 
 **4. Table names in SQL — no Go edge whatsoever.** `drill` reads five other modules' tables by
 name (see its row above); `notification/repository/snapshot.go` joins `alert_sources` to learn a
 source's kind so it can decide whether an Alertmanager silence URL is one oto can vouch for.
-No compiler, no depguard rule and no import graph can see either one — `test/arch/arch_test.go`
+`alerts/repository/case.go` reads `sources`' `alert_sources` and `source_health` by name too: the
+reaper's guarded scans pre-filter on "every live source on the cluster has a `healthy` row"
+(`liveSourcesHealthySQL`, ADR 0056 Amendment 1), and the case-sources reads join `alert_sources` for
+the live set and its max silence. ⚠️ **The pre-filter is not the verdict** — the §B.4 guard is still
+asked through the `SourceHealth` port and that answer decides — but a rename of either table or of
+`source_health.status`'s `'healthy'` breaks the reaper at runtime, not at build time.
+No compiler, no depguard rule and no import graph can see any of these — `test/arch/arch_test.go`
 says so itself: *"COMPILE-TIME EDGES ONLY."*
 
 `test/arch/sqltables_test.go` is the gate that reads the SQL instead, and it covers **`drill`
@@ -286,8 +319,8 @@ the drill path. It also holds `dispose.go`'s two stated invariants — every DEL
 and not merely by `org_id` and a predicate, and `AND synthetic` still on `alerts` — which were argued in a comment on a file nothing in the build system knew was
 special.
 
-⚠️ `notification`'s `alert_sources` join and `stats`' ten borrowed tables are **not** declared
-anywhere. For those a rename still breaks at runtime, and gating them means writing their claims.
+⚠️ `notification`'s `alert_sources` join, `alerts`' `alert_sources`/`source_health` reads and
+`stats`' ten borrowed tables are **not** declared anywhere. For those a rename still breaks at runtime, and gating them means writing their claims.
 
 ⛔ `notification ──► silences` used to be drawn and is **not a relationship**: `notification`
 neither imports `silences`, nor declares a port onto it, nor enqueues to it. The silence links it

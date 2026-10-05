@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -32,6 +34,9 @@ type InstanceStore interface {
 // errs.Message.
 type CredentialResolver interface {
 	Resolve(ctx context.Context, s db.TenantScope, credentialID uuid.UUID) (kind string, values map[string]string, err error)
+	// ResolveSigning unseals a connection's outbound signing secret and, while a
+	// rotation's overlap lasts, its predecessor (migration 00088).
+	ResolveSigning(ctx context.Context, s db.TenantScope, credentialID uuid.UUID) (domain.SigningSecret, error)
 }
 
 // Registry is the subset of `channels/registry` this service uses.
@@ -125,7 +130,21 @@ func (t *Tester) Test(ctx context.Context, scope db.TenantScope, channelID uuid.
 		return domain.TestResult{}, err
 	}
 
-	cred, err := t.credential(ctx, scope, inst)
+	conn, err := t.connections.Get(ctx, scope, inst.ConnectionID)
+	if err != nil {
+		return domain.TestResult{}, err
+	}
+	return t.send(ctx, scope, inst, conn, SyntheticView(inst, now, t.baseURL), now)
+}
+
+// send renders one view for a destination, maps it when the destination's
+// Connection carries a payload mapping, and delivers it — the whole real path, for
+// both the channel test and the mapping test.
+func (t *Tester) send(
+	ctx context.Context, scope db.TenantScope,
+	inst domain.Instance, conn domain.Connection, view *domain.NotificationView, now time.Time,
+) (domain.TestResult, error) {
+	cred, err := t.credential(ctx, scope, conn)
 	if err != nil {
 		return domain.TestResult{}, err
 	}
@@ -135,7 +154,6 @@ func (t *Tester) Test(ctx context.Context, scope db.TenantScope, channelID uuid.
 		return domain.TestResult{}, err
 	}
 
-	view := SyntheticView(inst, now, t.baseURL)
 	msg, err := renderer.Render(ctx, view, domain.RenderOptions{
 		Mode:           domain.ModePostRoot,
 		Verbosity:      inst.Verbosity.Normalise(),
@@ -154,7 +172,25 @@ func (t *Tester) Test(ctx context.Context, scope db.TenantScope, channelID uuid.
 		}, nil
 	}
 
-	ch, err := t.registry.Open(ctx, inst.Type, inst.ToChannelConfig(), cred)
+	// ⭐ A TEST SEND TO A MAPPED CONNECTION IS MAPPED, EXACTLY AS A REAL ONE IS (ADR
+	// 0055 §2). A test that sent the plain envelope to an incident tool would fail
+	// there for a reason no real delivery has — or, worse, pass against a receiver
+	// that rejects every mapped body. A mapping that does not render is reported the
+	// way the dispatcher records it, and nothing is sent.
+	msg, err = mapForChannel(ctx, conn, msg)
+	if err != nil {
+		t.recordHealth(ctx, scope, inst.ID, domain.InstanceConfigInvalid, "payload_mapping_invalid", now)
+		return domain.TestResult{
+			OK:         false,
+			Error:      mappingMessage(err),
+			ErrorClass: domain.ClassConfigInvalid,
+			CheckedAt:  now,
+		}, nil
+	}
+
+	cfg := inst.ToChannelConfig()
+	cfg.PayloadMapping = conn.PayloadMapping
+	ch, err := t.registry.Open(ctx, inst.Type, cfg, cred)
 	if err != nil {
 		return domain.TestResult{}, err
 	}
@@ -196,27 +232,109 @@ func (t *Tester) Test(ctx context.Context, scope db.TenantScope, channelID uuid.
 	}, nil
 }
 
-// credential unseals the destination's secret, or returns the empty
-// credential. The secret is no longer on the Instance itself — it belongs to
-// the Connection the Instance references, so this now reads that Connection
-// first.
-func (t *Tester) credential(ctx context.Context, scope db.TenantScope, inst domain.Instance) (domain.Credential, error) {
-	conn, err := t.connections.Get(ctx, scope, inst.ConnectionID)
-	if err != nil {
-		return domain.Credential{}, err
-	}
-	if conn.CredentialID == nil {
+// credential unseals the destination's secrets, or returns the empty
+// credential. The secrets are not on the Instance itself — they belong to the
+// Connection the Instance references.
+func (t *Tester) credential(ctx context.Context, scope db.TenantScope, conn domain.Connection) (domain.Credential, error) {
+	if conn.CredentialID == nil && conn.SigningCredentialID == nil && conn.MappingCredentialID == nil {
 		return domain.Credential{}, nil
 	}
 	if t.creds == nil {
 		return domain.Credential{}, errs.New(errs.KindInternal, "credential_resolver_missing",
 			"this deployment cannot unseal channel credentials")
 	}
-	kind, values, err := t.creds.Resolve(ctx, scope, *conn.CredentialID)
-	if err != nil {
-		return domain.Credential{}, err
+	var cred domain.Credential
+	if conn.CredentialID != nil {
+		kind, values, err := t.creds.Resolve(ctx, scope, *conn.CredentialID)
+		if err != nil {
+			return domain.Credential{}, err
+		}
+		cred.Kind, cred.Values = kind, values
 	}
-	return domain.Credential{Kind: kind, Values: values}, nil
+	// ⭐ A TEST SEND IS SIGNED EXACTLY AS A REAL ONE, both signatures during an
+	// overlap included. "Send a test" is how an operator checks a receiver's
+	// verification after a rotation, and a test that skipped the signature would
+	// pass against a receiver that rejects every real delivery.
+	if conn.SigningCredentialID != nil {
+		signing, err := t.creds.ResolveSigning(ctx, scope, *conn.SigningCredentialID)
+		if err != nil {
+			return domain.Credential{}, err
+		}
+		cred.Signing = signing
+	}
+	// A mapped test send fills its `secrets.<name>` references from the same sealed
+	// slot a real one does (migration 00090).
+	if conn.MappingCredentialID != nil {
+		_, values, err := t.creds.Resolve(ctx, scope, *conn.MappingCredentialID)
+		if err != nil {
+			return domain.Credential{}, err
+		}
+		cred.Secrets = values
+	}
+	return cred, nil
+}
+
+// TestMapping sends ONE fact, chosen by the operator, through a destination of a
+// mapped Connection: the real webhook renderer, the Connection's payload mapping, its
+// sealed secrets, the signature and the transport (ADR 0055 §2: "a test send is
+// offered").
+//
+// ⚠️ IT MAY OPEN A REAL INCIDENT IN THE TOOL. That is what a mapping does with a fact,
+// and a test that stopped short of the vendor would prove nothing about the mapping.
+// The view is the synthetic `OtoChannelTest` one, so whatever opens says so.
+//
+// The Connection holds the mapping and the channel holds the URL, so the test names
+// both: the channel must be a live destination of this Connection.
+func (t *Tester) TestMapping(
+	ctx context.Context, scope db.TenantScope, connectionID, channelID uuid.UUID, fact string,
+) (domain.TestResult, error) {
+	now := t.clk.Now().UTC()
+
+	if !domain.IsMappingFact(fact) {
+		return domain.TestResult{}, errs.Validation("validation_failed", "1 field failed validation.",
+			errs.Violation{Field: "fact", Code: "enum", Message: fmt.Sprintf(
+				"%q is not a fact an envelope carries; the facts are %s",
+				fact, strings.Join(domain.MappingFacts(), ", "))})
+	}
+	conn, err := t.connections.Get(ctx, scope, connectionID)
+	if err != nil {
+		return domain.TestResult{}, err
+	}
+	if conn.Deleted() {
+		return domain.TestResult{}, errs.NotFound("connection_deleted", "this connection has been deleted")
+	}
+	if domain.IsNullMapping(conn.PayloadMapping) {
+		return domain.TestResult{}, errs.Precondition("payload_mapping_absent",
+			"this connection carries no payload mapping; its channels send the plain envelope, "+
+				"which the channel test already covers")
+	}
+	inst, err := t.store.Get(ctx, scope, channelID)
+	if err != nil {
+		return domain.TestResult{}, err
+	}
+	if inst.Deleted() || inst.ConnectionID != connectionID {
+		return domain.TestResult{}, errs.Validation("validation_failed", "1 field failed validation.",
+			errs.Violation{Field: "channel_id", Code: "invalid",
+				Message: "the test is sent through a live channel of this connection, and this is not one"})
+	}
+	if !inst.Enabled {
+		return domain.TestResult{}, errs.Precondition("channel_disabled",
+			"this channel is disabled; enable it before testing")
+	}
+	if err := t.registry.ValidateConfig(ctx, inst.Type, inst.Config); err != nil {
+		return domain.TestResult{}, err
+	}
+	return t.send(ctx, scope, inst, conn, SyntheticFactView(inst, now, t.baseURL, fact), now)
+}
+
+// mappingMessage is a mapping failure in the operator's words: what the mapping did
+// wrong, never a provider code.
+func mappingMessage(err error) string {
+	var f *MappingFailure
+	if errors.As(err, &f) {
+		return f.Error()
+	}
+	return "the payload mapping did not render; nothing was sent"
 }
 
 // recordHealth writes what this attempt learned about the destination.

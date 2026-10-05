@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,6 +20,7 @@ import (
 	enrichrepo "github.com/thulasiram/oto/internal/enrichment/repository"
 	enrichservice "github.com/thulasiram/oto/internal/enrichment/service"
 	identityservice "github.com/thulasiram/oto/internal/identity/service"
+	incidentsservice "github.com/thulasiram/oto/internal/incidents/service"
 	ingestiondomain "github.com/thulasiram/oto/internal/ingestion/domain"
 	ingestionservice "github.com/thulasiram/oto/internal/ingestion/service"
 	notifdomain "github.com/thulasiram/oto/internal/notification/domain"
@@ -207,6 +209,11 @@ type timelineRecorder struct {
 var (
 	_ rulesservice.EventRecorder  = (*timelineRecorder)(nil)
 	_ enrichservice.EventRecorder = (*timelineRecorder)(nil)
+	// ⭐ THE THIRD DOOR (ADR 0052, git-bug b2672a1). `incidents` narrates a
+	// membership change onto the member Case's timeline through the same seam, for
+	// the same reason the other two do: CONTEXT.md §4 draws no `incidents ──►
+	// alerts` edge, and one writer of request-shaped events is the point.
+	_ incidentsservice.Timeline = (*timelineRecorder)(nil)
 )
 
 // The actor identities the timeline shows for these two writers. They are
@@ -268,6 +275,235 @@ func (r *timelineRecorder) RecordEnrichmentEvent(
 		ActorID:    timelineActorEnrich,
 		ActorLabel: timelineActorEnrichLbl,
 	})
+}
+
+// RecordIncidentFact appends one `incident.case_*` fact onto a member Case's
+// timeline (ADR 0052), inside the membership change's transaction.
+//
+// ⭐ THE ACTOR IS WHOEVER DECIDED, NOT A MODULE NAME — unlike the two narrators
+// above, whose facts oto produced itself. For a human: `user` when the decision
+// came with a `users` row behind it, which is what `ev_actor_ck` requires an id
+// for; `slack` when it did not, which carries the frozen label alone.
+//
+// ⭐ FOR A CORRELATOR (git-bug 61eeddf): `system`, with the Correlator's id as the
+// actor id and "Correlator <name>" as the frozen label. `system` because a
+// Correlator is not a person and `ev_actor_ck` keeps `user` for people; the id and
+// the label because "a machine did it" is not an answer to "why is this Case in
+// this Incident?" — the Correlator someone WROTE is (ADR 0052 §2), and the label
+// keeps reading the same after it is renamed or retired, as a human's does.
+//
+// ⛔ A NIL SERVICE IS AN ERROR HERE, NOT A SILENT NO-OP. The rules and enrichment
+// narrators degrade to "un-narrated" because their facts are side notes to work
+// that succeeded; a membership change is the fact, and recording it in one table
+// and not the other would leave a Case whose history denies the Incident it is in.
+func (r *timelineRecorder) RecordIncidentFact(
+	ctx context.Context, s db.TenantScope, f incidentsservice.CaseFact,
+) error {
+	if r.svc == nil {
+		return errs.New(errs.KindInternal, "incident_timeline_unwired",
+			"the alerts timeline is not wired, so an Incident change cannot be narrated")
+	}
+	kind, actorID, label := alertsdomain.ActorSlack, "", f.By.Label()
+	switch {
+	case !f.By.IsHuman():
+		if strings.TrimSpace(f.CorrelatorName) == "" {
+			return errs.New(errs.KindInternal, "incident_fact_correlator_unnamed",
+				"an incident.case_* fact a Correlator decided must name the Correlator")
+		}
+		kind, actorID = alertsdomain.ActorSystem, f.By.CorrelatorID().String()
+		label = "Correlator " + f.CorrelatorName
+	case f.By.UserID() != uuid.Nil:
+		kind, actorID = alertsdomain.ActorUser, f.By.UserID().String()
+	}
+	return r.svc.AppendTimelineEvent(ctx, s, alertsservice.TimelineEventRequest{
+		Type:       f.Type,
+		AlertID:    f.AlertID,
+		CaseID:     f.CaseID,
+		Summary:    f.Summary,
+		Payload:    f.Payload,
+		ActorKind:  kind.String(),
+		ActorID:    actorID,
+		ActorLabel: label,
+	})
+}
+
+// ---------------------------------------------------------------- incidents
+
+// incidentAnnouncer is `incidents/service.Announcer` over the outbox: each Incident
+// fact becomes one `notify.incident` job, enqueued in the transaction that made it
+// true (ADR 0001, ADR 0052 §5).
+//
+// ⛔ IT DECIDES NOTHING ABOUT DELIVERY. Whether a policy routes the fact, and where,
+// is `notification/service.EvaluateIncident`'s question; an org with no Incident
+// policy has the job evaluate to a recorded `no_policy` and sends nothing.
+//
+// ⭐ THE FACT IS CHECKED AGAINST THE REASON VOCABULARY HERE, at the one place the two
+// modules' words meet, so a Fact spelled differently from its Reason fails the
+// membership change that produced it rather than dead-lettering a job afterwards.
+type incidentAnnouncer struct {
+	enq db.Enqueuer
+}
+
+func (a incidentAnnouncer) Announce(
+	ctx context.Context, _ db.TenantScope, facts []incidentsservice.Announcement,
+) error {
+	reqs := make([]db.JobRequest, 0, len(facts))
+	for _, f := range facts {
+		reason := notifdomain.Reason(f.Fact)
+		if !reason.Valid() || reason.Subject() != notifdomain.SubjectIncident {
+			return errs.Newf(errs.KindInternal, "incident_fact_unmapped",
+				"Incident fact %q is not an Incident notification reason", f.Fact)
+		}
+		reqs = append(reqs, db.JobRequest{Args: jobs.NotifyIncidentArgs{
+			IncidentID: f.IncidentID,
+			Reason:     string(reason),
+			OccasionID: f.Occasion,
+			Sequence:   f.Sequence,
+		}})
+	}
+	if len(reqs) == 0 {
+		return nil
+	}
+	_, err := a.enq.EnqueueMany(ctx, reqs)
+	return err
+}
+
+// incidentFacts is `notification/service.IncidentReader` over `incidents/service`
+// — the struct copy the boundary costs, in the shape `notificationReader` pays it
+// the other way round.
+//
+// ⚠️ LATE-BOUND: notification is built before incidents, so the holder is handed
+// over empty and filled once `c.Incidents` exists. An unfilled holder is an error,
+// never an empty Incident: a card about a story oto could not read would be a
+// positive false statement.
+type incidentFacts struct {
+	svc *incidentsservice.Service
+	// orgs names the tenant for the envelope's `org`. Bound at construction:
+	// identity is built before notification, unlike incidents.
+	orgs *identityservice.Service
+}
+
+func (r *incidentFacts) Incident(
+	ctx context.Context, s db.TenantScope, id uuid.UUID,
+) (notifdomain.IncidentFacts, error) {
+	if r.svc == nil {
+		return notifdomain.IncidentFacts{}, errs.New(errs.KindInternal, "incident_reader_unwired",
+			"the Incident reader is not wired yet")
+	}
+	d, err := r.svc.GetByID(ctx, s, id)
+	if err != nil {
+		return notifdomain.IncidentFacts{}, err
+	}
+	out := notifdomain.IncidentFacts{
+		ID:                d.ID,
+		Number:            d.Number,
+		Active:            d.OpenMemberCount > 0,
+		DrawnAt:           d.DrawnAt,
+		DrawnByLabel:      d.DrawnBy.Label(),
+		DrawnByCorrelator: d.DrawnBy.CorrelatorID(),
+		Members:           make([]notifdomain.IncidentMemberFacts, 0, len(d.Members)),
+		Conversation:      d.Conversation,
+	}
+	for _, m := range d.Members {
+		out.Members = append(out.Members, notifdomain.IncidentMemberFacts{
+			CaseID:            m.CaseID,
+			CaseNumber:        m.CaseNumber,
+			CaseOpen:          m.CaseState.IsOpen(),
+			AlertID:           m.AlertID,
+			Alertname:         m.Alertname,
+			Labels:            m.Labels,
+			AddedAt:           m.AddedAt,
+			AddedByLabel:      m.AddedBy.Label(),
+			AddedByCorrelator: m.AddedBy.CorrelatorID(),
+			RemovedAt:         m.RemovedAt,
+			RemovedByLabel:    m.RemovedByLabel,
+			MovedToNumber:     m.MovedToNumber,
+		})
+	}
+	for _, o := range d.Outbound {
+		out.Outbound = append(out.Outbound, notifdomain.IncidentOutbound{
+			ChannelName: o.ChannelName,
+			ExternalURL: o.ExternalURL,
+			ExternalID:  o.ExternalID,
+		})
+	}
+	if r.orgs != nil {
+		org, err := r.orgs.GetOrg(ctx, s)
+		if err != nil {
+			return notifdomain.IncidentFacts{}, err
+		}
+		out.Org = notifdomain.OrgFacts{ID: org.ID, Slug: org.Slug, Name: org.Name}
+	}
+	return out, nil
+}
+
+// ConversationFor is `notification/service.IncidentConversations` over the same
+// holder (ADR 0052 §6): the Incident conversation a Case's fact belongs in now.
+//
+// ⚠️ AN UNFILLED HOLDER ANSWERS "NONE", UNLIKE `Incident` ABOVE, and for
+// `caseEndings`' reason: before `c.Incidents` exists nothing can have drawn an
+// Incident, so no Case can be in one, and "its own thread" is the true answer
+// rather than a degraded one.
+func (r *incidentFacts) ConversationFor(
+	ctx context.Context, s db.TenantScope, caseID uuid.UUID,
+) (notifdomain.IncidentRef, bool, error) {
+	if r.svc == nil {
+		return notifdomain.IncidentRef{}, false, nil
+	}
+	ref, ok, err := r.svc.ConversationFor(ctx, s, caseID)
+	if err != nil || !ok {
+		return notifdomain.IncidentRef{}, false, err
+	}
+	return notifdomain.IncidentRef{ID: ref.ID}, true, nil
+}
+
+// caseEndings is `alerts/service.CaseEndings` over `incidents/service`: a Case that
+// closed may have left its Incident quiet (ADR 0052 §3).
+//
+// ⚠️ LATE-BOUND, AND NIL ANSWERS NIL. alerts is the heart everything is wired
+// around and is built first; the holder is filled the moment incidents exists. A
+// close before that — which only construction itself could cause — has no Incident
+// to quiet, because nothing could have drawn one yet.
+type caseEndings struct {
+	svc *incidentsservice.Service
+}
+
+func (c *caseEndings) CasesEnded(ctx context.Context, s db.TenantScope, caseIDs []uuid.UUID) error {
+	if c.svc == nil {
+		return nil
+	}
+	return c.svc.CasesEnded(ctx, s, caseIDs)
+}
+
+// caseOpenings is `alerts/service.CaseOpenings` over the outbox: each Case a batch
+// opened becomes one `incidents.correlate` job, enqueued in the transaction that
+// opened it (ADR 0052 §2, git-bug 61eeddf).
+//
+// ⛔ IT EVALUATES NOTHING, AND THAT IS THE WHOLE OF ITS CONTRACT. Running the
+// Correlators here would put them on the ingest worker's transaction — every
+// Case's open would wait on every Correlator's matchers and a draw's inserts, and
+// a Correlator's failure would roll the batch back (CONTEXT.md commitment 2). The
+// job runs on the `lifecycle` queue instead, off `notify`, so a Correlator can
+// neither block nor delay the Case's own notification. It is enqueued even for an
+// org with no Correlator, which costs one job that reads an empty list: cheaper
+// to reason about than a read on the ingest transaction deciding whether to ask.
+type caseOpenings struct {
+	enq db.Enqueuer
+}
+
+func (o caseOpenings) CasesOpened(ctx context.Context, _ db.TenantScope, caseIDs []uuid.UUID) error {
+	if len(caseIDs) == 0 {
+		return nil
+	}
+	reqs := make([]db.JobRequest, 0, len(caseIDs))
+	for _, id := range caseIDs {
+		reqs = append(reqs, db.JobRequest{Args: jobs.IncidentsCorrelateArgs{CaseID: id}})
+	}
+	if _, err := o.enq.EnqueueMany(ctx, reqs); err != nil {
+		return errs.Wrap(err, errs.KindInternal, "enqueue_correlate_failed",
+			"could not queue Correlator evaluation")
+	}
+	return nil
 }
 
 // withKey returns the payload with one more entry, without mutating the caller's
@@ -465,6 +701,10 @@ func (l subjectLoader) LoadSubject(
 
 // caseSourceReader answers "which AlertSource did this episode come from",
 // through the batch port `alerts/service` already declares for the reaper guard.
+// That port answers with every live source on the cluster; only a cluster with
+// exactly ONE has an answer to "which", so an HA cluster reads as unresolved and
+// the enrichers that call upstream fall back to their generatorURL-only path
+// rather than querying a replica picked at random.
 type caseSourceReader struct {
 	resolver alertsservice.CaseSourceResolver
 }
@@ -479,8 +719,11 @@ func (r *caseSourceReader) SourceID(
 	if err != nil {
 		return uuid.Nil, false
 	}
-	src, ok := m[caseID]
-	return src, ok && src != uuid.Nil
+	srcs := m[caseID]
+	if len(srcs) != 1 || srcs[0] == uuid.Nil {
+		return uuid.Nil, false
+	}
+	return srcs[0], true
 }
 
 // enrichmentReader is `alerts/service.EnrichmentReader` over the enrichment
@@ -850,6 +1093,31 @@ func (l orgLister) LiveScope(ctx context.Context, orgID uuid.UUID) (db.TenantSco
 		return db.TenantScope{}, err
 	}
 	return db.NewTenantScope(found)
+}
+
+// sourceCases is `sources/api.CaseCounts` over `alerts/service` (ADR 0056 §1).
+// `sources` may not import `alerts/domain` beyond the kernel rule, and the count
+// is the alerts module's — it owns the reaper whose holds are being counted — so
+// the numbers cross as plain ints.
+type sourceCases struct {
+	svc *alertsservice.Service
+}
+
+func (c sourceCases) OpenCasesBySource(
+	ctx context.Context, s db.TenantScope, sourceIDs []uuid.UUID,
+) (map[uuid.UUID]sourcesapi.CaseCount, error) {
+	if c.svc == nil {
+		return nil, nil
+	}
+	counts, err := c.svc.OpenCasesBySource(ctx, s, sourceIDs)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[uuid.UUID]sourcesapi.CaseCount, len(counts))
+	for id, n := range counts {
+		out[id] = sourcesapi.CaseCount{Open: n.Open, Held: n.Held}
+	}
+	return out, nil
 }
 
 // ---------------------------------------------------------------- ingestion

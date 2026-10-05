@@ -151,6 +151,17 @@ func (w *world) seed(h *harness.H, orgID uuid.UUID) {
 	w.ids["alert"] = alert.ID.String()
 	w.ids["case"] = alertCase.ID.String()
 
+	// A SECOND episode, of a second alert, for the Incident probes alone (ADR 0052).
+	// A Case belongs to at most one Incident, so the move probe needs two Incidents
+	// and therefore two Cases to draw them over: with one, the second draw is the
+	// refusal the gate also has to observe, and nothing could ever be moved.
+	peer := h.AlertWith(org, cluster, map[string]string{
+		"alertname": "GateG2IncidentPeer",
+		"severity":  "warning",
+		"service":   "checkout",
+	})
+	w.ids["case2"] = h.Case(peer).ID.String()
+
 	// ⛔ `w.ids["group"]` WAS SEEDED HERE AND IS DELETED (git-bug `7570090`). It
 	// held one `alert_groups` generation plus a membership assertion, and both the
 	// table and the ten `/api/v1/alert-groups` probes that consumed the id are

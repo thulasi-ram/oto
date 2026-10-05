@@ -92,6 +92,15 @@ type rule struct {
 	why  string
 }
 
+// scopes NARROWS a rule, by name: a match counts only if its scope reports true
+// for it, given the whole comment-stripped file, the byte offset of the match in
+// it, and the file's extension. A rule with no entry bans the term everywhere it
+// is scanned, which is every rule but one. It is a table beside `rule` rather
+// than a field on it so the twenty positional rule literals stay one line each.
+var scopes = map[string]func(code string, at int, ext string) bool{
+	"incident_id": onSignalRow,
+}
+
 // banned is the AC-49 list. The stems matter more than the exact spellings:
 // `escalate_after_seconds` is the same violation as `escalation`, which is
 // exactly how it survived the first pass (SPEC §P-20).
@@ -146,9 +155,76 @@ var columns = []rule{
 	{"assigned_to", regexp.MustCompile(`\bassigned_to\b`), "no alert is assigned to anyone."},
 	{"owner_id", regexp.MustCompile(`\bowner_(id|team_id)\b`), "no alert has an owner."},
 	{"watchers", regexp.MustCompile(`\bwatchers?\b|\bsubscriber_ids\b`), "no alert has watchers."},
-	{"incident_id", regexp.MustCompile(`\bincident_id\b`), "oto records alerts, not incidents (§5.4)."},
+	// ⚠️ THE ONE COLUMN RULE THAT IS SCOPED, AND THE SCOPE IS THE DOOR ITSELF.
+	// ADR 0052 made an Incident an oto noun: a set of Cases drawn as one story.
+	// Its membership table's foreign key is naturally `incident_id`, and that row
+	// is a fact about the INCIDENT — so a ban on the bare column name failed the
+	// gate before a single row existed. What SCOPE-BOUNDARY §5.6 and SPEC §D.4.0
+	// shut was never the spelling; it was `incident_id` SITTING ON A SIGNAL ROW,
+	// where it would turn a fact about an alert into a pointer at a response
+	// effort. `scopes` gives it `onSignalRow`, which fires exactly there and
+	// nowhere else. The other five
+	// stay unscoped because none of them names anything oto has.
+	{"incident_id", regexp.MustCompile(`\bincident_id\b`),
+		"an incident_id on a signal row makes the alert a member of a response effort; Incident membership lives in its own table, keyed on the Case (SCOPE-BOUNDARY §5.6, SPEC §D.4.0, ADR 0052)."},
 	{"ticket_id", regexp.MustCompile(`\bticket_id\b`), "oto is not a ticket tracker (§5.4)."},
 	{"sla_due_at", regexp.MustCompile(`\bsla_due_at\b`), "oto has no deadline on a human (§A.1)."},
+}
+
+// signalTables are the rows `incident_id` may never sit on: the two §5.6 names,
+// plus the two FR-1 signal rows an Incident's facts would otherwise be stamped
+// onto. An Incident is declared outbound AS a notification (ADR 0052 §5), which
+// is exactly the pressure that would put the column on `notifications` — and
+// the answer there is `subject_kind = 'incident'`, not a second foreign key.
+var signalTables = map[string]bool{
+	"alerts": true, "alert_cases": true, "notifications": true, "notification_deliveries": true,
+}
+
+// signalQualified matches a column reference qualified by a signal table and
+// ending right where the match begins: `alert_cases.incident_id`, quoted or not.
+// It is anchored to the end of the look-behind window, so a signal table named
+// earlier on the line is not enough.
+var signalQualified = regexp.MustCompile(`(?i)\b(alerts|alert_cases|notifications|notification_deliveries)"?\."?$`)
+
+// ddlHead finds the table a statement puts columns ON: CREATE TABLE, ALTER
+// TABLE and CREATE INDEX ... ON, with Postgres' optional words. It is applied
+// to one statement and the LEFTMOST hit wins, so `CREATE TABLE incident_members
+// (... REFERENCES alert_cases(id))` names `incident_members`.
+//
+// ⛔ DDL ONLY, ON PURPOSE. A SELECT, an UPDATE ... FROM or an INSERT ... SELECT
+// that JOINS a signal table to the membership table names both, and nothing in
+// the text says which one owns the column — reading leftmost would fail a
+// perfectly legal read of an Incident's members. A column cannot be read or
+// written until DDL has put it somewhere, so the DDL is the door, and a
+// qualified `alert_cases.incident_id` anywhere is caught by signalQualified.
+var ddlHead = regexp.MustCompile(`(?i)\b(?:CREATE\s+(?:UNLOGGED\s+)?TABLE(?:\s+IF\s+NOT\s+EXISTS)?` +
+	`|ALTER\s+TABLE(?:\s+IF\s+EXISTS)?(?:\s+ONLY)?` +
+	`|CREATE\s+(?:UNIQUE\s+)?INDEX(?:\s+CONCURRENTLY)?(?:\s+IF\s+NOT\s+EXISTS)?(?:\s+\w+)?\s+ON(?:\s+ONLY)?)` +
+	`\s+(?:"?\w+"?\.)?"?(\w+)"?`)
+
+// onSignalRow reports whether the match at `at` would put the column on a
+// signal row: qualified by a signal table, or inside a DDL statement whose
+// subject is one.
+//
+// A statement runs between `;`s. Outside a .sql file a Go raw string is a
+// boundary too, because that is where this repository's SQL lives in Go, and a
+// struct tag (`db:"incident_id"`) is then its own statement with no DDL head —
+// a field name is not a column on any table.
+func onSignalRow(code string, at int, ext string) bool {
+	if signalQualified.MatchString(code[max(0, at-64):at]) {
+		return true
+	}
+	bounds := ";"
+	if !strings.EqualFold(ext, ".sql") {
+		bounds = ";`"
+	}
+	start := strings.LastIndexAny(code[:at], bounds) + 1
+	end := len(code)
+	if i := strings.IndexAny(code[at:], bounds); i >= 0 {
+		end = at + i
+	}
+	m := ddlHead.FindStringSubmatch(code[start:end])
+	return m != nil && signalTables[strings.ToLower(m[1])]
 }
 
 const marker = "vocab:allow"
@@ -312,15 +388,20 @@ func scanFile(path string) (bad, sup []finding, err error) {
 		return nil, nil, err
 	}
 	src := string(raw)
+	ext := filepath.Ext(path)
 	rawLines := strings.Split(src, "\n")
-	code := strings.Split(strip(src, filepath.Ext(path)), "\n")
-	down := gooseDownLines(rawLines, filepath.Ext(path))
+	stripped := strip(src, ext)
+	code := strings.Split(stripped, "\n")
+	down := gooseDownLines(rawLines, ext)
 
+	lineStart := 0
 	for i, line := range code {
+		at := lineStart
+		lineStart += len(line) + 1
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		hits := match(line)
+		hits := match(line, stripped, at, ext)
 		if len(hits) == 0 {
 			continue
 		}
@@ -345,7 +426,10 @@ func scanFile(path string) (bad, sup []finding, err error) {
 	return bad, sup, nil
 }
 
-func match(line string) []rule {
+// match returns the rules that fire on one stripped line. code is the whole
+// stripped file and at is where line begins in it, which is what a scoped rule
+// (`scopes`) needs to look past the line it matched on.
+func match(line, code string, at int, ext string) []rule {
 	var out []rule
 	for _, r := range banned {
 		if r.re.MatchString(line) {
@@ -353,11 +437,26 @@ func match(line string) []rule {
 		}
 	}
 	for _, r := range columns {
-		if r.re.MatchString(line) {
+		if fires(r, line, code, at, ext) {
 			out = append(out, r)
 		}
 	}
 	return out
+}
+
+// fires reports whether r matches line, and for a scoped rule whether ANY of its
+// matches on the line is one the scope admits.
+func fires(r rule, line, code string, at int, ext string) bool {
+	where, ok := scopes[r.name]
+	if !ok {
+		return r.re.MatchString(line)
+	}
+	for _, loc := range r.re.FindAllStringIndex(line, -1) {
+		if where(code, at+loc[0], ext) {
+			return true
+		}
+	}
+	return false
 }
 
 // markerLookback is how far above a violation the marker may sit. Two lines is

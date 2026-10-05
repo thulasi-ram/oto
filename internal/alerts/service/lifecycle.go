@@ -308,6 +308,13 @@ func (s *Service) observe(
 	if err != nil {
 		return ObserveResult{}, err
 	}
+	// The Correlators' turn (ADR 0052 §2): one `incidents.correlate` job per
+	// opened Case, enqueued here and evaluated elsewhere. It is not counted in
+	// `JobsEnqueued` below, which reports this module's own enqueues; this one is
+	// the port's, and an org with no Correlator still gets a job that finds none.
+	if err := s.announceOpenings(ctx, scope, acc.enrichIDs); err != nil {
+		return ObserveResult{}, err
+	}
 	// ⭐ PHASE ORDERING (SPEC §F.3). A `fired` evaluation for an episode that has
 	// just been queued for the INLINE enrichment pass is scheduled at the far end
 	// of the pre-notification budget rather than immediately, so the first card

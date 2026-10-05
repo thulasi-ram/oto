@@ -50,6 +50,10 @@ type Options struct {
 	// and the failed-batch list. Nil means this deployment cannot answer "why did
 	// my alert never appear", which is a declared 503 rather than a panic.
 	Feeds IngestFeeds
+	// Cases counts the open Cases on each source's cluster and how many the
+	// reaper is holding because of it (ADR 0056 §1). Nil means the list carries
+	// neither number — absent, never zero.
+	Cases CaseCounts
 	// Guard refuses a base or Prometheus URL that resolves somewhere oto must not
 	// dial. Nil means no configuration-time feedback — the dialer still refuses.
 	Guard AddressGuard
@@ -75,6 +79,7 @@ type Router struct {
 	clusterW    ClusterCreator
 	reconcile   Reconciler
 	feeds       IngestFeeds
+	cases       CaseCounts
 	guard       AddressGuard
 	allowNoTLSV bool
 	clk         clock.Clock
@@ -94,6 +99,7 @@ func NewRouter(o Options) *Router {
 		clusterW:    o.ClusterWrites,
 		reconcile:   o.Reconcile,
 		feeds:       o.Feeds,
+		cases:       o.Cases,
 		guard:       o.Guard,
 		allowNoTLSV: o.AllowInsecureTLS,
 		clk:         clk,

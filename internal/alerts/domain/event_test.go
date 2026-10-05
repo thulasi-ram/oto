@@ -43,9 +43,16 @@ func TestAllEventTypes_IsAClosedWellShapedSet(t *testing.T) {
 
 	// Nothing in the vocabulary names a scope-banned concept (CONTEXT.md §3).
 	for s := range seen {
+		// ⚠️ `incident` IS BANNED EVERYWHERE BUT ITS OWN SUBJECT (ADR 0052). An Incident
+		// is an oto noun now, so `incident.case_added` is a fact about one; what stays
+		// shut is the word on a SIGNAL's fact, where it would make an alert or a Case a
+		// member of a response effort — the same door lintvocab keeps on `incident_id`.
+		if !strings.HasPrefix(s, "incident.") {
+			assert.NotContains(t, s, "incident", "event type %q uses banned vocabulary %q", s, "incident")
+		}
 		// vocab:allow the scope-boundary guard must name the words it forbids; this table IS the enforcement.
 		for _, banned := range []string{
-			"incident", "escalat", "oncall", "on_call", "rota", "assign",
+			"escalat", "oncall", "on_call", "rota", "assign",
 			"responder", "triage", "postmortem", "sla", "mtta", "mttr", "watcher", "subscriber", // vocab:allow the scope-boundary guard must name the words it forbids; this table IS the enforcement.
 		} {
 			assert.NotContains(t, s, banned, "event type %q uses banned vocabulary %q", s, banned)

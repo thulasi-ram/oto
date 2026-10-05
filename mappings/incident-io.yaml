@@ -1,0 +1,70 @@
+# incident.io — HTTP alert source (Alert Events V2).
+#
+# Field names checked on 2026-10-02 against incident.io's public API reference:
+#
+#   https://docs.incident.io/openapi/tags/alert-events-v2.json
+#     POST /v2/alert_events/http/{alert_source_config_id}
+#     body: `title` (required), `status` (required, enum `firing` | `resolved`),
+#           `deduplication_key` ("For newly created HTTP sources, this field is
+#           required."), `description` ("Supports markdown."), `source_url`,
+#           `metadata` (object)
+#     auth: the `authorization` header — "We support either Basic or Bearer
+#           authorization with the secret provided on the alert source." — or a
+#           `token` query parameter
+#     202:  `status`, `message`, `deduplication_key`
+#
+#   https://docs.incident.io/api-reference/alert-sources-v2/create
+#     the alert source's token "must be included in either the query string or the
+#     'Authorization' header when sending events to this alert source"
+#
+# ⛔ `status` IS ALWAYS `firing`, ON EVERY FACT, `quiet` INCLUDED. `quiet` says every
+# member Case has closed; it does not say anything is fixed (ADR 0055 §4). Sending
+# incident.io's other status value on it would end a response the moment the signals
+# stop — including the times they stopped because the thing emitting them died. The
+# catalog check (`commands` below) fails this file if any fact renders that value.
+#
+# The token rides the connection's sealed `bearer` credential — never this file.
+#
+# ⚠️ ROUTE ONLY `drawn` AND `active_again` HERE. Once a human has resolved the alert
+# in incident.io, a later `firing` event on the same deduplication key can open a
+# new incident, so a `case_added`, `case_removed` or `quiet` would page again for a
+# response somebody just ended. The notification policy for this channel names those two
+# reasons and no others (setup, below).
+#
+# Nothing to echo: the 202 names only the `deduplication_key` oto sent, so there is
+# no `response` path and the Incident page shows no external link for this tool.
+
+vendor: incident.io
+title: incident.io HTTP alert source
+summary: >-
+  Fires one incident.io alert per oto Incident, keyed on the Incident's id, when it is
+  drawn and when it is active again, and never sends it resolved. Route only those two
+  facts to it: a firing event after a human resolved the alert can open a new incident.
+docs:
+  - https://docs.incident.io/openapi/tags/alert-events-v2.json
+  - https://docs.incident.io/api-reference/alert-sources-v2/create
+checked_on: "2026-10-02"
+setup:
+  - In incident.io, create an HTTP alert source and copy its URL and its token.
+  - Give this webhook connection a `bearer` credential holding that token.
+  - Point a channel of the connection at the URL, `https://api.incident.io/v2/alert_events/http/<alert_source_config_id>`.
+  - Add a notification policy for that channel whose reasons are ONLY `drawn` and `active_again`. Any other fact would be a further firing event on the same deduplication key, and once a human has resolved the alert in incident.io that event can open a new incident and page again. A mapping cannot decline a fact, so the policy is what keeps them out.
+commands:
+  - field: status
+    forbidden: [resolved]
+mapping:
+  body: |-
+    {
+      {% if incident.link %}"source_url": "{{ incident.link }}",
+      {% endif %}"title": "{{ summary }}",
+      "status": "firing",
+      "deduplication_key": "{% if incident %}{{ incident.id }}{% endif %}{% unless incident %}{% if group %}{{ group.id }}{% endif %}{% unless group %}oto-{{ reason }}-{{ delivered_at }}{% endunless %}{% endunless %}",
+      "description": "{% if incident %}oto Incident #{{ incident.number }} is {{ incident.state }} ({{ reason }}).{% if reason == "quiet" %} Every member Case has closed. This alert stays firing: quiet is not fixed, and ending the response is a decision for a human in incident.io.{% endif %}\n\n{% for m in incident.members %}- Case #{{ m.case_number }} {{ m.alert_name }}: {{ m.case_state }}{% if m.removed_at %} (left the Incident){% endif %}\n{% endfor %}{% endif %}{% unless incident %}{{ summary }}{% endunless %}",
+      "metadata": {
+        "oto_reason": "{{ reason }}",
+        "oto_org": "{{ org.slug }}"{% if incident %},
+        "oto_incident_id": "{{ incident.id }}",
+        "oto_incident_number": "{{ incident.number }}",
+        "oto_incident_state": "{{ incident.state }}"{% endif %}
+      }
+    }

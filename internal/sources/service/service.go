@@ -297,14 +297,46 @@ func (s *Service) ResolveRule(ctx context.Context, scope db.TenantScope, id uuid
 	}
 
 	if !q.SkipPrometheus {
-		override := ""
+		override, fromVmalertRoot := "", false
 		if q.FollowGeneratorURL {
+			// vmalert's default link carries no expression, so it never parses;
+			// it still names the vmalert that evaluated the rule (git-bug 766709c).
+			// Following is NOT opt-in: internal/app's rule lookup sets the flag
+			// whenever upstream calls are allowed, so every lookup that may call
+			// out follows the link it was handed.
 			if gen, gerr := rulematch.ParseGeneratorURL(q.GeneratorURL); gerr == nil {
 				override = gen.ExternalURL
+			} else if root, ok := rulematch.VmalertRoot(q.GeneratorURL); ok {
+				override, fromVmalertRoot = root, true
 			}
 		}
 		if src.HasPrometheus() || override != "" {
-			groups, purl, ferr := s.fetchRules(ctx, scope, src, override, q.Labels[rulematch.LabelAlertName])
+			name := q.Labels[rulematch.LabelAlertName]
+			// ⚠️ A VMALERT ROOT ASKS THE CONFIGURED URL FIRST. The root is only what
+			// vmalert's `-external.url` says about itself — a link built for a
+			// browser, not necessarily an address oto can reach — while
+			// prometheus_url is the address the operator gave oto. So with one
+			// configured, the root is the fallback, not the first call. A parsed
+			// expression link keeps the order below, because there following is
+			// what finds a federated rule at all.
+			first, second := override, ""
+			if fromVmalertRoot && src.HasPrometheus() {
+				first, second = "", override
+			}
+			groups, purl, ferr := s.fetchRules(ctx, scope, src, first, name)
+			// ⚠️ FOLLOWING IS ADDITIVE: IT MAY FIND MORE, NEVER LESS. The URL a
+			// generatorURL names is not always a rule evaluator. vmalert's
+			// recommended `vmui/#/?g0.expr=…` link names the VictoriaMetrics UI,
+			// whose /api/v1/rules is an empty stub unless it proxies to vmalert —
+			// so the moment that link parsed, it diverted every lookup away from
+			// the vmalert the operator configured as prometheus_url, and the
+			// snapshot lost `for` and keep_firing_for. A miss or a failure on the
+			// followed URL therefore falls back to the configured one, which is
+			// exactly what the lookup would have asked had it not followed.
+			if override != "" && src.HasPrometheus() && override != src.PrometheusURL &&
+				(ferr != nil || !holdsRules(groups, name)) {
+				groups, purl, ferr = s.fetchRules(ctx, scope, src, second, name)
+			}
 			if ferr != nil {
 				s.log.WarnContext(ctx, "sources: rule lookup degraded to generatorURL",
 					"source_id", src.ID, "code", errs.CodeOf(ferr), "error", ferr)
@@ -329,6 +361,21 @@ func (s *Service) ResolveRule(ctx context.Context, scope db.TenantScope, id uuid
 		}, nil
 	}
 	return m, nil
+}
+
+// holdsRules reports whether any group carries the rule named name, or any rule at
+// all when name is "". Rules are ASKED for filtered by alertname, but not every
+// server honours the filter — a vmalert or a proxy may answer with every rule it
+// holds — so a non-empty answer is not a hit until a rule of that name is in it.
+func holdsRules(groups []domain.RuleGroup, name string) bool {
+	for _, g := range groups {
+		for _, r := range g.Rules {
+			if name == "" || r.Name == name {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // fetchRules pulls the candidate rule groups for one alertname.

@@ -116,14 +116,25 @@ describe("frames become invalidations", () => {
     // primary list and is keyed under its own prefix — a case opening, being
     // acknowledged or ending is exactly what moves a row in and out of it, and an
     // `["alerts"]` invalidation does not reach it.
-    { kind: "case.upserted", expects: [["cases"], ["alerts"]] },
+    //
+    // ⭐ AND `["incidents"]`, BECAUSE AN INCIDENT'S STATE IS THIS FRAME (ADR 0052
+    // §3). Nothing stores whether an Incident is active: it is read off its member
+    // Cases, so a member Case closing IS the Incident going quiet, and no other
+    // frame would ever announce it.
+    { kind: "case.upserted", expects: [["cases"], ["alerts"], ["incidents"]] },
     // ⛔ NOTHING, AND THE EMPTY EXPECTATION IS THE ASSERTION. The AlertGroup is
     // gone (git-bug 7570090) and no query is keyed under `["groups"]` any more,
     // so the one honest thing this frame can do is nothing. It still has a case
     // of its own in the reducer, because the kind is still in the contract enum
     // and the coverage test below is what would otherwise stop noticing it.
     { kind: "group.upserted", expects: [] },
-    { kind: "event.appended", expects: [["cases"], ["alerts"], ["notifications"]] },
+    // `["incidents"]` because `incident.case_added`/`_removed`/`_moved` arrive as
+    // events on a member Case — the only announcement a membership change made in
+    // another session gets.
+    {
+      kind: "event.appended",
+      expects: [["cases"], ["alerts"], ["notifications"], ["incidents"]],
+    },
     // `["alerts"]` because a delivery is read as part of an alert
     // (`qk.alerts.notifications`); `["notifications"]` because a delivery moving
     // is what changes an intent's status. The `["deliveries"]` prefix this used
@@ -176,7 +187,7 @@ describe("frames become invalidations", () => {
     mounted = await mountLive();
     await mounted.push("id: 5\nevent: alert.upserted\ndata: {broken\n\n");
     await mounted.push(sse(frame(6, "alert.frobnicated"), frame(7, "case.upserted")));
-    expect(mounted.keys()).toEqual([["cases"], ["alerts"]]);
+    expect(mounted.keys()).toEqual([["cases"], ["alerts"], ["incidents"]]);
   });
 });
 

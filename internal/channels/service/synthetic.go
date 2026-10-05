@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/thulasiram/oto/internal/channels/domain"
+	"github.com/thulasiram/oto/internal/platform/id"
 )
 
 // SyntheticAlertName is the alertname the test card carries. It is deliberately
@@ -163,4 +164,68 @@ func syntheticLinks(base string) domain.Links {
 		Alert:    base + "/alerts/00000000-0000-7000-8000-000000000001",
 		Timeline: base + "/groups/00000000-0000-7000-8000-000000000002/timeline",
 	}
+}
+
+// SyntheticFactView is SyntheticView told as one chosen fact, for a payload
+// mapping's test send (ADR 0055 §2). A mapping renders a different body per fact, so
+// the operator picks which one to send — an Incident fact among them — and whatever
+// the incident tool opens is unmistakably `OtoChannelTest`.
+//
+// A Case fact is the synthetic card with its reason changed; `digest` is a window of
+// one; an Incident fact is a synthetic Incident whose one member is the synthetic
+// Case, shaped the way `ViewService.incidentCard` builds one (a Reason, an
+// IncidentView and a render time, and nothing else).
+//
+// ⚠️ UNLIKE SyntheticView IT IS NOT PURE FOR AN INCIDENT FACT: the Incident's id is
+// minted fresh on every call, so no two test sends name the same Incident.
+func SyntheticFactView(inst domain.Instance, now time.Time, baseURL, fact string) *domain.NotificationView {
+	v := SyntheticView(inst, now, baseURL)
+	v.Reason = fact
+	switch {
+	case fact == "digest":
+		from := now.Add(-time.Hour)
+		return &domain.NotificationView{
+			Org: v.Org, Reason: fact, RenderedAt: now,
+			Digest: &domain.DigestView{Count: 1, CoveredFrom: from, CoveredTo: now},
+		}
+	case domain.IncidentFact(fact):
+		base := strings.TrimRight(baseURL, "/")
+		drawn := now.Add(-10 * time.Minute)
+		state, caseState := "active", "open"
+		if fact == "quiet" {
+			state, caseState = "quiet", "closed"
+		}
+		member := domain.IncidentMemberView{
+			CaseID: v.Case.ID, CaseNumber: 1, CaseState: caseState,
+			AlertID: v.Alerts[0].ID, AlertName: SyntheticAlertName,
+			Labels:  v.Alerts[0].Labels,
+			AddedAt: drawn, AddedBy: domain.IncidentAuthorView{Label: "oto channel test"},
+		}
+		if fact == "case_removed" {
+			member.RemovedAt, member.RemovedByLabel = now, "oto channel test"
+		}
+		incident := &domain.IncidentView{
+			// ⭐ A FRESH ID FOR EVERY TEST. A receiver orders an Incident's facts by
+			// (id, sequence), and one that drops a fact at or below the highest it
+			// has seen FOR THAT INCIDENT would drop every test after the first if
+			// they all named one fixed Incident at sequence 1. Each test is its own
+			// one-fact story, so each one names its own Incident.
+			ID:     id.New().String(),
+			Number: 1,
+			// ⚠️ EVERY TEST FACT IS SEQUENCE 1, whichever one the operator sends. A
+			// test is one fact about a story that has no other, and a receiver that
+			// drops a fact BELOW the highest it has seen must not start dropping the
+			// second test it is sent because the first was numbered higher.
+			Sequence: 1,
+			State:    state,
+			DrawnAt:  drawn,
+			DrawnBy:  domain.IncidentAuthorView{Label: "oto channel test"},
+			Members:  []domain.IncidentMemberView{member},
+		}
+		if base != "" {
+			incident.Link = base + "/incidents/1"
+		}
+		return &domain.NotificationView{Org: v.Org, Reason: fact, Incident: incident, RenderedAt: now}
+	}
+	return v
 }

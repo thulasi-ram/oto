@@ -15,7 +15,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/thulasiram/oto/internal/channels/domain"
+	"github.com/thulasiram/oto/internal/channels/template"
 	"github.com/thulasiram/oto/internal/platform/clock"
 	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/netguard"
@@ -23,16 +26,46 @@ import (
 
 const providerName = "webhook"
 
-// signatureHeader carries the HMAC-SHA256 of the outbound body, when the
-// channel's connection has a CredSigningSecret. It is set only when there is
-// a secret to sign with — an unsigned request carries no header at all, never
+// signatureHeader carries the HMAC-SHA256 signatures of the outbound request,
+// when the channel's connection has a signing secret. It is set only when there
+// is a secret to sign with — an unsigned request carries no header at all, never
 // an empty one, so a receiver checking for its presence gets an honest answer.
+//
+// ⛔ ITS FORMAT IS A PUBLISHED PROMISE (docs/setup/webhook.md), WRITTEN DOWN FOR
+// THE FIRST TIME BY git-bug 2765f74. Until then it was `sha256=<hex>` over the body
+// alone, undocumented — which is the only reason it could change once, to the
+// shape below, without breaking anybody who had been told. From here it moves
+// only the way the envelope does: a new scheme is a new `v2=` entry sent beside
+// `v1=`, never a change to what `v1=` means.
+//
+//	X-Oto-Timestamp: 1696240000
+//	X-Oto-Signature: v1=<hex>[, v1=<hex>]
+//
+// where each <hex> is HMAC-SHA256(secret, "v1:" + timestamp + ":" + body). Two
+// entries appear only during a rotation's overlap, the current secret's first.
 const signatureHeader = "X-Oto-Signature"
 
+// timestampHeader is the signed send instant, in Unix seconds.
+//
+// ⭐ IT IS INSIDE THE SIGNATURE, WHICH IS ITS WHOLE POINT. A signature over the
+// body alone verifies forever: a captured request replayed next month passes. With
+// the timestamp in the signed base a receiver rejects anything older than its
+// tolerance (the docs say five minutes), and cannot be fooled by an edited header
+// because editing it breaks the signature. It is stamped per ATTEMPT, not per
+// delivery: a retry three hours later is a fresh request and must verify as one.
+// `X-Oto-Delivery-Id` is what stays the same across retries, for de-duplication.
+const timestampHeader = "X-Oto-Timestamp"
+
+// signatureScheme is the version tag on every signature entry and the first field
+// of the signed base string. See signatureHeader.
+const signatureScheme = "v1"
+
 // maxResponseBytes bounds what oto reads back before giving up on draining the
-// body. The bytes are COUNTED AND DISCARDED, never kept — an unbounded read is a
-// denial-of-service against oto by its own configuration, and a kept one is
-// worse (see recordResponse).
+// body. The bytes are COUNTED, PARSED FOR AN ECHO ON A 2xx, AND DISCARDED — never
+// recorded: an unbounded read is a denial-of-service against oto by its own
+// configuration, and a recorded one is worse (see recordResponse). The one thing
+// that may survive the read is an incident tool's validated `external_url` /
+// `external_id` (see echo.go), and nothing else of it.
 const maxResponseBytes = 4096
 
 // maxRetryAfter caps what a receiver may ask oto to wait.
@@ -54,6 +87,11 @@ type Channel struct {
 	client *http.Client
 	guard  *netguard.Guard
 	clock  clock.Clock
+	// echo reads an incident tool's handle out of a 2xx response (echo.go).
+	echo responseEcho
+	// mapped is set when the channel's Connection carries a payload mapping (ADR 0055
+	// §2): only a mapped message may then be sent (see send).
+	mapped bool
 }
 
 // Capabilities reports CapRichLayout and nothing else (§H.10).
@@ -70,7 +108,17 @@ func (c *Channel) Capabilities() domain.Capability { return capabilities }
 // message to amend, so a "reply" and an "update" are just another POST carrying
 // the current state — which is exactly what a stateless receiver wants.
 func (c *Channel) Deliver(ctx context.Context, req domain.DeliverRequest) (domain.DeliverResult, error) {
-	return c.send(ctx, req.Message, req.DeliveryID.String())
+	res, err := c.send(ctx, req.Message, req.DeliveryID.String())
+	if err == nil && req.DeliveryID != uuid.Nil {
+		// ⛔ MessageID MUST BE SET, NOT ONLY ProviderKey. A sent delivery must
+		// carry a provider handle (deliveries_sent_ck), so MarkSent refuses an
+		// empty one: with ProviderKey alone every webhook delivery landed, then
+		// failed to record, stayed `sending` and was sent again, and an incident
+		// tool's echo — recorded in the same transaction — was never kept. A
+		// channel test has no delivery, so it has no message id either.
+		res.Ref.MessageID = res.Ref.ProviderKey
+	}
+	return res, err
 }
 
 // Amend re-posts. A webhook cannot edit, and pretending otherwise would make the
@@ -98,10 +146,15 @@ func (c *Channel) send(
 		}
 	}
 
+	wire, mappedHeaders, err := c.request(msg)
+	if err != nil {
+		return domain.DeliverResult{}, err
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, c.cfg.Timeout())
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, c.cfg.Method, c.cfg.URL, bytes.NewReader(msg.Payload))
+	req, err := http.NewRequestWithContext(ctx, c.cfg.Method, c.cfg.URL, bytes.NewReader(wire))
 	if err != nil {
 		return domain.DeliverResult{}, &domain.Error{
 			Class: domain.ClassConfigInvalid, Provider: providerName,
@@ -112,6 +165,30 @@ func (c *Channel) send(
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "oto/1")
 	req.Header.Set("Accept", "application/json")
+	for k, v := range c.cfg.Headers {
+		// ⛔ AN `X-Oto-*` NAME IS SKIPPED, NOT SET. CheckHeaders refuses the whole
+		// prefix at save, but a channel stored before it did may still carry one,
+		// and Open deliberately does not refuse it (checkStoredHeaders). The comment
+		// that used to sit here claimed the save-time check made this safe while
+		// that check named none of oto's headers — so this loop, which ran LAST,
+		// was free to replace oto's idempotency handle with a constant.
+		if reservedHeader(k) {
+			continue
+		}
+		req.Header.Set(k, v)
+	}
+	// A payload mapping's headers come after the channel's static ones, under the
+	// same two rules: an `X-Oto-*` name is skipped, and so is a credential header —
+	// both are refused when the mapping is saved, and skipped here regardless.
+	for k, v := range mappedHeaders {
+		if reservedHeader(k) || forbiddenHeader(k) {
+			continue
+		}
+		req.Header.Set(k, v)
+	}
+	// ⭐ OTO'S FRAMING IS SET AFTER THE CONFIGURED HEADERS, so it wins by order as
+	// well as by the rule above: two independent reasons a receiver's idempotency
+	// and signature checks can never be shadowed by a static header.
 	if deliveryID != "" {
 		// The receiver's own idempotency handle. oto's queue is at-least-once, so
 		// a receiver that wants exactly-once has what it needs to get there.
@@ -120,15 +197,10 @@ func (c *Channel) send(
 	if msg.Hash != "" {
 		req.Header.Set("X-Oto-Content-Hash", msg.Hash)
 	}
-	for k, v := range c.cfg.Headers {
-		// Config headers are applied last but can never override oto's framing:
-		// CheckHeaders already refused the reserved names at configuration time.
-		req.Header.Set(k, v)
-	}
-	if signature := c.signaturePayload(msg.Payload); signature != "" {
-		// Set AFTER the configured headers, same as the framing headers above: a
-		// receiver's own signature check must never be shadowable by a typo'd
-		// static header.
+	// The signature covers the bytes on the wire: a mapped body, with its secrets
+	// filled, is what the receiver verifies.
+	if ts, signature := c.sign(wire, c.clock.Now()); signature != "" {
+		req.Header.Set(timestampHeader, ts)
 		req.Header.Set(signatureHeader, signature)
 	}
 
@@ -139,41 +211,99 @@ func (c *Channel) send(
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	// ⛔ THE BODY IS COUNTED AND DISCARDED. It is drained (bounded) so the
-	// connection can be reused, and then it is gone. See recordResponse for why
-	// not one byte of it may be kept.
-	bodyBytes, _ := io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponseBytes))
+	// ⛔ THE BODY IS NEVER RECORDED. It is read (bounded) so the connection can be
+	// reused and so a 2xx can be asked for an echo, and then it is gone. See
+	// recordResponse for why not one byte of it may reach `provider_response`.
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	bodyBytes := int64(len(body))
 	elapsed := c.clock.Now().Sub(started)
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// A refusal's body is not read for an echo: an incident the receiver
+		// refused to open has no handle worth keeping.
 		return domain.DeliverResult{}, classifyStatus(resp, bodyBytes)
 	}
 
 	return domain.DeliverResult{
 		Ref: domain.MessageRef{
 			// A webhook returns no message identity, so there is nothing to
-			// thread from and nothing to amend. ProviderKey carries the delivery
-			// id purely so a Deliveries row has something to show a human.
+			// thread from and nothing to amend. The delivery id — the
+			// X-Oto-Delivery-Id the receiver was handed — stands in for one;
+			// Deliver makes it the message id.
 			ProviderKey: deliveryID,
 		},
 		DeliveredAt: c.clock.Now().UTC(),
 		Raw:         recordResponse(resp.StatusCode, bodyBytes, elapsed),
+		External:    c.readEcho(body),
 	}, nil
 }
 
-// signaturePayload returns the header value to sign body with, or "" when the
-// channel's connection carries no signing secret at all.
-func (c *Channel) signaturePayload(body json.RawMessage) string {
-	if c.cred.Kind != CredSigningSecret {
-		return ""
+// request is the body and mapped headers this message is sent as.
+//
+// ⛔ A MAPPED CONNECTION SENDS A MAPPED BODY OR NOTHING (ADR 0055 §2). A message
+// that did not go through the Connection's payload mapping is refused as
+// `config_invalid` rather than sent: the plain envelope reaching a vendor that
+// cannot parse it is a missing incident, and "never a fallback" has to hold even
+// for a caller that forgot to map.
+//
+// ⭐ A MAPPED BODY'S SECRETS ARE FILLED HERE, AT THE MOMENT OF SENDING. The
+// delivery row recorded the body with `secrets.<name>` references in it, so the
+// stored request never holds a secret; the values come from the Connection's sealed
+// mapping-secret slot, unsealed into Credential.Secrets for this Open only. A
+// reference to a secret the Connection no longer holds fails the delivery.
+func (c *Channel) request(msg domain.RenderedMessage) ([]byte, map[string]string, error) {
+	if !msg.Mapped {
+		if c.mapped {
+			return nil, nil, &domain.Error{
+				Class: domain.ClassConfigInvalid, Provider: providerName,
+				Code:  "payload_mapping_not_applied",
+				Cause: errors.New("this connection carries a payload mapping and the message was not mapped; the plain envelope is never sent in its place"),
+			}
+		}
+		return msg.Payload, nil, nil
 	}
-	secret := firstValue(c.cred.Values, "secret", "value")
-	if secret == "" {
-		return ""
+	body, headers, err := template.FillSecrets(msg.Payload, msg.Headers, c.cred.Secrets)
+	if err != nil {
+		return nil, nil, &domain.Error{
+			Class: domain.ClassConfigInvalid, Provider: providerName,
+			Code: "payload_mapping_secret", Cause: err,
+		}
 	}
+	return body, headers, nil
+}
+
+// sign returns the timestamp and signature headers for a body sent at `at`, or two
+// empty strings when the connection carries no signing secret.
+//
+// One entry per live secret — the current one, and its predecessor while the
+// rotation overlap lasts (domain.SigningSecret.Secrets decides that against THIS
+// send's instant) — joined as an RFC 9110 list. A receiver splits on commas and
+// accepts the request if ANY `v1=` entry matches what it computes with the secret
+// it holds, which is what lets an operator rotate without a flag day.
+func (c *Channel) sign(body []byte, at time.Time) (timestamp, signature string) {
+	secrets := c.cred.Signing.Secrets(at)
+	if len(secrets) == 0 {
+		return "", ""
+	}
+	timestamp = strconv.FormatInt(at.Unix(), 10)
+	entries := make([]string, 0, len(secrets))
+	for _, secret := range secrets {
+		entries = append(entries, signatureScheme+"="+signatureHex(secret, timestamp, body))
+	}
+	return timestamp, strings.Join(entries, ", ")
+}
+
+// signatureHex is HMAC-SHA256(secret, "v1:" + timestamp + ":" + body), hex-encoded.
+//
+// ⛔ THIS LINE IS THE PUBLISHED ALGORITHM. docs/setup/webhook.md states the base
+// string byte for byte and verifies a worked example against it; changing either
+// side without the other is a broken promise to every receiver, and changing
+// both is a `v2=` scheme, not an edit.
+func signatureHex(secret, timestamp string, body []byte) string {
 	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(signatureScheme + ":" + timestamp + ":"))
 	mac.Write(body)
-	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 // Probe checks the destination without delivering an alert.

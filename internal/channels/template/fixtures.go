@@ -227,3 +227,144 @@ func hostileView() *domain.NotificationView {
 	v.Comment = "@everyone deploy now"
 	return v
 }
+
+// View is the fixture's NotificationView. It is exposed for the payload-mapping
+// gate, which renders the oto.notification.v1 envelope FROM it rather than binding it
+// the way a template does (ADR 0055 §2); a caller must not mutate it.
+func (f Fixture) View() *domain.NotificationView { return f.view }
+
+// At is the instant the fixture is rendered at.
+func (f Fixture) At() time.Time { return f.at }
+
+// MappingFixtures is the corpus a webhook Connection's payload mapping is checked
+// against before it may be saved (ADR 0055 §2, git-bug 2205620): ONE REPRESENTATIVE
+// VIEW FOR EVERY FACT an envelope can carry, named for that fact, and then the hostile
+// and zero-value shapes of a Case fact and of an Incident fact.
+//
+// ⭐ EVERY FACT, BECAUSE A MAPPING CANNOT DECLINE ONE. ADR 0055 grants a mapping no
+// way to say "not this fact", so a body that only works for `drawn` is a body that
+// kills every `fired` delivery on that Connection — and the place to find that out is
+// the save, with the fact named, not the first page at 03:00.
+//
+// ⭐ THE HOSTILE SHAPES ARE WHAT PROVE THE ESCAPE. A label holding `"`, `\`, a newline
+// and `</script>` must land as JSON string content in every body; a mapping that
+// renders valid JSON for `firing` and broken JSON for a quote in a label is refused.
+func MappingFixtures() []Fixture {
+	at := fixtureClock.Add(30 * time.Minute)
+	actor := &domain.ActorView{Label: "ram@example.com", Kind: "user"}
+	snoozeUntil := fixtureClock.Add(4 * time.Hour)
+
+	fact := func(reason string, base func() *domain.NotificationView, edit func(*domain.NotificationView)) Fixture {
+		v := base()
+		v.Reason = reason
+		if edit != nil {
+			edit(v)
+		}
+		return Fixture{Name: reason, Representative: true, view: v, at: at}
+	}
+	withActor := func(v *domain.NotificationView) { v.Actor = actor }
+	incident := func(reason string) func() *domain.NotificationView {
+		return func() *domain.NotificationView { return incidentFixtureView(reason) }
+	}
+
+	out := []Fixture{
+		fact("fired", firingView, nil),
+		fact("all_resolved", resolvedView, nil),
+		fact("repeat", firingView, nil),
+		fact("suppressed", firingView, nil),
+		fact("unsuppressed", firingView, nil),
+		fact("expired", resolvedView, nil),
+		fact("refired", firingView, nil),
+		fact("acked", firingView, withActor),
+		fact("unacked", firingView, withActor),
+		fact("snoozed", firingView, func(v *domain.NotificationView) {
+			v.Actor, v.SnoozedUntil = actor, &snoozeUntil
+		}),
+		fact("unsnoozed", firingView, nil),
+		fact("enriched", firingView, nil),
+		fact("rule_changed", firingView, nil),
+		fact("comment", firingView, func(v *domain.NotificationView) {
+			v.Actor, v.Comment = actor, "rolling back the 14:02 deploy"
+		}),
+		fact("digest", digestView, nil),
+		fact("drawn", incident("drawn"), nil),
+		fact("case_added", incident("case_added"), nil),
+		fact("case_removed", incident("case_removed"), nil),
+		fact("quiet", incident("quiet"), func(v *domain.NotificationView) {
+			v.Incident.State = "quiet"
+			for i := range v.Incident.Members {
+				v.Incident.Members[i].CaseState = "closed"
+			}
+		}),
+		fact("active_again", incident("active_again"), nil),
+	}
+
+	hostileCase := hostileView()
+	hostileCase.Alerts[0].Labels = map[string]string{
+		"alertname": "quote\" backslash\\ newline\n </script> \u2028sep\u2029",
+		"severity":  "critical",
+	}
+	// Hostile annotation KEYS, which a mapping binds as well as values: an alert's
+	// annotation names are as writable as its labels, and `{{ alert.annotations }}`
+	// renders them. One tries to close the string and add a command field; the other
+	// spells a secret reference out of the sentinel separators.
+	hostileCase.Alerts[0].Annotations["\",\"event_action\":\"resolve\",\"x\":\""] = "v"
+	hostileCase.Alerts[0].Annotations["\u2028routing_key\u2029"] = "v"
+	hostileIncident := incidentFixtureView("drawn")
+	hostileIncident.Incident.DrawnBy.Label = "</script>\"\\\n<!channel>"
+	hostileIncident.Incident.Members[0].AlertName = "a\"b\\c\nd\u2028e"
+	hostileIncident.Incident.Members[0].Labels = map[string]string{"service": "{\"forged\":true}"}
+
+	return append(out,
+		Fixture{Name: "fired: hostile-text", view: hostileCase, at: at},
+		Fixture{Name: "fired: empty-labels", view: emptyView(), at: fixtureClock},
+		Fixture{Name: "fired: zero-value", view: &domain.NotificationView{Reason: "fired"}, at: time.Time{}},
+		Fixture{Name: "drawn: hostile-text", view: hostileIncident, at: at},
+		Fixture{Name: "drawn: zero-value", view: &domain.NotificationView{
+			Reason: "drawn", Incident: &domain.IncidentView{},
+		}, at: time.Time{}},
+	)
+}
+
+// incidentFixtureView is an Incident fact the way `ViewService.incidentCard` builds
+// one: a Reason, an IncidentView and a render time, and nothing else (ADR 0052 §5).
+func incidentFixtureView(reason string) *domain.NotificationView {
+	drawn := fixtureClock.Add(-20 * time.Minute)
+	// `drawn` is always an Incident's first fact; every other fixture is a few into the
+	// story, so a mapping that reads `incident.sequence` is checked against a number
+	// that is not the trivial 1.
+	sequence := int64(3)
+	if reason == "drawn" {
+		sequence = 1
+	}
+	return &domain.NotificationView{
+		Org:    domain.OrgRef{ID: "org", Slug: "acme", Name: "Acme"},
+		Reason: reason,
+		Incident: &domain.IncidentView{
+			ID:       "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
+			Number:   4,
+			Sequence: sequence,
+			State:    "active",
+			DrawnAt:  drawn,
+			DrawnBy:  domain.IncidentAuthorView{Label: "Priya R."},
+			Link:     "https://oto.example/incidents/4",
+			Members: []domain.IncidentMemberView{
+				{
+					CaseID: "0199a1b2-0000-7000-8000-000000000412", CaseNumber: 412, CaseState: "open",
+					AlertID: "a1", AlertName: "HighErrorRate",
+					Labels:  map[string]string{"alertname": "HighErrorRate", "severity": "critical"},
+					AddedAt: drawn, AddedBy: domain.IncidentAuthorView{Label: "Priya R."},
+					Link: "https://oto.example/cases/412",
+				},
+				{
+					CaseID: "0199a1b2-0000-7000-8000-000000000409", CaseNumber: 409, CaseState: "closed",
+					AlertID: "a3", AlertName: "DiskFull",
+					Labels:  map[string]string{"alertname": "DiskFull"},
+					AddedAt: drawn, AddedBy: domain.IncidentAuthorView{Label: "Priya R."},
+					RemovedAt: drawn.Add(10 * time.Minute), RemovedByLabel: "Sam K.", MovedToNumber: 7,
+				},
+			},
+		},
+		RenderedAt: fixtureClock.Add(30 * time.Minute),
+	}
+}

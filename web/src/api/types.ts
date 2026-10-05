@@ -93,6 +93,39 @@ export type Case = S["CaseDTO"];
  */
 export type CaseListItem = S["CaseListItemDTO"];
 export type CaseDetail = S["CaseDetailDTO"];
+/**
+ * Who can still speak for a Case (ADR 0056 §1, owner ruling R1): the live and
+ * removed sources on its cluster, whether the reaper's health guard vouches for
+ * EVERY live one (`all_healthy`), the cluster's effective max silence (the
+ * longest, or null when any live source turned it off), and up to ten of the
+ * live sources each with its own verdict. `null` on a Case means it was not read.
+ */
+export type CaseSources = S["CaseSourcesDTO"];
+/** One live source a Case's expiry waits on, with its own verdict and silence. */
+export type CaseSource = S["CaseSourceDTO"];
+/**
+ * An Incident: a set of one or more Cases drawn together as one story (ADR 0052).
+ *
+ * ⛔ `state` IS DERIVED AND THE UI NEVER SENDS IT. It is `active` while any
+ * current member Case is open and `quiet` otherwise, read off the Cases by the
+ * server on every request — so there is no request type below that carries it,
+ * and there is no `status`, `lead` or `severity` on any of these shapes either:
+ * the response lives in the incident tool the Incident is declared to.
+ */
+export type Incident = S["IncidentDTO"];
+export type IncidentDetail = S["IncidentDetailDTO"];
+/** One spell of one Case inside an Incident — a tombstone once `removed_at` is set. */
+export type IncidentMember = S["IncidentMemberDTO"];
+export type IncidentState = S["IncidentState"];
+/** "Why is this here?" — a Correlator someone wrote, or a human who decided. */
+export type IncidentAttribution = S["IncidentAttributionDTO"];
+/**
+ * An operator-written definition that draws Incidents (ADR 0052 §2): matchers
+ * over Cases in the notification-policy grammar, optionally a count over a
+ * window. Walked in `priority` order, lower first — the order a policy is walked
+ * in. ⛔ Never call it a rule: in oto that word is the Prometheus alerting rule.
+ */
+export type Correlator = S["CorrelatorDTO"];
 export type AlertEvent = S["AlertEventDTO"];
 export type Enrichment = S["EnrichmentDTO"];
 export type EnrichmentSummary = S["EnrichmentSummaryDTO"];
@@ -233,6 +266,11 @@ export type VersionInfo = S["VersionDTO"];
 
 export type AckRequest = S["AckRequest"];
 export type UnackRequest = S["UnackRequest"];
+export type CreateIncidentRequest = S["CreateIncidentRequest"];
+export type AddIncidentCaseRequest = S["AddIncidentCaseRequest"];
+export type MoveIncidentCaseRequest = S["MoveIncidentCaseRequest"];
+export type CreateCorrelatorRequest = S["CreateCorrelatorRequest"];
+export type UpdateCorrelatorRequest = S["UpdateCorrelatorRequest"];
 export type CommentRequest = S["CommentRequest"];
 /** Exactly one of `until` and `duration_seconds`. Both, or neither, is a 422. */
 export type SnoozeRequest = S["SnoozeRequest"];
@@ -247,6 +285,18 @@ export type CreateChannelConnectionRequest = S["CreateChannelConnectionRequest"]
 export type UpdateChannelConnectionRequest = S["UpdateChannelConnectionRequest"];
 /** Exactly one of `name` or `conversation_id` — the response fills in the other. */
 export type ResolveConversationRequest = S["ResolveConversationRequest"];
+/**
+ * A webhook connection's payload mapping (ADR 0055 §2): destination setup, not a
+ * NotificationTemplate. It holds no secret — only `secrets.<name>` references.
+ */
+export type PayloadMapping = S["PayloadMapping"];
+/** One fact sent through a mapped connection by way of one of its channels. */
+export type TestConnectionMappingRequest = S["TestConnectionMappingRequest"];
+/**
+ * One entry of the payload-mapping catalog (ADR 0055 §2). Importing it COPIES its
+ * `mapping` into a webhook connection's own mapping; it carries no secret value.
+ */
+export type PayloadMappingCatalogEntry = S["PayloadMappingCatalogEntryDTO"];
 export type CreatePolicyRequest = S["CreatePolicyRequest"];
 export type UpdatePolicyRequest = S["UpdatePolicyRequest"];
 export type PolicyPreviewRequest = S["PolicyPreviewRequest"];
@@ -285,6 +335,7 @@ export type AlertRollupQuery = NonNullable<operations["listAlertRollups"]["param
  * `state=firing,suppressed` to mean the same thing.
  */
 export type CaseListQuery = NonNullable<operations["listCases"]["parameters"]["query"]>;
+export type IncidentListQuery = NonNullable<operations["listIncidents"]["parameters"]["query"]>;
 export type RollupAxis = AlertRollupQuery["group_by"];
 export type RuleSnapshotQuery = NonNullable<
   operations["listRuleSnapshots"]["parameters"]["query"]

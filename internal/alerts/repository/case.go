@@ -1065,13 +1065,36 @@ func (r *CaseRepository) BindRuleSnapshot(
 
 // ------------------------------------------------------------------- reaper
 
+// liveSourcesHealthySQL is the §B.4 pre-filter both guarded scans share, written
+// as the tail of an EXISTS over `alerts al JOIN alert_sources s` (live sources
+// only) LEFT JOIN `source_health h` (healthy rows only), grouped by the alert: a
+// group exists only when the cluster has at least one live source, and
+// `count(*) = count(h.source_id)` holds only when EVERY one of them has a
+// `healthy` row (owner ruling R1).
+//
+// ⛔ IT IS A PRE-FILTER, NEVER THE VERDICT. The §B.4 guard is still asked through
+// the `SourceHealth` port by the caller, and that answer decides; this only stops
+// the scan spending its LIMIT on candidates the guard is certain to hold — the
+// worst case for which was a source outage, when every open Case under it came
+// back every tick and starved the rest of the org's.
+const liveSourcesHealthySQL = `
+           FROM alerts al
+           JOIN alert_sources s
+             ON s.org_id = al.org_id AND s.cluster_id = al.cluster_id
+            AND s.deleted_at IS NULL
+           LEFT JOIN source_health h
+             ON h.source_id = s.id AND h.org_id = s.org_id AND h.status = 'healthy'
+          WHERE al.id = o.alert_id AND al.org_id = o.org_id
+          GROUP BY al.id
+         HAVING count(*) = count(h.source_id)`
+
 var reapCandidatesSQL = `
 SELECT ` + caseColumns + `
-  FROM alert_cases
- WHERE org_id = $1
-   AND ended_at IS NULL
-   AND source_ends_at IS NOT NULL
-   AND source_ends_at < $2
+  FROM alert_cases o
+ WHERE o.org_id = $1
+   AND o.ended_at IS NULL
+   AND o.source_ends_at IS NOT NULL
+   AND o.source_ends_at < $2
    -- ⛔ AN EPISODE HOLDING AN UPSTREAM RESOLVE IS NOT A REAP CANDIDATE (00057).
    -- A pending close leaves ended_at NULL, so without this line every case
    -- inside its retention window would be handed to T6 on the next tick and
@@ -1080,17 +1103,22 @@ SELECT ` + caseColumns + `
    -- domain refuses it and unreapable refuses it; this stops the sweep spending
    -- its whole budget on candidates that will all be turned down. It also keeps
    -- case_reap_idx usable: the predicate is a filter on the same index scan.
-   AND resolve_pending_at IS NULL
- ORDER BY source_ends_at ASC
+   AND o.resolve_pending_at IS NULL
+   -- The §B.4 pre-filter: every live source on the cluster is healthy.
+   AND EXISTS (SELECT 1` + liveSourcesHealthySQL + `)
+ ORDER BY o.source_ends_at ASC
  LIMIT $3`
 
 // ReapCandidates feeds T6: open episodes whose upstream end time plus
-// resolve_grace has passed. `before` is already `now - resolve_grace`, computed
-// by the caller against the injected clock.
+// resolve_grace has passed, on a cluster whose live sources are all healthy.
+// `before` is already `now - resolve_grace`, computed by the caller against the
+// injected clock.
 //
 // ⭐ THE REAPER GUARD (§B.4) IS THE CALLER'S. This method returns CANDIDATES, not
-// verdicts. A case whose AlertSource is not healthy MUST be held, never
-// expired: losing sight of an alert is not the same as the alert resolving.
+// verdicts. A case whose AlertSources are not all healthy MUST be held, never
+// expired: losing sight of an alert is not the same as the alert resolving. The
+// health predicate in the scan is a pre-filter over `source_health`; the port the
+// caller asks is the verdict.
 //
 // NOTE (planner): case_reap_idx is (source_ends_at) WHERE ended_at IS NULL AND
 // source_ends_at IS NOT NULL and deliberately does NOT lead with org_id — the
@@ -1114,6 +1142,343 @@ func (r *CaseRepository) ReapCandidates(
 	}
 	defer rows.Close()
 	return collectCases(rows, n)
+}
+
+// ------------------------------------------- the two ADR 0056 expiries (00094)
+
+// effectiveSilenceSQL is a cluster's `silent` threshold over the LEFT JOINed
+// `alert_sources s` of one group: NULL (off) when no source is live or ANY live
+// source turned it off, otherwise the longest live `max_silence_s` (owner ruling
+// R1). The longest, because a replica whose repeat_interval is slower still has
+// the right to be heard from before oto calls the quiet silence.
+const effectiveSilenceSQL = `
+       CASE WHEN count(s.id) FILTER (WHERE s.deleted_at IS NULL) > 0
+             AND count(s.id) FILTER (WHERE s.deleted_at IS NULL)
+               = count(s.max_silence_s) FILTER (WHERE s.deleted_at IS NULL)
+            THEN max(s.max_silence_s) FILTER (WHERE s.deleted_at IS NULL)
+       END`
+
+// silentCandidatesSQL feeds `silent`: open episodes whose cluster has at least one
+// live source, every live source is healthy and sets a `max_silence_s`, and
+// nothing has been heard about the episode for longer than the longest of them.
+//
+// ⭐ EVERY LIVE SOURCE, NOT EXACTLY ONE (owner ruling R1). An HA pair is two
+// witnesses to the same alerts: when both are healthy and neither has said a word
+// about an episode for longer than either would let pass, nobody is left who could
+// be carrying it. One of them unhealthy, or one with the expiry off, holds it.
+//
+// ⭐ THE `- interval '1 hour'` IS `alert_sources_silence_ck`'S FLOOR, restated so
+// the scan can stop reading `case_silence_idx` at the youngest episode any source
+// could possibly expire. It is a pre-filter, never the verdict: the per-cluster
+// comparison below is, and `expire` re-asks it of the fresh row.
+var silentCandidatesSQL = `
+SELECT ` + caseColumns + `
+  FROM alert_cases o
+ WHERE o.org_id = $1
+   AND o.ended_at IS NULL
+   AND o.resolve_pending_at IS NULL
+   AND o.last_observed_at < $2::timestamptz - interval '1 hour'
+   AND EXISTS (SELECT 1` + liveSourcesHealthySQL + `
+            AND count(*) = count(s.max_silence_s)
+            AND o.last_observed_at + make_interval(secs => max(s.max_silence_s)) < $2::timestamptz)
+ ORDER BY o.last_observed_at ASC
+ LIMIT $3`
+
+// SilentCandidates feeds the `silent` expiry (ADR 0056 §3). Like ReapCandidates
+// it returns CANDIDATES, not verdicts, and THE §B.4 GUARD IS THE CALLER'S: a
+// silent episode under a source that is not healthy is held, because oto cannot
+// tell "upstream stopped speaking about it" from "Alertmanager is down".
+func (r *CaseRepository) SilentCandidates(
+	ctx context.Context, s db.TenantScope, now time.Time, limit int,
+) ([]domain.Case, error) {
+	if err := db.RequireScope(s); err != nil {
+		return nil, err
+	}
+	if now.IsZero() {
+		return nil, errs.Internal("silent_bound_missing", errsMissing("now is required"))
+	}
+	n := db.ClampLimit(limit)
+
+	rows, err := r.db(ctx).Query(ctx, silentCandidatesSQL, s.OrgID(), now.UTC(), n)
+	if err != nil {
+		return nil, mapErr(err, "list silent candidates")
+	}
+	defer rows.Close()
+	return collectCases(rows, n)
+}
+
+// orphanedClustersSQL finds the clusters `source_removed` can speak about: no live
+// source left, at least one removed (a group exists only for a cluster that has
+// sources at all, and `bool_and` says every one of them is deleted), and the
+// newest removal older than the cutoff.
+//
+// ⭐⭐ IT IS A QUESTION ABOUT THE CLUSTER, NOT ABOUT THE DELETED SOURCE, AND THAT
+// IS WHAT KEEPS AN HA PAIR SAFE. Alertmanager replicas are several sources on one
+// cluster; deleting one leaves the other speaking for every Case they shared, so
+// those Cases must stay open. Only once the last live source is gone is there
+// nothing left that could say an episode ended.
+//
+// ⚠️ "AT LEAST ONE REMOVED" IS NOT DECORATION. A cluster no source was ever
+// deleted from has nothing to say `source_removed` about, and expiring its Cases
+// would name a cause that did not happen.
+//
+// ⭐ THE CUTOFF IS `now - resolve_grace`, so a source deleted and registered again
+// — a fixed URL, a rotated token, a re-import — ends nothing in between.
+const orphanedClustersSQL = `
+SELECT cluster_id
+  FROM alert_sources
+ WHERE org_id = $1
+ GROUP BY cluster_id
+HAVING bool_and(deleted_at IS NOT NULL)
+   AND max(deleted_at) < $2`
+
+// sourceRemovedCandidatesSQL is the open episodes on the orphaned clusters.
+//
+// ⚠️ COST. It is read only when orphanedClustersSQL found something, which on
+// a steady deployment is never: the source table is the small side, so it is asked
+// first and the walk over open episodes is skipped outright when it says no.
+var sourceRemovedCandidatesSQL = `
+SELECT ` + caseColumns + `
+  FROM alert_cases o
+ WHERE o.org_id = $1
+   AND o.ended_at IS NULL
+   AND o.resolve_pending_at IS NULL
+   AND EXISTS (SELECT 1 FROM alerts al
+                WHERE al.id = o.alert_id AND al.org_id = o.org_id
+                  AND al.cluster_id = ANY($2))
+ ORDER BY o.last_observed_at ASC
+ LIMIT $3`
+
+// SourceRemovedCandidates feeds the `source_removed` expiry (ADR 0056 §2): open
+// episodes whose cluster has no live source and whose last removal is older than
+// `removedBefore`. CANDIDATES, re-proved by the caller inside the transaction that
+// writes, because an operator can register a new source for the cluster between
+// this scan and the write.
+func (r *CaseRepository) SourceRemovedCandidates(
+	ctx context.Context, s db.TenantScope, removedBefore time.Time, limit int,
+) ([]domain.Case, error) {
+	if err := db.RequireScope(s); err != nil {
+		return nil, err
+	}
+	if removedBefore.IsZero() {
+		return nil, errs.Internal("source_removed_bound_missing", errsMissing("removedBefore is required"))
+	}
+	n := db.ClampLimit(limit)
+
+	clusters, err := r.orphanedClusters(ctx, s, removedBefore)
+	if err != nil {
+		return nil, err
+	}
+	if len(clusters) == 0 {
+		return nil, nil
+	}
+
+	rows, err := r.db(ctx).Query(ctx, sourceRemovedCandidatesSQL, s.OrgID(), clusters, n)
+	if err != nil {
+		return nil, mapErr(err, "list source_removed candidates")
+	}
+	defer rows.Close()
+	return collectCases(rows, n)
+}
+
+func (r *CaseRepository) orphanedClusters(
+	ctx context.Context, s db.TenantScope, removedBefore time.Time,
+) ([]uuid.UUID, error) {
+	rows, err := r.db(ctx).Query(ctx, orphanedClustersSQL, s.OrgID(), removedBefore.UTC())
+	if err != nil {
+		return nil, mapErr(err, "list orphaned clusters")
+	}
+	defer rows.Close()
+	var out []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, mapErr(err, "scan orphaned cluster")
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapErr(err, "list orphaned clusters")
+	}
+	return out, nil
+}
+
+// caseSourceCountSQL is the in-transaction re-read every expiry rests on. GROUP BY
+// the Case, so a Case that does not exist yields NO row rather than one whose
+// counts are zero — which would read as "no live source" and is the one wrong
+// answer this statement must never give.
+var caseSourceCountSQL = `
+SELECT count(s.id) FILTER (WHERE s.deleted_at IS NULL)::int,
+       count(s.id) FILTER (WHERE s.deleted_at IS NOT NULL)::int,
+       coalesce(array_agg(s.id ORDER BY s.id) FILTER (WHERE s.deleted_at IS NULL), '{}'),` +
+	effectiveSilenceSQL + `,
+       max(s.deleted_at)
+  FROM alert_cases o
+  JOIN alerts al ON al.id = o.alert_id AND al.org_id = o.org_id
+  LEFT JOIN alert_sources s ON s.org_id = al.org_id AND s.cluster_id = al.cluster_id
+ WHERE o.org_id = $1 AND o.id = $2
+ GROUP BY o.id`
+
+// Sources reads what one Case's cluster says about who can still speak for it:
+// the live set, the removed count and newest removal, and the effective `silent`
+// threshold. See domain.CaseSources.
+func (r *CaseRepository) Sources(
+	ctx context.Context, s db.TenantScope, caseID uuid.UUID,
+) (domain.CaseSources, error) {
+	if err := db.RequireScope(s); err != nil {
+		return domain.CaseSources{}, err
+	}
+	if err := db.RequireID("case id", caseID); err != nil {
+		return domain.CaseSources{}, err
+	}
+	var (
+		out       domain.CaseSources
+		silence   *int32
+		lastRemov *time.Time
+	)
+	if err := r.db(ctx).QueryRow(ctx, caseSourceCountSQL, s.OrgID(), caseID).
+		Scan(&out.Live, &out.Removed, &out.LiveIDs, &silence, &lastRemov); err != nil {
+		if isNoRows(err) {
+			return domain.CaseSources{}, errs.NotFound("case_not_found", "no such case")
+		}
+		return domain.CaseSources{}, mapErr(err, "count case sources")
+	}
+	if silence != nil {
+		out.MaxSilence = time.Duration(*silence) * time.Second
+	}
+	if lastRemov != nil {
+		out.LastRemovedAt = lastRemov.UTC()
+	}
+	return out, nil
+}
+
+// caseCoverSQL is caseSourceCountSQL for a PAGE of Cases, plus every live
+// source's name and own max silence, for the screens that show why a Case can or
+// cannot expire (ADR 0056 §1). It is the same walk — case → alert → cluster →
+// sources — and the same counts and threshold, so the screen and the reaper read
+// one answer.
+//
+// ⛔ IT IS A READ FOR DISPLAY AND NEVER A VERDICT. The reaper keeps its own
+// in-transaction re-read (`Sources`); nothing here is consulted before a write.
+var caseCoverSQL = `
+SELECT o.id,
+       count(s.id) FILTER (WHERE s.deleted_at IS NULL)::int,
+       count(s.id) FILTER (WHERE s.deleted_at IS NOT NULL)::int,
+       coalesce(array_agg(s.id ORDER BY s.name, s.id) FILTER (WHERE s.deleted_at IS NULL), '{}'),
+       coalesce(array_agg(s.name ORDER BY s.name, s.id) FILTER (WHERE s.deleted_at IS NULL), '{}'),
+       coalesce(array_agg(coalesce(s.max_silence_s, 0) ORDER BY s.name, s.id)
+                  FILTER (WHERE s.deleted_at IS NULL), '{}'),` +
+	effectiveSilenceSQL + `,
+       max(s.deleted_at)
+  FROM alert_cases o
+  JOIN alerts al ON al.id = o.alert_id AND al.org_id = o.org_id
+  LEFT JOIN alert_sources s ON s.org_id = al.org_id AND s.cluster_id = al.cluster_id
+ WHERE o.org_id = $1 AND o.id = ANY($2)
+ GROUP BY o.id`
+
+// CoverFor reads, for a page of Cases in one round trip, what each Case's cluster
+// says about who can still speak for it. A Case that does not exist in this org
+// is absent from the result. Health is left false: the §B.4 verdict is the
+// service's to add, through the same port the reaper asks.
+func (r *CaseRepository) CoverFor(
+	ctx context.Context, s db.TenantScope, caseIDs []uuid.UUID,
+) (map[uuid.UUID]domain.CaseCover, error) {
+	if err := db.RequireScope(s); err != nil {
+		return nil, err
+	}
+	out := make(map[uuid.UUID]domain.CaseCover, len(caseIDs))
+	if len(caseIDs) == 0 {
+		return out, nil
+	}
+	rows, err := r.db(ctx).Query(ctx, caseCoverSQL, s.OrgID(), caseIDs)
+	if err != nil {
+		return nil, mapErr(err, "read case cover")
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			caseID    uuid.UUID
+			c         domain.CaseCover
+			names     []string
+			silences  []int32
+			silence   *int32
+			lastRemov *time.Time
+		)
+		if err := rows.Scan(&caseID, &c.Live, &c.Removed, &c.LiveIDs, &names, &silences,
+			&silence, &lastRemov); err != nil {
+			return nil, mapErr(err, "scan case cover")
+		}
+		if silence != nil {
+			c.MaxSilence = time.Duration(*silence) * time.Second
+		}
+		if lastRemov != nil {
+			c.LastRemovedAt = lastRemov.UTC()
+		}
+		if len(names) != len(c.LiveIDs) || len(silences) != len(c.LiveIDs) {
+			return nil, errs.Internal("case_cover_misaligned",
+				errsMissing("aligned live source ids, names and silences"))
+		}
+		c.Sources = make([]domain.CoverSource, len(c.LiveIDs))
+		for i, id := range c.LiveIDs {
+			c.Sources[i] = domain.CoverSource{
+				ID: id, Name: names[i], MaxSilence: time.Duration(silences[i]) * time.Second,
+			}
+		}
+		out[caseID] = c
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapErr(err, "read case cover")
+	}
+	return out, nil
+}
+
+// openCasesBySourceSQL counts, for each named live source, the open Cases on its
+// cluster. The open count is taken once per cluster over the open episodes — the
+// reaper's own population — and never by walking every alert a cluster has ever
+// had.
+const openCasesBySourceSQL = `
+WITH open AS (
+  SELECT al.cluster_id, count(*)::int AS n
+    FROM alert_cases o
+    JOIN alerts al ON al.id = o.alert_id AND al.org_id = o.org_id
+   WHERE o.org_id = $1 AND o.ended_at IS NULL
+   GROUP BY al.cluster_id)
+SELECT s.id, COALESCE(open.n, 0)
+  FROM alert_sources s
+  LEFT JOIN open ON open.cluster_id = s.cluster_id
+ WHERE s.org_id = $1 AND s.id = ANY($2) AND s.deleted_at IS NULL`
+
+// OpenCasesBySource counts the open Cases on each named live source's cluster. A
+// removed or foreign source is absent.
+func (r *CaseRepository) OpenCasesBySource(
+	ctx context.Context, s db.TenantScope, sourceIDs []uuid.UUID,
+) (map[uuid.UUID]domain.SourceCases, error) {
+	if err := db.RequireScope(s); err != nil {
+		return nil, err
+	}
+	out := make(map[uuid.UUID]domain.SourceCases, len(sourceIDs))
+	if len(sourceIDs) == 0 {
+		return out, nil
+	}
+	rows, err := r.db(ctx).Query(ctx, openCasesBySourceSQL, s.OrgID(), sourceIDs)
+	if err != nil {
+		return nil, mapErr(err, "count open cases by source")
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			id uuid.UUID
+			c  domain.SourceCases
+		)
+		if err := rows.Scan(&id, &c.Open); err != nil {
+			return nil, mapErr(err, "scan open cases by source")
+		}
+		out[id] = c
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapErr(err, "count open cases by source")
+	}
+	return out, nil
 }
 
 // ---------------------------------------------------- the delayed close (00057)
@@ -1184,54 +1549,43 @@ func (r *CaseRepository) CloseDueCandidates(
 // INFO log nobody reads. That is the silently-zeroed-metric failure in its most
 // expensive form.
 //
-// ⭐ THE SURVIVING PATH IS THE CLUSTER, AND IT IS DELIBERATELY REFUSED WHEN IT IS
-// AMBIGUOUS. `alerts.cluster_id` and `alert_sources.cluster_id` both name
-// `clusters.id`, but `alert_sources_cluster_idx (org_id, cluster_id) WHERE deleted_at
-// IS NULL` is NOT unique — a cluster may be fed by several sources — so "the source
-// of this case" only has an answer when the cluster has exactly ONE live source. The
-// `count(*) OVER ()` window is that test, and a cluster with two live sources yields
-// NO row for its cases.
+// ⭐ THE SURVIVING PATH IS THE CLUSTER, AND IT ANSWERS WITH THE WHOLE LIVE SET
+// (owner ruling R1, 2026-10-05). `alerts.cluster_id` and `alert_sources.cluster_id`
+// both name `clusters.id`, and `alert_sources_cluster_idx (org_id, cluster_id) WHERE
+// deleted_at IS NULL` is NOT unique — a cluster may be fed by several sources, an
+// Alertmanager HA pair being the ordinary case. This used to refuse a cluster with
+// two live sources, which held every HA cluster's Cases forever. It now returns
+// every live source, and the guard asks ALL of them: a Case expires only when each
+// one is healthy, because any replica oto cannot see might be the one still
+// carrying the alert. That is §B.4 asked of every witness, not of a guessed one.
 //
-// ⚠️ WHICH IS THE SAFE DIRECTION AND THE ONLY DEFENSIBLE ONE. Picking any of several
-// sources would let the reaper expire an episode on the health of a source that never
-// carried it, which is precisely the mistake §B.4 exists to prevent; refusing leaves
-// those cases held, exactly as they are held today when the port is unwired. A
-// single-source cluster — the ordinary install — keeps the guard it had.
-//
-// ⚠️ AND THIS IS A JUDGEMENT, NOT A RESTORATION. The old answer was the source that
-// actually delivered the alert; this one is the source that must have, given the
-// cluster. They agree whenever the cluster has one source and the old answer is
-// simply unavailable otherwise. If `alert_cases` ever carries a source of its own
-// — which is what the snapshot note is waiting for — this should become that column.
+// ⚠️ A CASE WHOSE CLUSTER HAS NO LIVE SOURCE IS ABSENT, and is held by the guard;
+// `source_removed` is the one expiry that speaks for it.
 const caseSourcesSQL = `
-SELECT o.id, s.source_id
+SELECT o.id, array_agg(s.id ORDER BY s.id)
   FROM alert_cases o
   JOIN alerts al ON al.id = o.alert_id AND al.org_id = o.org_id
-  JOIN (SELECT id AS source_id, cluster_id, org_id,
-               count(*) OVER (PARTITION BY org_id, cluster_id) AS live_in_cluster
-          FROM alert_sources
-         WHERE deleted_at IS NULL) s
-    ON s.cluster_id = al.cluster_id AND s.org_id = al.org_id
-   AND s.live_in_cluster = 1
- WHERE o.org_id = $1 AND o.id = ANY($2)`
+  JOIN alert_sources s
+    ON s.org_id = al.org_id AND s.cluster_id = al.cluster_id
+   AND s.deleted_at IS NULL
+ WHERE o.org_id = $1 AND o.id = ANY($2)
+ GROUP BY o.id`
 
-// SourceIDs resolves which AlertSource each case came from, by way of the cluster
-// its Alert belongs to.
+// SourceIDs resolves which AlertSources speak for each case — every live source
+// on the cluster its Alert belongs to.
 //
-// It exists for the §B.4 reaper guard, which must load `source_health` for the
-// owning source before it may expire anything. A case with no resolvable
-// source is ABSENT from the result, and the caller must read that as "cannot
-// prove the source is healthy" and HOLD it. Since git-bug `7570090` that absence
-// covers one more shape than it used to: a case whose cluster has no live source, or
-// more than one. See `caseSourcesSQL` for why refusing beats guessing.
+// It exists for the §B.4 reaper guard, which must load `source_health` for every
+// one of them before it may expire anything. A case with no live source is ABSENT
+// from the result, and the caller must read that as "cannot prove the sources are
+// healthy" and HOLD it.
 func (r *CaseRepository) SourceIDs(
 	ctx context.Context, s db.TenantScope, caseIDs []uuid.UUID,
-) (map[uuid.UUID]uuid.UUID, error) {
+) (map[uuid.UUID][]uuid.UUID, error) {
 	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
 	if len(caseIDs) == 0 {
-		return map[uuid.UUID]uuid.UUID{}, nil
+		return map[uuid.UUID][]uuid.UUID{}, nil
 	}
 
 	rows, err := r.db(ctx).Query(ctx, caseSourcesSQL, s.OrgID(), caseIDs)
@@ -1240,13 +1594,16 @@ func (r *CaseRepository) SourceIDs(
 	}
 	defer rows.Close()
 
-	out := make(map[uuid.UUID]uuid.UUID, len(caseIDs))
+	out := make(map[uuid.UUID][]uuid.UUID, len(caseIDs))
 	for rows.Next() {
-		var caseID, srcID uuid.UUID
-		if err := rows.Scan(&caseID, &srcID); err != nil {
+		var (
+			caseID uuid.UUID
+			srcIDs []uuid.UUID
+		)
+		if err := rows.Scan(&caseID, &srcIDs); err != nil {
 			return nil, mapErr(err, "scan case source")
 		}
-		out[caseID] = srcID
+		out[caseID] = srcIDs
 	}
 	if err := rows.Err(); err != nil {
 		return nil, mapErr(err, "read case sources")

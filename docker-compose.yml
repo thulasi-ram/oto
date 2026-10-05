@@ -97,7 +97,72 @@ services:
       retries: 6
       start_period: 10s
 
+  # ---------------------------------------------------------------- profile: vm
+  # An OPTIONAL VictoriaMetrics stack, off unless asked for (`just vm`, or
+  # `docker compose --profile vm up -d`). It is the shape
+  # docs/setup/victoriametrics.md describes: vmalert evaluates rules against a
+  # VictoriaMetrics single-node and notifies the SAME Alertmanager as above —
+  # never oto directly — so its alerts reach oto on the ordinary webhook path.
+  # A source paired with it sets `prometheus_url` to vmalert (:8880), not to
+  # VictoriaMetrics, because vmalert is what serves /api/v1/rules.
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.153.0
+    container_name: oto-victoriametrics
+    restart: unless-stopped
+    profiles: ["vm"]
+    command:
+      - -storageDataPath=/victoria-metrics-data
+      # Dev only, like Prometheus's 24 h above.
+      - -retentionPeriod=1d
+      # Its own metrics, so the instance has real series to query at :8428/vmui.
+      - -selfScrapeInterval=15s
+    ports:
+      - "8428:8428"
+    volumes:
+      - oto-vmdata:/victoria-metrics-data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8428/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+
+  vmalert:
+    image: victoriametrics/vmalert:v1.153.0
+    container_name: oto-vmalert
+    restart: unless-stopped
+    profiles: ["vm"]
+    command:
+      - -rule=/etc/vmalert/rules/*.yml
+      - -datasource.url=http://victoriametrics:8428
+      # The Alertmanager above, by its compose service name.
+      - -notifier.url=http://alertmanager:9093
+      - -evaluationInterval=15s
+      # What vmalert writes into every alert's generatorURL. It is the address
+      # oto on the HOST can reach, so the default link
+      # (/vmalert/alert?group_id=…&alert_id=…) is one oto can follow back to
+      # this vmalert's /api/v1/rules. -external.alert.source is left at its
+      # default deliberately: the default link carries no expression, and that
+      # is the case worth exercising (docs/setup/victoriametrics.md §3).
+      - -external.url=http://localhost:8880
+    ports:
+      - "8880:8880"
+    volumes:
+      - ./deploy/vmalert/rules.yml:/etc/vmalert/rules/rules.yml:ro
+    depends_on:
+      victoriametrics:
+        condition: service_healthy
+      alertmanager:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8880/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+
 volumes:
   oto-pgdata:
   oto-amdata:
   oto-promdata:
+  oto-vmdata:

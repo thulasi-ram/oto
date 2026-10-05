@@ -1,13 +1,12 @@
 package domain
 
 import (
-	"regexp"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
 
+	kernel "github.com/thulasiram/oto/internal/alerts/domain"
 	"github.com/thulasiram/oto/internal/platform/errs"
 )
 
@@ -56,7 +55,9 @@ const (
 	// vocabulary: both assert a plurality and a conversation holds one Case. The
 	// ceiling tracks the vocabulary BY CONSTRUCTION, so it moves whenever the
 	// vocabulary does — which is the whole reason all three layers must agree.
-	MaxPolicyReasons = 15
+	//
+	// ⬆️ IT IS 20 AT MIGRATION 00084: the five Incident facts joined (ADR 0052 §5).
+	MaxPolicyReasons = 20
 	// MaxPolicyChannels is policies_chan_ck.
 	MaxPolicyChannels = 16
 	// MinPolicyPriority and MaxPolicyPriority are policies_prio_ck. LOWER IS
@@ -76,133 +77,36 @@ const (
 	MaxUnackedReminderAfter = 24 * time.Hour
 )
 
+// ⭐ THE MATCHER GRAMMAR MOVED TO THE KERNEL AND EVERY NAME HERE IS AN ALIAS FOR
+// IT (ADR 0052 §2, git-bug 61eeddf). A Correlator writes "matchers over Cases" in
+// the grammar a policy writes, and `incidents` may not import this package, so
+// the one grammar now lives in `alerts/domain/matcher.go` — the layer every module
+// may import (RULE K) — rather than being copied into a second module where its
+// anchoring, its regex cache and its "a missing label is the empty string" rule
+// could drift from this one. Aliases rather than new types, so a policy, a
+// template and every test in this module read exactly as they did.
+
 // MatchOp is a label matcher operator, mirroring Alertmanager's four.
-type MatchOp string
+type MatchOp = kernel.MatchOp
 
 // The four operators.
 const (
 	// OpEqual is `=`.
-	OpEqual MatchOp = "="
+	OpEqual = kernel.OpEqual
 	// OpNotEqual is `!=`.
-	OpNotEqual MatchOp = "!="
+	OpNotEqual = kernel.OpNotEqual
 	// OpMatch is `=~`, a FULLY ANCHORED regular expression, as in Alertmanager.
-	OpMatch MatchOp = "=~"
+	OpMatch = kernel.OpMatch
 	// OpNotMatch is `!~`, the anchored negation.
-	OpNotMatch MatchOp = "!~"
+	OpNotMatch = kernel.OpNotMatch
 )
-
-// Valid reports whether op is one of the four.
-func (op MatchOp) Valid() bool {
-	switch op {
-	case OpEqual, OpNotEqual, OpMatch, OpNotMatch:
-		return true
-	default:
-		return false
-	}
-}
-
-// IsRegex reports whether op compiles its value.
-func (op MatchOp) IsRegex() bool { return op == OpMatch || op == OpNotMatch }
 
 // Matcher is one label predicate: `{"name":"severity","op":"=","value":"critical"}`.
 //
 // It matches LABELS ONLY. There is no matcher on a time of day, on a weekday, or
 // on who is on call, and there never will be: a policy whose outcome depends on
 // WHEN it is evaluated is a schedule (SCOPE-BOUNDARY §4.8).
-type Matcher struct {
-	Name  string
-	Op    MatchOp
-	Value string
-}
-
-// regexCache memoises anchored matcher regexes.
-//
-// Policy evaluation happens on every lifecycle transition, and the same handful
-// of matchers are recompiled thousands of times an hour otherwise. The cache is
-// bounded and dropped wholesale when it grows past the bound: a policy set large
-// enough to overflow it is already pathological, and an unbounded cache keyed by
-// user-supplied strings is a memory leak with a nicer name.
-var (
-	regexCacheMu sync.RWMutex
-	regexCache   = map[string]*regexp.Regexp{}
-)
-
-const regexCacheMax = 1024
-
-// anchoredRegex compiles value with Alertmanager's full-anchor semantics: `=~`
-// means the WHOLE label value matches, never a substring. Getting this wrong
-// makes `severity=~"crit"` silently match `critical-but-ignorable`.
-func anchoredRegex(value string) (*regexp.Regexp, error) {
-	regexCacheMu.RLock()
-	re, ok := regexCache[value]
-	regexCacheMu.RUnlock()
-	if ok {
-		return re, nil
-	}
-
-	re, err := regexp.Compile("^(?:" + value + ")$")
-	if err != nil {
-		return nil, errs.Validation("policy_matcher_regex",
-			"a matcher regular expression did not compile",
-			errs.Violation{Field: "matchers.value", Code: "regex", Message: err.Error()})
-	}
-
-	regexCacheMu.Lock()
-	if len(regexCache) >= regexCacheMax {
-		regexCache = map[string]*regexp.Regexp{}
-	}
-	regexCache[value] = re
-	regexCacheMu.Unlock()
-
-	return re, nil
-}
-
-// Validate checks one matcher.
-func (m Matcher) Validate() error {
-	switch {
-	case strings.TrimSpace(m.Name) == "":
-		return errs.Validation("policy_matcher_name", "a matcher needs a label name",
-			errs.Violation{Field: "matchers.name", Code: "required", Message: "a label name is required"})
-	case !m.Op.Valid():
-		return errs.Validation("policy_matcher_op", "a matcher operator must be one of = != =~ !~",
-			errs.Violation{Field: "matchers.op", Code: "enum", Message: "unsupported operator"})
-	}
-	if m.Op.IsRegex() {
-		if _, err := anchoredRegex(m.Value); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// Matches evaluates the matcher against a label set.
-//
-// A MISSING LABEL IS AN EMPTY STRING, which is Alertmanager's rule and the only
-// one that makes `!=` behave sanely: `team != "payments"` must be true for an
-// alert that carries no `team` label at all.
-func (m Matcher) Matches(labels map[string]string) (bool, error) {
-	got := labels[m.Name]
-
-	switch m.Op {
-	case OpEqual:
-		return got == m.Value, nil
-	case OpNotEqual:
-		return got != m.Value, nil
-	case OpMatch, OpNotMatch:
-		re, err := anchoredRegex(m.Value)
-		if err != nil {
-			return false, err
-		}
-		hit := re.MatchString(got)
-		if m.Op == OpNotMatch {
-			return !hit, nil
-		}
-		return hit, nil
-	default:
-		return false, errs.Validation("policy_matcher_op", "a matcher operator must be one of = != =~ !~",
-			errs.Violation{Field: "matchers.op", Code: "enum", Message: "unsupported operator"})
-	}
-}
+type Matcher = kernel.Matcher
 
 // Throttle is a policy's per-subject rate cap: at most Max notifications for one
 // subject inside Window.
@@ -392,7 +296,9 @@ func (c CountOverWindow) Clears(count int) bool {
 // three-value vocabulary cannot exceed three by construction — so a cardinality
 // arm would be a number no row could ever test, which is the defect 00046 removed
 // from `policies_reasons_ck` when it stopped saying 32.
-const MaxPolicySubjectKinds = 3
+//
+// ⬆️ IT IS 4 AT MIGRATION 00084, when `incident` joined (ADR 0052 §5).
+const MaxPolicySubjectKinds = 4
 
 // SubjectBinding is WHICH ALTITUDE A POLICY IS ABOUT — the subset of
 // `notifications.subject_kind` it claims, as `notification_policies.subject_kinds`
@@ -609,16 +515,7 @@ func (p Policy) Digests() bool { return p.Digest.Enabled() && p.Handles(ReasonDi
 // Matchers are ANDed. There is no OR and no nesting: a policy an operator cannot
 // read at 3am is a policy that will route the wrong alert to the wrong channel.
 func (p Policy) Matches(labels map[string]string) (bool, error) {
-	for _, m := range p.Matchers {
-		ok, err := m.Matches(labels)
-		if err != nil {
-			return false, err
-		}
-		if !ok {
-			return false, nil
-		}
-	}
-	return true, nil
+	return kernel.MatchAll(p.Matchers, labels)
 }
 
 // Validate enforces every bound the DDL enforces, plus the closed vocabularies.
@@ -658,7 +555,7 @@ func (p Policy) Validate() error {
 		})
 	case len(p.Reasons) > MaxPolicyReasons:
 		v = append(v, errs.Violation{
-			Field: "reasons", Code: "max_items", Message: "at most 18 reasons",
+			Field: "reasons", Code: "max_items", Message: "at most 20 reasons",
 		})
 	}
 	// ⭐ `reasons` IS A SET, and this loop is the layer that says so where it
@@ -755,7 +652,7 @@ func (p Policy) validateSubjects() []errs.Violation {
 	if len(p.Subjects) > MaxPolicySubjectKinds {
 		v = append(v, errs.Violation{
 			Field: "subject_kinds", Code: "max_items",
-			Message: "at most 3 subject kinds, which is the whole vocabulary",
+			Message: "at most 4 subject kinds, which is the whole vocabulary",
 		})
 	}
 

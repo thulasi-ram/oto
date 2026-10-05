@@ -16,6 +16,7 @@ import (
 	alertsrepo "github.com/thulasiram/oto/internal/alerts/repository"
 	alertsservice "github.com/thulasiram/oto/internal/alerts/service"
 	channelsapi "github.com/thulasiram/oto/internal/channels/api"
+	channelsdomain "github.com/thulasiram/oto/internal/channels/domain"
 	slackprovider "github.com/thulasiram/oto/internal/channels/providers/slack"
 	channelsregistry "github.com/thulasiram/oto/internal/channels/registry"
 	channelsrepo "github.com/thulasiram/oto/internal/channels/repository"
@@ -34,6 +35,9 @@ import (
 	identitydomain "github.com/thulasiram/oto/internal/identity/domain"
 	identityrepo "github.com/thulasiram/oto/internal/identity/repository"
 	identityservice "github.com/thulasiram/oto/internal/identity/service"
+	incidentsapi "github.com/thulasiram/oto/internal/incidents/api"
+	incidentsrepo "github.com/thulasiram/oto/internal/incidents/repository"
+	incidentsservice "github.com/thulasiram/oto/internal/incidents/service"
 	"github.com/thulasiram/oto/internal/ingestion"
 	ingestionservice "github.com/thulasiram/oto/internal/ingestion/service"
 	notifapi "github.com/thulasiram/oto/internal/notification/api"
@@ -65,6 +69,7 @@ import (
 	streamingapi "github.com/thulasiram/oto/internal/streaming/api"
 	streamingrepo "github.com/thulasiram/oto/internal/streaming/repository"
 	streamingservice "github.com/thulasiram/oto/internal/streaming/service"
+	"github.com/thulasiram/oto/mappings"
 )
 
 // declarativeTuning resolves this process's declarative tuning layer.
@@ -158,7 +163,13 @@ type Container struct {
 	Enrichment *enrichservice.Service
 	Silences   *silencesservice.Service
 	Stats      *statsservice.Service
-	Ingestion  *ingestion.Module
+	// Incidents is ADR 0052's grouping over Cases: drawn by a human here, by a
+	// Correlator later, with a state read off its Cases and never written.
+	Incidents *incidentsservice.Service
+	// Correlators is the machine author of Incidents (ADR 0052 §2): the
+	// operator's CRUD over them, and the evaluator `incidents.correlate` runs.
+	Correlators *incidentsservice.Correlators
+	Ingestion   *ingestion.Module
 	// Drills runs delivery drills: one synthetic alert pushed through the REAL
 	// pipeline. It is built AFTER ingestion because it drives ingestion — through
 	// the same `Accept` the webhook handler calls, which is the whole point.
@@ -185,6 +196,9 @@ type Container struct {
 	NotifyWorkers   *notifworker.Workers
 	NotifyScopes    *notifrepo.ScopeResolver
 	notifConfigRepo *notifrepo.ConfigRepository
+	// incidentFacts is the notification layer's late-bound Incident reader, held
+	// here because it is built in buildNotification and filled after incidents.
+	incidentFacts *incidentFacts
 	// templates is held on the container because it is read at BOTH ends of the
 	// feature — the authoring API and the delivery-time resolver — and those are
 	// wired by two different methods.
@@ -214,18 +228,20 @@ type Container struct {
 
 // routerSet is every domain's HTTP surface, held so routes.go can mount them.
 type routerSet struct {
-	identity  *identityapi.Router
-	alerts    *alertsapi.Router
-	rules     *rulesapi.Router
-	sources   *sourcesapi.Router
-	channels  *channelsapi.Router
-	notifs    *notifapi.Router
-	silences  *silencesapi.Router
-	stats     *statsapi.Router
-	drills    *drillapi.Router
-	enrichers *enrichapi.Router
-	streaming *streamingapi.Router
-	ingestion *ingestion.Module
+	identity    *identityapi.Router
+	alerts      *alertsapi.Router
+	rules       *rulesapi.Router
+	sources     *sourcesapi.Router
+	channels    *channelsapi.Router
+	notifs      *notifapi.Router
+	silences    *silencesapi.Router
+	stats       *statsapi.Router
+	incidents   *incidentsapi.Router
+	correlators *incidentsapi.CorrelatorRouter
+	drills      *drillapi.Router
+	enrichers   *enrichapi.Router
+	streaming   *streamingapi.Router
+	ingestion   *ingestion.Module
 }
 
 // Options are what a process hands the composition root.
@@ -573,6 +589,9 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	enrichmentRepo := enrichrepo.NewEnrichmentRepository(general).WithLogger(logger)
 
 	notificationsPort := &notificationReader{}
+	// Late-bound for the reason `notificationsPort` is: incidents is built after
+	// alerts, and alerts is what observes a Case ending.
+	endings := &caseEndings{}
 
 	c.Alerts, err = alertsservice.New(alertsservice.Deps{
 		Alerts:           alertRepo,
@@ -584,6 +603,7 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		AlertBatch:       alertRepo,
 		OccBatch:         caseRepo,
 		OccSources:       caseRepo,
+		CaseCover:        caseRepo,
 		CasePolicies:     casePolicyRepo,
 		CasePolicyConfig: casePolicyConfigRepo,
 		SnoozeHistory:    snoozeRepo,
@@ -593,6 +613,15 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		Settings:         settings,
 		Enrichments:      enrichmentReader{repo: enrichmentRepo},
 		Notifications:    notificationsPort,
+		CaseEndings:      endings,
+		// A Case opening enqueues one `incidents.correlate` job in the same
+		// transaction (ADR 0052 §2). Not late-bound: it needs only the outbox,
+		// which exists before any service, and it never calls `incidents` — the
+		// queue is the seam.
+		CaseOpenings: caseOpenings{enq: c.enqueuer},
+		// The reaper's `silent` and `source_removed` passes (ADR 0056), off until
+		// an operator turns them on; see config.JobsConfig.ExpireSilentAndRemoved.
+		ExpireSilentAndRemoved: o.Config.Jobs.ExpireSilentAndRemoved,
 		// `commentOnAlert` and `snoozeAlert` take their claim inside the same
 		// transaction as the write, on the store every other guarded operation
 		// claims in. A comment is the one action a retry duplicates VISIBLY —
@@ -673,6 +702,41 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		Repo:  statsrepo.NewStatsRepository(general),
 		Clock: clk,
 	})
+	if err != nil {
+		return nil, err
+	}
+
+	// ---- incidents: a story drawn over Cases (ADR 0052) -------------------
+	//
+	// ⭐ THE TIMELINE IS THE SAME ADAPTER `rules` AND `enrichment` NARRATE
+	// THROUGH, and by now it is bound: `c.Alerts` exists. Every
+	// `incident.case_*` row in `alert_events` is written through it, inside the
+	// membership change's own transaction, so a Case's history and the
+	// Incident's membership commit together.
+	c.Incidents, err = incidentsservice.New(incidentsservice.Deps{
+		Incidents: incidentsrepo.NewIncidentRepository(general),
+		Tx:        incidentsrepo.NewTxRunner(general),
+		Timeline:  timeline,
+		// ⭐ EVERY INCIDENT FACT IS DECLARED THROUGH THE OUTBOX (ADR 0052 §5): one
+		// `notify.incident` job per fact, enqueued in the membership change's own
+		// transaction. Routing it anywhere is a notification policy's decision.
+		Announcer: incidentAnnouncer{enq: c.enqueuer},
+		Clock:     clk,
+	})
+	if err != nil {
+		return nil, err
+	}
+	// The two late-bound holders that were waiting for this service: alerts tells
+	// it when a Case ends, and the notification layer reads Incidents through it.
+	endings.svc = c.Incidents
+	c.incidentFacts.svc = c.Incidents
+
+	// ⭐ THE CORRELATORS BORROW THE INCIDENT SERVICE'S MEMBERSHIP VERBS rather than
+	// owning a second copy: a Correlator's draw and join are a human's with a
+	// different author, under the same locks, through the same announcer and the
+	// same timeline (ADR 0052 §2, §4).
+	c.Correlators, err = incidentsservice.NewCorrelators(c.Incidents,
+		incidentsrepo.NewCorrelatorRepository(general))
 	if err != nil {
 		return nil, err
 	}
@@ -790,7 +854,15 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	}
 	c.enqueuer.set(c.Jobs)
 
-	c.buildRouters(channelRepo, connectionRepo, credentialRepo, channelResolver, clusterRepo, identityTx, enricherRegistry, clk)
+	// The payload-mapping catalog (ADR 0055 §2) is embedded data, read once. A file
+	// that does not parse is a broken build, and fails the boot rather than shrinking
+	// the list Settings shows.
+	catalog, err := channelsservice.LoadCatalog(mappings.FS)
+	if err != nil {
+		return nil, err
+	}
+
+	c.buildRouters(channelRepo, connectionRepo, credentialRepo, channelResolver, clusterRepo, identityTx, enricherRegistry, catalog, clk)
 	return c, nil
 }
 
@@ -841,10 +913,16 @@ func (c *Container) buildNotification(
 	// `alerts/service` ever publish an equivalent, the swap is this one constructor.
 	snapshots := notifrepo.NewSnapshotRepository(general, clk)
 
+	// The Incident reader both halves need (ADR 0052 §5): the evaluation reads an
+	// Incident to route its fact, the view reads it again at claim time (C11). One
+	// late-bound holder, filled once `c.Incidents` exists.
+	c.incidentFacts = &incidentFacts{orgs: c.Identity}
+
 	if c.Views, err = notifservice.NewViewService(notifservice.ViewConfig{
 		Snapshots: snapshots,
 		BaseURL:   c.Config.HTTP.BaseURL,
 		Clock:     clk,
+		Incidents: c.incidentFacts,
 	}); err != nil {
 		return err
 	}
@@ -862,9 +940,13 @@ func (c *Container) buildNotification(
 		// ADR 0020's broadcast policy and the org's fallback verbosity, read from
 		// `orgs.settings` on every evaluation — the same adapter the alerts and
 		// grouping lifecycle ports use.
-		Settings: settings,
-		Clock:    clk,
-		Logger:   logger,
+		Settings:  settings,
+		Incidents: c.incidentFacts,
+		// The same holder answers which Incident conversation a Case fact belongs
+		// in (ADR 0052 §6), read once per fact as it is evaluated.
+		Conversations: c.incidentFacts,
+		Clock:         clk,
+		Logger:        logger,
 	}); err != nil {
 		return err
 	}
@@ -903,6 +985,13 @@ func (c *Container) buildNotification(
 		// keep meaning something. A deployment whose policies name no template
 		// resolves none and every card reads in oto's own voice.
 		Templates: channelsservice.NewTemplates(c.templates),
+		// ADR 0052 §5's outbound mapping (migration 00089): the external incident a
+		// receiver echoes for an Incident fact, kept once per (Incident, channel).
+		Receipts: notifrepo.NewIncidentReceiptRepository(general),
+		// ADR 0055 §2's payload mapping (migration 00090), applied at claim time beside
+		// the template lookup. A mapping that does not render is a dead
+		// `config_invalid` delivery, never the plain envelope.
+		Mapper: channelsservice.NewMapper(),
 	}); err != nil {
 		return err
 	}
@@ -1002,6 +1091,7 @@ func (c *Container) buildRouters(
 	clusterRepo *sourcesrepo.ClusterRepository,
 	identityTx *identityrepo.TxRunner,
 	enricherRegistry *enrichservice.Registry,
+	catalog []channelsdomain.CatalogMapping,
 	clk clock.Clock,
 ) {
 	c.routers = routerSet{
@@ -1050,6 +1140,10 @@ func (c *Container) buildRouters(
 			// not be read back from anywhere but `psql`. It is the SAME
 			// `ingestion/service.Service` the webhook handler writes through.
 			Feeds: ingestFeeds{svc: c.Ingestion.Service},
+			// The open Cases on each source's cluster and how many the reaper is
+			// holding because of it (ADR 0056 §1) — the per-source form of the
+			// `held` count the sweep only ever logged.
+			Cases: sourceCases{svc: c.Alerts},
 			// Configuration-time SSRF feedback. The DIALER is the control; this is
 			// so an operator who pastes a metadata-service URL sees a 422 naming the
 			// field rather than a probe that mysteriously returns someone else's data.
@@ -1081,7 +1175,9 @@ func (c *Container) buildRouters(
 			// the preview that renders a candidate template against the shipped
 			// fixture corpus in every Dialect and saves nothing.
 			Templates: c.templates,
-			Clock:     clk,
+			// The payload-mapping catalog Settings → Connections imports from.
+			Catalog: catalog,
+			Clock:   clk,
 		}),
 		notifs: notifapi.NewRouter(notifapi.Options{
 			Policies: c.notifConfigRepo,
@@ -1100,10 +1196,12 @@ func (c *Container) buildRouters(
 			Clock:         clk,
 			BaseURL:       c.Config.HTTP.BaseURL,
 		}),
-		silences:  silencesapi.NewRouter(c.Silences, silenceBaseURLs{svc: c.Sources}, clk),
-		stats:     statsapi.NewRouter(c.Stats, clk),
-		drills:    drillRouter(c.Drills, clk),
-		enrichers: enrichapi.NewRouter(enricherRegistry, clk),
+		silences:    silencesapi.NewRouter(c.Silences, silenceBaseURLs{svc: c.Sources}, clk),
+		stats:       statsapi.NewRouter(c.Stats, clk),
+		incidents:   incidentsapi.NewRouter(c.Incidents, clk),
+		correlators: incidentsapi.NewCorrelatorRouter(c.Correlators, clk),
+		drills:      drillRouter(c.Drills, clk),
+		enrichers:   enrichapi.NewRouter(enricherRegistry, clk),
 		streaming: streamingapi.NewRouter(c.Streaming, c.StreamHub,
 			streamingapi.ScopeResolverFunc(func(ctx context.Context) (db.TenantScope, error) {
 				_, s, err := authn.Scope(ctx)

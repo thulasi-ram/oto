@@ -35,6 +35,7 @@ const DefaultMaxInstances = 10
 // card, because a reader has no way to tell which one they are looking at.
 type ViewService struct {
 	snapshots SnapshotSource
+	incidents IncidentReader
 	baseURL   string
 	clk       clock.Clock
 }
@@ -61,6 +62,10 @@ type ViewConfig struct {
 	// runtime: `container.go` has never set it, so this view builder has been using
 	// `DefaultMaxInstances` on every deployment oto has ever had.
 	Clock clock.Clock
+	// Incidents reads the Incident an Incident fact's card is built from, at claim
+	// time (C11). Optional in the constructor for the reason
+	// `NotificationConfig.Incidents` is; `Build` refuses an Incident fact without it.
+	Incidents IncidentReader
 }
 
 // NewViewService builds the view service.
@@ -70,6 +75,7 @@ func NewViewService(cfg ViewConfig) (*ViewService, error) {
 	}
 	v := &ViewService{
 		snapshots: cfg.Snapshots,
+		incidents: cfg.Incidents,
 		baseURL:   strings.TrimRight(cfg.BaseURL, "/"),
 		clk:       cfg.Clock,
 	}
@@ -90,6 +96,17 @@ func NewViewService(cfg ViewConfig) (*ViewService, error) {
 // second way to name a human is a second name to disagree with.
 type ViewRequest struct {
 	Notification domain.Notification
+	// IncidentRoot is set when the delivery being rendered is the ROOT of an
+	// Incident's conversation — `post_root` or `update_root` on a thread keyed by an
+	// Incident (ADR 0052 §6) — and names that Incident.
+	//
+	// ⭐ THE ROOT OF A CONVERSATION IS THE CONVERSATION'S CARD, WHATEVER FACT MOVED
+	// IT. A Case fact that is the first to land in an Incident's thread on some
+	// channel posts the Incident's card, not its own, and a Case fact that amends the
+	// root amends it to the Incident as it now is — a Case card in that slot would
+	// tell the channel the story is one signal. Only the dispatcher knows the mode
+	// and the thread, so it says so here.
+	IncidentRoot uuid.UUID
 }
 
 // Build reads the world and projects it into the renderer's read model.
@@ -108,13 +125,37 @@ func (v *ViewService) Build(
 	if n.Digest() {
 		return v.digest(n), nil
 	}
+	// The root of an Incident's conversation is the Incident's card, whichever fact
+	// is amending or posting it. See `ViewRequest.IncidentRoot`.
+	if req.IncidentRoot != uuid.Nil {
+		return v.incidentCard(ctx, scope, req.IncidentRoot, n, "")
+	}
+	// ⛔ AN INCIDENT FACT HAS NO CASE TO SNAPSHOT EITHER. Its `ConversationID` is the
+	// Incident — or, for the one pointer posted into a member Case's own thread, that
+	// Case — and neither is the subject. It reads the Incident instead, at claim
+	// time, so the card says what the Incident IS when it is sent.
+	if n.Incident() {
+		pointsFrom := ""
+		if n.IncidentPointer() {
+			pointsFrom = n.ConversationID.String()
+		}
+		return v.incidentCard(ctx, scope, n.SubjectID, n, pointsFrom)
+	}
 
 	// ⛔ IT PASSED `GroupID: n.GroupID` PLUS AN OPTIONAL `CaseID` (git-bug
-	// `7570090`). The Case is the subject now, and `ConversationID` is where a
-	// non-digest notification's Case id lives — `mint` writes the pair, so reading it
-	// back here is reading what was stored rather than re-deriving it.
+	// `7570090`). The Case is the subject now.
+	//
+	// ⛔ AND IT READ THE CASE OUT OF `ConversationID`, WHICH IS NO LONGER ALWAYS A
+	// CASE (ADR 0052 §6). A Case fact placed in an Incident's conversation stores the
+	// Incident there, and snapshotting an Incident id as a Case comes back
+	// `case_not_found` and dead-letters the delivery. `case_id` is on every Case
+	// fact's row (`mint` writes both), so it is the column that answers "which Case".
+	caseID := n.ConversationID
+	if n.CaseID != nil {
+		caseID = *n.CaseID
+	}
 	snap, err := v.snapshots.Snapshot(ctx, scope, domain.SnapshotQuery{
-		CaseID:  n.ConversationID,
+		CaseID:  caseID,
 		AlertID: n.AlertID,
 		// The Reason travels because it is what names the timeline entry that
 		// caused this card: without it the read model can say what the world looks
@@ -124,7 +165,36 @@ func (v *ViewService) Build(
 	if err != nil {
 		return nil, err
 	}
-	return v.project(snap, req), nil
+	view := v.project(snap, req)
+	if n.InIncidentConversation() {
+		in, err := v.inIncident(ctx, scope, n.ConversationID, caseID)
+		if err != nil {
+			return nil, err
+		}
+		view.InIncident = in
+	}
+	return view, nil
+}
+
+// inIncident names the Incident conversation a Case fact is being posted into, and
+// the Case as that Incident lists it (ADR 0052 §6), read at claim time like the
+// rest of the card.
+func (v *ViewService) inIncident(
+	ctx context.Context, scope db.TenantScope, incidentID, caseID uuid.UUID,
+) (*InIncidentView, error) {
+	if v.incidents == nil {
+		return nil, errs.New(errs.KindInternal, "incident_reader_unwired",
+			"the view service has no Incident reader, so it cannot name the Incident a Case fact is posted in")
+	}
+	f, err := v.incidents.Incident(ctx, scope, incidentID)
+	if err != nil {
+		return nil, err
+	}
+	out := &InIncidentView{Number: f.Number}
+	if m, ok := f.Member(caseID); ok {
+		out.CaseNumber = m.CaseNumber
+	}
+	return out, nil
 }
 
 // digest projects a digest Notification, which needs no snapshot: everything it

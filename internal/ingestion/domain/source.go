@@ -49,6 +49,21 @@ type SourceConfig struct {
 // permanently and an operator toggling a flag should not lose evidence.
 func (c SourceConfig) AcceptsPush() bool { return c.PushEnabled && c.DeletedAt == nil }
 
+// PushStampEvery is how stale `source_health.last_push_at` may be allowed to get
+// before an accepted push moves it.
+//
+// ⭐ IT IS A THROTTLE ON A HOT ROW, NOT A DISPLAY SETTING. The stamp rides the
+// accept transaction (see service.Accept), and every concurrent accept from one
+// source would otherwise queue on that source's single `source_health` row lock
+// for the rest of its transaction — an HA pair in a storm is exactly that
+// workload. Inside the window the UPDATE matches no row, so it takes no lock and
+// writes no WAL; only the first push past the window pays for a write.
+//
+// Fifteen seconds is finer than anything that reads the column: the reconciler's
+// shipped period is 30 s and the question an operator brings to it — "is this
+// Alertmanager still telling oto anything?" — is answered in minutes.
+const PushStampEvery = 15 * time.Second
+
 // IngestToken is a resolved, non-revoked `api_tokens` row of kind `ingest`.
 //
 // An ingest token is scoped to EXACTLY ONE source (api_tokens_ingest_scope) and

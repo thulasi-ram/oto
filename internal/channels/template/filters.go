@@ -87,35 +87,10 @@ func registerFilters(e *liquid.Engine) {
 		return v
 	})
 
-	e.RegisterFilter("upper", func(v any) any { return caseMapped(str(v), unicode.ToUpper) })
-	e.RegisterFilter("lower", func(v any) any { return caseMapped(str(v), unicode.ToLower) })
-	e.RegisterFilter("capitalise", func(v any) any {
-		s := str(v)
-		if s == "" {
-			return s
-		}
-		r, n := utf8.DecodeRuneInString(s)
-		return strings.ToUpper(string(r)) + s[n:]
-	})
-
-	// truncate_runes counts RUNES, unlike the byte-budgeted sink it feeds. An author
-	// asking for forty characters means forty characters; the sink's separate byte
-	// ceiling is Slack's, and both apply.
-	e.RegisterFilter("truncate_runes", func(v any, n int) any {
-		s := str(v)
-		// ⛔ A TIME MARK IS NOT TEXT AND MUST NOT BE CUT. It carries the epoch and
-		// oto's own formatted fallback between private-use delimiters; slicing it
-		// leaves a half-mark that Spell cannot parse and that degrades to the raw
-		// unix seconds printed on the card. Truncating a timestamp is meaningless
-		// anyway, so the value passes through whole.
-		if strings.ContainsRune(s, markTimeOpen) {
-			return s
-		}
-		if n <= 0 || utf8.RuneCountInString(s) <= n {
-			return s
-		}
-		return string([]rune(s)[:n]) + "…"
-	})
+	e.RegisterFilter("upper", func(v any) any { return upperText(str(v)) })
+	e.RegisterFilter("lower", func(v any) any { return lowerText(str(v)) })
+	e.RegisterFilter("capitalise", func(v any) any { return capitaliseText(str(v)) })
+	e.RegisterFilter("truncate_runes", func(v any, n int) any { return truncateRunes(str(v), n) })
 
 	// ⛔ BACKTICKS ARE STRIPPED FROM THE VALUE, as slack.code() already does for
 	// upstream text. Without it an annotation containing a backtick closes the span
@@ -152,6 +127,35 @@ func registerFilters(e *liquid.Engine) {
 	e.RegisterFilter("human_duration", func(v any) any {
 		return humanise(time.Duration(toInt(v)) * time.Second)
 	})
+}
+
+func upperText(s string) string { return caseMapped(s, unicode.ToUpper) }
+func lowerText(s string) string { return caseMapped(s, unicode.ToLower) }
+
+func capitaliseText(s string) string {
+	if s == "" {
+		return s
+	}
+	r, n := utf8.DecodeRuneInString(s)
+	return strings.ToUpper(string(r)) + s[n:]
+}
+
+// truncateRunes counts RUNES, unlike the byte-budgeted sink it feeds. An author
+// asking for forty characters means forty characters; the sink's separate byte
+// ceiling is Slack's, and both apply.
+func truncateRunes(s string, n int) string {
+	// ⛔ A TIME MARK IS NOT TEXT AND MUST NOT BE CUT. It carries the epoch and
+	// oto's own formatted fallback between private-use delimiters; slicing it
+	// leaves a half-mark that Spell cannot parse and that degrades to the raw
+	// unix seconds printed on the card. Truncating a timestamp is meaningless
+	// anyway, so the value passes through whole.
+	if strings.ContainsRune(s, markTimeOpen) {
+		return s
+	}
+	if n <= 0 || utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	return string([]rune(s)[:n]) + "…"
 }
 
 func wrap(open, shut rune) func(any) any {

@@ -101,7 +101,13 @@ var notARequestResolver = map[string]string{
 		"`7570090` made the Case the conversation; the category is unchanged, because what makes it " +
 		"exempt is that the id comes from oto's own job args and never from a request",
 	"notification/repository.orgOfDeliverySQL": "job-payload scope for the delivery workers: the org comes from the delivery row",
-	"sources/repository.resolveSourceOrgSQL":   "job-payload scope for the source workers: the org comes from the source row",
+	"notification/repository.orgOfIncidentSQL": "job-payload scope for `notify.incident`: the org comes from the " +
+		"INCIDENT row the job names (ADR 0052 §5), the same category as orgOfCaseSQL — the id is oto's own " +
+		"job args and never a request's",
+	"incidents/repository.insertSQL": "an INSERT that draws an Incident, not a read: its org id goes IN as $2 " +
+		"from the TenantScope the caller already holds, and it returns the allocated number, never an org. " +
+		"It is scanned only because it opens with the `WITH` that allocates the number in the same statement",
+	"sources/repository.resolveSourceOrgSQL": "job-payload scope for the source workers: the org comes from the source row",
 
 	"app.selectLiveOrgIDBySlugSQL": "operator scope for `oto reset-password`, the same category as " +
 		"`ingestion/repository.locateBatchSQL` above: an operator running the CLI has a shell on the " +

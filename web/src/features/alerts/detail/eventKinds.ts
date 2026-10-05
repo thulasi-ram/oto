@@ -26,7 +26,8 @@ export type EventCategory =
   | "enrichment"
   | "notification"
   | "group"
-  | "source";
+  | "source"
+  | "incident";
 
 export type MarkerShape = "dot" | "ring" | "square" | "diamond" | "bar" | "quote";
 
@@ -290,6 +291,40 @@ export const EVENT_KINDS: Record<AlertEventType, EventKind> = {
     shape: "square",
     note: "The quiet period ended. The wake-up message reflects the alert's state now rather than replaying what was suppressed.",
   },
+
+  /**
+   * Incident membership (ADR 0052).
+   *
+   * ⛔ NONE OF THE THREE IS A LIFECYCLE STATE, SO NONE OF THEM TAKES A TIER-B
+   * HUE. Drawing a Case into an Incident, taking it out, or moving it to another
+   * changes nothing about the firing: the episode is open or closed exactly as it
+   * was, and painting the marker in a state colour would be the timeline claiming
+   * a human had changed the signal. Neutral ink, a square — the mark the retired
+   * group container used, because "this firing sits inside something larger" is
+   * the shape of the fact in both cases — and the server's own summary carries the
+   * Incident numbers and the actor.
+   */
+  "incident.case_added": {
+    label: "Added to an Incident",
+    category: "incident",
+    tone: NEUTRAL_STRONG,
+    shape: "square",
+    note: "A person or a Correlator put this firing in an Incident. The firing itself is unchanged.",
+  },
+  "incident.case_removed": {
+    label: "Removed from an Incident",
+    category: "incident",
+    tone: NEUTRAL,
+    shape: "square",
+    note: "A human took this firing out of an Incident. The Incident keeps it on record as removed.",
+  },
+  "incident.case_moved": {
+    label: "Moved to another Incident",
+    category: "incident",
+    tone: NEUTRAL_STRONG,
+    shape: "square",
+    note: "A human moved this firing from one Incident to another, in one step.",
+  },
 };
 
 /** A forward-compatible fallback: an unknown type renders its server summary. */
@@ -314,6 +349,7 @@ export const CATEGORY_LABEL: Record<EventCategory, string> = {
   notification: "Notifications",
   group: "Alert group",
   source: "Source",
+  incident: "Incidents",
 };
 
 /**
@@ -401,4 +437,5 @@ export const CATEGORY_MARK: Record<EventCategory, MarkerShape> = {
   notification: "dot",
   group: "square",
   source: "bar",
+  incident: "square",
 };

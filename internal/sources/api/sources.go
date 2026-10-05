@@ -100,6 +100,19 @@ func (rt *Router) decorate(
 		keys = k
 	}
 
+	// The open Cases each source's cluster holds, and how many the reaper is
+	// holding because of it (ADR 0056 §1). A source the count did not reach
+	// carries neither number: absent is "not counted", and a zero would claim the
+	// source is holding nothing.
+	cases := map[uuid.UUID]CaseCount{}
+	if rt.cases != nil {
+		c, err := rt.cases.OpenCasesBySource(ctx, scope, ids)
+		if err != nil {
+			return nil, err
+		}
+		cases = c
+	}
+
 	for _, s := range sources {
 		h, ok := health[s.ID]
 		if !ok {
@@ -108,7 +121,12 @@ func (rt *Router) decorate(
 			// state an operator most needs to see on a freshly added source.
 			h = domain.SourceHealth{SourceID: s.ID, OrgID: s.OrgID, Status: domain.HealthUnknown}
 		}
-		out = append(out, sourceDTO(s, keys[s.ClusterID], &h))
+		dto := sourceDTO(s, keys[s.ClusterID], &h)
+		if n, ok := cases[s.ID]; ok {
+			dto.OpenCaseCount = countPtr(n.Open)
+			dto.HeldCaseCount = countPtr(n.Held)
+		}
+		out = append(out, dto)
 	}
 	return out, nil
 }
@@ -173,6 +191,10 @@ func (rt *Router) createSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := checkMaxSilence(dto.MaxSilenceSeconds); err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
 	if err := rt.checkTLSSkipVerify(dto.TLSSkipVerify); err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
@@ -263,6 +285,10 @@ func (rt *Router) updateSource(w http.ResponseWriter, r *http.Request) {
 			}))
 		return
 	}
+	if err := checkMaxSilence(dto.MaxSilenceSeconds); err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
 
 	if err := rt.checkTLSSkipVerify(dto.TLSSkipVerify); err != nil {
 		httpx.WriteProblem(w, r, err)
@@ -292,6 +318,24 @@ func (rt *Router) updateSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.Data(w, r, http.StatusOK, rt.oneDTO(r.Context(), scope, src), started)
+}
+
+// checkMaxSilence enforces `alert_sources_silence_ck` at layer 2, because a custom
+// unmarshaller has no field for a validator tag to hang on. A null is always
+// allowed: it is "off".
+func checkMaxSilence(n NullableInt32) error {
+	if n.Value == nil {
+		return nil
+	}
+	v := int64(*n.Value)
+	if v < int64(domain.MaxSilenceFloor.Seconds()) || v > int64(domain.MaxSilenceCeiling.Seconds()) {
+		return errs.Validation("validation_failed", "1 field failed validation.",
+			errs.Violation{
+				Field: "max_silence_seconds", Code: "range",
+				Message: "max_silence_seconds must be between 3600 (an hour) and 2592000 (thirty days), or null to turn the silent expiry off",
+			})
+	}
+	return nil
 }
 
 // deleteSource serves DELETE /api/v1/sources/{id}.

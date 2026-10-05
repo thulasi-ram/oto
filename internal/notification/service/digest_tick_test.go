@@ -365,6 +365,13 @@ func (t *digestThreads) Get(
 	return domain.Thread{}, nil
 }
 
+// ForSubjects is the Incident pointer's read (ADR 0052 §6); a digest never asks it.
+func (t *digestThreads) ForSubjects(
+	context.Context, db.TenantScope, domain.SubjectKind, []uuid.UUID,
+) ([]domain.Thread, error) {
+	return nil, nil
+}
+
 func (t *digestThreads) AllocateSeq(
 	context.Context, db.TenantScope, uuid.UUID, time.Time,
 ) (int, error) {

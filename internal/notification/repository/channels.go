@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,6 +19,9 @@ type channelRow struct {
 	name           string
 	config         []byte
 	credentialID   *uuid.UUID
+	signingID      *uuid.UUID
+	mapping        []byte
+	mappingID      *uuid.UUID
 	capabilities   int64
 	renderer       string
 	verbosity      string
@@ -31,20 +35,23 @@ type channelRow struct {
 
 func (r channelRow) toDomain() domain.Channel {
 	c := domain.Channel{
-		ID:             r.id,
-		OrgID:          r.orgID,
-		Type:           domain.ChannelType(r.kind),
-		Name:           r.name,
-		Config:         r.config,
-		CredentialID:   r.credentialID,
-		Capabilities:   domain.Capability(r.capabilities),
-		Renderer:       r.renderer,
-		Verbosity:      domain.Verbosity(r.verbosity),
-		ThreadUpdates:  r.threadUpdates,
-		ShowFieldEmoji: r.showFieldEmoji,
-		Enabled:        r.enabled,
-		HealthStatus:   domain.HealthStatus(r.healthStatus),
-		DeletedAt:      r.deletedAt,
+		ID:                  r.id,
+		OrgID:               r.orgID,
+		Type:                domain.ChannelType(r.kind),
+		Name:                r.name,
+		Config:              r.config,
+		CredentialID:        r.credentialID,
+		SigningCredentialID: r.signingID,
+		PayloadMapping:      nullableMapping(r.mapping),
+		MappingCredentialID: r.mappingID,
+		Capabilities:        domain.Capability(r.capabilities),
+		Renderer:            r.renderer,
+		Verbosity:           domain.Verbosity(r.verbosity),
+		ThreadUpdates:       r.threadUpdates,
+		ShowFieldEmoji:      r.showFieldEmoji,
+		Enabled:             r.enabled,
+		HealthStatus:        domain.HealthStatus(r.healthStatus),
+		DeletedAt:           r.deletedAt,
 	}
 	if r.healthError != nil {
 		c.HealthError = *r.healthError
@@ -62,6 +69,13 @@ type SealedCredential struct {
 	Kind       string
 	Sealed     []byte
 	KeyVersion int
+
+	// The secret this one replaced, still sealed, and when it stops signing
+	// (migration 00088). Only a `webhook_signing_secret` ever has one; nil
+	// everywhere else and once never rotated.
+	PreviousSealed     []byte
+	PreviousKeyVersion *int
+	PreviousUntil      *time.Time
 }
 
 // ChannelRepository is the SQL over `channels` and `channel_credentials`.
@@ -87,7 +101,8 @@ func (r *ChannelRepository) db(ctx context.Context) db.Querier { return db.FromC
 const channelColumns = `
   c.id, c.org_id, c.type, c.name, c.config, cx.credential_id, c.capabilities,
   c.renderer, c.verbosity, c.thread_updates, c.show_field_emoji, c.enabled,
-  c.health_status, c.health_error, c.deleted_at`
+  c.health_status, c.health_error, c.deleted_at, cx.signing_credential_id,
+  cx.payload_mapping, cx.mapping_credential_id`
 
 const channelFrom = `
   FROM channels c
@@ -124,7 +139,7 @@ func (r *ChannelRepository) ListByIDs(
 			&row.id, &row.orgID, &row.kind, &row.name, &row.config, &row.credentialID,
 			&row.capabilities, &row.renderer, &row.verbosity, &row.threadUpdates,
 			&row.showFieldEmoji, &row.enabled, &row.healthStatus, &row.healthError,
-			&row.deletedAt,
+			&row.deletedAt, &row.signingID, &row.mapping, &row.mappingID,
 		); err != nil {
 			return nil, mapErr(err, "channel_not_found", "scan channel")
 		}
@@ -149,7 +164,7 @@ func (r *ChannelRepository) Get(
 		&row.id, &row.orgID, &row.kind, &row.name, &row.config, &row.credentialID,
 		&row.capabilities, &row.renderer, &row.verbosity, &row.threadUpdates,
 		&row.showFieldEmoji, &row.enabled, &row.healthStatus, &row.healthError,
-		&row.deletedAt,
+		&row.deletedAt, &row.signingID, &row.mapping, &row.mappingID,
 	)
 	if err != nil {
 		return domain.Channel{}, mapErr(err, "channel_not_found", "channel")
@@ -217,7 +232,7 @@ func (r *ChannelRepository) SetHealth(
 // NULL.
 
 const getCredentialSQL = `
-SELECT id, kind, sealed, key_version
+SELECT id, kind, sealed, key_version, previous_sealed, previous_key_version, previous_until
   FROM channel_credentials
  WHERE org_id = $1 AND id = $2`
 
@@ -227,9 +242,19 @@ func (r *ChannelRepository) Credential(
 ) (SealedCredential, error) {
 	var c SealedCredential
 	err := r.db(ctx).QueryRow(ctx, getCredentialSQL, s.OrgID(), id).
-		Scan(&c.ID, &c.Kind, &c.Sealed, &c.KeyVersion)
+		Scan(&c.ID, &c.Kind, &c.Sealed, &c.KeyVersion,
+			&c.PreviousSealed, &c.PreviousKeyVersion, &c.PreviousUntil)
 	if err != nil {
 		return SealedCredential{}, mapErr(err, "credential_not_found", "channel credential")
 	}
 	return c, nil
+}
+
+// nullableMapping is `payload_mapping` read back: nil for NULL, so "no mapping" has
+// one spelling in this module.
+func nullableMapping(b []byte) json.RawMessage {
+	if len(b) == 0 {
+		return nil
+	}
+	return json.RawMessage(b)
 }

@@ -170,6 +170,23 @@ type ChannelConnectionDTO struct {
 	CredentialKind      *string    `json:"credential_kind"`
 	CredentialRotatedAt *time.Time `json:"credential_rotated_at"`
 
+	// The signing slot (migration 00088), said about the same way: whether one is
+	// attached, when it was last rotated, and until when the secret that rotation
+	// replaced keeps signing beside it. Never the secret.
+	SigningCredentialKind      *string    `json:"signing_credential_kind"`
+	SigningCredentialRotatedAt *time.Time `json:"signing_credential_rotated_at"`
+	SigningOverlapUntil        *time.Time `json:"signing_overlap_until"`
+
+	// PayloadMapping is a webhook connection's payload mapping (ADR 0055 §2), or
+	// null when it sends the plain envelope. It holds no secret — a secret is named
+	// in it as `secrets.<name>` — so it is returned whole, and is what the catalog
+	// exports.
+	PayloadMapping json.RawMessage `json:"payload_mapping"`
+	// MappingSecretNames are the names the connection seals for its mapping, and
+	// MappingSecretsRotatedAt when they were last replaced. Never a value.
+	MappingSecretNames      []string   `json:"mapping_secret_names"`
+	MappingSecretsRotatedAt *time.Time `json:"mapping_secrets_rotated_at"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -181,6 +198,18 @@ type CreateChannelConnectionRequest struct {
 	Config json.RawMessage `json:"config" validate:"required"`
 
 	Credential *CredentialInputDTO `json:"credential,omitempty"`
+	// SigningCredential is a webhook connection's outbound signing secret, kind
+	// `webhook_signing_secret`, beside — never instead of — `credential`.
+	SigningCredential *CredentialInputDTO `json:"signing_credential,omitempty"`
+
+	// PayloadMapping is a webhook connection's payload mapping (ADR 0055 §2). It is
+	// rendered against an envelope for every fact before it is stored, and refused
+	// with the failing fact named.
+	PayloadMapping json.RawMessage `json:"payload_mapping,omitempty"`
+	// MappingSecrets are the secrets the mapping references, name → value, sealed
+	// into one credential. ⛔ WRITE-ONLY, like every credential: only the names come
+	// back.
+	MappingSecrets map[string]string `json:"mapping_secrets,omitempty" validate:"omitempty,max=16"`
 }
 
 // UpdateChannelConnectionRequest is the partial update. `type` is absent for
@@ -191,11 +220,70 @@ type UpdateChannelConnectionRequest struct {
 	Config *json.RawMessage `json:"config,omitempty"`
 
 	Credential *CredentialInputDTO `json:"credential,omitempty"`
+	// SigningCredential rotates the signing secret, keeping the old one signing
+	// beside it for domain.SigningSecretOverlap; kind `none` detaches it.
+	SigningCredential *CredentialInputDTO `json:"signing_credential,omitempty"`
+
+	// PayloadMapping replaces the mapping; JSON `null` removes it, and the connection
+	// sends the plain envelope from the next claim on.
+	PayloadMapping json.RawMessage `json:"payload_mapping,omitempty"`
+	// MappingSecrets REPLACES the whole set of mapping secrets — nothing outside the
+	// send path can unseal the current ones to add to — and `{}` removes them.
+	MappingSecrets map[string]string `json:"mapping_secrets,omitempty" validate:"omitempty,max=16"`
 }
 
 // IsEmpty reports whether the request asks for nothing.
 func (r UpdateChannelConnectionRequest) IsEmpty() bool {
-	return r.Name == nil && r.Config == nil && r.Credential == nil
+	return r.Name == nil && r.Config == nil && r.Credential == nil && r.SigningCredential == nil &&
+		len(r.PayloadMapping) == 0 && r.MappingSecrets == nil
+}
+
+// PayloadMappingCatalogEntryDTO is one file of the payload-mapping catalog (ADR
+// 0055 §2): a tool's mapping, the docs its field names were checked against, and
+// what an importer must do. Importing COPIES `mapping` into a webhook connection's
+// own `payload_mapping`; nothing links the two afterwards.
+type PayloadMappingCatalogEntryDTO struct {
+	ID        string   `json:"id"`
+	Vendor    string   `json:"vendor"`
+	Title     string   `json:"title"`
+	Summary   string   `json:"summary"`
+	Docs      []string `json:"docs"`
+	CheckedOn string   `json:"checked_on"`
+	Setup     []string `json:"setup"`
+	// Commands are the tool's command fields and the values the catalog never sends
+	// in them (ADR 0055 §4) — what the import tells the operator they are NOT getting.
+	Commands []PayloadMappingCommandDTO `json:"commands"`
+	// Choices are what the import must ask before it copies `mapping`: each is
+	// written into the copy as the literal the operator picks, in place of its
+	// `<<choose:<name>>>` placeholder. A copy that still holds one is refused at save.
+	Choices []PayloadMappingChoiceDTO `json:"choices"`
+	// Secrets are the mapping secrets the connection must seal before the copy can
+	// be saved, by name. Never a value: a catalog file holds none.
+	Secrets []string        `json:"secrets"`
+	Mapping json.RawMessage `json:"mapping"`
+}
+
+// PayloadMappingCommandDTO is one command field of a tool's request body and the
+// values of it that would turn a fact into a command.
+type PayloadMappingCommandDTO struct {
+	Field     string   `json:"field"`
+	Forbidden []string `json:"forbidden"`
+}
+
+// PayloadMappingChoiceDTO is one value a catalog entry leaves to the operator.
+type PayloadMappingChoiceDTO struct {
+	Name     string   `json:"name"`
+	Question string   `json:"question"`
+	Field    string   `json:"field"`
+	Options  []string `json:"options"`
+}
+
+// TestConnectionMappingRequest asks for one fact to be sent through a mapped
+// connection, by way of one of its channels — the connection holds the mapping and
+// the channel holds the URL.
+type TestConnectionMappingRequest struct {
+	ChannelID uuid.UUID `json:"channel_id" validate:"required"`
+	Fact      string    `json:"fact"       validate:"required,max=32"`
 }
 
 // ResolveConversationRequest asks "what is the other half of this Slack

@@ -107,6 +107,7 @@ func New(d Deps) (*Module, error) {
 		Dedup:       repository.NewDedupRepository(ingest),
 		Rejections:  repository.NewRejectionRepository(ingest),
 		Sources:     sources,
+		Pushes:      repository.NewPushRepository(ingest),
 		Alerts:      d.Alerts,
 		AlertStates: d.AlertStates,
 		Enqueuer:    d.Enqueuer,

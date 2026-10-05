@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"time"
@@ -82,6 +83,8 @@ type DispatchService struct {
 	log           *slog.Logger
 	metrics       *Metrics
 	templates     TemplateResolver
+	receipts      IncidentReceipts
+	mapper        PayloadMapper
 }
 
 // DispatchConfig is everything NewDispatchService needs.
@@ -116,6 +119,15 @@ type DispatchConfig struct {
 	// reads in oto's own voice, which is the correct behaviour for a deployment
 	// that has never configured one.
 	Templates TemplateResolver
+	// Receipts records the external incident a destination echoes back for an
+	// Incident fact (ADR 0052 §5, migration 00089). Nil records nothing, and every
+	// delivery behaves exactly as it did before the echo existed — the echo is a
+	// courtesy a receiver extends, never part of whether a delivery succeeded.
+	Receipts IncidentReceipts
+	// Mapper applies a webhook Connection's payload mapping (ADR 0055 §2, migration
+	// 00090). Nil leaves every unmapped channel exactly as it was, and makes every
+	// MAPPED channel's delivery fail `config_invalid` — never the plain envelope.
+	Mapper PayloadMapper
 }
 
 // NewDispatchService builds the service.
@@ -136,6 +148,8 @@ func NewDispatchService(cfg DispatchConfig) (*DispatchService, error) {
 		lease: cfg.StaleClaimLease, clk: cfg.Clock, log: cfg.Logger,
 		metrics:   cfg.Metrics,
 		templates: cfg.Templates,
+		receipts:  cfg.Receipts,
+		mapper:    cfg.Mapper,
 	}
 	if s.maxInstances <= 0 {
 		s.maxInstances = DefaultMaxInstances
@@ -186,6 +200,10 @@ type sendPlan struct {
 	msg    RenderedMessage
 	target Target
 	gate   *ordering.Gate
+	// incidentID is the Incident this delivery is a fact about, or uuid.Nil. It is
+	// what an echoed external incident is recorded against, carried here so TX 2
+	// does not have to read the notification again to learn it.
+	incidentID uuid.UUID
 }
 
 // Dispatch is `deliver.dispatch`.
@@ -560,7 +578,16 @@ func (s *DispatchService) claim(
 	}
 
 	// C11: the view is built HERE, at claim time, from the world as it is now.
-	view, err := s.views.Build(ctx, scope, ViewRequest{Notification: n})
+	//
+	// ⭐ THE ROOT OF AN INCIDENT'S THREAD IS THE INCIDENT'S CARD (ADR 0052 §6), and
+	// this is the one place that knows both the thread and the RE-DERIVED mode: a
+	// Case fact's reply that `effectiveMode` turned into a fresh root — no root yet,
+	// or past the reply ceiling — must post the story, not one of its signals.
+	req := ViewRequest{Notification: n}
+	if d.ThreadID != nil && th.SubjectKind == domain.SubjectIncident && !mode.IsReply() {
+		req.IncidentRoot = th.SubjectID
+	}
+	view, err := s.views.Build(ctx, scope, req)
 	if err != nil {
 		return outcome{}, nil, err
 	}
@@ -622,6 +649,30 @@ func (s *DispatchService) claim(
 		return out, nil, err
 	}
 
+	// ⭐ A PAYLOAD MAPPING TURNS THE ENVELOPE INTO THE VENDOR'S REQUEST HERE (ADR 0055
+	// §2, git-bug 2205620): after the renderer, so the renderer stays pure, and before
+	// PersistRendered, so the row records the mapped body — the bytes that are sent,
+	// less the secrets the provider fills in at the socket.
+	if len(channel.PayloadMapping) > 0 {
+		mapped, merr := s.mapPayload(ctx, channel.PayloadMapping, msg)
+		if merr != nil {
+			// ⛔ NOT THE RENDER-FAILURE BRANCH ABOVE, AND NOT ITS COUNTER. RenderInvalid
+			// and its "oto could not render a legal payload" line mean an oto bug fixed
+			// by shipping a new oto; a mapping that does not render is the operator's
+			// configuration, fixed in Settings and retried from the audit. The row goes
+			// dead `config_invalid` with the attempt on it, the channel is flagged, and
+			// NOTHING is sent — above all not the plain envelope, which the vendor could
+			// not parse (§2: "never falls back").
+			if len(mapped.Payload) > 0 {
+				_ = s.deliveries.PersistRendered(ctx, scope, d.ID,
+					mapped.Payload, mapped.Hash, msg.Fallback, now, attributionOf(opts.Template))
+			}
+			out, err := s.fail(ctx, scope, d, channel, merr, domain.ClassConfigInvalid, now)
+			return out, nil, err
+		}
+		msg = mapped
+	}
+
 	// §G.7.4 coalescing: a root update whose bytes match what the card already
 	// shows buys nothing. This is what turns a flapping alert's forty identical
 	// updates into one send and thirty-nine visible `skipped` rows.
@@ -644,6 +695,9 @@ func (s *DispatchService) claim(
 
 	plan := &sendPlan{
 		delivery: d, thread: th, channel: channel, mode: mode, msg: msg, gate: gate,
+	}
+	if n.SubjectKind == domain.SubjectIncident {
+		plan.incidentID = n.SubjectID
 	}
 
 	target, err := s.open(ctx, scope, channel)
@@ -709,9 +763,50 @@ func (s *DispatchService) record(
 			out, err = s.fail(ctx, scope, d, p.channel, sendErr, classOf(sendErr), now)
 			return err
 		}
-		return s.succeed(ctx, scope, d, p.thread, p.channel, p.mode, result, now)
+		if err := s.succeed(ctx, scope, d, p.thread, p.channel, p.mode, result, now); err != nil {
+			return err
+		}
+		return s.recordReceipt(ctx, scope, p, result, now)
 	})
 	return out, err
+}
+
+// recordReceipt keeps the external incident a destination echoed for an Incident
+// fact — ADR 0052 §5's outbound mapping, as the receipt of this delivery (git-bug
+// 506ff21). It runs in TX 2, beside the `sent` row it is a receipt of, so a crash
+// cannot keep one without the other.
+//
+// ⭐ ONLY AN INCIDENT FACT, AND ONLY WHAT THE PROVIDER ALREADY VALIDATED. A Case
+// fact's echo is ignored: the outbound mapping binds an INCIDENT to its external
+// one, and a receiver that names something for a Case fact has named something oto
+// has no place for. The values arrive through `DeliverResult.External` already
+// passed through `ValidExternalIncident`; nothing else of the response ever
+// reached this module.
+//
+// ⭐ IDEMPOTENT BY CONSTRUCTION. The writer inserts ON CONFLICT DO NOTHING on
+// (Incident, channel), so the retry of a delivery the receiver already answered,
+// and every later fact on the same Incident, records nothing new.
+//
+// ⚠️ THE SLACK CARD SHOWS THE LINK ON ITS NEXT RENDER, NOT THIS INSTANT. The card is
+// built at claim time from the Incident as it is then (C11), and recording a receipt
+// is not an Incident fact — so nothing re-renders the card for it. The next fact
+// that touches the Incident's conversation amends the card, and the link is on it
+// from then on; the Incident's page reads it on every load.
+func (s *DispatchService) recordReceipt(
+	ctx context.Context, scope db.TenantScope, p *sendPlan, result DeliverResult, now time.Time,
+) error {
+	if s.receipts == nil || p.incidentID == uuid.Nil || result.External.IsZero() {
+		return nil
+	}
+	_, err := s.receipts.Record(ctx, scope, domain.IncidentReceipt{
+		IncidentID:  p.incidentID,
+		ChannelID:   p.channel.ID,
+		DeliveryID:  p.delivery.ID,
+		ExternalURL: result.External.URL,
+		ExternalID:  result.External.ID,
+		RecordedAt:  now,
+	})
+	return err
 }
 
 // recordTimeout bounds TX 2. It is generous because the alternative to writing
@@ -1045,6 +1140,7 @@ func (s *DispatchService) open(
 		Verbosity:      RenderVerbosity(c.EffectiveVerbosity()),
 		ThreadUpdates:  c.ThreadUpdates,
 		ShowFieldEmoji: c.ShowFieldEmoji,
+		PayloadMapping: c.PayloadMapping,
 	}
 
 	var cred TargetCredential
@@ -1063,8 +1159,88 @@ func (s *DispatchService) open(
 		}
 		cred = TargetCredential{Kind: sealed.Kind, Values: values}
 	}
+	if c.SigningCredentialID != nil {
+		signing, err := s.signingSecret(ctx, scope, *c.SigningCredentialID)
+		if err != nil {
+			return nil, err
+		}
+		cred.Signing = signing
+	}
+	// The secrets a payload mapping names, unsealed for this Open and filled by the
+	// provider as it sends (migration 00090). The delivery row never sees them.
+	if c.MappingCredentialID != nil {
+		sealed, err := s.channels.Credential(ctx, scope, *c.MappingCredentialID)
+		if err != nil {
+			return nil, err
+		}
+		if s.unsealer == nil {
+			return nil, errs.New(errs.KindInternal, "no_credential_unsealer",
+				"this destination has sealed mapping secrets and no unsealer is configured")
+		}
+		values, err := s.unsealer.Unseal(ctx, sealed.Kind, sealed.Sealed, sealed.KeyVersion)
+		if err != nil {
+			return nil, err
+		}
+		cred.Secrets = values
+	}
 
 	return s.registry.Open(ctx, ProviderType(c.Type), cfg, cred)
+}
+
+// mapPayload applies the channel's payload mapping, refusing outright when this
+// deployment was built without a mapper: a mapped channel's delivery with no way to
+// map it is a configuration error, never a reason to send the envelope.
+func (s *DispatchService) mapPayload(
+	ctx context.Context, mapping json.RawMessage, msg RenderedMessage,
+) (RenderedMessage, error) {
+	if s.mapper == nil {
+		return RenderedMessage{}, &ProviderError{
+			Class: "config_invalid", Provider: "webhook", Code: "payload_mapping_unavailable",
+			Cause: errors.New("this channel's connection carries a payload mapping and this deployment has no mapper; the plain envelope is never sent in its place"),
+		}
+	}
+	return s.mapper.Map(ctx, mapping, msg)
+}
+
+// signingSecret unseals a connection's outbound signing secret and — while a
+// rotation's overlap lasts — the one it replaced (migration 00088, ADR 0055 §1).
+//
+// ⭐ A PREDECESSOR PAST ITS OVERLAP IS NEVER UNSEALED. Whether it still signs is
+// decided twice: here, so the plaintext of a retired secret does not exist even
+// briefly, and again by the provider at the send instant (`SigningSecret.Secrets`),
+// because a slow retry can cross the boundary between this read and the POST.
+func (s *DispatchService) signingSecret(
+	ctx context.Context, scope db.TenantScope, id uuid.UUID,
+) (SigningSecret, error) {
+	sealed, err := s.channels.Credential(ctx, scope, id)
+	if err != nil {
+		return SigningSecret{}, err
+	}
+	// ⛔ THE ROW MUST BE A SIGNING SECRET. SigningValue reads a `token` too, so a
+	// signing reference pointed at the Connection's bearer credential would sign
+	// every request with the bearer token and publish an HMAC keyed by it.
+	if sealed.Kind != "webhook_signing_secret" {
+		return SigningSecret{}, errs.Newf(errs.KindInternal, "signing_credential_kind",
+			"this destination's signing credential is a %q credential, not a webhook_signing_secret", sealed.Kind)
+	}
+	if s.unsealer == nil {
+		return SigningSecret{}, errs.New(errs.KindInternal, "no_credential_unsealer",
+			"this destination has a sealed signing secret and no unsealer is configured")
+	}
+	values, err := s.unsealer.Unseal(ctx, sealed.Kind, sealed.Sealed, sealed.KeyVersion)
+	if err != nil {
+		return SigningSecret{}, err
+	}
+	out := SigningSecret{Current: SigningValue(values)}
+	if sealed.PreviousSealed != nil && sealed.PreviousKeyVersion != nil && sealed.PreviousUntil != nil &&
+		s.clk.Now().Before(*sealed.PreviousUntil) {
+		prev, err := s.unsealer.Unseal(ctx, sealed.Kind, sealed.PreviousSealed, *sealed.PreviousKeyVersion)
+		if err != nil {
+			return SigningSecret{}, err
+		}
+		out.Previous, out.PreviousUntil = SigningValue(prev), sealed.PreviousUntil.UTC()
+	}
+	return out, nil
 }
 
 // classOf maps a provider failure onto oto's retry taxonomy.

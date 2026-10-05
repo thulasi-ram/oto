@@ -92,15 +92,15 @@ export const AckStateSchema = v.picklist(["unacked", "acked"]);
 
 export const SuppressionReasonSchema = v.nullable(v.picklist(["silence", "inhibition", "mute_time_interval", "active_time_interval"]));
 
-export const ResolveReasonSchema = v.nullable(v.picklist(["upstream", "timeout"]));
+export const ResolveReasonSchema = v.nullable(v.picklist(["upstream", "timeout", "silent", "source_removed"]));
 
 export const GroupStateSchema = v.picklist(["open", "closed"]);
 
 export const ActorKindSchema = v.picklist(["system", "ingest", "reconciler", "reaper", "enricher", "notifier", "user", "slack"]);
 
-export const AlertEventTypeSchema = v.picklist(["alert.created", "alert.mutated", "case.opened", "case.reopened", "case.suppressed", "case.unsuppressed", "case.resolved", "case.expired", "case.acknowledged", "case.unacknowledged", "alert.snoozed", "alert.unsnoozed", "group.opened", "group.closed", "group.member_joined", "group.member_left", "rule.snapshot_captured", "rule.definition_changed", "rule.lookup_failed", "enrichment.completed", "enrichment.failed", "notification.created", "notification.suppressed", "delivery.sent", "delivery.updated", "delivery.failed", "delivery.skipped", "delivery.dead", "comment.added", "source.unreachable", "source.recovered", "source.clock_skew"]);
+export const AlertEventTypeSchema = v.picklist(["alert.created", "alert.mutated", "case.opened", "case.reopened", "case.suppressed", "case.unsuppressed", "case.resolved", "case.expired", "case.acknowledged", "case.unacknowledged", "alert.snoozed", "alert.unsnoozed", "group.opened", "group.closed", "group.member_joined", "group.member_left", "rule.snapshot_captured", "rule.definition_changed", "rule.lookup_failed", "enrichment.completed", "enrichment.failed", "notification.created", "notification.suppressed", "delivery.sent", "delivery.updated", "delivery.failed", "delivery.skipped", "delivery.dead", "comment.added", "source.unreachable", "source.recovered", "source.clock_skew", "incident.case_added", "incident.case_removed", "incident.case_moved"]);
 
-export const NotificationReasonSchema = v.picklist(["fired", "all_resolved", "repeat", "suppressed", "unsuppressed", "expired", "refired", "acked", "unacked", "snoozed", "unsnoozed", "enriched", "rule_changed", "comment", "digest"]);
+export const NotificationReasonSchema = v.picklist(["fired", "all_resolved", "repeat", "suppressed", "unsuppressed", "expired", "refired", "acked", "unacked", "snoozed", "unsnoozed", "enriched", "rule_changed", "comment", "digest", "drawn", "case_added", "case_removed", "quiet", "active_again"]);
 
 export const NotificationStatusSchema = v.picklist(["pending", "dispatched", "partial", "delivered", "failed", "suppressed"]);
 
@@ -569,6 +569,47 @@ export const RuleSnapshotDTOSchema = v.looseObject({
   "captured_at": TimestampSchema,
 });
 
+export const CaseSourceDTOSchema = v.looseObject({
+  "id": UuidSchema,
+  "name": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(120),
+  ),
+  "healthy": v.boolean(),
+  "max_silence_seconds": v.nullable(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(3600),
+    v.maxValue(2592000),
+  )),
+});
+
+export const CaseSourcesDTOSchema = v.looseObject({
+  "live": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+  ),
+  "removed": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+  ),
+  "all_healthy": v.boolean(),
+  "max_silence_seconds": v.nullable(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(3600),
+    v.maxValue(2592000),
+  )),
+  "live_sources": v.pipe(
+    v.array(CaseSourceDTOSchema),
+    v.maxLength(10),
+  ),
+  "source": v.nullable(CaseSourceDTOSchema),
+});
+
 export const CaseDetailDTOSchema = v.intersect([
   CaseDTOSchema,
   v.looseObject({
@@ -580,6 +621,7 @@ export const CaseDetailDTOSchema = v.intersect([
       v.maxLength(32),
     ),
     "delivery_summary": DeliverySummaryDTOSchema,
+    "sources": v.nullable(CaseSourcesDTOSchema),
   }),
 ]);
 
@@ -587,8 +629,254 @@ export const CaseListItemDTOSchema = v.intersect([
   CaseDTOSchema,
   v.looseObject({
     "alert": AlertRefDTOSchema,
+    "sources": v.nullable(CaseSourcesDTOSchema),
   }),
 ]);
+
+export const IncidentStateSchema = v.picklist(["active", "quiet"]);
+
+export const IncidentAttributionDTOSchema = v.looseObject({
+  "kind": v.picklist(["human", "correlator"]),
+  "label": v.exactOptional(v.nullable(v.pipe(
+    v.string(),
+    v.maxLength(200),
+  ))),
+  "correlator_id": v.exactOptional(v.nullable(UuidSchema)),
+});
+
+export const IncidentDTOSchema = v.looseObject({
+  "id": UuidSchema,
+  "number": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+  ),
+  "state": IncidentStateSchema,
+  "drawn_at": TimestampSchema,
+  "drawn_by": IncidentAttributionDTOSchema,
+  "member_count": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+  ),
+  "open_member_count": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+  ),
+  "alertnames": v.pipe(
+    v.array(v.pipe(
+      v.string(),
+      v.maxLength(1024),
+    )),
+    v.maxLength(10),
+  ),
+});
+
+export const IncidentMemberDTOSchema = v.looseObject({
+  "case_id": UuidSchema,
+  "case_number": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+  ),
+  "case_state": CaseStateSchema,
+  "alert_id": UuidSchema,
+  "alertname": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(1024),
+  ),
+  "labels": LabelMapSchema,
+  "added_at": TimestampSchema,
+  "added_by": IncidentAttributionDTOSchema,
+  "removed_at": v.exactOptional(v.nullable(TimestampSchema)),
+  "removed_by_label": v.exactOptional(v.nullable(v.pipe(
+    v.string(),
+    v.maxLength(200),
+  ))),
+  "moved_to_number": v.exactOptional(v.nullable(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+  ))),
+});
+
+export const IncidentOutboundDTOSchema = v.looseObject({
+  "channel_id": UuidSchema,
+  "channel_name": v.string(),
+  "external_url": v.nullable(v.pipe(
+    v.string(),
+    v.url(),
+    v.maxLength(2048),
+  )),
+  "external_id": v.nullable(v.pipe(
+    v.string(),
+    v.maxLength(255),
+  )),
+  "recorded_at": TimestampSchema,
+});
+
+export const IncidentDetailDTOSchema = v.intersect([
+  IncidentDTOSchema,
+  v.looseObject({
+    "members": v.array(IncidentMemberDTOSchema),
+    "outbound": v.pipe(
+      v.array(IncidentOutboundDTOSchema),
+      v.maxLength(1000),
+    ),
+  }),
+]);
+
+export const CreateIncidentRequestSchema = v.strictObject({
+  "case_ids": v.pipe(
+    v.array(UuidSchema),
+    v.minLength(1),
+    v.maxLength(100),
+    v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
+  ),
+});
+
+export const AddIncidentCaseRequestSchema = v.strictObject({
+  "case_id": UuidSchema,
+});
+
+export const MoveIncidentCaseRequestSchema = v.strictObject({
+  "to_number": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+  ),
+});
+
+export const MatcherDTOSchema = v.looseObject({
+  "name": LabelNameSchema,
+  "op": MatcherOpSchema,
+  "value": v.pipe(
+    v.string(),
+    v.maxLength(4096),
+  ),
+});
+
+export const CorrelatorDTOSchema = v.looseObject({
+  "id": UuidSchema,
+  "name": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(120),
+  ),
+  "priority": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+    v.maxValue(10000),
+  ),
+  "enabled": v.boolean(),
+  "matchers": v.pipe(
+    v.array(MatcherDTOSchema),
+    v.maxLength(32),
+  ),
+  "count_min": v.nullable(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(2),
+    v.maxValue(10000),
+  )),
+  "count_window_seconds": v.nullable(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(60),
+    v.maxValue(86400),
+  )),
+  "quiet_grace_seconds": v.nullable(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(60),
+    v.maxValue(86400),
+  )),
+  "incidents_are_conversations": v.boolean(),
+  "created_at": TimestampSchema,
+  "updated_at": TimestampSchema,
+});
+
+export const CreateCorrelatorRequestSchema = v.strictObject({
+  "name": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(120),
+  ),
+  "priority": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+    v.maxValue(10000),
+  ), 100),
+  "enabled": v.exactOptional(v.boolean(), true),
+  "matchers": v.exactOptional(v.pipe(
+    v.array(MatcherDTOSchema),
+    v.maxLength(32),
+  )),
+  "count_min": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(2),
+    v.maxValue(10000),
+  )),
+  "count_window_seconds": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(60),
+    v.maxValue(86400),
+  )),
+  "quiet_grace_seconds": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(60),
+    v.maxValue(86400),
+  )),
+  "incidents_are_conversations": v.exactOptional(v.boolean(), false),
+});
+
+export const UpdateCorrelatorRequestSchema = v.pipe(
+  v.strictObject({
+    "name": v.exactOptional(v.pipe(
+      v.string(),
+      v.minLength(1),
+      v.maxLength(120),
+    )),
+    "priority": v.exactOptional(v.pipe(
+      v.number(),
+      v.integer(),
+      v.minValue(0),
+      v.maxValue(10000),
+    )),
+    "enabled": v.exactOptional(v.boolean()),
+    "matchers": v.exactOptional(v.pipe(
+      v.array(MatcherDTOSchema),
+      v.maxLength(32),
+    )),
+    "count_min": v.exactOptional(v.nullable(v.pipe(
+      v.number(),
+      v.integer(),
+      v.minValue(2),
+      v.maxValue(10000),
+    ))),
+    "count_window_seconds": v.exactOptional(v.nullable(v.pipe(
+      v.number(),
+      v.integer(),
+      v.minValue(60),
+      v.maxValue(86400),
+    ))),
+    "quiet_grace_seconds": v.exactOptional(v.nullable(v.pipe(
+      v.number(),
+      v.integer(),
+      v.minValue(60),
+      v.maxValue(86400),
+    ))),
+    "incidents_are_conversations": v.exactOptional(v.boolean()),
+  }),
+  v.check((value) => Object.keys(value).length >= 1, "at least 1 property required"),
+);
 
 export const CasePolicyDTOSchema = v.looseObject({
   "id": UuidSchema,
@@ -1112,8 +1400,24 @@ export const SourceDTOSchema = v.looseObject({
     v.minValue(10),
     v.maxValue(3600),
   ),
+  "max_silence_seconds": v.nullable(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(3600),
+    v.maxValue(2592000),
+  )),
   "ingest_path": v.string(),
   "health": v.exactOptional(v.nullable(SourceHealthDTOSchema)),
+  "open_case_count": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+  )),
+  "held_case_count": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+  )),
   "created_at": TimestampSchema,
   "updated_at": TimestampSchema,
 });
@@ -1316,15 +1620,6 @@ export const ChannelTestDTOSchema = v.looseObject({
   "checked_at": TimestampSchema,
 });
 
-export const MatcherDTOSchema = v.looseObject({
-  "name": LabelNameSchema,
-  "op": MatcherOpSchema,
-  "value": v.pipe(
-    v.string(),
-    v.maxLength(4096),
-  ),
-});
-
 export const ThrottleDTOSchema = v.looseObject({
   "max": v.pipe(
     v.number(),
@@ -1361,7 +1656,7 @@ export const PolicyDTOSchema = v.looseObject({
   "reasons": v.pipe(
     v.array(NotificationReasonSchema),
     v.minLength(1),
-    v.maxLength(15),
+    v.maxLength(20),
     v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
   ),
   "channel_ids": v.pipe(
@@ -1373,8 +1668,8 @@ export const PolicyDTOSchema = v.looseObject({
   "template_id": v.exactOptional(UuidSchema),
   "throttle": v.exactOptional(v.nullable(ThrottleDTOSchema)),
   "subject_kinds": v.pipe(
-    v.array(v.picklist(["alert", "case", "digest"])),
-    v.maxLength(3),
+    v.array(v.picklist(["alert", "case", "digest", "incident"])),
+    v.maxLength(4),
     v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
   ),
   "count_min": v.exactOptional(v.nullable(v.pipe(
@@ -1407,7 +1702,7 @@ export const PolicyDTOSchema = v.looseObject({
 
 export const NotificationDTOSchema = v.looseObject({
   "id": UuidSchema,
-  "subject_kind": v.picklist(["alert", "case", "digest"]),
+  "subject_kind": v.picklist(["alert", "case", "digest", "incident"]),
   "subject_id": UuidSchema,
   "alert_id": v.exactOptional(v.nullable(UuidSchema)),
   "case_id": v.exactOptional(v.nullable(UuidSchema)),
@@ -2380,6 +2675,12 @@ export const CreateSourceRequestSchema = v.strictObject({
     v.minValue(10),
     v.maxValue(3600),
   ), 30),
+  "max_silence_seconds": v.exactOptional(v.nullable(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(3600),
+    v.maxValue(2592000),
+  )), 86400),
   "credential": v.exactOptional(CredentialInputSchema),
 });
 
@@ -2390,7 +2691,6 @@ export const UpdateSourceRequestSchema = v.pipe(
       v.minLength(1),
       v.maxLength(120),
     )),
-    "cluster_id": v.exactOptional(UuidSchema),
     "base_url": v.exactOptional(v.pipe(
       v.string(),
       v.url(),
@@ -2431,6 +2731,12 @@ export const UpdateSourceRequestSchema = v.pipe(
       v.minValue(10),
       v.maxValue(3600),
     )),
+    "max_silence_seconds": v.exactOptional(v.nullable(v.pipe(
+      v.number(),
+      v.integer(),
+      v.minValue(3600),
+      v.maxValue(2592000),
+    ))),
     "credential": v.exactOptional(CredentialInputSchema),
   }),
   v.check((value) => Object.keys(value).length >= 1, "at least 1 property required"),
@@ -2470,6 +2776,42 @@ export const UpdateChannelRequestSchema = v.pipe(
   v.check((value) => Object.keys(value).length >= 1, "at least 1 property required"),
 );
 
+export const PayloadMappingSchema = v.looseObject({
+  "body": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(16384),
+  ),
+  "facts": v.exactOptional(v.pipe(
+    v.record(v.string(), v.pipe(
+      v.string(),
+      v.minLength(1),
+      v.maxLength(16384),
+    )),
+    v.check((value) => Object.keys(value).length <= 20, "at most 20 properties allowed"),
+  )),
+  "headers": v.exactOptional(v.pipe(
+    v.record(v.string(), v.pipe(
+      v.string(),
+      v.maxLength(4096),
+    )),
+    v.check((value) => Object.keys(value).length <= 16, "at most 16 properties allowed"),
+  )),
+  "response": v.exactOptional(v.pipe(
+    v.looseObject({
+      "external_url": v.exactOptional(v.pipe(
+        v.string(),
+        v.maxLength(256),
+      )),
+      "external_id": v.exactOptional(v.pipe(
+        v.string(),
+        v.maxLength(256),
+      )),
+    }),
+    v.check((value) => Object.keys(value).length >= 1, "at least 1 property required"),
+  )),
+});
+
 export const ChannelConnectionDTOSchema = v.looseObject({
   "id": UuidSchema,
   "type": ChannelTypeSchema,
@@ -2481,9 +2823,30 @@ export const ChannelConnectionDTOSchema = v.looseObject({
   "config": v.record(v.string(), v.unknown()),
   "credential_kind": v.exactOptional(v.nullable(v.picklist(["slack_bot_token", "slack_app_token", "slack_signing_secret", "basic", "bearer", "webhook_signing_secret", "none"]))),
   "credential_rotated_at": v.exactOptional(v.nullable(TimestampSchema)),
+  "signing_credential_kind": v.exactOptional(v.nullable(v.picklist(["webhook_signing_secret"]))),
+  "signing_credential_rotated_at": v.exactOptional(v.nullable(TimestampSchema)),
+  "signing_overlap_until": v.exactOptional(v.nullable(TimestampSchema)),
+  "payload_mapping": v.exactOptional(v.nullable(PayloadMappingSchema)),
+  "mapping_secret_names": v.pipe(
+    v.array(v.pipe(
+      v.string(),
+      v.regex(/^[a-z][a-z0-9_]{0,63}$/),
+    )),
+    v.maxLength(16),
+  ),
+  "mapping_secrets_rotated_at": v.exactOptional(v.nullable(TimestampSchema)),
   "created_at": TimestampSchema,
   "updated_at": TimestampSchema,
 });
+
+export const MappingSecretsInputSchema = v.pipe(
+  v.record(v.string(), v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(4096),
+  )),
+  v.check((value) => Object.keys(value).length <= 16, "at most 16 properties allowed"),
+);
 
 export const CreateChannelConnectionRequestSchema = v.strictObject({
   "type": ChannelTypeSchema,
@@ -2494,6 +2857,9 @@ export const CreateChannelConnectionRequestSchema = v.strictObject({
   ),
   "config": v.record(v.string(), v.unknown()),
   "credential": v.exactOptional(CredentialInputSchema),
+  "signing_credential": v.exactOptional(CredentialInputSchema),
+  "payload_mapping": v.exactOptional(PayloadMappingSchema),
+  "mapping_secrets": v.exactOptional(MappingSecretsInputSchema),
 });
 
 export const UpdateChannelConnectionRequestSchema = v.pipe(
@@ -2505,9 +2871,66 @@ export const UpdateChannelConnectionRequestSchema = v.pipe(
     )),
     "config": v.exactOptional(v.record(v.string(), v.unknown())),
     "credential": v.exactOptional(CredentialInputSchema),
+    "signing_credential": v.exactOptional(CredentialInputSchema),
+    "payload_mapping": v.exactOptional(v.nullable(PayloadMappingSchema)),
+    "mapping_secrets": v.exactOptional(MappingSecretsInputSchema),
   }),
   v.check((value) => Object.keys(value).length >= 1, "at least 1 property required"),
 );
+
+export const PayloadMappingCommandDTOSchema = v.looseObject({
+  "field": v.string(),
+  "forbidden": v.array(v.string()),
+});
+
+export const PayloadMappingChoiceDTOSchema = v.looseObject({
+  "name": v.pipe(
+    v.string(),
+    v.regex(/^[a-z][a-z0-9_]{0,63}$/),
+  ),
+  "question": v.string(),
+  "field": v.string(),
+  "options": v.pipe(
+    v.array(v.pipe(
+      v.string(),
+      v.regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/),
+    )),
+    v.minLength(2),
+  ),
+});
+
+export const PayloadMappingCatalogEntryDTOSchema = v.looseObject({
+  "id": v.pipe(
+    v.string(),
+    v.regex(/^[a-z0-9][a-z0-9-]{0,62}$/),
+  ),
+  "vendor": v.string(),
+  "title": v.string(),
+  "summary": v.string(),
+  "docs": v.array(v.pipe(
+    v.string(),
+    v.url(),
+  )),
+  "checked_on": v.string(),
+  "setup": v.array(v.string()),
+  "commands": v.array(PayloadMappingCommandDTOSchema),
+  "choices": v.array(PayloadMappingChoiceDTOSchema),
+  "secrets": v.array(v.pipe(
+    v.string(),
+    v.regex(/^[a-z][a-z0-9_]{0,63}$/),
+  )),
+  "mapping": PayloadMappingSchema,
+});
+
+export const PayloadMappingCatalogResponseSchema = v.looseObject({
+  "data": v.array(PayloadMappingCatalogEntryDTOSchema),
+  "meta": MetaSchema,
+});
+
+export const TestConnectionMappingRequestSchema = v.strictObject({
+  "channel_id": UuidSchema,
+  "fact": NotificationReasonSchema,
+});
 
 export const ResolveConversationRequestSchema = v.strictObject({
   "name": v.exactOptional(v.pipe(
@@ -2670,7 +3093,7 @@ export const CreatePolicyRequestSchema = v.strictObject({
   "reasons": v.pipe(
     v.array(NotificationReasonSchema),
     v.minLength(1),
-    v.maxLength(15),
+    v.maxLength(20),
     v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
   ),
   "channel_ids": v.pipe(
@@ -2682,8 +3105,8 @@ export const CreatePolicyRequestSchema = v.strictObject({
   "template_id": v.exactOptional(UuidSchema),
   "throttle": v.exactOptional(ThrottleDTOSchema),
   "subject_kinds": v.exactOptional(v.pipe(
-    v.array(v.picklist(["alert", "case", "digest"])),
-    v.maxLength(3),
+    v.array(v.picklist(["alert", "case", "digest", "incident"])),
+    v.maxLength(4),
     v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
   )),
   "count_min": v.exactOptional(v.pipe(
@@ -2733,7 +3156,7 @@ export const UpdatePolicyRequestSchema = v.pipe(
     "reasons": v.exactOptional(v.pipe(
       v.array(NotificationReasonSchema),
       v.minLength(1),
-      v.maxLength(15),
+      v.maxLength(20),
       v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
     )),
     "channel_ids": v.exactOptional(v.pipe(
@@ -2757,8 +3180,8 @@ export const UpdatePolicyRequestSchema = v.pipe(
       v.maxValue(10000),
     ))),
     "subject_kinds": v.exactOptional(v.pipe(
-      v.array(v.picklist(["alert", "case", "digest"])),
-      v.maxLength(3),
+      v.array(v.picklist(["alert", "case", "digest", "incident"])),
+      v.maxLength(4),
       v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
     )),
     "count_min": v.exactOptional(v.nullable(v.pipe(
@@ -2964,6 +3387,28 @@ export const CasePolicyListResponseSchema = v.looseObject({
 
 export const CasePolicyResponseSchema = v.looseObject({
   "data": CasePolicyDTOSchema,
+  "meta": MetaSchema,
+});
+
+export const IncidentListResponseSchema = v.looseObject({
+  "data": v.array(IncidentDTOSchema),
+  "page": PageInfoSchema,
+  "meta": MetaSchema,
+});
+
+export const IncidentResponseSchema = v.looseObject({
+  "data": IncidentDetailDTOSchema,
+  "meta": MetaSchema,
+});
+
+export const CorrelatorListResponseSchema = v.looseObject({
+  "data": v.array(CorrelatorDTOSchema),
+  "page": PageInfoSchema,
+  "meta": MetaSchema,
+});
+
+export const CorrelatorResponseSchema = v.looseObject({
+  "data": CorrelatorDTOSchema,
   "meta": MetaSchema,
 });
 

@@ -71,7 +71,10 @@ import (
 // coverage test above is what noticed. One file is not a reason to leave a tree
 // unscanned — `api/` and `db/` are barely larger, and the point of the gate is
 // that nobody has to remember.
-var eventTypeTrees = []string{"internal", "cmd", "tools", "api", "db", "web"}
+//
+// `mappings/` joined for web/'s reason: the payload-mapping catalog (ADR 0055 §2)
+// is a folder of YAML whose one Go file embeds it, and it ships in the binary.
+var eventTypeTrees = []string{"internal", "cmd", "tools", "api", "db", "web", "mappings"}
 
 // eventTypeExempt names the packages allowed to hold an `alert_events.type`
 // literal, and returns "" for everything else.
@@ -259,9 +262,13 @@ func eventTypeMembersIn(s string, values map[string]bool) []string {
 	return out
 }
 
-// TestEventTypeIsSpelledOnce refuses a second Go spelling of any of the 40
-// strings `alert_events.type` may hold — the 32 on the contract plus the 8
+// TestEventTypeIsSpelledOnce refuses a second Go spelling of any of the 43
+// strings `alert_events.type` may hold — the 35 on the contract plus the 8
 // pre-rename spellings ADR 0036 left on disk.
+//
+// ⬆️ 32 → 35 (ADR 0052): `incident.case_added`, `incident.case_removed` and
+// `incident.case_moved` land on a member Case's own timeline, and the contract's
+// `EventType` enum declares all three.
 //
 // ⚠️ THE NUMBER FELL FROM 36 TO 32 BY DELETION, NOT BY RETIREMENT. Migration
 // 00060 narrows `ev_type_ck` to refuse `group.storm_started`, `group.storm_ended`,
@@ -269,13 +276,13 @@ func eventTypeMembersIn(s string, values map[string]bool) []string {
 // counts. The three RETIRED types — `group.member_joined`, `group.member_left`,
 // `case.reopened` — are still admitted by the CHECK and still counted here.
 func TestEventTypeIsSpelledOnce(t *testing.T) {
-	if n := len(domain.AllEventTypes()); n != 32 {
-		t.Fatalf("AllEventTypes has %d distinct values, expected 32 — "+
+	if n := len(domain.AllEventTypes()); n != 35 {
+		t.Fatalf("AllEventTypes has %d distinct values, expected 35 — "+
 			"if the SPEC amended the enum, this number moves with it", n)
 	}
-	if n := len(eventTypeValues()); n != 40 {
-		t.Fatalf("AllPersistedEventTypes has %d distinct values, expected 40 — "+
-			"32 on the wire plus the 8 pre-ADR-0036 spellings. This number falls to 32 "+
+	if n := len(eventTypeValues()); n != 43 {
+		t.Fatalf("AllPersistedEventTypes has %d distinct values, expected 43 — "+
+			"35 on the wire plus the 8 pre-ADR-0036 spellings. This number falls to 35 "+
 			"when the last `alert_events` partition holding them is dropped, and not before", n)
 	}
 

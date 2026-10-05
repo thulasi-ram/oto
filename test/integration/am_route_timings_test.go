@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 82 {
-		t.Fatalf("latest migration is %d, want 82 — this test pins the number so that a "+
+	if latest != 94 {
+		t.Fatalf("latest migration is %d, want 94 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1562,10 +1562,12 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 			"`refired` stays declared (that is a separate decision, not this one) and "+
 			"`all_resolved` stays because a Case resolving is a fact about the Case", def)
 	}
-	// The ceiling follows the enum, as it has in both directions since 00046.
-	if def := policyReasonsCheck(); !strings.Contains(def, "15") {
-		t.Fatalf("policies_reasons_ck does not bound reasons at 15 at the top of the stack: "+
-			"%s — the enum has fifteen values now, and sixteen is a cardinality no row can "+
+	// The ceiling follows the enum, as it has in both directions since 00046. 00069
+	// left it at fifteen; 00084 added the five Incident facts, so the top of the stack
+	// reads twenty, and fifteen is asserted again once 00084's Down has run.
+	if def := policyReasonsCheck(); !strings.Contains(def, "20") {
+		t.Fatalf("policies_reasons_ck does not bound reasons at 20 at the top of the stack: "+
+			"%s — the enum has twenty values now, and twenty-one is a cardinality no row can "+
 			"reach. ⛔ The ceiling moving is only half of it: the constraint does NOT test "+
 			"membership, so 00069 also has to strip the two values out of the arrays by hand",
 			def)
@@ -1629,6 +1631,437 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// accepts a kind the release below it cannot interpret. No column reading can
 	// see that, and it is the half most likely to be forgotten because nothing
 	// references it.
+	// ⭐ 00094 LETS A CASE THE UPSTREAM STOPPED SPEAKING ABOUT EXPIRE (ADR 0056): it
+	// widens `case_resreason_ck` to admit `silent` and `source_removed`, adds
+	// `alert_sources.max_silence_s` with its CHECK and a day's default, and adds
+	// `case_silence_idx`.
+	//
+	// ⚠️ ITS DOWN NARROWS AN ENUM, so it is 00031's shape: rows written under the
+	// wider CHECK must be rewritten before the narrower one goes back, or the
+	// rollback aborts. A real `silent` Case is written here and read back after the
+	// Down as `timeout` — still expired, which is the one fact the release below can
+	// spell. A Down that DELETED the row instead would pass every schema reading.
+	silentScope, _, silentHealth := seedSource(t, env)
+	var silentCluster uuid.UUID
+	if err := env.pool.QueryRow(env.ctx,
+		`SELECT cluster_id FROM alert_sources WHERE id = $1`, silentHealth.SourceID).
+		Scan(&silentCluster); err != nil {
+		t.Fatalf("read the seeded source's cluster: %v", err)
+	}
+	var silenceDefault string
+	if err := env.pool.QueryRow(env.ctx,
+		`SELECT coalesce(max(column_default), '') FROM information_schema.columns
+		  WHERE table_name::text = 'alert_sources' AND column_name::text = 'max_silence_s'`).
+		Scan(&silenceDefault); err != nil {
+		t.Fatalf("introspect alert_sources.max_silence_s default: %v", err)
+	}
+	if def := silenceDefault; !strings.Contains(def, "86400") {
+		t.Fatalf("alert_sources.max_silence_s defaults to %q at migration 94, want 86400 — a "+
+			"day is ADR 0056's default for a source registered after it", def)
+	}
+	if def := constraintDef("alert_sources_silence_ck", "alert_sources"); !strings.Contains(def, "3600") ||
+		!strings.Contains(def, "2592000") {
+		t.Fatalf("alert_sources_silence_ck is %q — it must bound max_silence_s to an hour..thirty days", def)
+	}
+	if def := constraintDef("case_resreason_ck", "alert_cases"); !strings.Contains(def, "silent") ||
+		!strings.Contains(def, "source_removed") {
+		t.Fatalf("case_resreason_ck does not admit the two ADR 0056 expiries at migration 94: %s", def)
+	}
+	if n := countIndexes("case_silence_idx"); n != 1 {
+		t.Fatalf("case_silence_idx is absent at migration 94 (found %d)", n)
+	}
+	silentAlert, silentCase := id.New(), id.New()
+	if _, err := env.pool.Exec(env.ctx,
+		`INSERT INTO alerts (id, org_id, cluster_id, alert_key, source_fingerprint, alertname,
+		                     cluster_key, labels, state, first_seen_at, last_seen_at,
+		                     last_state_change_at)
+		 VALUES ($1, $2, $3, $4, $5, 'RollbackSilent', 'prod',
+		         '{"alertname":"RollbackSilent"}'::jsonb, 'expired', now(), now(), now())`,
+		silentAlert, silentScope.OrgID(), silentCluster,
+		"ak_"+strings.Repeat("s", 26), strings.Repeat("cd", 8)); err != nil {
+		t.Fatalf("seed the alert behind the silent case: %v", err)
+	}
+	if _, err := env.pool.Exec(env.ctx,
+		`INSERT INTO alert_cases (id, org_id, alert_id, seq, number, state, resolve_reason,
+		                          started_at, ended_at, last_observed_at, source_starts_at)
+		 VALUES ($1, $2, $3, 1, 1, 'closed', 'silent', now() - interval '2 days', now(),
+		         now() - interval '2 days', now() - interval '2 days')`,
+		silentCase, silentScope.OrgID(), silentAlert); err != nil {
+		t.Fatalf("seed a case expired as silent at migration 94: %v", err)
+	}
+
+	down(94)
+
+	if n := countColumns("alert_sources", "max_silence_s"); n != 0 {
+		t.Fatalf("alert_sources.max_silence_s survived 00094's Down (found %d)", n)
+	}
+	if n := countConstraints("alert_sources_silence_ck"); n != 0 {
+		t.Fatalf("alert_sources_silence_ck survived 00094's Down")
+	}
+	if n := countIndexes("case_silence_idx"); n != 0 {
+		t.Fatalf("case_silence_idx survived 00094's Down (found %d)", n)
+	}
+	if def := constraintDef("case_resreason_ck", "alert_cases"); strings.Contains(def, "silent") ||
+		!strings.Contains(def, "timeout") {
+		t.Fatalf("00094's Down did not restore the two-valued case_resreason_ck: %s", def)
+	}
+	var rewritten string
+	if err := env.pool.QueryRow(env.ctx,
+		`SELECT resolve_reason FROM alert_cases WHERE id = $1`, silentCase).Scan(&rewritten); err != nil {
+		t.Fatalf("the silent case did not survive 00094's Down: %v — the Down must rewrite "+
+			"the reason, never delete the row", err)
+	}
+	if rewritten != "timeout" {
+		t.Fatalf("00094's Down left resolve_reason %q; an expired case must read as the one "+
+			"expiry the release below can spell, `timeout`", rewritten)
+	}
+
+	// ⭐ R2 (owner ruling, 2026-10-05): A SOURCE THAT EXISTED BEFORE 00094 STARTS WITH
+	// THE EXPIRY OFF, and only one registered after it takes the day. That is a
+	// property of the Up's ORDER — ADD COLUMN bare, then SET DEFAULT — and no reading
+	// of the schema at the top of the stack can see it: `column_default` says 86400
+	// either way. So 00094 is re-applied here, over the source seeded above (which
+	// predates it now that the Down has run), and the two rows are read back. A
+	// single `ADD COLUMN ... DEFAULT 86400` would backfill the old row and fail the
+	// first check. Then the Down runs again, and the loop below carries on from 93.
+	if err := migrate.Up(env.ctx, dsn); err != nil {
+		t.Fatalf("re-apply 00094 over a source that predates it: %v", err)
+	}
+	if top := appliedTop(); top != 94 {
+		t.Fatalf("re-applying 00094 left the top applied migration at %s, want 94",
+			migrate.FormatVersion(top))
+	}
+	var existingSilence *int32
+	if err := env.pool.QueryRow(env.ctx,
+		`SELECT max_silence_s FROM alert_sources WHERE id = $1`, silentHealth.SourceID).
+		Scan(&existingSilence); err != nil {
+		t.Fatalf("read the pre-existing source's max_silence_s: %v", err)
+	}
+	if existingSilence != nil {
+		t.Fatalf("a source that existed before 00094 reads max_silence_s = %d, want NULL — "+
+			"R2: existing sources start with the silent expiry OFF, and only an operator "+
+			"turns it on", *existingSilence)
+	}
+	freshSource := id.New()
+	var freshSilence *int32
+	if err := env.pool.QueryRow(env.ctx,
+		`INSERT INTO alert_sources (id, org_id, cluster_id, name, kind, base_url,
+		                            created_at, updated_at)
+		 VALUES ($1, $2, $3, 'r2-after-00094', 'alertmanager', 'https://am.invalid.example',
+		         now(), now())
+		 RETURNING max_silence_s`,
+		freshSource, silentScope.OrgID(), silentCluster).Scan(&freshSilence); err != nil {
+		t.Fatalf("register a source after 00094: %v", err)
+	}
+	if freshSilence == nil || *freshSilence != 86400 {
+		t.Fatalf("a source registered after 00094 reads max_silence_s = %v, want 86400 (a day)",
+			freshSilence)
+	}
+	down(94)
+	if n := countColumns("alert_sources", "max_silence_s"); n != 0 {
+		t.Fatalf("alert_sources.max_silence_s survived 00094's second Down (found %d)", n)
+	}
+
+	// ⭐ 00093 NUMBERS AN INCIDENT'S FACTS (ADR 0052 §5, owner ruling 2026-10-04): a
+	// defaulted counter on `incidents` and a nullable column on `notifications`, each with
+	// its CHECK. The notifications CHECK is read for its subject arm, because a sequence on
+	// a Case fact would be a number no receiver could order anything against.
+	//
+	// ⚠️ 00091 AND 00092 BELONG TO A CONCURRENT BRANCH. Until it lands, 00090 is the
+	// migration beneath this one and `down(93)` is followed directly by `down(90)`; when it
+	// lands, its two steps go between them, and `down` refuses the run until they do.
+	if n := countColumns("incidents", "fact_sequence"); n != 1 {
+		t.Fatalf("incidents.fact_sequence is absent at migration 93 (found %d)", n)
+	}
+	if n := countColumns("notifications", "incident_sequence"); n != 1 {
+		t.Fatalf("notifications.incident_sequence is absent at migration 93 (found %d)", n)
+	}
+	if n := countConstraints("incidents_fact_sequence_ck", "notifications_incident_seq_ck"); n != 2 {
+		t.Fatalf("%d of 00093's two CHECKs exist at migration 93, want 2", n)
+	}
+	if def := constraintDef("notifications_incident_seq_ck", "notifications"); !strings.Contains(def, "'incident'") {
+		t.Fatalf("notifications_incident_seq_ck does not confine a sequence to an Incident fact: %s", def)
+	}
+
+	down(93)
+
+	if n := countColumns("incidents", "fact_sequence") + countColumns("notifications", "incident_sequence"); n != 0 {
+		t.Fatalf("%d of 00093's columns survived its Down", n)
+	}
+	if n := countConstraints("incidents_fact_sequence_ck", "notifications_incident_seq_ck"); n != 0 {
+		t.Fatalf("%d of 00093's CHECKs survived its Down", n)
+	}
+
+	// ⭐ 00090 LETS A WEBHOOK CONNECTION CARRY A PAYLOAD MAPPING (ADR 0055 §2, git-bug
+	// 2205620): three columns on `channel_connections` with their four CHECKs, and a
+	// widened `channel_credentials_kind_ck` admitting `webhook_mapping_secrets`. The kind
+	// CHECK is read separately from the columns for 00075's reason: a Down that dropped
+	// the columns and forgot the enum leaves a database accepting a kind the release
+	// below cannot interpret, and no column reading can see it.
+	//
+	// ⛔ ITS GUARD IS NOT EXERCISED HERE, for 00088's reason: it raises when a connection
+	// carries a mapping, and firing it would abort every step below. What runs is the
+	// clean path, which is where a misspelt column in the guard's SELECT would fail.
+	if n := countColumns("channel_connections", "payload_mapping", "mapping_credential_id",
+		"mapping_secret_names"); n != 3 {
+		t.Fatalf("%d of 00090's three channel_connections columns exist at migration 90, want 3", n)
+	}
+	if n := countConstraints("channel_connections_mapping_ck", "channel_connections_mapping_secrets_ck",
+		"channel_connections_mapping_distinct_ck", "channel_connections_mapping_names_ck"); n != 4 {
+		t.Fatalf("%d of 00090's four CHECKs exist at migration 90, want 4", n)
+	}
+	if def := constraintDef("channel_connections_mapping_ck", "channel_connections"); !strings.Contains(def, "webhook") {
+		t.Fatalf("channel_connections_mapping_ck does not confine a mapping to a webhook: %s", def)
+	}
+	if def := constraintDef("channel_credentials_kind_ck", "channel_credentials"); !strings.Contains(def, "webhook_mapping_secrets") {
+		t.Fatalf("channel_credentials_kind_ck at migration 90 does not admit webhook_mapping_secrets: %s", def)
+	}
+
+	down(90)
+
+	if n := countColumns("channel_connections", "payload_mapping", "mapping_credential_id",
+		"mapping_secret_names"); n != 0 {
+		t.Fatalf("%d of 00090's channel_connections columns survived its Down", n)
+	}
+	if n := countConstraints("channel_connections_mapping_ck", "channel_connections_mapping_secrets_ck",
+		"channel_connections_mapping_distinct_ck", "channel_connections_mapping_names_ck"); n != 0 {
+		t.Fatalf("%d of 00090's CHECKs survived its Down", n)
+	}
+	if def := constraintDef("channel_credentials_kind_ck", "channel_credentials"); strings.Contains(def, "webhook_mapping_secrets") ||
+		!strings.Contains(def, "webhook_signing_secret") {
+		t.Fatalf("00090's Down did not restore 00075's channel_credentials_kind_ck: %s", def)
+	}
+
+	// ⭐ 00089 RECORDS ADR 0052 §5'S OUTBOUND MAPPING AS A RECEIPT (git-bug 506ff21):
+	// one table, its four CHECKs and its tenant index, and a Down that drops the table.
+	// The URL CHECK is read for its prefix because it is the one bound the dispatcher's
+	// write restates in SQL — a CHECK that drifted from that restatement would make a
+	// receipt raise inside TX 2 and roll back a `sent` row.
+	if n := countTables("incident_outbound_mappings"); n != 1 {
+		t.Fatalf("incident_outbound_mappings is absent at migration 89 (found %d)", n)
+	}
+	if n := countConstraints("incident_outbound_mappings_some_ck", "incident_outbound_mappings_url_ck",
+		"incident_outbound_mappings_id_ck", "incident_outbound_mappings_pkey"); n != 4 {
+		t.Fatalf("%d of 00089's four constraints exist at migration 89, want 4", n)
+	}
+	if def := constraintDef("incident_outbound_mappings_url_ck", "incident_outbound_mappings"); !strings.Contains(def, "https://") ||
+		!strings.Contains(def, "2048") {
+		t.Fatalf("incident_outbound_mappings_url_ck is %q — it must hold an echoed link to https and 2048 characters", def)
+	}
+	if n := countIndexes("incident_outbound_mappings_org_idx"); n != 1 {
+		t.Fatalf("incident_outbound_mappings_org_idx is absent at migration 89 (found %d)", n)
+	}
+
+	down(89)
+
+	if n := countTables("incident_outbound_mappings"); n != 0 {
+		t.Fatalf("incident_outbound_mappings survived 00089's Down (found %d)", n)
+	}
+	if n := countIndexes("incident_outbound_mappings_org_idx"); n != 0 {
+		t.Fatalf("incident_outbound_mappings_org_idx survived 00089's Down (found %d)", n)
+	}
+
+	// ⭐ 00088 GIVES A WEBHOOK CONNECTION A SECOND SLOT FOR ITS SIGNING SECRET, AND A
+	// SIGNING SECRET AN OVERLAP (ADR 0055 §1, git-bug 2765f74). Its Down has two halves
+	// that cannot be read off each other: the connection's column with its two CHECKs,
+	// and the credential row's three `previous_*` columns with theirs. A Down that
+	// dropped one and forgot the other leaves a schema no release ran against. The
+	// `credential_id` comment is read too, because the Up rewrote it to say a signing
+	// secret no longer lives there, and the release below 00088 keeps it there.
+	//
+	// ⛔ ITS GUARD IS NOT EXERCISED HERE, for 00075's reason: it raises when a connection
+	// holds both slots, and firing it would abort every step below. What runs is the
+	// clean path — no connection exists at this height — which is where a misspelt
+	// column in the guard's own SELECT would fail.
+	if n := countColumns("channel_connections", "signing_credential_id"); n != 1 {
+		t.Fatalf("channel_connections.signing_credential_id is absent at migration 88 (found %d)", n)
+	}
+	if n := countColumns("channel_credentials", "previous_sealed", "previous_key_version", "previous_until"); n != 3 {
+		t.Fatalf("%d of channel_credentials' three previous_* columns exist at migration 88, want 3", n)
+	}
+	if n := countConstraints("channel_connections_signing_ck", "channel_connections_signing_distinct_ck",
+		"channel_credentials_previous_ck"); n != 3 {
+		t.Fatalf("%d of 00088's three CHECKs exist at migration 88, want 3", n)
+	}
+	if def := constraintDef("channel_credentials_previous_ck", "channel_credentials"); !strings.Contains(def, "webhook_signing_secret") {
+		t.Fatalf("channel_credentials_previous_ck does not confine the overlap to a signing secret: %s — "+
+			"an overlap on a bearer token is a revoked token that keeps working", def)
+	}
+	if c := columnComment("channel_connections", "credential_id"); !strings.Contains(c, "signing_credential_id") {
+		t.Fatalf("channel_connections.credential_id's comment at migration 88 does not send a signing "+
+			"secret to its own slot: %q", c)
+	}
+
+	down(88)
+
+	if n := countColumns("channel_connections", "signing_credential_id"); n != 0 {
+		t.Fatalf("channel_connections.signing_credential_id survived 00088's Down (found %d)", n)
+	}
+	if n := countColumns("channel_credentials", "previous_sealed", "previous_key_version", "previous_until"); n != 0 {
+		t.Fatalf("%d of channel_credentials' previous_* columns survived 00088's Down", n)
+	}
+	if n := countConstraints("channel_connections_signing_ck", "channel_connections_signing_distinct_ck",
+		"channel_credentials_previous_ck"); n != 0 {
+		t.Fatalf("%d of 00088's CHECKs survived its Down", n)
+	}
+	if c := columnComment("channel_connections", "credential_id"); !strings.Contains(c, "basic/bearer credential or signing secret") {
+		t.Fatalf("00088's Down did not restore 00075's comment on channel_connections.credential_id: %q", c)
+	}
+
+	// ⭐ 00087 LETS AN INCIDENT BE A CONVERSATION, and its Down takes back three
+	// things: the Correlator's switch, `incident` from `threads_subjkind_ck`, and the
+	// index the Incident-thread lookup reads. The column comment is read as well,
+	// because the Down's COMMENT ON is a sentence copied from an older migration and
+	// a sentence copied from the wrong one passes every structural reading.
+	if n := countColumns("correlators", "incidents_are_conversations"); n != 1 {
+		t.Fatalf("correlators.incidents_are_conversations is absent at migration 87 (found %d)", n)
+	}
+	if def := constraintDef("threads_subjkind_ck", "channel_threads"); !strings.Contains(def, "'incident'") {
+		t.Fatalf("threads_subjkind_ck does not admit 'incident' at migration 87: %s — an "+
+			"Incident that is a conversation keys its thread by the Incident", def)
+	}
+	if n := countIndexes("threads_subject_idx"); n != 1 {
+		t.Fatalf("threads_subject_idx is absent at migration 87 (found %d)", n)
+	}
+
+	down(87)
+
+	if n := countColumns("correlators", "incidents_are_conversations"); n != 0 {
+		t.Fatalf("correlators.incidents_are_conversations survived 00087's Down (found %d)", n)
+	}
+	if def := constraintDef("threads_subjkind_ck", "channel_threads"); strings.Contains(def, "'incident'") {
+		t.Fatalf("threads_subjkind_ck still admits 'incident' after 00087's Down: %s", def)
+	} else if !strings.Contains(def, "'case'") || !strings.Contains(def, "'digest'") {
+		t.Fatalf("threads_subjkind_ck lost more than 'incident' in 00087's Down: %s", def)
+	}
+	if n := countIndexes("threads_subject_idx"); n != 0 {
+		t.Fatalf("threads_subject_idx survived 00087's Down (found %d)", n)
+	}
+	if c := columnComment("channel_threads", "subject_kind"); strings.Contains(c, "alert_group") ||
+		!strings.Contains(c, "keyed by the CASE") {
+		t.Fatalf("00087's Down did not restore 00069's comment on channel_threads.subject_kind: "+
+			"%q — the release below 00087 has no AlertGroup, and a comment describing one is "+
+			"the defect 00069 rewrote this same sentence to remove", c)
+	}
+	if c := columnComment("notifications", "conversation_id"); strings.Contains(c, "incidents.id") {
+		t.Fatalf("notifications.conversation_id still names incidents.id after 00087's Down: %q", c)
+	}
+
+	// 00086 gives a Correlator a quiet grace, bounded, and its Down takes both back.
+	if n := countColumns("correlators", "quiet_grace_s"); n != 1 {
+		t.Fatalf("correlators.quiet_grace_s is absent at migration 86 (found %d)", n)
+	}
+	if def := constraintDef("correlators_quiet_grace_ck", "correlators"); !strings.Contains(def, "60") ||
+		!strings.Contains(def, "86400") {
+		t.Fatalf("correlators_quiet_grace_ck is %q at migration 86 — it must bound the grace to "+
+			"60..86400 seconds", def)
+	}
+
+	down(86)
+
+	if n := countColumns("correlators", "quiet_grace_s"); n != 0 {
+		t.Fatalf("correlators.quiet_grace_s survived 00086's Down (found %d)", n)
+	}
+	if n := countConstraints("correlators_quiet_grace_ck"); n != 0 {
+		t.Fatalf("correlators_quiet_grace_ck survived 00086's Down (found %d)", n)
+	}
+
+	// ⭐ 00085 ADDS THE CORRELATOR AND POINTS 00083'S COLUMNS AT IT. Its Down must take
+	// the two foreign keys off `incidents` and `incident_members` BEFORE the table they
+	// reference goes, and must leave both of 00083's tables standing: a Down that
+	// dropped the Correlator with CASCADE would pass every reading of its own objects.
+	if n := countTables("correlators", "correlator_matches"); n != 2 {
+		t.Fatalf("correlators and correlator_matches are not both present at migration 85 (found %d)", n)
+	}
+	if n := countConstraints("incidents_correlator_fk", "incident_members_correlator_fk"); n != 2 {
+		t.Fatalf("%d of 00085's two foreign keys into correlators exist at migration 85, want 2", n)
+	}
+	if n := countIndexes("incidents_correlator_idx", "correlators_name_uniq", "correlators_eval_idx",
+		"correlator_matches_window_idx"); n != 4 {
+		t.Fatalf("%d of 00085's four indexes exist at migration 85, want 4", n)
+	}
+
+	down(85)
+
+	if n := countTables("correlators", "correlator_matches"); n != 0 {
+		t.Fatalf("%d of 00085's tables survived its Down", n)
+	}
+	if n := countConstraints("incidents_correlator_fk", "incident_members_correlator_fk"); n != 0 {
+		t.Fatalf("%d of 00085's foreign keys survived its Down", n)
+	}
+	if n := countIndexes("incidents_correlator_idx"); n != 0 {
+		t.Fatalf("incidents_correlator_idx survived 00085's Down (found %d)", n)
+	}
+	if n := countTables("incidents", "incident_members"); n != 2 {
+		t.Fatalf("00085's Down took %d of 00083's two tables with it — they are 00083's to drop", 2-n)
+	}
+
+	// ⭐ 00084 MAKES AN INCIDENT A NOTIFICATION SUBJECT, widening five constraints at
+	// once. Its Down NARROWS all five, which is the dangerous direction — a row the
+	// wide constraint admitted fails the narrow one — so it deletes and strips the
+	// Incident rows first. Each constraint is read on both sides, because a Down that
+	// narrowed four and forgot one exits 0.
+	incidentArms := []struct{ name, table string }{
+		{"notifications_subjkind_ck", "notifications"},
+		{"policies_subjkinds_ck", "notification_policies"},
+		{"notifications_convkind_ck", "notifications"},
+		{"notifications_subject_ck", "notifications"},
+	}
+	for _, c := range incidentArms {
+		if def := constraintDef(c.name, c.table); !strings.Contains(def, "'incident'") {
+			t.Fatalf("%s does not admit 'incident' at migration 84: %s", c.name, def)
+		}
+	}
+	if def := constraintDef("notifications_reason_ck", "notifications"); !strings.Contains(def, "'active_again'") {
+		t.Fatalf("notifications_reason_ck does not admit the Incident facts at migration 84: %s", def)
+	}
+
+	down(84)
+
+	for _, c := range incidentArms {
+		if def := constraintDef(c.name, c.table); def == "" || strings.Contains(def, "'incident'") {
+			t.Fatalf("%s after 00084's Down is %q — it must exist and no longer admit 'incident'",
+				c.name, def)
+		}
+	}
+	if def := constraintDef("notifications_reason_ck", "notifications"); strings.Contains(def, "'drawn'") ||
+		strings.Contains(def, "'active_again'") {
+		t.Fatalf("notifications_reason_ck still admits an Incident fact after 00084's Down: %s", def)
+	} else if !strings.Contains(def, "'digest'") || !strings.Contains(def, "'all_resolved'") {
+		t.Fatalf("notifications_reason_ck lost more than the Incident facts in 00084's Down: %s", def)
+	}
+	if def := policyReasonsCheck(); !strings.Contains(def, "15") || !strings.Contains(def, "oto_array_is_set") {
+		t.Fatalf("policies_reasons_ck did not go back to a set of 1..15 after 00084's Down: %s — "+
+			"the ceiling IS the enum size, and the set rule 00046 added must survive the swap", def)
+	}
+
+	// ⭐ 00083 DRAWS AN INCIDENT OVER CASES. Its at-most-one rule is a PARTIAL unique
+	// index, read as its definition: a full UNIQUE (case_id) would forbid the tombstone
+	// a removal leaves, and both spellings satisfy "the index exists".
+	if n := countTables("incidents", "incident_members", "org_incident_numbers"); n != 3 {
+		t.Fatalf("%d of 00083's three tables exist at migration 83, want 3", n)
+	}
+	if def := constraintDef("incidents_number_uniq", "incidents"); !strings.Contains(def, "org_id") {
+		t.Fatalf("incidents_number_uniq is %q at migration 83 — it must be UNIQUE (org_id, number), "+
+			"for the reason case_number_uniq is", def)
+	}
+	var liveUniq string
+	if err := env.pool.QueryRow(env.ctx,
+		`SELECT coalesce((SELECT indexdef FROM pg_indexes
+		                   WHERE indexname = 'incident_members_case_live_uniq'), '')`).Scan(&liveUniq); err != nil {
+		t.Fatalf("introspect incident_members_case_live_uniq: %v", err)
+	}
+	if !strings.Contains(liveUniq, "UNIQUE") || !strings.Contains(liveUniq, "removed_at IS NULL") {
+		t.Fatalf("incident_members_case_live_uniq is %q at migration 83 — a Case belongs to at "+
+			"most one Incident AT A TIME, so the uniqueness is over live memberships only", liveUniq)
+	}
+
+	down(83)
+
+	if n := countTables("incidents", "incident_members", "org_incident_numbers"); n != 0 {
+		t.Fatalf("%d of 00083's tables survived its Down", n)
+	}
+
 	// ⭐ 00082 GIVES A TEMPLATE A REPLY BODY, and its Down takes back the column and
 	// the floor on it. The floor is read as its DEFINITION, because "a constraint
 	// exists" reads the same whether `''` is refused or quietly becomes a second

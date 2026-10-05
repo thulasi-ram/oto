@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/thulasiram/oto/internal/channels/domain"
 	"github.com/thulasiram/oto/internal/platform/clock"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
@@ -39,7 +40,12 @@ type Unsealer interface {
 // against it and a second copy would drift.
 var CredentialKinds = []string{
 	"slack_bot_token", "slack_app_token", "slack_signing_secret", "basic", "bearer",
-	"webhook_signing_secret", "none",
+	"webhook_signing_secret",
+	// A webhook Connection's payload-mapping secrets, name → value, in its own slot
+	// (migration 00090). channels/api seals it from `mapping_secrets`, never from a
+	// `credential` input, whose `kind` enum does not list it.
+	domain.MappingSecretsKind,
+	"none",
 }
 
 // ValidCredentialKind reports whether kind is in the closed set.
@@ -168,18 +174,42 @@ func (r *CredentialRepository) Create(
 // secret as older than it is. GREATEST ignores NULLs, so a never-rotated row —
 // where `rotated_at` is NULL — takes the max of the other two, exactly as it
 // should.
+//
+// ⭐⭐ A SIGNING SECRET KEEPS ITS PREDECESSOR FOR THE OVERLAP, AND THE SQL MOVES IT
+// (migration 00088, ADR 0055 §1). When the row was a `webhook_signing_secret` and
+// stays one, the three `previous_*` columns take the row's CURRENT ciphertext and
+// key version and `$7`, the end of the overlap. Every SET expression reads the
+// OLD row, so `previous_sealed = sealed` is the outgoing secret, still sealed: it
+// is never unsealed to be carried forward, and no plaintext of it exists anywhere
+// during a rotation. Any other kind — or a signing secret re-sealed as something
+// else — clears all three, which is what `channel_credentials_previous_ck`
+// demands: an overlap on a bearer token is a revoked token that still works.
 const rotateCredentialSQL = `
 UPDATE channel_credentials
-   SET kind = $3, sealed = $4, key_version = $5,
+   SET previous_sealed      = CASE WHEN kind = 'webhook_signing_secret' AND $3 = 'webhook_signing_secret'
+                                   THEN sealed END,
+       previous_key_version = CASE WHEN kind = 'webhook_signing_secret' AND $3 = 'webhook_signing_secret'
+                                   THEN key_version END,
+       previous_until       = CASE WHEN kind = 'webhook_signing_secret' AND $3 = 'webhook_signing_secret'
+                                   THEN $7::timestamptz END,
+       kind = $3, sealed = $4, key_version = $5,
        rotated_at = GREATEST(created_at, rotated_at, $6)
  WHERE org_id = $1 AND id = $2
 RETURNING id, kind, created_at, rotated_at`
+
+// signingKind is the one credential kind that rotates with an overlap.
+const signingKind = "webhook_signing_secret"
 
 // Rotate re-seals an existing credential in place and stamps `rotated_at`.
 //
 // Rotating rather than replacing keeps `alert_sources.auth_credential_id` and
 // `channels.credential_id` pointing at the same row, so a rotation is one UPDATE
 // and cannot leave a channel briefly credential-less.
+//
+// A `webhook_signing_secret` rotated into another one keeps signing with its
+// predecessor until `domain.SigningSecretOverlap` from now — see
+// rotateCredentialSQL. A second rotation inside that window retires the oldest
+// secret at once: there are never more than two.
 func (r *CredentialRepository) Rotate(
 	ctx context.Context, s db.TenantScope, credentialID uuid.UUID, kind string, values map[string]string,
 ) (CredentialMeta, error) {
@@ -204,9 +234,10 @@ func (r *CredentialRepository) Rotate(
 		return CredentialMeta{}, err
 	}
 
+	now := r.clock.Now().UTC()
 	var out CredentialMeta
 	row := r.db(ctx).QueryRow(ctx, rotateCredentialSQL,
-		s.OrgID(), credentialID, kind, sealed, version, r.clock.Now().UTC())
+		s.OrgID(), credentialID, kind, sealed, version, now, now.Add(domain.SigningSecretOverlap))
 	if err := row.Scan(&out.ID, &out.Kind, &out.CreatedAt, &out.RotatedAt); err != nil {
 		if isNoRows(err) {
 			return CredentialMeta{}, errs.NotFound("credential_not_found", "no such credential")
@@ -278,6 +309,72 @@ func (r *CredentialRepository) Resolve(
 	return row.kind, values, nil
 }
 
+const getSigningSQL = `
+SELECT kind, sealed, key_version, previous_sealed, previous_key_version, previous_until
+  FROM channel_credentials
+ WHERE org_id = $1 AND id = $2`
+
+// ResolveSigning unseals a connection's outbound signing secret and, while its
+// overlap lasts, the one the last rotation replaced.
+//
+// ⛔ THE KIND IS CHECKED HERE, NOT TRUSTED. `signing_credential_id` is a column
+// any row id fits in; a bearer token behind it would otherwise become an HMAC key
+// — and an HMAC over a body is not a secret, so every receiver would be signing
+// with a token oto also hands out as `Authorization`. A non-signing row is
+// refused as an internal error, because only a bug in channels/api can put one
+// there.
+//
+// A predecessor whose overlap has already ended is not unsealed at all: there is
+// no reason for that plaintext to exist, even briefly.
+func (r *CredentialRepository) ResolveSigning(
+	ctx context.Context, s db.TenantScope, credentialID uuid.UUID,
+) (domain.SigningSecret, error) {
+	if err := db.RequireScope(s); err != nil {
+		return domain.SigningSecret{}, err
+	}
+	if r.open == nil {
+		return domain.SigningSecret{}, errs.New(errs.KindInternal, "credential_unsealer_missing",
+			"this deployment has no credential keyring configured")
+	}
+
+	var (
+		kind            string
+		sealed          []byte
+		keyVersion      int
+		previousSealed  []byte
+		previousVersion *int
+		previousUntil   *time.Time
+	)
+	err := r.db(ctx).QueryRow(ctx, getSigningSQL, s.OrgID(), credentialID).Scan(
+		&kind, &sealed, &keyVersion, &previousSealed, &previousVersion, &previousUntil)
+	if err != nil {
+		if isNoRows(err) {
+			return domain.SigningSecret{}, errs.NotFound("credential_not_found", "no such credential")
+		}
+		return domain.SigningSecret{}, mapErr(err, "credential_not_found", "read a signing secret")
+	}
+	if kind != signingKind {
+		return domain.SigningSecret{}, errs.Newf(errs.KindInternal, "signing_credential_kind",
+			"the connection's signing slot holds a %q credential, not a %s", kind, signingKind)
+	}
+
+	values, err := r.open.Unseal(ctx, kind, sealed, keyVersion)
+	if err != nil {
+		return domain.SigningSecret{}, err
+	}
+	out := domain.SigningSecret{Current: domain.SigningValue(values)}
+
+	if previousSealed != nil && previousVersion != nil && previousUntil != nil &&
+		r.clock.Now().Before(*previousUntil) {
+		prev, err := r.open.Unseal(ctx, kind, previousSealed, *previousVersion)
+		if err != nil {
+			return domain.SigningSecret{}, err
+		}
+		out.Previous, out.PreviousUntil = domain.SigningValue(prev), previousUntil.UTC()
+	}
+	return out, nil
+}
+
 // Delete removes a credential row.
 //
 // Both referencing columns are ON DELETE SET NULL, so deleting a credential
@@ -326,4 +423,9 @@ func (r *CredentialRepository) RotateCredential(
 ) error {
 	_, err := r.Rotate(ctx, s, credentialID, kind, values)
 	return err
+}
+
+// DeleteCredential removes a credential row, by its plain-typed id.
+func (r *CredentialRepository) DeleteCredential(ctx context.Context, s db.TenantScope, credentialID uuid.UUID) error {
+	return r.Delete(ctx, s, credentialID)
 }

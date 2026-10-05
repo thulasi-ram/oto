@@ -23,8 +23,25 @@ import { fireEvent, screen } from "@solidjs/testing-library";
 import { describe, expect, it } from "vitest";
 
 import CasesRoute from "./cases";
-import { alertRef, caseListItem } from "~/test/fixtures";
-import { item, list, renderScreen, stubFetch, until, type FetchStub } from "~/test/harness";
+import {
+  alertRef,
+  caseListItem,
+  caseSource,
+  caseSources,
+  clusterSources,
+  incident,
+  incidentDetail,
+} from "~/test/fixtures";
+import {
+  item,
+  list,
+  problem,
+  renderScreen,
+  stubFetch,
+  until,
+  type FetchStub,
+  type RecordedCall,
+} from "~/test/harness";
 
 const PATH = "/api/v1/cases";
 
@@ -32,6 +49,22 @@ function mount(search = "", rows = [caseListItem()]): FetchStub {
   const net = stubFetch({ [`GET ${PATH}`]: () => ({ json: list(rows) }) });
   renderScreen(() => <CasesRoute />, { path: `/cases${search}` });
   return net;
+}
+
+/**
+ * The ack control's buttons, by the visible word their accessible name starts
+ * with (`Ack HighErrorRate #412`), among the ROWS only — the toolbar's `Ack`
+ * filter menu is a different control with its own name.
+ */
+function rowButtons(word: "Ack" | "Unack"): readonly HTMLElement[] {
+  return screen
+    .queryAllByRole("button", { name: new RegExp(`^${word} `) })
+    .filter((el) => el.closest("li") !== null);
+}
+
+async function rowButton(word: "Ack" | "Unack"): Promise<HTMLElement> {
+  await until(() => expect(rowButtons(word)).toHaveLength(1));
+  return rowButtons(word)[0]!;
 }
 
 /** The query string of the last list request the screen made. */
@@ -151,35 +184,43 @@ describe("a row", () => {
     const net = mount("", [caseListItem({ id: "case-1" })]);
     net.on("POST /api/v1/cases/case-1/ack", () => ({ json: item(caseListItem()) }));
 
-    await until(() =>
-      expect(screen.getByRole("button", { name: "Acknowledge HighErrorRate" })).toBeTruthy(),
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Acknowledge HighErrorRate" }));
+    fireEvent.click(await rowButton("Ack"));
 
     await until(() => expect(net.to("/ack")).toHaveLength(1));
     expect(net.to("/ack")[0]?.path).toBe("/api/v1/cases/case-1/ack");
     expect(net.to("/ack")[0]?.headers["Idempotency-Key"]).toBeTruthy();
   });
 
-  it("⭐ turns into the way back once the firing carries a receipt", async () => {
-    // ONE control with two words. `ack_state` has two values, so a separate
-    // Acknowledge and Withdraw would leave one of the two dead on every row —
-    // and the dead one was the enabled-looking half of the pair a tired operator
-    // reads first.
+  it("⭐ says `Ack` in words, and its accessible name starts with that word and names the row", async () => {
+    // The owner's report: the row used to carry a tick in BOTH directions, told
+    // apart only by an `aria-label` nobody sighted ever reads — ack and unack
+    // were the same picture. The verb is printed now; the accessible name
+    // contains it, first (WCAG 2.5.3), and then says which of fifty rows it is.
+    mount("", [caseListItem({ ack_state: "unacked" })]);
+    const ack = await rowButton("Ack");
+    expect(ack.textContent?.trim()).toBe("Ack");
+    expect(ack.getAttribute("aria-label")).toBe("Ack HighErrorRate #412");
+    expect(ack.querySelector("svg")).toBeNull();
+    expect(rowButtons("Unack")).toHaveLength(0);
+  });
+
+  it("⭐ turns into `Unack` once the firing carries a receipt", async () => {
+    // ONE control with two words. `ack_state` has two values, so a separate Ack
+    // and Unack would leave one of the two dead on every row — and the dead one
+    // was the enabled-looking half of the pair a tired operator reads first.
     mount("", [caseListItem({ ack_state: "acked" })]);
-    const name = "Withdraw the acknowledgement of HighErrorRate";
-    await until(() => expect(screen.getByRole("button", { name })).toBeTruthy());
-    expect(screen.getByRole("button", { name })).not.toBeDisabled();
-    expect(screen.queryByRole("button", { name: "Acknowledge HighErrorRate" })).toBeNull();
+    const unack = await rowButton("Unack");
+    expect(unack).not.toBeDisabled();
+    expect(unack.textContent?.trim()).toBe("Unack");
+    expect(unack.getAttribute("aria-label")).toBe("Unack HighErrorRate #412");
+    expect(rowButtons("Ack")).toHaveLength(0);
   });
 
   it("withdraws through the CASE's own unack when that is the direction it is in", async () => {
     const net = mount("", [caseListItem({ id: "case-1", ack_state: "acked" })]);
     net.on("POST /api/v1/cases/case-1/unack", () => ({ json: item(caseListItem()) }));
 
-    const name = "Withdraw the acknowledgement of HighErrorRate";
-    await until(() => expect(screen.getByRole("button", { name })).toBeTruthy());
-    fireEvent.click(screen.getByRole("button", { name }));
+    fireEvent.click(await rowButton("Unack"));
 
     await until(() => expect(net.to("/unack")).toHaveLength(1));
     expect(net.to("/unack")[0]?.path).toBe("/api/v1/cases/case-1/unack");
@@ -201,10 +242,7 @@ describe("a row", () => {
         resolve_reason: "upstream",
       }),
     ]);
-    await until(() =>
-      expect(screen.getByRole("button", { name: "Acknowledge HighErrorRate" })).toBeTruthy(),
-    );
-    expect(screen.getByRole("button", { name: "Acknowledge HighErrorRate" })).toBeDisabled();
+    expect(await rowButton("Ack")).toBeDisabled();
   });
 });
 
@@ -440,5 +478,217 @@ describe("an empty list", () => {
     await until(() =>
       expect(screen.getByText("No cases match these filters.")).toBeTruthy(),
     );
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Drawing an Incident over a selection                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * ADR 0052 §2 names a human as one of an Incident's two authors, and this list is
+ * where a human sees several Cases at once (git-bug f89c9cc).
+ *
+ * ⛔ A CASE IS IN AT MOST ONE INCIDENT, and the tests below hold the screen to
+ * saying so BEFORE the press: a selected Case already in one is named as MOVED,
+ * and the requests prove it — the draw names only the Cases in none, and each
+ * held Case reaches the new Incident through `…/move`, never a second draw.
+ */
+describe("drawing an Incident over a selection", () => {
+  const ROWS = [
+    caseListItem({ id: "case-1", number: 412 }),
+    caseListItem({ id: "case-2", number: 413, alert: alertRef({ alertname: "DiskFillingUp" }) }),
+  ];
+
+  /** Mount the list; `held` maps a Case id to the Incident number it is in now. */
+  function mountHeld(held: Readonly<Record<string, number>> = {}): FetchStub {
+    const net = mount("", ROWS);
+    net.on("GET /api/v1/incidents", (call: RecordedCall) => {
+      const n = held[call.search.get("case_id") ?? ""];
+      return { json: list(n === undefined ? [] : [incident({ number: n })]) };
+    });
+    return net;
+  }
+
+  const draws = (net: FetchStub): readonly RecordedCall[] =>
+    net.calls.filter((c) => c.method === "POST" && c.path === "/api/v1/incidents");
+
+  async function pick(label: string): Promise<void> {
+    await until(() => expect(screen.getByLabelText(label)).toBeTruthy());
+    fireEvent.click(screen.getByLabelText(label));
+  }
+
+  const drawButton = (): HTMLElement => screen.getByRole("button", { name: "Draw Incident" });
+
+  it("offers no bar until something is selected, and selecting sends nothing to the list", async () => {
+    const net = mountHeld();
+    await until(() => expect(screen.getByText("DiskFillingUp")).toBeTruthy());
+    expect(screen.queryByRole("button", { name: "Draw Incident" })).toBeNull();
+
+    const before = net.to("/api/v1/cases").length;
+    await pick("Select Case #412, HighErrorRate");
+    await until(() => expect(screen.getByText("1 Case selected")).toBeTruthy());
+    // ⛔ A SELECTION IS NOT A FILTER: the list is not asked again for it.
+    expect(net.to("/api/v1/cases")).toHaveLength(before);
+  });
+
+  it("⭐ draws one Incident over every selected Case that is in none", async () => {
+    const net = mountHeld();
+    net.on("POST /api/v1/incidents", () => ({
+      status: 201,
+      json: item(incidentDetail({ number: 9 })),
+    }));
+
+    await pick("Select Case #412, HighErrorRate");
+    await pick("Select Case #413, DiskFillingUp");
+    await until(() => expect(screen.getByText("2 Cases selected")).toBeTruthy());
+    await until(() => expect(drawButton()).not.toBeDisabled());
+    fireEvent.click(drawButton());
+
+    await until(() => expect(draws(net)).toHaveLength(1));
+    const post = draws(net)[0]!;
+    // ⛔ ONLY CASE IDS — no status, lead or severity exists to send.
+    expect(post.body).toEqual({ case_ids: ["case-1", "case-2"] });
+    expect(post.headers["Idempotency-Key"]).toBeTruthy();
+    expect(net.to("/move")).toHaveLength(0);
+  });
+
+  it("⭐⭐ says a selected Case already in an Incident will be MOVED, and moves it", async () => {
+    const net = mountHeld({ "case-2": 3 });
+    net.on("POST /api/v1/incidents", () => ({
+      status: 201,
+      json: item(incidentDetail({ number: 9 })),
+    }));
+    net.on("POST /api/v1/incidents/3/cases/case-2/move", () => ({
+      json: item(incidentDetail({ number: 9 })),
+    }));
+
+    await pick("Select Case #412, HighErrorRate");
+    await pick("Select Case #413, DiskFillingUp");
+
+    // Said BEFORE the press, naming where it is now.
+    await until(() =>
+      expect(document.querySelector('[data-moving-case="case-2"]')?.textContent).toMatch(
+        /#413.*Incident #3.*moves it.*not added twice/,
+      ),
+    );
+    expect(document.querySelector('[data-moving-case="case-1"]')).toBeNull();
+
+    await until(() => expect(drawButton()).not.toBeDisabled());
+    fireEvent.click(drawButton());
+
+    await until(() => expect(net.to("/move")).toHaveLength(1));
+    // ⛔ THE DRAW NAMES ONLY THE CASE IN NONE. Naming case-2 would be the second
+    // membership the rule forbids, and the server would refuse the whole draw.
+    expect(draws(net)).toHaveLength(1);
+    expect(draws(net)[0]!.body).toEqual({ case_ids: ["case-1"] });
+    // The move is addressed by the Incident the Case is LEAVING, into the one
+    // just drawn — one transaction, one `incident.case_moved` fact.
+    const move = net.to("/move")[0]!;
+    expect(move.path).toBe("/api/v1/incidents/3/cases/case-2/move");
+    expect(move.body).toEqual({ to_number: 9 });
+    expect(move.headers["Idempotency-Key"]).toBeTruthy();
+    expect(net.calls.indexOf(draws(net)[0]!)).toBeLessThan(net.calls.indexOf(move));
+  });
+
+  it("⛔ offers no draw when every selected Case is already in an Incident", async () => {
+    const net = mountHeld({ "case-2": 3 });
+    await pick("Select Case #413, DiskFillingUp");
+
+    await until(() =>
+      expect(screen.getByText(/^Every selected Case is already in an Incident\./)).toBeTruthy(),
+    );
+    expect(drawButton()).toBeDisabled();
+    expect(draws(net)).toHaveLength(0);
+  });
+
+  it("says which Case did not move when the draw succeeded and a move did not", async () => {
+    const net = mountHeld({ "case-2": 3 });
+    net.on("POST /api/v1/incidents", () => ({
+      status: 201,
+      json: item(incidentDetail({ number: 9 })),
+    }));
+    net.on("POST /api/v1/incidents/3/cases/case-2/move", () =>
+      problem(404, "incident_member_not_found", { detail: "Case #413 is not in Incident #3." }),
+    );
+
+    await pick("Select Case #412, HighErrorRate");
+    await pick("Select Case #413, DiskFillingUp");
+    await until(() => expect(drawButton()).not.toBeDisabled());
+    fireEvent.click(drawButton());
+
+    // ⚠️ The Incident exists — it is not rolled back — so the banner says both
+    // halves and links to it.
+    await until(() =>
+      expect(screen.getByRole("alert").textContent).toMatch(
+        /Incident #9 was drawn, but Case #413 is still in Incident #3: Case #413 is not in Incident #3\./,
+      ),
+    );
+    expect(
+      screen.getByRole("link", { name: "Open Incident #9" }).getAttribute("href"),
+    ).toBe("/incidents/9");
+  });
+
+  it("clears the selection on request", async () => {
+    mountHeld();
+    await pick("Select Case #412, HighErrorRate");
+    await until(() => expect(screen.getByText("1 Case selected")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Clear selection" }));
+    await until(() => expect(screen.queryByText("1 Case selected")).toBeNull());
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Whether a row can expire (ADR 0056 §1)                                     */
+/* -------------------------------------------------------------------------- */
+
+describe("a row's staleness", () => {
+  it("says when upstream last spoke about an open case, and when it expires", async () => {
+    mount();
+    await until(() => expect(screen.getByText("HighErrorRate")).toBeTruthy());
+    expect(document.body.textContent).toMatch(/last heard from upstream/);
+    expect(screen.getByText("expires as silent after 1d without word, if enabled")).toBeTruthy();
+  });
+
+  it("marks a held case with the replica that holds it, and puts the whole sentence behind it", async () => {
+    mount("", [
+      caseListItem({
+        sources: clusterSources([
+          caseSource({ id: "a0", name: "am-0" }),
+          caseSource({ id: "a1", name: "am-1", healthy: false }),
+        ]),
+      }),
+    ]);
+    await until(() => expect(screen.getByText("held: am-1 is not healthy")).toBeTruthy());
+    const marker = screen.getByText("held: am-1 is not healthy");
+    expect(marker.getAttribute("title")).toMatch(
+      /oto expires a case only while every live source on its cluster is healthy/,
+    );
+  });
+
+  it("⛔ marks an acked case exactly as it marks any other open one", async () => {
+    mount("", [
+      caseListItem({
+        ack_state: "acked",
+        acked_by_label: "Ada",
+        sources: caseSources({}, { healthy: false }),
+      }),
+    ]);
+    await until(() =>
+      expect(screen.getByText("held: prod-eu alertmanager is not healthy")).toBeTruthy(),
+    );
+  });
+
+  it("names the expiry on an ended row and forecasts nothing", async () => {
+    mount("?state=open,closed", [
+      caseListItem({
+        state: "closed",
+        ended_at: "2026-08-10T09:00:00.000Z",
+        resolve_reason: "source_removed",
+      }),
+    ]);
+    await until(() => expect(screen.getByText("Ended · expired: source removed")).toBeTruthy());
+    expect(document.querySelector("[data-expiry]")).toBeNull();
+    expect(document.body.textContent).not.toMatch(/last heard from upstream/);
   });
 });

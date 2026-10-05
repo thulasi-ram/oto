@@ -139,7 +139,7 @@ export interface paths {
          *     Every filter `listAlerts` accepts is accepted here and applied identically, so the buckets always
          *     summarise exactly the list beside them. Each bucket carries counts by state, by acknowledgement,
          *     by damping facet and by raw severity, plus a roll-up `state`: **a bucket is as alive as its
-         *     liveliest member**, and `resolved` and `expired` are never merged, because "the upstream said it
+         *     liveliest member**, and `resolved` and `expired` are never combined, because "the upstream said it
          *     ended" and "we stopped hearing about it" are different facts and the second is the more
          *     interesting one.
          *
@@ -579,7 +579,8 @@ export interface paths {
          *     **A case's `state` is `open` or `closed`, and it is the only liveness axis here.** The four
          *     words `firing | suppressed | resolved | expired` describe the ALERT, and every alert-shaped
          *     object in this contract carries them. What an episode adds is `resolve_reason` — `upstream`
-         *     for a resolution the source asserted, `timeout` for one oto never heard — and
+         *     for a resolution the source asserted, and `timeout`, `silent` or `source_removed` for the
+         *     three ways oto stops being able to say it is firing — and
          *     `suppression_reason`, which names the silence that muted that firing. A client wanting the
          *     four-word reading composes it from those fields exactly as the server does.
          *
@@ -821,6 +822,248 @@ export interface paths {
         patch: operations["updateCasePolicy"];
         trace?: never;
     };
+    "/api/v1/incidents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Incidents
+         * @description Every Incident in the org, newest first by `number`. Each row carries its **derived** state and
+         *     the size of its current membership, so the list can be read without a request per row.
+         *
+         *     `state` is never stored and no endpoint sets it: an Incident is `active` while any member Case is
+         *     open and `quiet` otherwise (ADR 0052 §3). It is read off the member Cases on every request, so it
+         *     cannot disagree with them.
+         *
+         *     With `case_id`, the answer is the Incident that Case is in **now** — none or exactly one, because a
+         *     Case is in at most one — so a screen can say a Case would be moved before a draw or an add is
+         *     refused for it. A Case in no Incident, or one this org does not have, is the same empty list.
+         *
+         *     **An empty Incident is left out unless `include_empty=true`.** An Incident whose every Case was
+         *     removed or moved away (`member_count: 0`) is kept — it is a record of what the story held — and
+         *     `GET /incidents/{number}` always serves it, but it is not a story anybody is following, so the
+         *     default list does not lead with it. A quiet Incident whose Cases all closed still holds them and
+         *     is listed.
+         */
+        get: operations["listIncidents"];
+        put?: never;
+        /**
+         * Draw an Incident over Cases
+         * @description A human draws one Incident over one or more Cases (ADR 0052 §1–§2). The caller is recorded as
+         *     **actor metadata** — "drawn by alice" — and nothing on the Incident says anybody owes it work.
+         *     Each Case's own timeline gains an `incident.case_added` event.
+         *
+         *     **A Case belongs to at most one Incident** (§4). Naming a Case that is already in another
+         *     Incident refuses the whole draw with `409 case_in_incident`, whose `detail` names that Incident
+         *     and the `move` request that would take the Case out of it. Nothing is drawn by a refused
+         *     request. The rule is a partial unique index in the database, so two concurrent draws over one
+         *     Case cannot both succeed.
+         *
+         *     ⛔ There is no `status`, `lead` or `severity` on the request or the response. An Incident's
+         *     response is managed in the incident tool it is declared to, never here.
+         *
+         *     A retry needs no idempotency claim: a second draw over the same Cases meets the first one's
+         *     memberships and is refused with the `409` above, which names the Incident the first attempt
+         *     drew.
+         */
+        post: operations["createIncident"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/incidents/{number}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get one Incident
+         * @description One Incident addressed by the `number` a human quotes, with every Case that has ever been in it:
+         *     the current members, and the removed ones as tombstones carrying who removed them and, for a
+         *     move, which Incident they went to. A removed Case stays recorded as removed.
+         *
+         *     An Incident with no Case left in it is served here like any other: the list hides it unless
+         *     `include_empty=true`, but its number always resolves.
+         *
+         *     A number naming no Incident in this org is a `404`, indistinguishable from one another org drew.
+         */
+        get: operations["getIncident"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/incidents/{number}/cases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add a Case to an Incident
+         * @description A human adds one Case to this Incident. The Case's timeline gains `incident.case_added`.
+         *
+         *     A Case already in **another** Incident is refused with `409 case_in_incident`, whose `detail`
+         *     names that Incident and the move request — `POST /api/v1/incidents/{that}/cases/{case_id}/move`
+         *     — that takes it out of there and into here in one step. A Case already in **this** Incident is
+         *     `409 already_a_member`. Either answer is also what a retry meets, which is why this endpoint
+         *     takes no idempotency claim.
+         */
+        post: operations["addIncidentCase"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/incidents/{number}/cases/{case_id}/remove": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Remove a Case from an Incident
+         * @description A human takes one Case out of this Incident. The membership is **tombstoned, never deleted**:
+         *     the Incident keeps showing the Case as removed, by whom and when, and the Case's timeline gains
+         *     `incident.case_removed`. A Correlator never re-adds a Case a human removed (ADR 0052 §4).
+         *
+         *     Removing a Case does nothing to the Case. It stays open or closed exactly as it was, and the
+         *     Incident's derived state moves only because its membership did.
+         *
+         *     `{case_id}` must be a current member of this Incident; anything else — a removed member, a Case
+         *     in another Incident, another org's Case — is a `404`.
+         */
+        post: operations["removeIncidentCase"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/incidents/{number}/cases/{case_id}/move": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Move a Case to another Incident
+         * @description A human moves one Case from **this** Incident to the one named in the body, in **one
+         *     transaction**: the membership here is tombstoned as "moved to #M" and a new one is written there,
+         *     both attributed to the caller, so there is no instant at which the Case is in neither Incident or
+         *     in both. The Case's timeline gains one `incident.case_moved` event naming both numbers.
+         *
+         *     The path names the Incident the Case is leaving, so a move is always a statement about where the
+         *     Case is now: if it has been moved or removed meanwhile, the request is a `404` rather than a
+         *     move from somewhere it no longer is. A move to the same Incident is a `422`.
+         *
+         *     The response is the Incident the Case **went to**.
+         */
+        post: operations["moveIncidentCase"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/correlators": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Correlators
+         * @description Every live Correlator in the org, disabled ones included, **in the order the evaluator walks
+         *     them**: `priority` ascending — lower first — then age, then id, exactly as notification policies
+         *     are walked. A settings list in any other order would make "why did that one draw it?"
+         *     unanswerable.
+         *
+         *     A Correlator is operator-written configuration that draws Incidents (ADR 0052 §2): matchers over
+         *     Cases in the notification-policy grammar, optionally a count over a window. It is **not** a
+         *     rule — in oto that word is the Prometheus alerting rule. The list is never paged: it is a
+         *     handful of hand-written rows, and `page.has_more` is always `false`.
+         */
+        get: operations["listCorrelators"];
+        put?: never;
+        /**
+         * Write a Correlator
+         * @description Every Case that opens from now on is run through the org's Correlators, **asynchronously** — a
+         *     job the Case's opening enqueues, never the ingest transaction, and on a queue no notification
+         *     waits on, so a Correlator can neither block nor delay one.
+         *
+         *     - The **first** Correlator, in `priority` order, whose matchers hold **claims** the Case. No later
+         *       Correlator is consulted — even when the first then declines to draw because its count is not
+         *       met yet. That is a notification policy's first-match semantics, unchanged.
+         *     - It **joins** that Correlator's latest Incident while that Incident is active, or within
+         *       `quiet_grace_seconds` after it went quiet — which makes it active again. A human-drawn
+         *       Incident never grows by itself.
+         *     - Otherwise it **draws** a new Incident: over this Case alone with no count condition, or — once
+         *       at least `count_min` of this Correlator's free Cases opened inside one `count_window_seconds`
+         *       span through this Case — over all of them at once.
+         *     - A Case already in an Incident is skipped by every Correlator, and a Case a human ever removed
+         *       or moved out of an Incident is never put back by one.
+         *
+         *     A duplicate live name is a `409` naming `correlators_name_uniq`.
+         */
+        post: operations["createCorrelator"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/correlators/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Retire a Correlator
+         * @description The Correlator draws nothing from now on. It is **soft-deleted**: every Incident it drew and every
+         *     membership it added keep naming it, so "why is this an Incident?" still has an answer.
+         */
+        delete: operations["deleteCorrelator"];
+        options?: never;
+        head?: never;
+        /**
+         * Update a Correlator
+         * @description A partial update, validated against the Correlator **as it would be after the update**. **Reordering is a `priority`
+         *     change**, as it is for notification policies. An explicit `null` on `count_min` and
+         *     `count_window_seconds` clears the count condition; clearing one half alone is a `422`.
+         *
+         *     A change applies to Cases that open after it. Incidents a Correlator already drew are not
+         *     redrawn.
+         */
+        patch: operations["updateCorrelator"];
+        trace?: never;
+    };
     "/api/v1/rule-snapshots": {
         parameters: {
             query?: never;
@@ -969,6 +1212,13 @@ export interface paths {
          * Soft-delete a source
          * @description Stops ingestion and reconciliation and revokes the ingest token. **Alert history is retained** —
          *     deleting a source must never erase the record of what it once reported.
+         *
+         *     **Deleting a cluster's last live source ends its open cases.** With nothing left that could
+         *     say they ended, each open case on that cluster expires with `resolve_reason:
+         *     source_removed` (ADR 0056 §2) once the resolve grace has passed since the deletion — while
+         *     the reaper's ADR 0056 expiries are turned on (`jobs.expire_silent_and_removed`). A source
+         *     registered on the cluster inside that grace stands the expiry down. Deleting one replica of
+         *     an HA pair ends nothing: the other still speaks for every case they shared.
          */
         delete: operations["deleteSource"];
         options?: never;
@@ -980,6 +1230,13 @@ export interface paths {
          *     Be deliberate about `ignore_labels`: it feeds the alert-identity hash, and changing it does
          *     **not** re-key existing alerts. New identities are created from that point forward, which is
          *     documented behaviour rather than a defect.
+         *
+         *     **`kind` and `cluster_id` are immutable** and are refused by name with a `422`
+         *     (`additionalProperties: false`). A source's cluster is which cases it speaks for: the
+         *     reaper's health guard, the `silent` threshold and `source_removed` are all questions about
+         *     the live sources on a case's cluster, so moving a source would orphan one cluster's cases
+         *     and hand another a witness to alerts it never carried. Delete the source and register it
+         *     again on the right cluster.
          */
         patch: operations["updateSource"];
         trace?: never;
@@ -1396,6 +1653,70 @@ export interface paths {
          *     exists, it simply cannot do this.
          */
         post: operations["resolveSlackConversation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/channel-connections/{id}/mapping/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Send one fact through a connection's payload mapping
+         * @description Render one fact you choose — an Incident fact among them — as the `oto.notification.v1` envelope,
+         *     map it through this webhook connection's **payload mapping** (ADR 0055 §2), fill the secrets it
+         *     names, sign it, and send it through `channel_id`, which must be a live channel of this connection:
+         *     the connection holds the mapping, the channel holds the URL. The same renderer, mapping, secrets,
+         *     signature and transport a real delivery uses, so a pass means the real path works.
+         *
+         *     **A test send to an incident tool may open a real incident there.** That is what a mapping does
+         *     with a fact; the view is the synthetic `OtoChannelTest` one, so whatever opens says so.
+         *
+         *     A mapping that does not render is reported as `ok: false` with `error_class: config_invalid` and
+         *     nothing is sent — never the plain envelope. A connection with no mapping is a `412`: its
+         *     channels send the plain envelope, which `POST /api/v1/channels/{id}/test` already covers.
+         */
+        post: operations["testChannelConnectionMapping"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/payload-mapping-catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the payload-mapping catalog
+         * @description The **catalog** of payload mappings embedded in this oto binary (ADR 0055 §2): one entry per
+         *     incident tool, each with the mapping document whole, the vendor docs its field names were
+         *     checked against and the date they were checked.
+         *
+         *     There is no import endpoint. Importing an entry is copying its `mapping` into a webhook
+         *     connection's own `payload_mapping` with `PATCH /api/v1/channel-connections/{id}` — through the
+         *     same save-time gate as any mapping — and nothing on the connection refers back to the catalog,
+         *     so a later catalog change never alters a live connection. A mapping that names a secret
+         *     (`secrets`) is accepted only once the connection seals a mapping secret of that name; the
+         *     catalog carries no secret value.
+         *
+         *     **No catalog mapping turns a fact into a resolve, close or status change** (ADR 0055 §4).
+         *     `commands` names each entry's command fields and the values it never sends in them; a test over
+         *     the catalog holds every entry to that declaration for every fact.
+         */
+        get: operations["listPayloadMappingCatalog"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2113,9 +2434,9 @@ export interface paths {
          *     reports `default` again. An unknown name in `reset` is rejected, never ignored: a typo'd key that
          *     was silently dropped is a reset the operator believes happened and did not.
          *
-         *     **The bounds are enforced here, on the server.** They are checked against the *merged* state, so a
+         *     **The bounds are enforced here, on the server.** They are checked against the state *after the update*, so a
          *     write cannot slip a value past by relying on a key it did not send, and the result is stored only
-         *     if the whole merged state is legal. A `resolve_grace_s` of `0` is refused whatever a UI would have
+         *     if the whole updated state is legal. A `resolve_grace_s` of `0` is refused whatever a UI would have
          *     allowed — that value is a Slack thread per transition.
          *
          *     **A key this deployment's configuration manages is refused with `409`**, and the problem's
@@ -2459,7 +2780,8 @@ export interface components {
          *     - `open` — the episode is live. `ended_at` is null, guaranteed by the `case_terminal_ended`
          *       CHECK.
          *     - `closed` *(terminal, and terminal means terminal)* — the episode ended. `resolve_reason`
-         *       says whether upstream resolved it (`upstream`) or oto stopped hearing about it (`timeout`),
+         *       says whether upstream resolved it (`upstream`) or how oto stopped hearing about it
+         *       (`timeout`, `silent`, `source_removed`),
          *       and a closed case is never reopened: a re-fire opens the NEXT episode at `seq + 1`,
          *       unacknowledged.
          *
@@ -2493,12 +2815,22 @@ export interface components {
          */
         SuppressionReason: "silence" | "inhibition" | "mute_time_interval" | "active_time_interval" | null;
         /**
-         * @description Why a case ended. Non-null **if and only if** the state is terminal, and the two agree:
-         *     `resolved` always pairs with `upstream`, `expired` always pairs with `timeout`.
+         * @description Why a case ended. Non-null **if and only if** the case is closed. `upstream` is the only
+         *     resolution — an explicit `status="resolved"` arrived — and it alone reads as `resolved`.
+         *     The other three all read as `expired` (ADR 0056 §4), and say why:
+         *
+         *     - `timeout` — upstream's `endsAt` plus `resolve_grace` passed while every live source on the
+         *       case's cluster was healthy.
+         *     - `silent` — every live source on the case's cluster was healthy and none said anything
+         *       about the case for longer than the longest `max_silence_seconds` among them.
+         *     - `source_removed` — no live source has fed the case's cluster for a `resolve_grace`, so
+         *       nothing is left that could say it ended.
+         *
+         *     None of them is a person's decision: no human ends a case.
          * @example upstream
          * @enum {string|null}
          */
-        ResolveReason: "upstream" | "timeout" | null;
+        ResolveReason: "upstream" | "timeout" | "silent" | "source_removed" | null;
         /**
          * @description `open` while at least one member case is `firing` or `suppressed`; `closed` once no live
          *     member is left.
@@ -2548,10 +2880,20 @@ export interface components {
          *     `case.reopened` are **not** in that group. They are RETIRED — read but never written — and
          *     remain published here, because `ev_type_ck` still admits them and rows on disk still spell
          *     them.
+         *
+         *     `incident.case_added`, `incident.case_removed` and `incident.case_moved` are the three
+         *     membership facts a Case's timeline carries about the Incident it is in (ADR 0052). They are
+         *     written on the **Case**, never on the Incident, and always by a human actor: "added to
+         *     Incident #4 by alice", "removed from Incident #4 by alice", "moved from Incident #4 to #7 by
+         *     alice". `incident.case_added` carries `{incident_id, incident_number, drawn}`, where `drawn` is
+         *     true when the Case was one of those the Incident was drawn over; `incident.case_removed`
+         *     carries `{incident_id, incident_number}`; `incident.case_moved` carries
+         *     `{from_incident_id, from_number, to_incident_id, to_number}`. None of them changes the Case: an
+         *     episode is open or closed exactly as it was.
          * @example case.opened
          * @enum {string}
          */
-        AlertEventType: "alert.created" | "alert.mutated" | "case.opened" | "case.reopened" | "case.suppressed" | "case.unsuppressed" | "case.resolved" | "case.expired" | "case.acknowledged" | "case.unacknowledged" | "alert.snoozed" | "alert.unsnoozed" | "group.opened" | "group.closed" | "group.member_joined" | "group.member_left" | "rule.snapshot_captured" | "rule.definition_changed" | "rule.lookup_failed" | "enrichment.completed" | "enrichment.failed" | "notification.created" | "notification.suppressed" | "delivery.sent" | "delivery.updated" | "delivery.failed" | "delivery.skipped" | "delivery.dead" | "comment.added" | "source.unreachable" | "source.recovered" | "source.clock_skew";
+        AlertEventType: "alert.created" | "alert.mutated" | "case.opened" | "case.reopened" | "case.suppressed" | "case.unsuppressed" | "case.resolved" | "case.expired" | "case.acknowledged" | "case.unacknowledged" | "alert.snoozed" | "alert.unsnoozed" | "group.opened" | "group.closed" | "group.member_joined" | "group.member_left" | "rule.snapshot_captured" | "rule.definition_changed" | "rule.lookup_failed" | "enrichment.completed" | "enrichment.failed" | "notification.created" | "notification.suppressed" | "delivery.sent" | "delivery.updated" | "delivery.failed" | "delivery.skipped" | "delivery.dead" | "comment.added" | "source.unreachable" | "source.recovered" | "source.clock_skew" | "incident.case_added" | "incident.case_removed" | "incident.case_moved";
         /**
          * @description Why a Notification exists. Distinct from Alertmanager's wire `notification_reason` string, which
          *     is mapped onto this enum on ingest.
@@ -2569,6 +2911,18 @@ export interface components {
          *     ⛔ It is not a throttle and not a damper. A policy with a window sends its digest **in addition**
          *     to whatever else it routes, and alert-based and case-based policies gain no window at all: their
          *     noise is a signal to fix the Prometheus rule, and oto does not decide to be quiet about a firing.
+         *
+         *     The last five — `drawn`, `case_added`, `case_removed`, `quiet` and `active_again` — are facts about
+         *     an **Incident** (ADR 0052 §5): an Incident drawn over Cases, a Case joining or leaving it, and its
+         *     derived state moving from active to quiet (no member Case open) or back. Their `subject_kind` is
+         *     `incident`, their `subject_id` is the Incident, and they name no alert and no case. **None of them
+         *     is a command:** there is no `resolved`, no `closed` and no status, because oto declares facts to
+         *     an incident tool and never resolves its incident — `quiet` means every member Case has closed,
+         *     never that the response is over. A policy whose `subject_kinds` is `[incident]` and whose `reasons`
+         *     are these five is the catch-all "every Incident goes to the incident tool"; an org with no such
+         *     policy sends nothing about its Incidents. They are delivered over the generic webhook as the
+         *     `incident` subject of `oto.notification.v1`; a threaded channel records the delivery as skipped,
+         *     because an Incident is not yet a conversation on one.
          *
          *     ⛔ **There is no `severity_raised`, and there was.** ADR 0020 proposed it as the purest case for
          *     broadcasting — a card going amber to red under a silent `chat.update` — and a migration was
@@ -2608,7 +2962,7 @@ export interface components {
          * @example fired
          * @enum {string}
          */
-        NotificationReason: "fired" | "all_resolved" | "repeat" | "suppressed" | "unsuppressed" | "expired" | "refired" | "acked" | "unacked" | "snoozed" | "unsnoozed" | "enriched" | "rule_changed" | "comment" | "digest";
+        NotificationReason: "fired" | "all_resolved" | "repeat" | "suppressed" | "unsuppressed" | "expired" | "refired" | "acked" | "unacked" | "snoozed" | "unsnoozed" | "enriched" | "rule_changed" | "comment" | "digest" | "drawn" | "case_added" | "case_removed" | "quiet" | "active_again";
         /**
          * @example delivered
          * @enum {string}
@@ -3195,6 +3549,81 @@ export interface components {
             rule?: components["schemas"]["RuleSnapshotDTO"] | null;
             enrichments: components["schemas"]["EnrichmentDTO"][];
             delivery_summary: components["schemas"]["DeliverySummaryDTO"];
+            /**
+             * @description Who can still speak for this episode, so a screen can say whether it can expire and,
+             *     when it cannot, why (ADR 0056 §1). `null` means oto could not read it, which is **not**
+             *     the same as "no source".
+             */
+            sources: components["schemas"]["CaseSourcesDTO"] | null;
+        };
+        /**
+         * @description What an episode's cluster says about who can still speak for it (ADR 0056 §1). It is the
+         *     reaper's own reading, shown — the same live set, threshold and §B.4 health verdicts its
+         *     passes rest on. It is read for display and decides nothing.
+         */
+        CaseSourcesDTO: {
+            /**
+             * Format: int32
+             * @description How many live sources feed the episode's cluster. The reaper expires a case as `timeout`
+             *     or `silent` only when there is **at least one** and **every one** is healthy
+             *     (`all_healthy`): an HA pair is two witnesses, and either one oto cannot see might be the
+             *     one still carrying the alert.
+             * @example 2
+             */
+            live: number;
+            /**
+             * Format: int32
+             * @description How many sources were removed from the cluster. With `live == 0` and `removed > 0` the
+             *     episode expires as `source_removed` once the last removal is a resolve grace old, while
+             *     the reaper's ADR 0056 expiries are turned on.
+             * @example 0
+             */
+            removed: number;
+            /**
+             * @description `true` when `live >= 1` and the §B.4 guard vouches for every live source — the
+             *     condition under which the reaper may expire the episode as `timeout` or `silent` at all.
+             *     `false` holds it: some live source is not `healthy` (or oto could not read its health),
+             *     or there is no live source.
+             */
+            all_healthy: boolean;
+            /**
+             * Format: int32
+             * @description The cluster's `silent` threshold (ADR 0056 §3): the **longest** `max_silence_seconds`
+             *     among its live sources. An open episode none of them has said anything about for this
+             *     long expires as `silent`, while `all_healthy`. `null` when **any** live source turned
+             *     the expiry off — which turns it off for the whole cluster — or when none is live.
+             * @example 86400
+             */
+            max_silence_seconds: number | null;
+            /**
+             * @description The live sources, in name order, each with its own health verdict and max silence — at
+             *     most ten; `live` says how many there are in all.
+             */
+            live_sources: components["schemas"]["CaseSourceDTO"][];
+            /**
+             * @description The one live source when `live == 1`, and `null` otherwise. It is `live_sources[0]` in
+             *     that case; `live_sources`, `all_healthy` and `max_silence_seconds` carry the rule for
+             *     any number of sources.
+             */
+            source: components["schemas"]["CaseSourceDTO"] | null;
+        };
+        /** @description One live source an episode's expiry waits on. */
+        CaseSourceDTO: {
+            id: components["schemas"]["Uuid"];
+            /** @example alertmanager-prod-eu */
+            name: string;
+            /**
+             * @description The §B.4 guard's verdict on this source. `false` — any status but `healthy`, or one oto
+             *     could not read — holds every open case on its cluster: they can expire only once it
+             *     recovers.
+             */
+            healthy: boolean;
+            /**
+             * Format: int32
+             * @description This source's own max silence (ADR 0056 §3). `null` turns the `silent` expiry off — for
+             *     every case on its cluster, whatever the other sources there say.
+             */
+            max_silence_seconds: number | null;
         };
         /**
          * @description One row of `GET /api/v1/cases`: a firing episode, plus the identity it belongs to.
@@ -3208,6 +3637,295 @@ export interface components {
          */
         CaseListItemDTO: components["schemas"]["CaseDTO"] & {
             alert: components["schemas"]["AlertRefDTO"];
+            /**
+             * @description Who can still speak for this episode (ADR 0056 §1), read for the whole page in one
+             *     query. `null` means it was not read, never "no source".
+             */
+            sources: components["schemas"]["CaseSourcesDTO"] | null;
+        };
+        /**
+         * @description What an Incident's member Cases say about it, and nothing else (ADR 0052 §3). **Derived on every
+         *     read and never stored**: `active` while any current member Case is `open`, `quiet` otherwise —
+         *     including when every member has been removed.
+         *
+         *     **No endpoint sets it, and no human writes it.** "Quiet but not fixed" and "fixed but still
+         *     noisy" are facts about the *response*, and the response lives in the incident tool the Incident
+         *     is declared to. The two may disagree, and that is correct: they describe different things.
+         * @example active
+         * @enum {string}
+         */
+        IncidentState: "active" | "quiet";
+        /** @description The answer to "why is this here?" — a rule someone wrote, or a person who decided. */
+        IncidentAttributionDTO: {
+            /**
+             * @description Who decided: an operator-written **Correlator**, or a **human**. There is no third answer —
+             *     a model may only propose membership, never decide it (ADR 0052 §2).
+             * @enum {string}
+             */
+            kind: "human" | "correlator";
+            /**
+             * @description The human's display name, frozen when they acted so the record reads the same after a
+             *     rename. `null` exactly when `kind` is `correlator`. Actor metadata only: nothing is ever
+             *     aggregated per person.
+             * @example Priya R.
+             */
+            label?: string | null;
+            /** @description The Correlator that decided, `null` exactly when `kind` is `human`. */
+            correlator_id?: components["schemas"]["Uuid"] | null;
+        };
+        /**
+         * @description An **Incident**: a set of one or more Cases drawn together as one story (ADR 0052). An Alert has
+         *     Cases; an Incident spans Cases.
+         *
+         *     ⛔ It carries no `status`, no `lead`, no human-set `severity` and no write-up, and it never will:
+         *     its response is managed in the external tool it is declared to. Inside oto an Incident is a fact
+         *     about signals, and its `state` is read off its Cases.
+         */
+        IncidentDTO: {
+            id: components["schemas"]["Uuid"];
+            /**
+             * Format: int64
+             * @description The Incident's name within its organisation: 1-based, monotonic, and what `/incidents/{number}`
+             *     addresses. Per-organisation and never global, and unique and ordered but not gapless — the
+             *     same contract as a Case's `number`, from a counter of its own.
+             * @example 4
+             */
+            number: number;
+            state: components["schemas"]["IncidentState"];
+            drawn_at: components["schemas"]["Timestamp"];
+            drawn_by: components["schemas"]["IncidentAttributionDTO"];
+            /**
+             * Format: int32
+             * @description How many Cases are in the Incident now. Removed Cases are not counted.
+             * @example 3
+             */
+            member_count: number;
+            /**
+             * Format: int32
+             * @description How many of those are open. `state` is `active` exactly when this is above zero; the two are
+             *     served together so a client never has to decide which one to believe.
+             * @example 1
+             */
+            open_member_count: number;
+            /**
+             * @description The distinct `alertname`s of the current members, sorted, at most ten — enough for a list
+             *     row to say what the story is about without a request per row.
+             * @example [
+             *       "KubePodCrashLooping",
+             *       "HighErrorRate"
+             *     ]
+             */
+            alertnames: string[];
+        };
+        /**
+         * @description One spell of one Case inside an Incident — current when `removed_at` is `null`, a tombstone
+         *     otherwise. A Case removed and later added again appears once per spell.
+         */
+        IncidentMemberDTO: {
+            case_id: components["schemas"]["Uuid"];
+            /**
+             * Format: int64
+             * @description The member Case's own `number`, which is what `/cases` leads its rows with.
+             * @example 412
+             */
+            case_number: number;
+            case_state: components["schemas"]["CaseState"];
+            alert_id: components["schemas"]["Uuid"];
+            alertname: string;
+            labels: components["schemas"]["LabelMap"];
+            added_at: components["schemas"]["Timestamp"];
+            added_by: components["schemas"]["IncidentAttributionDTO"];
+            /**
+             * @description When a human took the Case out of this Incident; `null` while it is a member. A removed Case
+             *     stays on the Incident as a tombstone rather than disappearing from it.
+             */
+            removed_at?: components["schemas"]["Timestamp"] | null;
+            /** @description The display name of whoever removed it, frozen at the time. Only a human removes. */
+            removed_by_label?: string | null;
+            /**
+             * Format: int64
+             * @description Set when the removal was half of a **move**: the `number` of the Incident the Case went to.
+             *     `null` for a plain removal and for a current member.
+             * @example 7
+             */
+            moved_to_number?: number | null;
+        };
+        /** @description One Incident with its full membership history. */
+        IncidentDetailDTO: components["schemas"]["IncidentDTO"] & {
+            /**
+             * @description Every spell of every Case that has been in this Incident, current and removed, in the
+             *     order they joined.
+             */
+            members: components["schemas"]["IncidentMemberDTO"][];
+            /**
+             * @description Every external incident a destination's tool echoed back for this Incident — one per
+             *     channel, oldest first, `[]` when none did. Recorded from the tool's own 2xx response to
+             *     an Incident fact (`external_url` / `external_id`), once per channel, never overwritten
+             *     and never re-read from the tool.
+             */
+            outbound: components["schemas"]["IncidentOutboundDTO"][];
+        };
+        /**
+         * @description ADR 0052 §5's outbound mapping: the incident an incident tool opened for this Incident, as the
+         *     tool named it in its response. It is the receipt of a delivery, not the external incident's
+         *     state — oto never reads the tool back, and nothing about this Incident derives from it.
+         */
+        IncidentOutboundDTO: {
+            channel_id: components["schemas"]["Uuid"];
+            /** @description The destination whose receiver echoed it. */
+            channel_name: string;
+            /**
+             * Format: uri
+             * @description The tool's own link to its incident — always an absolute `https` URL, or `null` when the tool echoed only an id.
+             */
+            external_url: string | null;
+            /** @description The tool's own id for its incident, or `null` when it echoed only a link. */
+            external_id: string | null;
+            recorded_at: components["schemas"]["Timestamp"];
+        };
+        /** @description Draw an Incident. The caller is recorded as the human who drew it. */
+        CreateIncidentRequest: {
+            /**
+             * @description The Cases to draw the Incident over — at least one, because an Incident is a set of one or
+             *     more Cases. Each must be in the caller's organisation and in no other Incident.
+             */
+            case_ids: components["schemas"]["Uuid"][];
+        };
+        /** @description Add one Case to an Incident. The caller is recorded as the human who added it. */
+        AddIncidentCaseRequest: {
+            case_id: components["schemas"]["Uuid"];
+        };
+        /** @description Move one Case from the Incident in the path to another, in one transaction. */
+        MoveIncidentCaseRequest: {
+            /**
+             * Format: int64
+             * @description The `number` of the Incident the Case is moving to. It must not be the one in the path.
+             * @example 7
+             */
+            to_number: number;
+        };
+        /**
+         * @description An operator-written definition that draws Incidents (ADR 0052 §2): matchers over Cases,
+         *     optionally a count over a window. Not a rule — in oto that word is the Prometheus alerting rule.
+         */
+        CorrelatorDTO: {
+            id: components["schemas"]["Uuid"];
+            /**
+             * @description Unique among the org's live Correlators, compared case-insensitively.
+             * @example payments api
+             */
+            name: string;
+            /**
+             * Format: int32
+             * @description The operator's order. **Lower is evaluated first**, ties by age then id — a notification
+             *     policy's sentence. The first Correlator whose matchers hold claims the Case.
+             * @example 100
+             */
+            priority: number;
+            enabled: boolean;
+            /** @description All must match the Case's labels. An empty list matches every Case. */
+            matchers: components["schemas"]["MatcherDTO"][];
+            /**
+             * Format: int32
+             * @description Draw only once at least this many of this Correlator's free Cases opened inside one
+             *     `count_window_seconds` span, the Case being evaluated included; the Incident is then drawn over
+             *     all of them. `null` means every matching Case draws or joins. It gates **drawing** only: a
+             *     matching Case joins this Correlator's active Incident whatever the count.
+             * @example 5
+             */
+            count_min: number | null;
+            /**
+             * Format: int32
+             * @description The span `count_min` is counted over. Both halves are set or neither.
+             * @example 600
+             */
+            count_window_seconds: number | null;
+            /**
+             * Format: int32
+             * @description How long after this Correlator's latest Incident went **quiet** a matching Case still joins it
+             *     — and makes it active again — rather than drawing a new one (ADR 0052 §4). `null` joins only
+             *     while the Incident is active. It is what keeps a flapping alert one story instead of one
+             *     Incident per firing. Measured from when the Incident went quiet to when the new Case opened;
+             *     a re-fire exactly this long after still joins. A human-drawn Incident never grows by itself,
+             *     grace or not.
+             * @example 1800
+             */
+            quiet_grace_seconds: number | null;
+            /**
+             * @description Whether this Correlator's Incidents are **conversations** (ADR 0052 §6). When `true`, a fact
+             *     about a member Case evaluated after its membership exists posts into the Incident's Slack
+             *     thread — whose root is the Incident's card — instead of the Case's own, and each member Case
+             *     that already had a thread gets one "now part of Incident #N" reply there. Nothing is held
+             *     back to wait for a Correlator and nothing already posted moves; changing it redirects only
+             *     later facts. `false`, the default, is one conversation per Case (ADR 0045). A human-drawn
+             *     Incident has no Correlator and is never a conversation.
+             */
+            incidents_are_conversations: boolean;
+            created_at: components["schemas"]["Timestamp"];
+            updated_at: components["schemas"]["Timestamp"];
+        };
+        /** @description Write a Correlator. */
+        CreateCorrelatorRequest: {
+            name: string;
+            /**
+             * Format: int32
+             * @default 100
+             */
+            priority: number;
+            /** @default true */
+            enabled: boolean;
+            matchers?: components["schemas"]["MatcherDTO"][];
+            /**
+             * Format: int32
+             * @description Requires `count_window_seconds`; omitting both means no count condition.
+             */
+            count_min?: number;
+            /**
+             * Format: int32
+             * @description Requires `count_min`.
+             */
+            count_window_seconds?: number;
+            /**
+             * Format: int32
+             * @description Omit it to join only while the Correlator's Incident is active.
+             */
+            quiet_grace_seconds?: number;
+            /**
+             * @description Make this Correlator's Incidents conversations (ADR 0052 §6).
+             * @default false
+             */
+            incidents_are_conversations: boolean;
+        };
+        /** @description Change a Correlator. A change applies to Cases that open after it. */
+        UpdateCorrelatorRequest: {
+            name?: string;
+            /**
+             * Format: int32
+             * @description How an operator reorders. Lower is evaluated first.
+             */
+            priority?: number;
+            enabled?: boolean;
+            matchers?: components["schemas"]["MatcherDTO"][];
+            /**
+             * Format: int32
+             * @description An explicit `null` clears the count condition; it must be cleared with its window.
+             */
+            count_min?: number | null;
+            /**
+             * Format: int32
+             * @description An explicit `null` clears the count condition; it must be cleared with `count_min`.
+             */
+            count_window_seconds?: number | null;
+            /**
+             * Format: int32
+             * @description An explicit `null` clears the grace, so the Correlator joins only while active.
+             */
+            quiet_grace_seconds?: number | null;
+            /**
+             * @description Redirects only facts evaluated after the change commits; nothing already posted moves, in
+             *     either direction.
+             */
+            incidents_are_conversations?: boolean;
         };
         /**
          * @description The **case retention window** for one `(namespace, alertname)` pair — the only per-pair shaping of
@@ -4009,11 +4727,43 @@ export interface components {
              */
             reconcile_interval_seconds: number;
             /**
+             * Format: int32
+             * @description How long, in seconds, this source may say nothing about an open case before oto expires
+             *     it with `resolve_reason=silent` (ADR 0056 §3). `null` turns that expiry off — for every
+             *     case on this source's cluster, since an HA pair expires on the longest threshold among
+             *     its live sources and not at all while any of them is off. Asked only while every live
+             *     source on the cluster is `healthy`: under an unhealthy one oto cannot tell silence from an
+             *     outage, so the case is held. A source registered before this field existed reads `null`
+             *     until an operator sets it.
+             *
+             *     ⚠️ It must exceed the Alertmanager's `repeat_interval` (4h unless set). Alertmanager
+             *     re-sends a firing alert once per repeat, so a shorter value expires long-firing cases
+             *     while they are still firing.
+             */
+            max_silence_seconds: number | null;
+            /**
              * @description The exact path to configure in this source's Alertmanager `webhook_config`.
              * @example /api/v1/ingest/alertmanager/0198f3c1-6a2e-7c31-9b4d-2f5a1c8e0b77
              */
             ingest_path: string;
             health?: components["schemas"]["SourceHealthDTO"] | null;
+            /**
+             * Format: int32
+             * @description How many cases are open on this source's cluster (ADR 0056 §1). Served on the list;
+             *     absent means not counted, never zero.
+             * @example 12
+             */
+            open_case_count?: number;
+            /**
+             * Format: int32
+             * @description How many of those open cases the reaper is **holding** because of this source (§B.4):
+             *     all of them while it is not `healthy`, and none while it is. The reaper asks every live
+             *     source on a cluster, so an HA sibling that is not `healthy` holds the cases too — and
+             *     it is that sibling's count that says so. A held case ends only when upstream resolves it
+             *     or the hold lifts. Absent exactly when `open_case_count` is.
+             * @example 12
+             */
+            held_case_count?: number;
             created_at: components["schemas"]["Timestamp"];
             updated_at: components["schemas"]["Timestamp"];
         };
@@ -4560,7 +5310,11 @@ export interface components {
             connection_config_schema: {
                 [key: string]: unknown;
             };
-            /** @description Which credential kinds a **connection** of this type accepts. */
+            /**
+             * @description Which credential kinds a **connection** of this type accepts, across both of its slots.
+             *     `webhook_signing_secret`, where listed, goes in `signing_credential`; every other kind goes in
+             *     `credential`.
+             */
             connection_credential_kinds: ("slack_bot_token" | "slack_app_token" | "slack_signing_secret" | "basic" | "bearer" | "webhook_signing_secret" | "none")[];
             /**
              * @description What the provider can do. Capabilities are negotiated centrally by oto's dispatcher, never
@@ -4726,7 +5480,7 @@ export interface components {
              *       "case"
              *     ]
              */
-            subject_kinds: ("alert" | "case" | "digest")[];
+            subject_kinds: ("alert" | "case" | "digest" | "incident")[];
             /**
              * Format: int32
              * @description THE FLOOR TO `throttle`'S CEILING: stay silent until at least this many facts about this
@@ -4858,12 +5612,15 @@ export interface components {
              *       here, because ack lives on the firing rather than on the identity.
              *     - `digest` — a WINDOW OVER A NAMESPACE, which is not an object at all. `subject_id` is the
              *       `notification_policies` row that asked.
+             *     - `incident` — an INCIDENT, a set of Cases drawn as one story (ADR 0052). `subject_id` is the
+             *       Incident; `alert_id` and `case_id` are always `null`, because a fact about the story is not a
+             *       fact about any one of its signals.
              *
              *     It has always been part of the idempotency pre-image, which is why the vocabulary could grow
-             *     (00056, then 00058) without re-keying anything.
+             *     (00056, then 00058, then 00084) without re-keying anything.
              * @enum {string}
              */
-            subject_kind: "alert" | "case" | "digest";
+            subject_kind: "alert" | "case" | "digest" | "incident";
             subject_id: components["schemas"]["Uuid"];
             /**
              * @description Set when the fact is about one specific alert. Always set for `acked`, `unacked`, `refired`
@@ -5980,6 +6737,14 @@ export interface components {
              * @default 30
              */
             reconcile_interval_seconds: number;
+            /**
+             * Format: int32
+             * @description How long this source may say nothing about an open case before it expires as `silent`
+             *     (ADR 0056 §3). Omitted, it is a day; `null` turns the expiry off. ⚠️ It must exceed the
+             *     Alertmanager's `repeat_interval`, or long-firing cases expire while still firing.
+             * @default 86400
+             */
+            max_silence_seconds: number | null;
             credential?: components["schemas"]["CredentialInput"];
         };
         /**
@@ -5992,7 +6757,6 @@ export interface components {
          */
         UpdateSourceRequest: {
             name?: string;
-            cluster_id?: components["schemas"]["Uuid"];
             /** Format: uri */
             base_url?: string;
             /** Format: uri */
@@ -6015,6 +6779,13 @@ export interface components {
              *     polls is tunable here; whether it polls is not.
              */
             reconcile_interval_seconds?: number;
+            /**
+             * Format: int32
+             * @description How long this source may say nothing about an open case before it expires as `silent`
+             *     (ADR 0056 §3). Omitted leaves it; `null` turns the expiry off. ⚠️ It must exceed the
+             *     Alertmanager's `repeat_interval`, or long-firing cases expire while still firing.
+             */
+            max_silence_seconds?: number | null;
             credential?: components["schemas"]["CredentialInput"];
         };
         /**
@@ -6090,7 +6861,7 @@ export interface components {
         };
         /**
          * @description One **org-wide provider setup** — a Slack workspace's bot token, or a webhook receiver family's
-         *     shared credential — set up once and referenced by several channels.
+         *     shared credential and/or signing secret — set up once and referenced by several channels.
          */
         ChannelConnectionDTO: {
             id: components["schemas"]["Uuid"];
@@ -6118,13 +6889,50 @@ export interface components {
              */
             credential_kind?: "slack_bot_token" | "slack_app_token" | "slack_signing_secret" | "basic" | "bearer" | "webhook_signing_secret" | "none" | null;
             credential_rotated_at?: components["schemas"]["Timestamp"] | null;
+            /**
+             * @description `webhook_signing_secret` when this webhook connection signs its outbound requests
+             *     (`X-Oto-Signature`, docs/setup/webhook.md), `null` when it does not. Carried beside
+             *     `credential_kind`, never in it, so one receiver can require a bearer token and verify a
+             *     signature at once. **The secret itself is never returned.**
+             * @enum {string|null}
+             */
+            signing_credential_kind?: "webhook_signing_secret" | null;
+            signing_credential_rotated_at?: components["schemas"]["Timestamp"] | null;
+            /**
+             * @description Until this instant the signing secret the last rotation REPLACED keeps signing beside the
+             *     current one, and every request carries both signatures. Set to the rotation plus 24 hours;
+             *     `null` when the signing secret has never been rotated. Once in the past, only the current
+             *     secret signs.
+             */
+            signing_overlap_until?: components["schemas"]["Timestamp"] | null;
+            /**
+             * @description A webhook connection's payload mapping (ADR 0055 §2), or `null` when it sends the plain
+             *     `oto.notification.v1` envelope. It holds no secret — a secret is named in it as
+             *     `{{ secrets.<name> }}` — so it is returned whole.
+             */
+            payload_mapping?: components["schemas"]["PayloadMapping"] | null;
+            /**
+             * @description The names of the secrets this connection seals for its payload mapping, sorted. **The values
+             *     are never returned.** Empty when it seals none.
+             */
+            mapping_secret_names: string[];
+            /** @description When the mapping secrets were last replaced; `null` when never. */
+            mapping_secrets_rotated_at?: components["schemas"]["Timestamp"] | null;
             created_at: components["schemas"]["Timestamp"];
             updated_at: components["schemas"]["Timestamp"];
         };
         /**
-         * @description Create a connection. A `slack` connection must carry a `slack_bot_token` credential; a `webhook`
-         *     connection may have none, a `basic`/`bearer` credential to authenticate outbound to a shared
-         *     receiver, or a `webhook_signing_secret` to sign the outbound payload for the receiver to verify.
+         * @description Create a connection. A `slack` connection must carry a `slack_bot_token` credential. A `webhook`
+         *     connection may carry a `basic`/`bearer` `credential` to authenticate outbound to a shared
+         *     receiver, a `webhook_signing_secret` in `signing_credential` to sign every request for the
+         *     receiver to verify, both, or neither. A `webhook_signing_secret` in `credential`, any other kind
+         *     in `signing_credential`, or a `signing_credential` on a `slack` connection is a `422` naming the
+         *     field.
+         *
+         *     A `webhook` connection may carry a `payload_mapping` and the `mapping_secrets` it names. The
+         *     mapping is rendered against an envelope for **every fact** before it is stored, and a mapping
+         *     that does not render — or that names a secret not in `mapping_secrets` — is a `422` whose
+         *     violation names the source (`payload_mapping/body`, `payload_mapping/facts/<fact>`) and the fact.
          */
         CreateChannelConnectionRequest: {
             type: components["schemas"]["ChannelType"];
@@ -6138,11 +6946,25 @@ export interface components {
                 [key: string]: unknown;
             };
             credential?: components["schemas"]["CredentialInput"];
+            signing_credential?: components["schemas"]["CredentialInput"];
+            payload_mapping?: components["schemas"]["PayloadMapping"];
+            mapping_secrets?: components["schemas"]["MappingSecretsInput"];
         };
         /**
          * @description Partial update. `type` is absent because a connection's provider is its identity; supplying
          *     `credential` rotates the secret in place, so every channel referencing this connection never
          *     spends a moment pointing at nothing.
+         *
+         *     Supplying `signing_credential` rotates the signing secret **with an overlap**: the secret it
+         *     replaces keeps signing beside the new one for 24 hours (`signing_overlap_until`), and every
+         *     request in that window carries both signatures, so a receiver still holding the old secret keeps
+         *     verifying until it is given the new one. A second rotation inside the window retires the oldest
+         *     secret at once. Kind `none` detaches the signing secret immediately, with no overlap.
+         *
+         *     Supplying `payload_mapping` or `mapping_secrets` re-checks the mapping the connection will have
+         *     against the secrets it will have, for every fact, so removing a secret the mapping still names is
+         *     a `422` here rather than a failed delivery later. `mapping_secrets` **replaces the whole set**
+         *     (oto cannot read the current values back to add to); `{}` removes them.
          */
         UpdateChannelConnectionRequest: {
             name?: string;
@@ -6150,6 +6972,120 @@ export interface components {
                 [key: string]: unknown;
             };
             credential?: components["schemas"]["CredentialInput"];
+            signing_credential?: components["schemas"]["CredentialInput"];
+            /** @description Replaces the payload mapping; `null` removes it and the plain envelope is sent. */
+            payload_mapping?: components["schemas"]["PayloadMapping"] | null;
+            mapping_secrets?: components["schemas"]["MappingSecretsInput"];
+        };
+        /**
+         * @description A webhook connection's **payload mapping** (ADR 0055 §2): destination setup, not wording. It is
+         *     not a NotificationTemplate, and a mapping that fails at send time is a failed delivery
+         *     (`dead`, `config_invalid`, retryable from the audit) — never the plain envelope instead. It holds
+         *     no secret: a vendor key is named as `{{ secrets.<name> }}` and filled in at the moment of sending
+         *     from the connection's sealed `mapping_secrets`.
+         */
+        PayloadMapping: {
+            /**
+             * @description Liquid over the `oto.notification.v1` envelope, rendering ONE JSON object: the request body for
+             *     every fact `facts` does not name. Every interpolated value is JSON-escaped with no opt-out, so
+             *     write `"title": "{{ incident.number }}"` and a label holding a quote stays a string.
+             */
+            body: string;
+            /** @description A body per fact (the envelope's `reason`), overriding `body` for that fact. */
+            facts?: {
+                [key: string]: string;
+            };
+            /**
+             * @description Request headers, name to a Liquid value. `Authorization` and every `X-Oto-*` name are refused:
+             *     a vendor's token is this connection's sealed `credential`, and `X-Oto-*` is oto's framing.
+             */
+            headers?: {
+                [key: string]: string;
+            };
+            /**
+             * @description Where an incident tool's 2xx response names the incident it opened. When present, ONLY these
+             *     paths are read and the default top-level `external_url` / `external_id` keys are not. What is
+             *     read is kept only if it is an absolute `https` URL / a printable id, exactly as for the default.
+             */
+            response?: {
+                /** @description A gjson path to the incident's link in a 2xx JSON response, e.g. `data.url`. */
+                external_url?: string;
+                /** @description A gjson path to the incident's id in a 2xx JSON response. */
+                external_id?: string;
+            };
+        };
+        /**
+         * @description The secrets a payload mapping names, name to value — sealed into one credential. **Write-only**:
+         *     only the names are ever returned (`mapping_secret_names`). Supplying it replaces the whole set.
+         */
+        MappingSecretsInput: {
+            [key: string]: string;
+        };
+        /**
+         * @description One entry of the payload-mapping catalog (ADR 0055 §2). Importing it copies `mapping` into a
+         *     webhook connection's `payload_mapping`.
+         */
+        PayloadMappingCatalogEntryDTO: {
+            /** @description The catalog file's name without its extension, e.g. `pagerduty`. */
+            id: string;
+            /** @description The tool, as its vendor writes it. */
+            vendor: string;
+            /** @description The API the mapping speaks to. */
+            title: string;
+            /** @description What the mapping does with oto's facts. */
+            summary: string;
+            /** @description The vendor's public docs the mapping's field names were checked against. */
+            docs: string[];
+            /**
+             * Format: date
+             * @description When the field names were checked against `docs`.
+             */
+            checked_on: string;
+            /** @description What the operator does in the tool and on the connection, in order. */
+            setup: string[];
+            /**
+             * @description The tool's command fields and the values the catalog never sends in them (ADR 0055 §4) — so
+             *     an importer knows, for example, that this mapping never resolves an incident on `quiet`.
+             */
+            commands: components["schemas"]["PayloadMappingCommandDTO"][];
+            /**
+             * @description What the import must ask before it copies `mapping`, e.g. PagerDuty's default severity. Each
+             *     choice stands in `mapping` as the placeholder `<<choose:<name>>>`; the import writes the
+             *     operator's pick in its place as a literal, and a copy that still holds a placeholder is
+             *     refused at save (`choice_unfilled`). The catalog never answers a choice itself.
+             */
+            choices: components["schemas"]["PayloadMappingChoiceDTO"][];
+            /**
+             * @description The mapping secrets the connection must seal, by name, before the copied mapping can be
+             *     saved. Never a value: a catalog entry holds none.
+             */
+            secrets: string[];
+            mapping: components["schemas"]["PayloadMapping"];
+        };
+        PayloadMappingCommandDTO: {
+            /** @description A gjson path into the request body the mapping renders, e.g. `event_action`. */
+            field: string;
+            /** @description The values of `field` that would turn a fact into a command; the catalog sends none. */
+            forbidden: string[];
+        };
+        PayloadMappingChoiceDTO: {
+            /** @description The choice's name, as the mapping's placeholder writes it. */
+            name: string;
+            /** @description What the import asks the operator, in one sentence. */
+            question: string;
+            /** @description A gjson path into the request body the choice decides, e.g. `payload.severity`. */
+            field: string;
+            /** @description The values the operator picks one of. */
+            options: string[];
+        };
+        PayloadMappingCatalogResponse: {
+            data: components["schemas"]["PayloadMappingCatalogEntryDTO"][];
+            meta: components["schemas"]["Meta"];
+        };
+        /** @description Which fact to send, and through which of this connection's channels. */
+        TestConnectionMappingRequest: {
+            channel_id: components["schemas"]["Uuid"];
+            fact: components["schemas"]["NotificationReason"];
         };
         /**
          * @description Ask for the other half of one Slack channel. Supply exactly one of `name` or `conversation_id` —
@@ -6390,7 +7326,7 @@ export interface components {
              *       "case"
              *     ]
              */
-            subject_kinds?: ("alert" | "case" | "digest")[];
+            subject_kinds?: ("alert" | "case" | "digest" | "incident")[];
             /**
              * Format: int32
              * @description Stay silent until at least this many facts about the bound subject kind have happened inside
@@ -6471,14 +7407,14 @@ export interface components {
              *     binding admits none of the policy's reasons, and a `422` if the policy carries a `count_min`
              *     and the new binding is not exactly `["case"]` — code `required` when it names no single kind,
              *     code **`unsupported`** when the single kind it names is `alert` or `digest`
-             *     (`policies_count_case_ck`). The check runs against the MERGED policy, so a `PATCH` that
+             *     (`policies_count_case_ck`). The check runs against the policy AS UPDATED, so a `PATCH` that
              *     touches only this field can be refused for a `count_min` it never mentioned; clear the count
              *     condition in the same request to widen the binding.
              * @example [
              *       "case"
              *     ]
              */
-            subject_kinds?: ("alert" | "case" | "digest")[];
+            subject_kinds?: ("alert" | "case" | "digest" | "incident")[];
             /**
              * Format: int32
              * @description An explicit `null` turns the count condition off, which is a different request from omitting
@@ -6487,7 +7423,7 @@ export interface components {
              *     count condition means anything alone.
              *
              *     ⛔ **Turning a count condition ON requires the policy's `subject_kinds` to be exactly
-             *     `["case"]`** after the merge, whether this request restates the binding or leaves it alone;
+             *     `["case"]`** after the update, whether this request restates the binding or leaves it alone;
              *     otherwise it is a `422` on `subject_kinds` (`policies_count_case_ck`). See `PolicyDTO.count_min`
              *     for why `alert` would mute the policy permanently and `digest` would be read by nothing.
              */
@@ -6672,6 +7608,24 @@ export interface components {
         };
         CasePolicyResponse: {
             data: components["schemas"]["CasePolicyDTO"];
+            meta: components["schemas"]["Meta"];
+        };
+        IncidentListResponse: {
+            data: components["schemas"]["IncidentDTO"][];
+            page: components["schemas"]["PageInfo"];
+            meta: components["schemas"]["Meta"];
+        };
+        IncidentResponse: {
+            data: components["schemas"]["IncidentDetailDTO"];
+            meta: components["schemas"]["Meta"];
+        };
+        CorrelatorListResponse: {
+            data: components["schemas"]["CorrelatorDTO"][];
+            page: components["schemas"]["PageInfo"];
+            meta: components["schemas"]["Meta"];
+        };
+        CorrelatorResponse: {
+            data: components["schemas"]["CorrelatorDTO"];
             meta: components["schemas"]["Meta"];
         };
         ClusterListResponse: {
@@ -6903,7 +7857,7 @@ export interface components {
         };
         /**
          * @description A partial write. **An omitted key is left alone**; `reset` is the only way to return one to the
-         *     default. Every bound here is a copy of the server's own table and the server checks the *merged*
+         *     default. Every bound here is a copy of the server's own table and the server checks the *updated*
          *     state regardless — this schema is a courtesy to the form, not the boundary.
          */
         UpdateOrgSettingsRequest: {
@@ -7126,6 +8080,14 @@ export interface components {
     parameters: {
         /** @description Resource identifier (UUIDv7). */
         IdParam: components["schemas"]["Uuid"];
+        /**
+         * @description The Incident's number within the caller's organisation — the name a human quotes, not its id.
+         *     Per-organisation, so another org's Incident with the same number is simply a different one, and
+         *     a number naming nothing here is a `404`.
+         */
+        IncidentNumberParam: number;
+        /** @description The id of a Case that is a current member of the Incident in the path. */
+        IncidentCaseIdParam: components["schemas"]["Uuid"];
         /**
          * @description The `AlertSource` this webhook belongs to. The presented ingest token MUST be scoped to this
          *     exact id; a token for another source is a `401`, never a `403`.
@@ -7400,7 +8362,7 @@ export interface operations {
             query?: {
                 /**
                  * @description Comma-separated lifecycle states. Remember that `resolved` and `expired` are different
-                 *     things and are never merged.
+                 *     things and are never combined.
                  */
                 state?: components["schemas"]["State"][];
                 /**
@@ -9065,6 +10027,598 @@ export interface operations {
             503: components["responses"]["ServiceUnavailable"];
         };
     };
+    listIncidents: {
+        parameters: {
+            query?: {
+                /** @description Maximum items to return in one page. */
+                limit?: components["parameters"]["LimitParam"];
+                /**
+                 * @description Opaque keyset cursor, taken verbatim from `page.next_cursor` of the previous response. A cursor
+                 *     minted under a different filter set is rejected with `400 cursor_filter_mismatch` — reset
+                 *     pagination when the user changes a filter.
+                 */
+                cursor?: components["parameters"]["CursorParam"];
+                /** @description Only the Incident this Case is a current member of (at most one). Nothing to page. */
+                case_id?: components["schemas"]["Uuid"];
+                /**
+                 * @description List the Incidents with no current member as well — every Case removed or moved away. Off by
+                 *     default: such an Incident is kept and served by number, and hidden from the list. A cursor is
+                 *     bound to this setting, so one minted with it cannot page the list without it. It changes
+                 *     nothing alongside `case_id`, whose answer is never empty.
+                 */
+                include_empty?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of Incidents. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IncidentListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    createIncident: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
+                 *     body within the retention window returns the original result rather than acting twice; replaying
+                 *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
+                 *
+                 *     ### The second carve-out: endpoints that are idempotent by state machine
+                 *
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     a key, because the state after N calls equals the state after one. They are therefore **not**
+                 *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
+                 *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
+                 *     `delivery_not_dead` — rather than a replay of the original response.
+                 *
+                 *     **Treat those four codes as success-equivalent when you are retrying the same key.** They mean
+                 *     "the thing you asked for is already true", which is what a replayed `200` would have told you.
+                 *
+                 *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
+                 *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
+                 *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
+                 *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
+                 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateIncidentRequest"];
+            };
+        };
+        responses: {
+            /** @description The Incident that was drawn. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IncidentResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    getIncident: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description The Incident's number within the caller's organisation — the name a human quotes, not its id.
+                 *     Per-organisation, so another org's Incident with the same number is simply a different one, and
+                 *     a number naming nothing here is a `404`.
+                 */
+                number: components["parameters"]["IncidentNumberParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The Incident. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IncidentResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    addIncidentCase: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
+                 *     body within the retention window returns the original result rather than acting twice; replaying
+                 *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
+                 *
+                 *     ### The second carve-out: endpoints that are idempotent by state machine
+                 *
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     a key, because the state after N calls equals the state after one. They are therefore **not**
+                 *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
+                 *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
+                 *     `delivery_not_dead` — rather than a replay of the original response.
+                 *
+                 *     **Treat those four codes as success-equivalent when you are retrying the same key.** They mean
+                 *     "the thing you asked for is already true", which is what a replayed `200` would have told you.
+                 *
+                 *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
+                 *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
+                 *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
+                 *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
+                 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
+            };
+            path: {
+                /**
+                 * @description The Incident's number within the caller's organisation — the name a human quotes, not its id.
+                 *     Per-organisation, so another org's Incident with the same number is simply a different one, and
+                 *     a number naming nothing here is a `404`.
+                 */
+                number: components["parameters"]["IncidentNumberParam"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddIncidentCaseRequest"];
+            };
+        };
+        responses: {
+            /** @description The Incident, with the Case added. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IncidentResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    removeIncidentCase: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
+                 *     body within the retention window returns the original result rather than acting twice; replaying
+                 *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
+                 *
+                 *     ### The second carve-out: endpoints that are idempotent by state machine
+                 *
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     a key, because the state after N calls equals the state after one. They are therefore **not**
+                 *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
+                 *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
+                 *     `delivery_not_dead` — rather than a replay of the original response.
+                 *
+                 *     **Treat those four codes as success-equivalent when you are retrying the same key.** They mean
+                 *     "the thing you asked for is already true", which is what a replayed `200` would have told you.
+                 *
+                 *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
+                 *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
+                 *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
+                 *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
+                 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
+            };
+            path: {
+                /**
+                 * @description The Incident's number within the caller's organisation — the name a human quotes, not its id.
+                 *     Per-organisation, so another org's Incident with the same number is simply a different one, and
+                 *     a number naming nothing here is a `404`.
+                 */
+                number: components["parameters"]["IncidentNumberParam"];
+                /** @description The id of a Case that is a current member of the Incident in the path. */
+                case_id: components["parameters"]["IncidentCaseIdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The Incident, with the Case recorded as removed. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IncidentResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    moveIncidentCase: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
+                 *     body within the retention window returns the original result rather than acting twice; replaying
+                 *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
+                 *
+                 *     ### The second carve-out: endpoints that are idempotent by state machine
+                 *
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     a key, because the state after N calls equals the state after one. They are therefore **not**
+                 *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
+                 *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
+                 *     `delivery_not_dead` — rather than a replay of the original response.
+                 *
+                 *     **Treat those four codes as success-equivalent when you are retrying the same key.** They mean
+                 *     "the thing you asked for is already true", which is what a replayed `200` would have told you.
+                 *
+                 *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
+                 *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
+                 *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
+                 *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
+                 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
+            };
+            path: {
+                /**
+                 * @description The Incident's number within the caller's organisation — the name a human quotes, not its id.
+                 *     Per-organisation, so another org's Incident with the same number is simply a different one, and
+                 *     a number naming nothing here is a `404`.
+                 */
+                number: components["parameters"]["IncidentNumberParam"];
+                /** @description The id of a Case that is a current member of the Incident in the path. */
+                case_id: components["parameters"]["IncidentCaseIdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MoveIncidentCaseRequest"];
+            };
+        };
+        responses: {
+            /** @description The Incident the Case was moved to. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IncidentResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    listCorrelators: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every live Correlator, in evaluation order. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CorrelatorListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    createCorrelator: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateCorrelatorRequest"];
+            };
+        };
+        responses: {
+            /** @description The Correlator. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CorrelatorResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    deleteCorrelator: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: components["responses"]["NoContent"];
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    updateCorrelator: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateCorrelatorRequest"];
+            };
+        };
+        responses: {
+            /** @description The updated Correlator. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CorrelatorResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
     listRuleSnapshots: {
         parameters: {
             query: {
@@ -9522,7 +11076,20 @@ export interface operations {
             409: components["responses"]["Conflict"];
             413: components["responses"]["PayloadTooLarge"];
             415: components["responses"]["UnsupportedMediaType"];
-            422: components["responses"]["UnprocessableContent"];
+            /**
+             * @description `422 validation_failed` — the body parsed but is semantically invalid, or carries an
+             *     unknown field. Always carries `violations[]`. **An attempt to change an immutable field
+             *     lands here**: `{"cluster_id": …}` or `{"kind": …}` is refused with a violation naming the
+             *     field and `code: unknown_field`, and nothing is written.
+             */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             429: components["responses"]["RateLimited"];
             500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
@@ -10733,6 +12300,134 @@ export interface operations {
             502: components["responses"]["BadGateway"];
             503: components["responses"]["ServiceUnavailable"];
             504: components["responses"]["GatewayTimeout"];
+        };
+    };
+    testChannelConnectionMapping: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
+                 *     body within the retention window returns the original result rather than acting twice; replaying
+                 *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
+                 *
+                 *     ### The second carve-out: endpoints that are idempotent by state machine
+                 *
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     a key, because the state after N calls equals the state after one. They are therefore **not**
+                 *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
+                 *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
+                 *     `delivery_not_dead` — rather than a replay of the original response.
+                 *
+                 *     **Treat those four codes as success-equivalent when you are retrying the same key.** They mean
+                 *     "the thing you asked for is already true", which is what a replayed `200` would have told you.
+                 *
+                 *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
+                 *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
+                 *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
+                 *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
+                 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
+            };
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TestConnectionMappingRequest"];
+            };
+        };
+        responses: {
+            /**
+             * @description The test result. A `200` with `ok: false` means the test ran and the mapping or the receiver
+             *     refused it — check `error_class` and `error`.
+             */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChannelTestResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            412: components["responses"]["PreconditionFailed"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            502: components["responses"]["BadGateway"];
+            503: components["responses"]["ServiceUnavailable"];
+            504: components["responses"]["GatewayTimeout"];
+        };
+    };
+    listPayloadMappingCatalog: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The catalog, in file-name order. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PayloadMappingCatalogResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
         };
     };
     listNotificationTemplates: {

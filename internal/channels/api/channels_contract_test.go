@@ -224,7 +224,10 @@ func (f *chanConnStore) Create(
 	}
 	return domain.Connection{
 		ID: id, OrgID: s.OrgID(), Type: in.Type, Name: in.Name, Config: in.Config,
-		CredentialID: in.CredentialID, CreatedAt: now, UpdatedAt: now,
+		CredentialID: in.CredentialID, SigningCredentialID: in.SigningCredentialID,
+		PayloadMapping: in.PayloadMapping, MappingCredentialID: in.MappingCredentialID,
+		MappingSecretNames: in.MappingSecretNames, MappingRotatedAt: nil,
+		CreatedAt: now, UpdatedAt: now,
 	}, nil
 }
 
@@ -292,6 +295,7 @@ func (f *chanResolver) ResolveConversation(
 type chanCreds struct {
 	sealed  []map[string]string
 	rotated []map[string]string
+	deleted []uuid.UUID
 }
 
 func (f *chanCreds) CreateCredential(
@@ -308,6 +312,11 @@ func (f *chanCreds) RotateCredential(
 	return nil
 }
 
+func (f *chanCreds) DeleteCredential(_ context.Context, _ db.TenantScope, id uuid.UUID) error {
+	f.deleted = append(f.deleted, id)
+	return nil
+}
+
 // chanTester answers the synthetic-card send.
 type chanTester struct {
 	result domain.TestResult
@@ -315,6 +324,32 @@ type chanTester struct {
 	// scoped makes Test behave like the real query and refuse an id the caller
 	// does not own, which is what the tenant probe drives.
 	store *chanStore
+	// connections scopes TestMapping the same way: the real Tester reads the
+	// connection under the caller's tenant before it reads the channel.
+	connections *chanConnStore
+	// mapped records every TestMapping that got past the scope, so a cross-tenant
+	// probe can prove nothing was sent.
+	mapped []uuid.UUID
+}
+
+func (f *chanTester) TestMapping(
+	ctx context.Context, s db.TenantScope, connectionID, channelID uuid.UUID, _ string,
+) (domain.TestResult, error) {
+	if f.connections != nil {
+		if _, err := f.connections.Get(ctx, s, connectionID); err != nil {
+			return domain.TestResult{}, err
+		}
+	}
+	if f.store != nil {
+		if _, err := f.store.Get(ctx, s, channelID); err != nil {
+			return domain.TestResult{}, err
+		}
+	}
+	f.mapped = append(f.mapped, connectionID)
+	if f.err != nil {
+		return domain.TestResult{}, f.err
+	}
+	return f.result, nil
 }
 
 func (f *chanTester) Test(
@@ -482,8 +517,9 @@ func newChanWorld(t *testing.T) *chanWorld {
 			answer: domain.ConversationResult{ID: "C7F2X9QLM", Name: "sre-alerts"},
 		},
 		tester: &chanTester{
-			store:  store,
-			result: domain.TestResult{OK: true, ProviderConversationID: "C7F2X9QLM", ProviderMessageID: "1723023262.114300", CheckedAt: chanNow},
+			store:       store,
+			connections: connStore,
+			result:      domain.TestResult{OK: true, ProviderConversationID: "C7F2X9QLM", ProviderMessageID: "1723023262.114300", CheckedAt: chanNow},
 		},
 	}
 	// The REAL write facade over the fake store and the fake tester: the claim
@@ -936,6 +972,13 @@ func TestAnotherTenantsChannelIdIsAlwaysA404(t *testing.T) {
 			Op: "resolveSlackConversation", Method: http.MethodPost,
 			Path: "/channel-connections/" + conn + "/slack/resolve", Body: `{"name":"sre-alerts"}`,
 		},
+		// The mapping test opens the connection's sealed mapping secrets and may
+		// open a real incident in the tool — the worst route here to leak across.
+		{
+			Op: "testChannelConnectionMapping", Method: http.MethodPost,
+			Path: "/channel-connections/" + conn + "/mapping/test",
+			Body: `{"channel_id":"` + stranger + `","fact":"drawn"}`,
+		},
 	}
 
 	apitest.AssertCrossTenant404(t, func(t *testing.T) (*apitest.Client, apitest.RouteCheck) {
@@ -955,6 +998,9 @@ func TestAnotherTenantsChannelIdIsAlwaysA404(t *testing.T) {
 			}
 			if len(w.resolver.queries) != 0 {
 				t.Fatal("⛔ a cross-tenant resolve reached the resolver, and so would have opened a token")
+			}
+			if len(w.tester.mapped) != 0 {
+				t.Fatal("⛔ a cross-tenant mapping test reached the sender, and so would have opened its secrets")
 			}
 		}
 	}, routes)
@@ -1298,4 +1344,244 @@ func TestAnUnknownQueryParameterOnAChannelEndpointIsADeclared400(t *testing.T) {
 		{Op: "deleteChannel", Method: http.MethodDelete, Path: "/channels/" + chanMine.String() + "?foo=bar"},
 		{Op: "testChannel", Method: http.MethodPost, Path: "/channels/" + chanMine.String() + "/test?foo=bar"},
 	})
+}
+
+// TestAWebhookConnectionCarriesABearerTokenAndASigningSecret is the second slot
+// (migration 00088, ADR 0055 §1): a receiver that requires a bearer token AND
+// verifies X-Oto-Signature is configured with one connection, both secrets are
+// sealed, and neither comes back.
+func TestAWebhookConnectionCarriesABearerTokenAndASigningSecret(t *testing.T) {
+	t.Parallel()
+
+	w := newChanWorld(t)
+	const (
+		token  = "tok-not-a-real-token"    //nolint:gosec // a fixture, not a credential
+		secret = "whsec-not-a-real-secret" //nolint:gosec // a fixture, not a credential
+	)
+	body := map[string]any{
+		"type":   "webhook",
+		"name":   "incident tool",
+		"config": map[string]any{},
+		"credential": map[string]any{
+			"kind": "bearer", "values": map[string]string{"token": token},
+		},
+		"signing_credential": map[string]any{
+			"kind": "webhook_signing_secret", "values": map[string]string{"secret": secret},
+		},
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+	schema.AssertRequest(t, "createChannelConnection", raw)
+
+	resp := w.client.POST(t, "/channel-connections", body).MustStatus(t, http.StatusCreated)
+	schema.Assert(t, "createChannelConnection", http.StatusCreated, resp.Body())
+
+	if len(w.creds.sealed) != 2 || w.creds.sealed[0]["token"] != token || w.creds.sealed[1]["secret"] != secret {
+		t.Fatalf("both secrets must reach the sealer, credential first: %#v", w.creds.sealed)
+	}
+	if len(w.connections.created) != 1 ||
+		w.connections.created[0].CredentialID == nil || w.connections.created[0].SigningCredentialID == nil {
+		t.Fatalf("the connection was not created with both slots filled: %#v", w.connections.created)
+	}
+	for _, leaked := range []string{token, secret} {
+		if strings.Contains(string(resp.Body()), leaked) {
+			t.Fatalf("⛔ a secret came back in the response body:\n%s", resp.Body())
+		}
+	}
+	data, _ := resp.JSON(t)["data"].(map[string]any)
+	if got := data["signing_credential_kind"]; got != "webhook_signing_secret" {
+		t.Fatalf("signing_credential_kind = %v, want webhook_signing_secret", got)
+	}
+}
+
+// TestASecretInTheWrongSlotIsRefusedBeforeAnythingIsSealed. No CHECK constraint can
+// see which kind a slot points at — both reference one table — so the API is the
+// only place this is caught, and it is caught BEFORE the sealer runs.
+func TestASecretInTheWrongSlotIsRefusedBeforeAnythingIsSealed(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		body  map[string]any
+		field string
+	}{
+		{
+			name: "a signing secret in the credential slot",
+			body: map[string]any{
+				"type": "webhook", "name": "wrong slot", "config": map[string]any{},
+				"credential": map[string]any{"kind": "webhook_signing_secret", "values": map[string]string{"secret": "x"}},
+			},
+			field: "credential/kind",
+		},
+		{
+			name: "a bearer token in the signing slot",
+			body: map[string]any{
+				"type": "webhook", "name": "wrong slot", "config": map[string]any{},
+				"signing_credential": map[string]any{"kind": "bearer", "values": map[string]string{"token": "x"}},
+			},
+			field: "signing_credential/kind",
+		},
+		{
+			name: "a signing secret on a slack connection",
+			body: map[string]any{
+				"type": "slack", "name": "wrong provider", "config": map[string]any{"team_id": "T9TK3CUKW"},
+				"credential":         map[string]any{"kind": "slack_bot_token", "values": map[string]string{"token": "x"}},
+				"signing_credential": map[string]any{"kind": "webhook_signing_secret", "values": map[string]string{"secret": "x"}},
+			},
+			field: "signing_credential",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			w := newChanWorld(t)
+			resp := w.client.POST(t, "/channel-connections", tc.body).MustStatus(t, http.StatusUnprocessableEntity)
+			schema.AssertProblem(t, "createChannelConnection", http.StatusUnprocessableEntity, resp.Body())
+			resp.MustViolate(t, tc.field)
+			if len(w.creds.sealed) != 0 || len(w.connections.created) != 0 {
+				t.Fatal("a refused create still sealed a secret or wrote a connection")
+			}
+		})
+	}
+}
+
+// ADR 0055 §2 (git-bug 2205620): a webhook connection's payload mapping is set up
+// with the connection, checked against every fact before it is stored, and its
+// secrets are sealed and never come back — only their names.
+
+// incidentToolMapping renders incident.io's required `title` and `status` for every
+// fact, and names its key as a secret rather than holding it.
+var incidentToolMapping = map[string]any{
+	"body": `{"title": "{{ summary }}", "status": "firing", "routing_key": "{{ secrets.routing_key }}"}`,
+	"facts": map[string]string{
+		"quiet": `{"title": "{{ summary }}", "status": "resolved", "routing_key": "{{ secrets.routing_key }}"}`,
+	},
+	"response": map[string]string{"external_url": "data.url"},
+}
+
+// TestAWebhookConnectionCarriesAPayloadMappingAndOnlyItsSecretNames is the happy
+// path: the mapping is stored and returned whole, the secret is sealed, and the
+// response names the secret without holding it.
+func TestAWebhookConnectionCarriesAPayloadMappingAndOnlyItsSecretNames(t *testing.T) {
+	t.Parallel()
+
+	w := newChanWorld(t)
+	const key = "R0UTING-KEY-NOT-REAL" //nolint:gosec // a fixture, not a credential
+	body := map[string]any{
+		"type": "webhook", "name": "incident tool", "config": map[string]any{},
+		"payload_mapping": incidentToolMapping,
+		"mapping_secrets": map[string]string{"routing_key": key},
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+	schema.AssertRequest(t, "createChannelConnection", raw)
+
+	resp := w.client.POST(t, "/channel-connections", body).MustStatus(t, http.StatusCreated)
+	schema.Assert(t, "createChannelConnection", http.StatusCreated, resp.Body())
+
+	if len(w.creds.sealed) != 1 || w.creds.sealed[0]["routing_key"] != key {
+		t.Fatalf("the mapping secret must reach the sealer: %#v", w.creds.sealed)
+	}
+	if strings.Contains(string(resp.Body()), key) {
+		t.Fatalf("⛔ a mapping secret came back in the response body:\n%s", resp.Body())
+	}
+	created := w.connections.created
+	if len(created) != 1 || created[0].MappingCredentialID == nil || strings.Contains(string(created[0].PayloadMapping), key) {
+		t.Fatalf("the connection was not stored with a sealed slot and a secret-free mapping: %#v", created)
+	}
+	data, _ := resp.JSON(t)["data"].(map[string]any)
+	if names, _ := data["mapping_secret_names"].([]any); len(names) != 1 || names[0] != "routing_key" {
+		t.Fatalf("mapping_secret_names = %v, want [routing_key]", data["mapping_secret_names"])
+	}
+	if _, ok := data["payload_mapping"].(map[string]any); !ok {
+		t.Fatalf("payload_mapping did not come back: %v", data["payload_mapping"])
+	}
+}
+
+// TestAMappingThatCannotRenderAFactIsA422NamingIt: a mapping that breaks on `quiet`
+// alone is refused, the violation names `quiet`, and nothing is sealed or stored.
+func TestAMappingThatCannotRenderAFactIsA422NamingIt(t *testing.T) {
+	t.Parallel()
+
+	w := newChanWorld(t)
+	body := map[string]any{
+		"type": "webhook", "name": "incident tool", "config": map[string]any{},
+		"payload_mapping": map[string]any{
+			"body":  `{"title": "{{ summary }}"}`,
+			"facts": map[string]string{"quiet": `{"title": {{ summary }}}`},
+		},
+		"mapping_secrets": map[string]string{"routing_key": "x"},
+	}
+	resp := w.client.POST(t, "/channel-connections", body).MustStatus(t, http.StatusUnprocessableEntity)
+	schema.AssertProblem(t, "createChannelConnection", http.StatusUnprocessableEntity, resp.Body())
+	resp.MustViolate(t, "payload_mapping/facts/quiet")
+	if !strings.Contains(string(resp.Body()), "quiet (fixture") {
+		t.Fatalf("the refusal does not name the fact:\n%s", resp.Body())
+	}
+	if len(w.creds.sealed) != 0 || len(w.connections.created) != 0 {
+		t.Fatal("a refused mapping still sealed a secret or wrote a connection")
+	}
+}
+
+// TestAMappingNamingASecretTheConnectionDoesNotHoldIsA422.
+func TestAMappingNamingASecretTheConnectionDoesNotHoldIsA422(t *testing.T) {
+	t.Parallel()
+
+	w := newChanWorld(t)
+	body := map[string]any{
+		"type": "webhook", "name": "incident tool", "config": map[string]any{},
+		"payload_mapping": incidentToolMapping,
+	}
+	resp := w.client.POST(t, "/channel-connections", body).MustStatus(t, http.StatusUnprocessableEntity)
+	schema.AssertProblem(t, "createChannelConnection", http.StatusUnprocessableEntity, resp.Body())
+	resp.MustViolate(t, "payload_mapping/body")
+	if !strings.Contains(string(resp.Body()), "routing_key") {
+		t.Fatalf("the refusal does not name the missing secret:\n%s", resp.Body())
+	}
+}
+
+// TestASlackConnectionCarriesNoPayloadMapping: there is no envelope to map.
+func TestASlackConnectionCarriesNoPayloadMapping(t *testing.T) {
+	t.Parallel()
+
+	w := newChanWorld(t)
+	body := map[string]any{
+		"type": "slack", "name": "workspace", "config": map[string]any{"team_id": "T9TK3CUKW"},
+		"credential":      map[string]any{"kind": "slack_bot_token", "values": map[string]string{"token": "x"}},
+		"payload_mapping": map[string]any{"body": `{}`},
+	}
+	resp := w.client.POST(t, "/channel-connections", body).MustStatus(t, http.StatusUnprocessableEntity)
+	resp.MustViolate(t, "payload_mapping")
+}
+
+// TestAMappingTestSendsTheChosenFactThroughTheConnection: the happy path of
+// `POST /channel-connections/{id}/mapping/test`. The request is the contract's,
+// the answer is the channel test's shape, and the send went through the
+// connection in the path — not some other one the body could name.
+func TestAMappingTestSendsTheChosenFactThroughTheConnection(t *testing.T) {
+	t.Parallel()
+
+	w := newChanWorld(t)
+	body := map[string]any{"channel_id": chanMine.String(), "fact": "drawn"}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+	schema.AssertRequest(t, "testChannelConnectionMapping", raw)
+
+	resp := w.client.POST(t, "/channel-connections/"+chanConnMine.String()+"/mapping/test", body).
+		MustStatus(t, http.StatusOK)
+	schema.Assert(t, "testChannelConnectionMapping", http.StatusOK, resp.Body())
+
+	if len(w.tester.mapped) != 1 || w.tester.mapped[0] != chanConnMine {
+		t.Fatalf("the mapping test was sent through %v, want exactly [%s]", w.tester.mapped, chanConnMine)
+	}
+	data, _ := resp.JSON(t)["data"].(map[string]any)
+	if data["ok"] != true {
+		t.Fatalf("ok = %v, want true", data["ok"])
+	}
 }

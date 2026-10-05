@@ -69,6 +69,7 @@ type Options struct {
 	Dedup      DedupRepository
 	Rejections RejectionRepository
 	Sources    SourceConfigs
+	Pushes     PushRecorder
 	Alerts     AlertObserver
 	Enqueuer   db.Enqueuer
 
@@ -89,6 +90,8 @@ type Options struct {
 //
 // The split is the whole architecture (CONTEXT.md §2.2). Accept does two writes
 // and one enqueue in one short transaction and makes NO outbound network call.
+// (A push also stamps `source_health.last_push_at` in that transaction — one
+// throttled primary-key UPDATE that is a no-op inside domain.PushStampEvery.)
 // ProcessBatch does everything expensive, asynchronously, where a failure costs a
 // retry instead of a lost alert.
 type Service struct {
@@ -97,6 +100,7 @@ type Service struct {
 	dedup       DedupRepository
 	rejections  RejectionRepository
 	sources     SourceConfigs
+	pushes      PushRecorder
 	alerts      AlertObserver
 	alertStates AlertStateReader
 	enqueuer    db.Enqueuer
@@ -119,6 +123,8 @@ func New(o Options) (*Service, error) {
 		return nil, errs.New(errs.KindInternal, "ingest_missing_rejections", "a rejection repository is required")
 	case o.Sources == nil:
 		return nil, errs.New(errs.KindInternal, "ingest_missing_sources", "a source config port is required")
+	case o.Pushes == nil:
+		return nil, errs.New(errs.KindInternal, "ingest_missing_pushes", "a push recorder is required")
 	case o.Enqueuer == nil:
 		return nil, errs.New(errs.KindInternal, "ingest_missing_enqueuer", "an enqueuer is required")
 	}
@@ -142,6 +148,7 @@ func New(o Options) (*Service, error) {
 		dedup:       o.Dedup,
 		rejections:  o.Rejections,
 		sources:     o.Sources,
+		pushes:      o.Pushes,
 		alerts:      o.Alerts,
 		alertStates: o.AlertStates,
 		enqueuer:    o.Enqueuer,

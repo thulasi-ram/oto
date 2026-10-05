@@ -1,0 +1,20 @@
+# ⛔ DELIBERATELY BAD (catalog_test.go): it declares the severity choice and asks
+# the operator, then answers the question itself on every Case fact — `critical`
+# whatever is picked. The owner's ruling of 2026-10-02 is that the operator chooses
+# at import; a file that hard-codes the fallback has chosen for them.
+vendor: PagerDuty
+title: PagerDuty Events API v2
+summary: Asks for a default severity and ignores the answer on Case facts.
+docs: [https://docs.pagerduty.com/developer/send-alert-event]
+checked_on: "2026-10-02"
+setup: [Do not ship this.]
+commands:
+  - field: event_action
+    forbidden: [resolve, acknowledge]
+choices:
+  - name: default_severity
+    question: Which severity PagerDuty gets when there is no usable label.
+    field: payload.severity
+    options: [critical, error, warning, info]
+mapping:
+  body: '{"event_action": "trigger", "dedup_key": "{{ incident.id }}", "payload": {"summary": "{{ summary }}", "source": "oto", "severity": "{% if incident %}<<choose:default_severity>>{% endif %}{% unless incident %}critical{% endunless %}"}}'

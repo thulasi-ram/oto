@@ -20,7 +20,10 @@ const (
 	// QueueReconcile carries the mandatory Alertmanager reconciler and silence sync.
 	QueueReconcile = "reconcile"
 	// QueueLifecycle carries the periodic state-machine sweeps: the case reaper and
-	// the two digest kinds (the tick and its detector). ⛔ IT USED TO SAY "group
+	// the two digest kinds (the tick and its detector) — and `incidents.correlate`,
+	// the one per-Case kind here, which sits on this queue rather than on `notify`
+	// precisely so that a Correlator can never occupy a worker a notification is
+	// waiting for (ADR 0052, git-bug 61eeddf). ⛔ IT USED TO SAY "group
 	// close, unacked reminders" as well, and both of those kinds are gone —
 	// `notify.unacked_reminder` with the reminder (git-bug bd0fb1d) and `group.close`
 	// with grouping (git-bug 7570090, kind deleted below). A queue described by work
@@ -48,7 +51,15 @@ const (
 	KindIngestProcessBatch = "ingest.process_batch"
 	KindEnrichRun          = "enrich.run"
 	KindNotifyEvaluate     = "notify.evaluate"
-	KindDeliverDispatch    = "deliver.dispatch"
+	// KindNotifyIncident evaluates notification policy for one Incident fact (ADR
+	// 0052 §5). It is enqueued by `incidents`, which never imports `notification`
+	// — the queue is the seam, as it is for `notify.evaluate`.
+	KindNotifyIncident  = "notify.incident"
+	KindDeliverDispatch = "deliver.dispatch"
+	// KindIncidentsCorrelate runs one freshly opened Case through the org's
+	// Correlators (ADR 0052 §2, §4). It is enqueued by `alerts`' Case-opening port,
+	// which never imports `incidents` — the queue is the seam.
+	KindIncidentsCorrelate = "incidents.correlate"
 	// KindSlackInteraction is one verified Slack block action, taken off the HTTP
 	// request so the endpoint can answer inside Slack's three-second window.
 	KindSlackInteraction = "slack.interaction"

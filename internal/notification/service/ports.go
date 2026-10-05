@@ -152,6 +152,7 @@ type DeliveryStore interface {
 type ThreadStore interface {
 	Ensure(ctx context.Context, s db.TenantScope, channelID uuid.UUID, kind domain.SubjectKind, subjectID uuid.UUID, now time.Time) (domain.Thread, error)
 	Get(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Thread, error)
+	ForSubjects(ctx context.Context, s db.TenantScope, kind domain.SubjectKind, subjectIDs []uuid.UUID) ([]domain.Thread, error)
 	AllocateSeq(ctx context.Context, s db.TenantScope, threadID uuid.UUID, now time.Time) (int, error)
 	RecordRoot(ctx context.Context, s db.TenantScope, threadID uuid.UUID, conversationID, messageID string, rootDeliveryID uuid.UUID, seq int, now time.Time) error
 	RecordReply(ctx context.Context, s db.TenantScope, threadID uuid.UUID, seq int, now time.Time) error
@@ -203,6 +204,15 @@ type EventSink interface {
 // channels_port.go, alongside the type aliases it is expressed in. It lives
 // there rather than here so that exactly one file in this module names
 // `internal/channels/domain`.
+
+// IncidentReceipts records ADR 0052 §5's outbound mapping: the external incident a
+// destination echoed back for an Incident fact (migration 00089, git-bug 506ff21).
+// Satisfied by `repository.IncidentReceiptRepository`. Record reports whether this
+// call wrote the receipt — false when one already existed for the (Incident,
+// channel), which is the idempotent retry and every later fact.
+type IncidentReceipts interface {
+	Record(ctx context.Context, s db.TenantScope, r domain.IncidentReceipt) (bool, error)
+}
 
 // CredentialUnsealer turns a sealed blob into provider credentials.
 //

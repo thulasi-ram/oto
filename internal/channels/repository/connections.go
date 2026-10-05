@@ -34,22 +34,41 @@ type connectionRow struct {
 	// Joined from channel_credentials. Never the sealed blob.
 	credKind      *string
 	credRotatedAt *time.Time
+
+	// The signing slot (00088), joined the same way and just as blind: when it was
+	// last rotated and when its predecessor stops signing, never either secret.
+	signingID            *uuid.UUID
+	signingRotatedAt     *time.Time
+	signingPreviousUntil *time.Time
+
+	// The payload mapping and its secret slot (00090): the document, which holds no
+	// secret, and the slot's names and rotation — never the sealed values.
+	mapping          []byte
+	mappingID        *uuid.UUID
+	mappingNames     []string
+	mappingRotatedAt *time.Time
 }
 
 const connectionColumns = `
 	cx.id, cx.org_id, cx.type, cx.name::text, cx.config, cx.credential_id,
 	cx.created_at, cx.updated_at, cx.deleted_at,
-	cc.kind, cc.rotated_at`
+	cc.kind, cc.rotated_at,
+	cx.signing_credential_id, cs.rotated_at, cs.previous_until,
+	cx.payload_mapping, cx.mapping_credential_id, cx.mapping_secret_names, cm.rotated_at`
 
 const connectionFrom = `
   FROM channel_connections cx
-  LEFT JOIN channel_credentials cc ON cc.id = cx.credential_id AND cc.org_id = cx.org_id`
+  LEFT JOIN channel_credentials cc ON cc.id = cx.credential_id AND cc.org_id = cx.org_id
+  LEFT JOIN channel_credentials cs ON cs.id = cx.signing_credential_id AND cs.org_id = cx.org_id
+  LEFT JOIN channel_credentials cm ON cm.id = cx.mapping_credential_id AND cm.org_id = cx.org_id`
 
 func (r *connectionRow) scanDest() []any {
 	return []any{
 		&r.id, &r.orgID, &r.kind, &r.name, &r.config, &r.credID,
 		&r.createdAt, &r.updatedAt, &r.deletedAt,
 		&r.credKind, &r.credRotatedAt,
+		&r.signingID, &r.signingRotatedAt, &r.signingPreviousUntil,
+		&r.mapping, &r.mappingID, &r.mappingNames, &r.mappingRotatedAt,
 	}
 }
 
@@ -63,6 +82,12 @@ func (r *connectionRow) toDomain() (domain.Connection, error) {
 	if len(cfg) == 0 {
 		cfg = json.RawMessage(`{}`)
 	}
+	// The names describe the slot and nothing else: a slot cleared by ON DELETE SET
+	// NULL leaves them behind, and they are then read as no secrets at all.
+	var names []string
+	if r.mappingID != nil {
+		names = r.mappingNames
+	}
 	return domain.Connection{
 		ID:                  r.id,
 		OrgID:               r.orgID,
@@ -72,9 +97,19 @@ func (r *connectionRow) toDomain() (domain.Connection, error) {
 		CredentialID:        r.credID,
 		CredentialKind:      strOrEmpty(r.credKind),
 		CredentialRotatedAt: r.credRotatedAt,
-		CreatedAt:           r.createdAt,
-		UpdatedAt:           r.updatedAt,
-		DeletedAt:           r.deletedAt,
+
+		SigningCredentialID:  r.signingID,
+		SigningRotatedAt:     r.signingRotatedAt,
+		SigningPreviousUntil: r.signingPreviousUntil,
+
+		PayloadMapping:      nullableJSON(r.mapping),
+		MappingCredentialID: r.mappingID,
+		MappingSecretNames:  names,
+		MappingRotatedAt:    r.mappingRotatedAt,
+
+		CreatedAt: r.createdAt,
+		UpdatedAt: r.updatedAt,
+		DeletedAt: r.deletedAt,
 	}, nil
 }
 
@@ -176,8 +211,9 @@ func (r *ConnectionRepository) List(
 }
 
 const insertConnectionSQL = `
-INSERT INTO channel_connections (id, org_id, type, name, config, credential_id, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+INSERT INTO channel_connections (id, org_id, type, name, config, credential_id, signing_credential_id,
+                                 payload_mapping, mapping_credential_id, mapping_secret_names, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $8, $9, $10, $11, $7, $7)
 RETURNING id`
 
 // Create inserts a connection and returns it as stored.
@@ -213,6 +249,8 @@ func (r *ConnectionRepository) Create(
 	var stored uuid.UUID
 	err := r.db(ctx).QueryRow(ctx, insertConnectionSQL,
 		newID, s.OrgID(), string(in.Type), in.Name, []byte(cfg), in.CredentialID, now,
+		in.SigningCredentialID, mappingParam(in.PayloadMapping), in.MappingCredentialID,
+		namesParam(in.MappingCredentialID, in.MappingSecretNames),
 	).Scan(&stored)
 	if err != nil {
 		return domain.Connection{}, mapErr(err, "connection_not_found", "create a connection")
@@ -225,6 +263,10 @@ UPDATE channel_connections SET
     name          = COALESCE($3, name),
     config        = COALESCE($4, config),
     credential_id = CASE WHEN $5 THEN $6 ELSE credential_id END,
+    signing_credential_id = CASE WHEN $8 THEN $9 ELSE signing_credential_id END,
+    payload_mapping       = CASE WHEN $10 THEN $11::jsonb ELSE payload_mapping END,
+    mapping_credential_id = CASE WHEN $12 THEN $13 ELSE mapping_credential_id END,
+    mapping_secret_names  = CASE WHEN $12 THEN $14::text[] ELSE mapping_secret_names END,
     updated_at    = GREATEST(updated_at, $7)
  WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL
 RETURNING id`
@@ -256,10 +298,36 @@ func (r *ConnectionRepository) Update(
 	if p.CredentialID != nil {
 		setCred, credVal = true, *p.CredentialID
 	}
+	var (
+		setSigning bool
+		signingVal *uuid.UUID
+	)
+	if p.SigningCredentialID != nil {
+		setSigning, signingVal = true, *p.SigningCredentialID
+	}
+
+	var (
+		setMapping bool
+		mappingVal []byte
+	)
+	if p.PayloadMapping != nil {
+		setMapping, mappingVal = true, mappingParam(*p.PayloadMapping)
+	}
+	var (
+		setSecrets bool
+		secretsVal *uuid.UUID
+		namesVal   []string
+	)
+	if p.MappingSecrets != nil {
+		setSecrets = true
+		secretsVal = p.MappingSecrets.CredentialID
+		namesVal = namesParam(secretsVal, p.MappingSecrets.Names)
+	}
 
 	var stored uuid.UUID
 	err := r.db(ctx).QueryRow(ctx, updateConnectionSQL,
 		s.OrgID(), connectionID, p.Name, cfg, setCred, credVal, r.clock.Now().UTC(),
+		setSigning, signingVal, setMapping, mappingVal, setSecrets, secretsVal, namesVal,
 	).Scan(&stored)
 	if err != nil {
 		if isNoRows(err) {
@@ -327,4 +395,30 @@ func (r *ConnectionRepository) ReferencingChannels(
 		return nil, mapErr(err, "connection_not_found", "read channels referencing a connection")
 	}
 	return out, nil
+}
+
+// mappingParam is a payload mapping as the column takes it: nil for none, which is
+// both an absent document and JSON `null`.
+func mappingParam(raw json.RawMessage) []byte {
+	if domain.IsNullMapping(raw) {
+		return nil
+	}
+	return []byte(raw)
+}
+
+// namesParam is the mapping-secret names as the column takes them: NULL whenever the
+// slot is, so the clear half never outlives the sealed half it describes.
+func namesParam(slot *uuid.UUID, names []string) []string {
+	if slot == nil || len(names) == 0 {
+		return nil
+	}
+	return names
+}
+
+// nullableJSON is a JSONB column read back: nil for NULL.
+func nullableJSON(b []byte) json.RawMessage {
+	if len(b) == 0 {
+		return nil
+	}
+	return json.RawMessage(b)
 }

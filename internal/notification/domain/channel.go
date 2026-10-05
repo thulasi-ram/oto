@@ -78,6 +78,17 @@ type Channel struct {
 	// keeps the same meaning to every reader in this module without them
 	// needing to know the join exists.
 	CredentialID *uuid.UUID
+	// SigningCredentialID names the connection's outbound signing secret, when it
+	// has one (migration 00088) — joined from `channel_connections` exactly as
+	// CredentialID is, and just as sealed: this module hands it to the same port.
+	SigningCredentialID *uuid.UUID
+	// PayloadMapping is the connection's payload mapping (ADR 0055 §2, migration
+	// 00090), joined like the two above, or nil. This module never reads inside it:
+	// it hands it to the PayloadMapper port at claim time and to the provider at open.
+	PayloadMapping json.RawMessage
+	// MappingCredentialID names the sealed row of secrets the mapping references,
+	// handed to the same unsealing port as the other two.
+	MappingCredentialID *uuid.UUID
 
 	Capabilities Capability
 	// Renderer is `channels.renderer`; "default" resolves to the provider's own.

@@ -11,7 +11,7 @@ import (
 //
 // A Connection is the ORG-WIDE setup a provider needs once: a Slack workspace's
 // bot token and team id, or a webhook receiver family's shared basic/bearer
-// credential or outbound signing secret. An Instance (see instance.go) is one
+// credential and/or outbound signing secret. An Instance (see instance.go) is one
 // destination — a specific #channel, a specific URL — that references a
 // Connection by id. Several Instances share one Connection; that sharing is the
 // entire point of the split (SPEC §A — see the ADR introducing it).
@@ -45,6 +45,28 @@ type Connection struct {
 	CredentialKind      string
 	CredentialRotatedAt *time.Time
 
+	// SigningCredentialID names a webhook connection's OUTBOUND signing secret, or
+	// is nil (migration 00088). It sits BESIDE CredentialID, never in it: one
+	// receiver may need a bearer token to let oto in AND a signature to trust what
+	// came in, and ADR 0047's one-slot connection could not give it both.
+	SigningCredentialID *uuid.UUID
+	// SigningRotatedAt and SigningPreviousUntil are the safe-to-show half of the
+	// signing secret. PreviousUntil is when the secret the last rotation replaced
+	// stops signing beside the new one; nil when there was no rotation, and in the
+	// past once the overlap has run out.
+	SigningRotatedAt     *time.Time
+	SigningPreviousUntil *time.Time
+
+	// PayloadMapping is a webhook connection's payload mapping (ADR 0055 §2,
+	// migration 00090), or nil when it sends the plain envelope. It holds no secret.
+	PayloadMapping json.RawMessage
+	// MappingCredentialID names the ONE sealed row holding the mapping's secrets, name
+	// → value, or is nil. MappingSecretNames are those names — the safe-to-show half,
+	// kept in the clear so a mapping can be checked against them without unsealing.
+	MappingCredentialID *uuid.UUID
+	MappingSecretNames  []string
+	MappingRotatedAt    *time.Time
+
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	DeletedAt *time.Time
@@ -64,6 +86,13 @@ type NewConnection struct {
 	Name         string
 	Config       json.RawMessage
 	CredentialID *uuid.UUID
+	// SigningCredentialID is the outbound signing secret, webhook only (00088).
+	SigningCredentialID *uuid.UUID
+	// PayloadMapping, MappingCredentialID and MappingSecretNames are a webhook
+	// connection's payload mapping and its sealed secrets (00090).
+	PayloadMapping      json.RawMessage
+	MappingCredentialID *uuid.UUID
+	MappingSecretNames  []string
 }
 
 // ConnectionPatch is the partial update. Every field is a pointer for the same
@@ -79,9 +108,24 @@ type ConnectionPatch struct {
 	// CredentialID is a double pointer: nil leaves it, a pointer to nil detaches
 	// it, a pointer to a pointer attaches a new one.
 	CredentialID **uuid.UUID
+	// SigningCredentialID is the same double pointer for the signing slot.
+	SigningCredentialID **uuid.UUID
+	// PayloadMapping replaces the mapping; a pointer to an empty one removes it.
+	PayloadMapping *json.RawMessage
+	// MappingSecrets moves the mapping-secret slot and its names TOGETHER, so the
+	// names in the clear can never describe a sealed row they are not beside.
+	MappingSecrets *MappingSecretsSlot
+}
+
+// MappingSecretsSlot is the mapping-secret slot's new state: the sealed row and the
+// names it holds, or nil and none.
+type MappingSecretsSlot struct {
+	CredentialID *uuid.UUID
+	Names        []string
 }
 
 // IsEmpty reports whether the patch would change nothing.
 func (p ConnectionPatch) IsEmpty() bool {
-	return p.Name == nil && p.Config == nil && p.CredentialID == nil
+	return p.Name == nil && p.Config == nil && p.CredentialID == nil && p.SigningCredentialID == nil &&
+		p.PayloadMapping == nil && p.MappingSecrets == nil
 }

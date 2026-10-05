@@ -7,7 +7,7 @@
  * this firing, it clears itself when the next one opens, and it can never quietly
  * come to be about a different firing than the one that was looked at.
  *
- * ⛔ ACK IS THE ONLY VERB ON THIS SCREEN, AND SNOOZE IS DELIBERATELY NOT HERE.
+ * ⛔ ACK IS THE ONLY VERB ON THIS FIRING, AND SNOOZE IS DELIBERATELY NOT HERE.
  *
  *   - **Acknowledge** is case-scoped (`POST /api/v1/cases/{id}/ack`). It ends
  *     with this episode, which is exactly why it is written here.
@@ -20,11 +20,28 @@
  *     alert-scoped decision behind a case-shaped heading, and the panel below
  *     links out to the identity for exactly that reason.
  *
- * ⛔ THE ONE CONTROL HERE HAS ITS WAY BACK, and that is a rule rather than a
+ * ⭐ DRAWING AN INCIDENT STARTS HERE, AND IT IS NOT A VERB ON THE CASE. An
+ * Incident is a set of Cases drawn together as one story (ADR 0052); a person
+ * draws one from the firing that made them think "this is bigger than one alert",
+ * which is this screen. The button writes nothing onto this Case's row — the
+ * membership is a row of its own — and it leaves an `incident.case_added` fact on
+ * the timeline below. A Case already in an Incident is refused by the server with
+ * a sentence naming that Incident and the move that would take it out, and the
+ * header shows that sentence as it was written.
+ *
+ * ⭐ AND THE HEADER SAYS WHICH INCIDENT THIS CASE IS IN BEFORE ANYONE ASKS
+ * (git-bug f89c9cc). A Case is in at most one, so the controls follow the answer:
+ * in none, it offers **Draw Incident** and **Add to Incident…**; in one, it names
+ * that Incident and offers **Move to Incident…** — never an add, because a second
+ * membership is the one thing the rule forbids. The refusal above remains the
+ * backstop for a screen that is a frame behind.
+ *
+ * ⛔ THE RECEIPT HERE HAS ITS WAY BACK, and that is a rule rather than a
  * coincidence. A gesture that writes a record and cannot unwrite it leaves the
  * operator with nothing to do but be wrong in public — so the receipt is a
- * TOGGLE: one control, reading `Acknowledge` while this firing carries none and
- * the withdrawal's own words once it does.
+ * TOGGLE: one control, reading `Ack` while this firing carries none and `Unack`
+ * once it does — the same two words as the row on `/cases`, so the verb an
+ * operator presses there is the verb they press here.
  *
  * The same timeline component the alert detail uses, reading this episode's own
  * events (`GET /cases/{id}/events`) rather than the identity's whole history:
@@ -32,21 +49,33 @@
  * rule ever done", and this screen only ever asks the first.
  */
 import { For, Match, Show, Switch, createMemo, createSignal } from "solid-js";
-import { A, useParams } from "@solidjs/router";
-import { useQuery, useQueryClient } from "@tanstack/solid-query";
+import { A, useNavigate, useParams } from "@solidjs/router";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/solid-query";
 
-import { ackCase, getCase, getCaseTimeline, unackCase } from "~/api/endpoints";
+import {
+  ackCase,
+  addIncidentCase,
+  createIncident,
+  getCase,
+  getCaseTimeline,
+  moveIncidentCase,
+  unackCase,
+} from "~/api/endpoints";
 import { qk } from "~/api/keys";
-import type { AlertEvent, TimelineQuery } from "~/api/types";
+import type { AlertEvent, IncidentDetail, TimelineQuery } from "~/api/types";
 import { AckDialog } from "~/features/alerts/AckDialog";
 import { Elapsed, RelativeTime } from "~/components/Time";
 import { AckChip, CaseStateChip, SeverityMark, StateChip } from "~/components/StateChip";
 import { Button } from "~/components/ui/Button";
 import { Chip, DataRow, PageHeading, Panel, PanelHeader, PanelTitle } from "~/components/ui/surfaces";
-import { ErrorState, LoadingLine, Skeleton } from "~/components/ui/states";
-import { absoluteTime } from "~/lib/format";
+import { ErrorBanner, ErrorState, LoadingLine, Skeleton } from "~/components/ui/states";
+import { TextField, TextFieldInput, TextFieldLabel } from "~/components/ui/TextField";
+import { IncidentStateChip } from "~/features/incidents/parts";
+import { caseIncidentQuery, parseIncidentNumber } from "~/features/incidents/membership";
+import { absoluteTime, idempotencyKey } from "~/lib/format";
 import { createKeysetFeed, keepPrevious, type KeysetFeed } from "~/lib/keysetFeed";
 import { EnrichmentPanel } from "~/features/alerts/detail/EnrichmentPanel";
+import { ExpiryNote, LastHeard } from "~/features/alerts/Staleness";
 import { PANEL_CODE_BLOCK } from "~/features/alerts/detail/rhythm";
 import { Timeline } from "~/features/alerts/detail/Timeline";
 import { typesForCategories, type EventCategory } from "~/features/alerts/detail/eventKinds";
@@ -99,6 +128,93 @@ export default function CaseDetailRoute() {
   };
 
   const [ackOpen, setAckOpen] = createSignal(false);
+
+  const navigate = useNavigate();
+
+  // One refusal on screen at a time, whichever membership verb produced it — the
+  // most recent is the one the operator is reacting to.
+  const [refusal, setRefusal] = createSignal<unknown>(null);
+
+  /**
+   * Draw an Incident over this one Case.
+   *
+   * One key per press, minted here because the press IS the gesture — and a
+   * retry is safe regardless: the first attempt's membership refuses a second
+   * draw over the same Case with `409 case_in_incident`, naming the Incident the
+   * first one drew. On success the operator goes to the Incident, which is where
+   * further Cases are added to it.
+   */
+  const draw = useMutation(() => ({
+    mutationFn: () => createIncident([params.id], idempotencyKey()),
+    onMutate: () => setRefusal(null),
+    onSuccess: (incident: { readonly number: number }) => {
+      void client.invalidateQueries({ queryKey: qk.incidents.all() });
+      void client.invalidateQueries({ queryKey: qk.cases.all() });
+      navigate(`/incidents/${incident.number}`);
+    },
+    onError: (err: unknown) => setRefusal(err),
+  }));
+
+  /**
+   * The Incident this Case is in now, or `null`. It decides which membership
+   * controls the header offers, so they are not shown until it has answered:
+   * offering "Add" for a Case that turns out to be in #3 would be offering the
+   * one gesture the rule refuses.
+   */
+  const membership = useQuery(() => caseIncidentQuery(params.id));
+  const holding = () => membership.data ?? null;
+
+  /** Which membership form is open under the header, if any. */
+  const [picking, setPicking] = createSignal<"add" | "move" | null>(null);
+  const [to, setTo] = createSignal("");
+  /** The typed Incident, or `null` — and never the one this Case is already in. */
+  const target = (): number | null => {
+    const n = parseIncidentNumber(to());
+    return n !== null && n !== holding()?.number ? n : null;
+  };
+
+  /**
+   * A membership write's answer is the Incident the Case is in NOW, so it is
+   * written straight into the "which Incident" entry: the header never shows
+   * the old membership between the response and the refetch. The Case's own
+   * timeline has just gained an `incident.case_*` fact, so it is refetched too.
+   */
+  const settle = (now: IncidentDetail): void => {
+    client.setQueryData(qk.incidents.holding(params.id), now);
+    void client.invalidateQueries({ queryKey: qk.incidents.all() });
+    void client.invalidateQueries({ queryKey: qk.cases.all() });
+    setPicking(null);
+    setTo("");
+  };
+
+  const add = useMutation(() => ({
+    mutationFn: (n: number) => addIncidentCase(n, params.id, idempotencyKey()),
+    onMutate: () => setRefusal(null),
+    onSuccess: settle,
+    onError: (err: unknown) => setRefusal(err),
+  }));
+
+  /**
+   * Move this Case out of the Incident it is in and into another, in one
+   * transaction on the server. The path names where it is LEAVING, read at the
+   * press — so a screen a frame behind gets a 404 rather than a move from
+   * somewhere the Case no longer is.
+   */
+  const move = useMutation(() => ({
+    mutationFn: (v: { readonly from: number; readonly to: number }) =>
+      moveIncidentCase(v.from, params.id, v.to, idempotencyKey()),
+    onMutate: () => setRefusal(null),
+    onSuccess: settle,
+    onError: (err: unknown) => setRefusal(err),
+  }));
+
+  const submitPick = (): void => {
+    const n = target();
+    if (n === null) return;
+    const from = holding()?.number;
+    if (picking() === "move" && from !== undefined) move.mutate({ from, to: n });
+    else if (picking() === "add") add.mutate(n);
+  };
 
   return (
     <Switch>
@@ -183,6 +299,9 @@ export default function CaseDetailRoute() {
                           </span>
                         )}
                       </Show>
+                      {/* ADR 0056 §1: how long since upstream last said anything
+                          about this firing — the fact a stale Case is made of. */}
+                      <LastHeard at={c().last_observed_at} />
                       <Show when={c().alert}>
                         {(a) => (
                           <>
@@ -202,6 +321,13 @@ export default function CaseDetailRoute() {
                         )}
                       </Show>
                     </div>
+
+                    {/* ⭐ WHETHER THIS FIRING CAN EXPIRE, AND WHY NOT (ADR 0056 §1).
+                        A Case that upstream stopped speaking about used to sit
+                        open with nothing on screen to say whether it ever would
+                        end. This says so in the reaper's own terms. It is facts
+                        only: nothing here ends a Case. */}
+                    <ExpiryNote case={c()} class="mt-1.5" />
 
                     <Show when={c().ack_note}>
                       {(note) => (
@@ -239,10 +365,118 @@ export default function CaseDetailRoute() {
                             : "Record that a human has seen this firing. It stays firing, at the same severity."
                       }
                     >
-                      {acked() ? "Withdraw acknowledgement" : "Acknowledge"}
+                      {acked() ? "Unack" : "Ack"}
                     </Button>
+                    {/* ⭐ THE MEMBERSHIP CONTROLS FOLLOW WHICH INCIDENT THIS CASE
+                        IS IN, and wait for the answer. Offered on an ended firing
+                        too: an Incident may be drawn over history — it is then
+                        simply quiet. */}
+                    <Show when={!membership.isPending}>
+                      <div class="flex flex-wrap items-center gap-2" data-incident-membership>
+                        <Show
+                          when={holding()}
+                          fallback={
+                            <>
+                              <Button
+                                variant="secondary"
+                                size="sm"
+                                busy={draw.isPending}
+                                onClick={() => draw.mutate()}
+                                title="Draw an Incident over this Case: a set of Cases told as one story. This firing is unchanged; more Cases can be added on the Incident's own page."
+                              >
+                                Draw Incident
+                              </Button>
+                              <Button
+                                variant="secondary"
+                                size="sm"
+                                aria-expanded={picking() === "add"}
+                                onClick={() => setPicking(picking() === "add" ? null : "add")}
+                                title="Add this Case to an Incident that already exists, by its number."
+                              >
+                                Add to Incident…
+                              </Button>
+                            </>
+                          }
+                        >
+                          {(inc) => (
+                            <>
+                              {/* A reading, not a control: which story this
+                                  firing is part of, and that story's derived
+                                  state, one click from the Incident itself. */}
+                              <A
+                                href={`/incidents/${inc().number}`}
+                                class="inline-flex items-center gap-1.5 rounded-chip border border-line bg-raised px-1.5 py-0.5 text-body text-ink hover:bg-sunken"
+                                title="The Incident this Case is in. A Case is in at most one, so to change that it is moved, never added a second time."
+                              >
+                                <span class="text-ink-subtle">in</span>
+                                <span class="font-mono">Incident #{inc().number}</span>
+                                <IncidentStateChip state={inc().state} size="sm" />
+                              </A>
+                              <Button
+                                variant="secondary"
+                                size="sm"
+                                aria-expanded={picking() === "move"}
+                                onClick={() => setPicking(picking() === "move" ? null : "move")}
+                                title={`Move this Case out of Incident #${inc().number} and into another, in one step. It is never in two.`}
+                              >
+                                Move to Incident…
+                              </Button>
+                            </>
+                          )}
+                        </Show>
+                      </div>
+                    </Show>
                   </div>
                 </div>
+
+                {/* The number of the Incident to add this Case to, or move it
+                    into — the same minimal form the Incident page's own Move
+                    uses, because the number is what people quote. */}
+                <Show when={picking()}>
+                  {(mode) => (
+                    <form
+                      class="mt-2 flex flex-wrap items-end gap-2"
+                      data-incident-membership
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        submitPick();
+                      }}
+                    >
+                      <TextField class="w-48" value={to()} onChange={setTo}>
+                        <TextFieldLabel>
+                          {mode() === "move" ? "Move to Incident #" : "Add to Incident #"}
+                        </TextFieldLabel>
+                        <TextFieldInput inputMode="numeric" placeholder="7" />
+                      </TextField>
+                      <Button
+                        type="submit"
+                        size="sm"
+                        busy={add.isPending || move.isPending}
+                        disabled={target() === null}
+                      >
+                        {mode() === "move" ? "Move Case" : "Add Case"}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          setPicking(null);
+                          setTo("");
+                        }}
+                      >
+                        Cancel
+                      </Button>
+                    </form>
+                  )}
+                </Show>
+
+                {/* ⛔ THE SERVER'S SENTENCE, VERBATIM. A `409 case_in_incident`
+                    names the Incident this Case is already in and the move that
+                    would take it out; that pointer exists nowhere else. */}
+                <Show when={refusal()}>
+                  {(err) => <ErrorBanner class="mt-2" error={err()} />}
+                </Show>
 
                 {/* One dialog, shared with the rest of the product, and the mode
                     it opens in is the same read the button's word came from —

@@ -444,9 +444,100 @@ const (
 	TransitionUnsuppress TransitionKind = "unsuppress"
 	// TransitionResolve is T5: an explicit upstream status="resolved".
 	TransitionResolve TransitionKind = "resolve"
-	// TransitionExpire is T6: the reaper, and only while the source is healthy.
+	// TransitionExpire is T6: the reaper, and only while the source is healthy —
+	// or, as `source_removed`, once no source is left to be (ADR 0056 §2).
 	TransitionExpire TransitionKind = "expire"
 )
+
+// CaseSources is what a Case's cluster says about who can still speak for it,
+// read by the reaper inside the transaction that would expire the Case
+// (ADR 0056). The cluster is the only surviving edge from a Case to its sources
+// (`caseSourcesSQL`), and Alertmanager HA replicas are several sources on one
+// cluster, so the answer is a SET before it is an id.
+//
+// ⭐ AN HA CLUSTER EXPIRES ON ALL OF ITS SOURCES (owner ruling R1, 2026-10-05).
+// `timeout` and `silent` may end a Case only when its cluster has at least one
+// live source and EVERY live source is healthy: each replica is a witness, and
+// any one oto cannot see might be the one still carrying the alert. LiveIDs is
+// that set, and the reaper re-reads it inside the expiring transaction to prove
+// it is still the set whose health it asked.
+type CaseSources struct {
+	// Live is how many live (not soft-deleted) sources feed the cluster.
+	Live int
+	// Removed is how many soft-deleted sources the cluster has. `source_removed`
+	// needs Live == 0 AND Removed > 0: a cluster nothing was ever removed from is
+	// not one whose source was removed.
+	Removed int
+	// LiveIDs is every live source on the cluster, in id order. Empty when none.
+	LiveIDs []uuid.UUID
+	// MaxSilence is the cluster's EFFECTIVE `silent` threshold: zero (off) when
+	// no source is live or ANY live source turned it off, otherwise the longest
+	// `max_silence_s` among them — the one replica whose repeat_interval is the
+	// slowest still has the right to be heard from before oto calls it silence.
+	MaxSilence time.Duration
+	// LastRemovedAt is the newest `deleted_at` on the cluster, zero when nothing
+	// was ever removed. `source_removed` waits a resolve grace past it, so a
+	// source deleted and re-created (a re-registration, a fixed URL) ends nothing.
+	LastRemovedAt time.Time
+}
+
+// SameLiveSet reports whether the cluster's live sources are exactly `proven`,
+// in any order — the reaper's in-transaction proof that the sources whose
+// health it asked are still the ones that speak for the Case. An empty set is
+// never "the same": a Case with no live source has nobody to vouch for it.
+func (c CaseSources) SameLiveSet(proven []uuid.UUID) bool {
+	if len(c.LiveIDs) == 0 || len(c.LiveIDs) != len(proven) {
+		return false
+	}
+	want := make(map[uuid.UUID]struct{}, len(proven))
+	for _, id := range proven {
+		want[id] = struct{}{}
+	}
+	if len(want) != len(proven) {
+		return false
+	}
+	for _, id := range c.LiveIDs {
+		if _, ok := want[id]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// CoverSource is one live source as a Case's screen shows it.
+type CoverSource struct {
+	ID   uuid.UUID
+	Name string
+	// MaxSilence is this source's own `max_silence_s`; zero when it turned the
+	// expiry off.
+	MaxSilence time.Duration
+	// Healthy is the §B.4 guard's verdict on this source, asked through the same
+	// port the reaper asks. False means "not proven healthy", which is also what
+	// it reads when the port is unwired or could not answer: the reaper holds.
+	Healthy bool
+}
+
+// CaseCover is CaseSources as a screen reads it (ADR 0056 §1, "staleness is
+// shown"): the same counts and threshold, every live source with its name and
+// health, and the §B.4 verdict on the whole set — so a Case can say whether it
+// can expire and, when it cannot, which source it is waiting on. It is a read for
+// display; the reaper never consults it.
+type CaseCover struct {
+	CaseSources
+	// Sources is every live source, in name order.
+	Sources []CoverSource
+	// AllHealthy is the reaper's R1 guard as a screen reads it: at least one live
+	// source, and every one of them healthy.
+	AllHealthy bool
+}
+
+// SourceCases is what the open Cases on one source's cluster look like from the
+// source's side (ADR 0056 §1): how many are open. Whether the reaper holds them
+// because of this source is the service's to add, from its health alone (owner
+// ruling R1: a healthy replica holds nothing).
+type SourceCases struct {
+	Open int
+}
 
 // Transition is the persisted effect of one edge. It is produced by the domain
 // state machine (Apply) and NEVER assembled by hand in a repository or a handler

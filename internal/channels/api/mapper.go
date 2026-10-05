@@ -132,7 +132,7 @@ func connectionDTO(c domain.Connection) ChannelConnectionDTO {
 	if len(cfg) == 0 {
 		cfg = json.RawMessage(`{}`)
 	}
-	return ChannelConnectionDTO{
+	out := ChannelConnectionDTO{
 		ID:                  c.ID,
 		Type:                string(c.Type),
 		Name:                c.Name,
@@ -142,6 +142,21 @@ func connectionDTO(c domain.Connection) ChannelConnectionDTO {
 		CreatedAt:           c.CreatedAt.UTC(),
 		UpdatedAt:           c.UpdatedAt.UTC(),
 	}
+	if c.SigningCredentialID != nil {
+		out.SigningCredentialKind = optionalString(signingCredentialKind)
+		out.SigningCredentialRotatedAt = utcPtr(c.SigningRotatedAt)
+		out.SigningOverlapUntil = utcPtr(c.SigningPreviousUntil)
+	}
+	// Never `null`: an empty list is the truthful "this connection seals none".
+	out.MappingSecretNames = []string{}
+	if c.MappingCredentialID != nil {
+		out.MappingSecretNames = append(out.MappingSecretNames, c.MappingSecretNames...)
+		out.MappingSecretsRotatedAt = utcPtr(c.MappingRotatedAt)
+	}
+	if !domain.IsNullMapping(c.PayloadMapping) {
+		out.PayloadMapping = c.PayloadMapping
+	}
+	return out
 }
 
 // resolveConversationDTO maps a provider's resolved conversation onto the wire.
@@ -220,21 +235,23 @@ func (r UpdateChannelRequest) toPatch() domain.InstancePatch {
 // ------------------------------------------------------------- connections
 
 // toNewConnection maps a create request onto the domain command.
-func (r CreateChannelConnectionRequest) toNewConnection(credentialID *uuid.UUID) domain.NewConnection {
+func (r CreateChannelConnectionRequest) toNewConnection(credentialID, signingID *uuid.UUID) domain.NewConnection {
 	return domain.NewConnection{
-		Type:         domain.Type(r.Type),
-		Name:         r.Name,
-		Config:       r.Config,
-		CredentialID: credentialID,
+		Type:                domain.Type(r.Type),
+		Name:                r.Name,
+		Config:              r.Config,
+		CredentialID:        credentialID,
+		SigningCredentialID: signingID,
 	}
 }
 
 // toPatch maps an update request onto the domain command.
-func (r UpdateChannelConnectionRequest) toPatch(credential **uuid.UUID) domain.ConnectionPatch {
+func (r UpdateChannelConnectionRequest) toPatch(credential, signing **uuid.UUID) domain.ConnectionPatch {
 	return domain.ConnectionPatch{
-		Name:         r.Name,
-		Config:       r.Config,
-		CredentialID: credential,
+		Name:                r.Name,
+		Config:              r.Config,
+		CredentialID:        credential,
+		SigningCredentialID: signing,
 	}
 }
 
