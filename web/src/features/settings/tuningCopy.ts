@@ -549,11 +549,11 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
     key: "investigations_enabled",
     kind: "onoff",
     label: "Investigations",
-    what: "The org-wide kill switch for Investigators. While it is off, no new Investigation starts in this org: each one asked for is recorded as skipped, with the reason disabled, rather than dropped silently. A run already under way finishes under its own budgets.",
+    what: "The org-wide kill switch for Investigators. While it is off, no new Investigation starts in this org: one a person asks for is recorded as skipped, with the reason disabled, rather than dropped silently; Incidents and digest windows ask for none, and this switch is the record of why. A run already under way finishes under its own budgets.",
     risks: [
       {
         label: "If it is off",
-        text: "Nothing new is investigated, whoever asks and whatever fires — and each refusal is recorded, so an empty Finding can always say why. Notifications are unaffected: an Investigation never decides whether or how anyone is told.",
+        text: "Nothing new is investigated, whoever asks and whatever fires. A person's request is recorded as skipped, so an empty Finding can always say why; an Incident or a digest window starts nothing and records nothing, because this switch already says why. Notifications are unaffected: an Investigation never decides whether or how anyone is told.",
       },
       {
         label: "If it is on",
@@ -597,7 +597,7 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
       },
       {
         label: "Too high",
-        text: "More model calls run at once, which spends the daily budget faster and puts more load on your model endpoint and ToolServers at the moment a storm is already loading them. Each oto process works at most two at once, so a number above the workers you run never binds.",
+        text: "More model calls run at once, which spends the daily budget faster and puts more load on your model endpoint and ToolServers at the moment a storm is already loading them. Each oto process works at most eight at once by default (jobs.queue_investigate), so a number above the workers you run never binds.",
       },
     ],
     amRule:

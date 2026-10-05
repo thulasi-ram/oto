@@ -566,6 +566,23 @@ export function listIncidentInvestigations(
 }
 
 /**
+ * A notification policy's digest Investigations, latest requested first, WITHOUT
+ * transcripts (review D4) — the runs its digest windows asked for, including the ones
+ * that never ran (`skipped` for the day's budget, a kill switch, or a window that closed
+ * first). A digest run has no page of its own; this is where its record is read.
+ */
+export function listPolicyDigestInvestigations(
+  policyId: string,
+  query: { readonly limit?: number } = {},
+  c: Ctx = {},
+): Promise<ListEnvelope<Investigation>> {
+  return getList<Investigation>(`${V1}/notification-policies/${policyId}/investigations`, {
+    ...ctx(c),
+    query: query as QueryParams,
+  });
+}
+
+/**
  * Ask one Investigator to investigate one Incident as a whole. The same `202` and the
  * same absent idempotency key as `requestCaseInvestigation`, for the same reasons.
  */

@@ -209,6 +209,12 @@ export const qk = {
     mappingCatalog: () => ["settings", "payload-mapping-catalog"] as const,
     policies: () => ["settings", "policies"] as const,
     /**
+     * One policy's digest Investigations (review D4). Under `policies()` on purpose:
+     * an edit to the policies invalidates the prefix, and with it this list.
+     */
+    policyInvestigations: (policyId: string) =>
+      ["settings", "policies", policyId, "investigations"] as const,
+    /**
      * The org's Correlators (ADR 0052 §2), in evaluation order. Only this
      * screen writes them, so a mutation invalidates; no frame is about one.
      */

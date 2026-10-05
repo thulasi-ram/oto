@@ -274,6 +274,41 @@ describe("a run that did not complete", () => {
     expect(shownRun().textContent).toContain("turn 2 carried no usage block");
     expect(shownRun().querySelector("[data-finding]")).toBeNull();
   });
+
+  it("⛔ skipped because its digest window closed: says so, and that nothing ran", async () => {
+    const { row, detail } = run({
+      status: "skipped",
+      reason: "window_closed",
+      reason_detail: "the digest window closed before this run could start",
+      finding: null,
+      started_at: null,
+      tokens_in: 0,
+      tokens_out: 0,
+      tool_calls: 0,
+      steps: [],
+    });
+    mount({ runs: [row], details: [detail] });
+
+    await until(() => expect(shownRun().textContent).toContain("Skipped — nothing ran."));
+    expect(shownRun().textContent).toContain(REASON_SENTENCE.window_closed);
+    expect(shownRun().querySelector("[data-finding]")).toBeNull();
+  });
+});
+
+describe("a run whose detail cannot be read", () => {
+  it("⛔ stops polling once the read has failed, rather than asking forever (review B6)", async () => {
+    const { row } = run();
+    const net = mount({ runs: [row] });
+    net.on(`GET /api/v1/investigations/${row.id}`, () =>
+      problem(404, "investigation_not_found", { detail: "no such Investigation" }),
+    );
+
+    await until(() => expect(net.to(`/investigations/${row.id}`).length).toBeGreaterThan(0));
+    await new Promise((r) => setTimeout(r, 60));
+    const settled = net.to(`/investigations/${row.id}`).length;
+    await new Promise((r) => setTimeout(r, 150));
+    expect(net.to(`/investigations/${row.id}`)).toHaveLength(settled);
+  });
 });
 
 /* -------------------------------------------------------------------------- */
@@ -585,6 +620,16 @@ describe("a Finding's Suggestions", () => {
     expect(suggestions().textContent).toContain("3 Cases have happened within 10m");
     expect(suggestions().textContent).toContain("in the model's words");
     expect(suggestions().textContent).toMatch(/lapses after seven days/);
+    // ⛔ The value it had when PROPOSED, never "now" (review B3).
+    expect(suggestions().textContent).toContain("(it had none when this was proposed)");
+    expect(suggestions().textContent).not.toMatch(/\bnow\)/);
+    // ⛔ Not a due date (review D18): the row says when it was proposed; the lapse is a tooltip.
+    const proposed = suggestions().querySelector<HTMLElement>("[data-proposed] time")!;
+    expect(proposed.getAttribute("datetime")).toBe(s.proposed_at);
+    expect(proposed.textContent).toBe(absoluteTime(s.proposed_at));
+    expect(proposed.getAttribute("title")).toContain(absoluteTime(s.lapses_at));
+    expect(suggestions().textContent).not.toContain(absoluteTime(s.lapses_at));
+    expect(suggestions().textContent).not.toMatch(/Lapses /);
     // ⛔ There is no other verb: nothing declines, rejects or hides a Suggestion.
     const buttons = within(suggestions()).getAllByRole("button");
     expect(buttons.map((b) => b.textContent)).toEqual(["Apply"]);

@@ -125,6 +125,7 @@ import { cn } from "~/lib/cn";
 import { duration, idempotencyKey } from "~/lib/format";
 import { formatMatchers, parseMatchers } from "~/lib/matchers";
 import { MatcherInput } from "~/features/alerts/MatcherInput";
+import { DigestInvestigations } from "~/features/investigations/DigestInvestigations";
 import { SchemaForm } from "~/features/settings/SchemaForm";
 import {
   cleanConfig,
@@ -867,6 +868,12 @@ const PolicyRow: Component<{
                 </Show>
               </p>
             )}
+          </Show>
+          {/* Review D4: a digest Investigator's runs have no page of their own, so the
+              policy that names one is where they are read — including the ones that never
+              ran. Collapsed, and read only when opened. */}
+          <Show when={p().digest_investigator_id}>
+            <DigestInvestigations policyId={p().id} />
           </Show>
         </div>
 

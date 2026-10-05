@@ -192,7 +192,12 @@ export const InvestigationPanel: Component<InvestigationPanelProps> = (props) =>
     queryFn: ({ signal }: { signal: AbortSignal }) =>
       getInvestigation(shownId() ?? "", { signal }),
     enabled: shownId() !== null,
-    refetchInterval: () => {
+    // ⛔ A READ THAT KEEPS FAILING IS NOT A RUN IN PROGRESS (review B6). "No data yet" used
+    // to mean "poll", and a detail that answers 404 or 5xx never has data — so the panel
+    // asked again every few seconds for as long as it was open. An errored read stops
+    // polling; the list's own poll, or a click, asks again.
+    refetchInterval: (query) => {
+      if (query.state.status === "error") return false;
       const d = client.getQueryData<InvestigationDetail>(qk.cases.investigation(shownId() ?? ""));
       return d !== undefined && !IN_PROGRESS[d.status] ? false : poll();
     },
@@ -320,7 +325,7 @@ export const InvestigationPanel: Component<InvestigationPanelProps> = (props) =>
       <Show when={investigators.data !== undefined && askable().length === 0}>
         <p class={cn("text-body leading-snug text-ink-muted", PANEL_ROW)}>
           {(investigators.data?.data.length ?? 0) === 0
-            ? "No Investigator is configured in this organisation, so there is nobody to ask. One is written through the API (POST /api/v1/investigators); there is no settings screen for it yet."
+            ? "No Investigator is configured in this organisation, so there is nobody to ask. One is written through the API (POST /api/v1/investigators) — docs/setup/investigators.md walks through the model endpoint, ToolServers and budgets; there is no settings screen for it yet."
             : "Every Investigator in this organisation is switched off, so there is nobody to ask. Earlier Findings stay readable below."}
         </p>
       </Show>
@@ -697,12 +702,18 @@ const SuggestionsView: Component<{ readonly investigationId: string }> = (props)
                         ? `Move to Incident #${s.membership.incident_number}`
                         : "Apply"}
                     </Button>
-                    <span class="text-meta text-ink-subtle">
-                      Lapses{" "}
-                      <time datetime={s.lapses_at} class="tabular-nums">
-                        {absoluteTime(s.lapses_at)}
-                      </time>{" "}
-                      if nobody applies it.
+                    {/* ⛔ NOT A DUE DATE (review D18, CONTEXT H-1): oto puts no deadline on a
+                        human. The row says when it was proposed; when it lapses is in the
+                        tooltip only, and the header already says Suggestions lapse. */}
+                    <span class="text-meta text-ink-subtle" data-proposed>
+                      Proposed{" "}
+                      <time
+                        datetime={s.proposed_at}
+                        class="tabular-nums"
+                        title={`Lapses ${absoluteTime(s.lapses_at)} if nobody applies it`}
+                      >
+                        {absoluteTime(s.proposed_at)}
+                      </time>
                     </span>
                   </div>
                 </Show>
@@ -724,12 +735,14 @@ const SuggestionChange: Component<{ readonly suggestion: Suggestion }> = (props)
           Give the policy <span class="font-medium">{c().policy_name}</span> a count condition:
           stay silent until {c().count_min} Cases have happened within{" "}
           {span(c().count_window_seconds)}{" "}
+          {/* The value it had WHEN PROPOSED, never "now" (review B3): applying a Suggestion
+              whose policy changed since is refused as `suggestion_stale`. */}
           <span class="text-ink-muted">
-            (it has{" "}
+            (it had{" "}
             {c().was_count_min !== null && c().was_count_window_seconds !== null
               ? `${c().was_count_min} within ${span(c().was_count_window_seconds!)}`
               : "none"}{" "}
-            now)
+            when this was proposed)
           </span>
           .
         </p>
