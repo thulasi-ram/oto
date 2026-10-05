@@ -16,6 +16,7 @@ import { createSignal, onCleanup, type Component } from "solid-js";
 import { cn } from "~/lib/cn";
 import {
   absoluteTime,
+  ago,
   clockTime,
   describeSkew,
   duration,
@@ -60,6 +61,22 @@ export const RelativeTime: Component<RelativeTimeProps> = (props) => (
     class={cn("tabular-nums", props.class)}
   >
     {relativeTime(props.value, now())}
+  </time>
+);
+
+/**
+ * `12m ago`, or `just now`, as one `<time>` — for a sentence that reads "last
+ * push 12m ago". A server-stamped instant that this browser's clock places in
+ * the future reads `just now`, never `in 2m ago` (see `ago`); the absolute value
+ * is behind the same `title` as `<RelativeTime>`.
+ */
+export const Ago: Component<RelativeTimeProps> = (props) => (
+  <time
+    datetime={props.value ?? undefined}
+    title={`${props.label ? `${props.label}: ` : ""}${absoluteTime(props.value)}`}
+    class={cn("tabular-nums", props.class)}
+  >
+    {ago(props.value, now())}
   </time>
 );
 

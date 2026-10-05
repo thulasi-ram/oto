@@ -23,7 +23,15 @@ import { fireEvent, screen } from "@solidjs/testing-library";
 import { describe, expect, it } from "vitest";
 
 import CasesRoute from "./cases";
-import { alertRef, caseListItem, caseSources, incident, incidentDetail } from "~/test/fixtures";
+import {
+  alertRef,
+  caseListItem,
+  caseSource,
+  caseSources,
+  clusterSources,
+  incident,
+  incidentDetail,
+} from "~/test/fixtures";
 import {
   item,
   list,
@@ -44,18 +52,19 @@ function mount(search = "", rows = [caseListItem()]): FetchStub {
 }
 
 /**
- * The ack control's buttons, by their exact visible word, among the ROWS only —
- * the toolbar's `Ack` filter menu is a different control with its own name.
+ * The ack control's buttons, by the visible word their accessible name starts
+ * with (`Ack HighErrorRate #412`), among the ROWS only — the toolbar's `Ack`
+ * filter menu is a different control with its own name.
  */
-function rowButtons(name: string): readonly HTMLElement[] {
+function rowButtons(word: "Ack" | "Unack"): readonly HTMLElement[] {
   return screen
-    .queryAllByRole("button", { name })
+    .queryAllByRole("button", { name: new RegExp(`^${word} `) })
     .filter((el) => el.closest("li") !== null);
 }
 
-async function rowButton(name: string): Promise<HTMLElement> {
-  await until(() => expect(rowButtons(name)).toHaveLength(1));
-  return rowButtons(name)[0]!;
+async function rowButton(word: "Ack" | "Unack"): Promise<HTMLElement> {
+  await until(() => expect(rowButtons(word)).toHaveLength(1));
+  return rowButtons(word)[0]!;
 }
 
 /** The query string of the last list request the screen made. */
@@ -182,14 +191,15 @@ describe("a row", () => {
     expect(net.to("/ack")[0]?.headers["Idempotency-Key"]).toBeTruthy();
   });
 
-  it("⭐ says `Ack` in words, and the word IS its accessible name", async () => {
+  it("⭐ says `Ack` in words, and its accessible name starts with that word and names the row", async () => {
     // The owner's report: the row used to carry a tick in BOTH directions, told
     // apart only by an `aria-label` nobody sighted ever reads — ack and unack
-    // were the same picture. The verb is printed now, and nothing renames it.
+    // were the same picture. The verb is printed now; the accessible name
+    // contains it, first (WCAG 2.5.3), and then says which of fifty rows it is.
     mount("", [caseListItem({ ack_state: "unacked" })]);
     const ack = await rowButton("Ack");
     expect(ack.textContent?.trim()).toBe("Ack");
-    expect(ack.getAttribute("aria-label")).toBeNull();
+    expect(ack.getAttribute("aria-label")).toBe("Ack HighErrorRate #412");
     expect(ack.querySelector("svg")).toBeNull();
     expect(rowButtons("Unack")).toHaveLength(0);
   });
@@ -202,7 +212,7 @@ describe("a row", () => {
     const unack = await rowButton("Unack");
     expect(unack).not.toBeDisabled();
     expect(unack.textContent?.trim()).toBe("Unack");
-    expect(unack.getAttribute("aria-label")).toBeNull();
+    expect(unack.getAttribute("aria-label")).toBe("Unack HighErrorRate #412");
     expect(rowButtons("Ack")).toHaveLength(0);
   });
 
@@ -637,14 +647,23 @@ describe("a row's staleness", () => {
     mount();
     await until(() => expect(screen.getByText("HighErrorRate")).toBeTruthy());
     expect(document.body.textContent).toMatch(/last heard from upstream/);
-    expect(screen.getByText("expires as silent after 1d without word")).toBeTruthy();
+    expect(screen.getByText("expires as silent after 1d without word, if enabled")).toBeTruthy();
   });
 
-  it("marks a held case with the reason, and puts the whole sentence behind it", async () => {
-    mount("", [caseListItem({ sources: caseSources({ live: 2, source: null }) })]);
-    await until(() => expect(screen.getByText("cannot expire: 2 live sources")).toBeTruthy());
-    const marker = screen.getByText("cannot expire: 2 live sources");
-    expect(marker.getAttribute("title")).toMatch(/oto expires a case only under exactly one/);
+  it("marks a held case with the replica that holds it, and puts the whole sentence behind it", async () => {
+    mount("", [
+      caseListItem({
+        sources: clusterSources([
+          caseSource({ id: "a0", name: "am-0" }),
+          caseSource({ id: "a1", name: "am-1", healthy: false }),
+        ]),
+      }),
+    ]);
+    await until(() => expect(screen.getByText("held: am-1 is not healthy")).toBeTruthy());
+    const marker = screen.getByText("held: am-1 is not healthy");
+    expect(marker.getAttribute("title")).toMatch(
+      /oto expires a case only while every live source on its cluster is healthy/,
+    );
   });
 
   it("⛔ marks an acked case exactly as it marks any other open one", async () => {

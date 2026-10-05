@@ -28,7 +28,15 @@ import { describe, expect, it } from "vitest";
 
 import CaseDetailRoute from "./case-detail";
 import type { Incident } from "~/api/types";
-import { alertRef, caseDetail, caseSources, incident, incidentDetail } from "~/test/fixtures";
+import {
+  alertRef,
+  caseDetail,
+  caseSource,
+  caseSources,
+  clusterSources,
+  incident,
+  incidentDetail,
+} from "~/test/fixtures";
 import {
   item,
   list,
@@ -410,11 +418,26 @@ describe("whether this firing can expire", () => {
     expect(document.body.textContent).toMatch(/last heard from upstream/);
   });
 
-  it("says when it expires as silent, from its source's max silence", async () => {
+  it("says when it expires as silent, from its source's max silence — if enabled", async () => {
     mount();
     await ready("Ack");
     const note = document.querySelector('[data-expiry="can_expire"]');
-    expect(note?.textContent).toMatch(/^Expires as silent after 1d without word/);
+    // The deployment flag is not on the wire, so the forecast never promises.
+    expect(note?.textContent).toMatch(/^If this deployment has turned on the silent and source-removed expiries/);
+    expect(note?.textContent).toMatch(/it expires as silent after 1d without word/);
+  });
+
+  it("⭐ under an HA pair, names only the replica that holds it", async () => {
+    mount({
+      sources: clusterSources([
+        caseSource({ id: "a0", name: "am-0" }),
+        caseSource({ id: "a1", name: "am-1", healthy: false }),
+      ]),
+    });
+    await ready("Ack");
+    const note = document.querySelector('[data-expiry="not_healthy"]');
+    expect(note?.textContent).toMatch(/^Held: am-1 is not healthy\./);
+    expect(note?.textContent).not.toMatch(/am-0/);
   });
 
   it("says plainly that it is held while its source is not healthy", async () => {
