@@ -1,6 +1,6 @@
 /**
- * `/settings/:section` — sources, clusters, channels, Correlators, Classification, Remedy
- * risk, tuning and tokens.
+ * `/settings/:section` — sources, clusters, channels, Correlators, Classification, model
+ * providers, tool servers, Investigators, Remedy risk, tuning and tokens.
  *
  * The section is in the path rather than in component state so a settings screen
  * is linkable like everything else. "Look at the channel config" should be a URL.
@@ -19,8 +19,11 @@ import { SidebarPanel, SubNavLink } from "~/components/SidebarSlot";
 import { ChannelsSection } from "~/features/settings/ChannelsSection";
 import { ClassificationSection } from "~/features/settings/ClassificationSection";
 import { CorrelatorsSection } from "~/features/settings/CorrelatorsSection";
+import { InvestigatorsSection } from "~/features/settings/InvestigatorsSection";
+import { ModelProvidersSection } from "~/features/settings/ModelProvidersSection";
 import { RemedyRiskSection } from "~/features/settings/RemedyRiskSection";
 import { SourcesSection } from "~/features/settings/SourcesSection";
+import { ToolServersSection } from "~/features/settings/ToolServersSection";
 import { TokensSection } from "~/features/settings/TokensSection";
 import { TuningSection } from "~/features/settings/TuningSection";
 
@@ -37,6 +40,12 @@ const SECTIONS = [
   { id: "correlators", label: "Correlators" },
   // ADR 0053 §5: the operator's own words a Finding is classified in.
   { id: "classification", label: "Classification" },
+  // ADR 0053 §3: the endpoint and key an Investigator reasons with.
+  { id: "model-providers", label: "Model providers" },
+  // ADR 0053 §3: the MCP servers an Investigator reads through, and a Remedy writes through.
+  { id: "tool-servers", label: "Tool servers" },
+  // ADR 0053 §6: the named, versioned configurations oto runs.
+  { id: "investigators", label: "Investigators" },
   // ADR 0054 §3: the operator's rules over a Remedy's command — one approval or two.
   { id: "remedy-risk", label: "Remedy risk" },
   { id: "tuning", label: "Tuning" },
@@ -132,6 +141,15 @@ const SettingsRoute: Component = () => {
                 </Match>
                 <Match when={params.section === "classification"}>
                   <ClassificationSection />
+                </Match>
+                <Match when={params.section === "model-providers"}>
+                  <ModelProvidersSection />
+                </Match>
+                <Match when={params.section === "tool-servers"}>
+                  <ToolServersSection />
+                </Match>
+                <Match when={params.section === "investigators"}>
+                  <InvestigatorsSection />
                 </Match>
                 <Match when={params.section === "remedy-risk"}>
                   <RemedyRiskSection />

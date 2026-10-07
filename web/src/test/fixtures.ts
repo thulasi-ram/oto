@@ -12,6 +12,10 @@ import type {
   AlertDetail,
   AlertRef,
   ApiToken,
+  ModelProvider,
+  ToolServer,
+  ToolServerTool,
+  InvestigatorDetail,
   Channel,
   ChannelConnection,
   Cluster,
@@ -753,4 +757,54 @@ export function sse(...frames: readonly StreamFrame[]): string {
       return `id: ${seq}\nevent: ${kind}\ndata: ${JSON.stringify(f)}\n\n`;
     })
     .join("");
+}
+
+export function modelProvider(patch: Partial<ModelProvider> = {}): ModelProvider {
+  return {
+    id: "3f1a9c2e-5b7d-4e8f-a0b1-c2d3e4f50617",
+    name: "gateway",
+    base_url: "https://llm.internal.example/v1",
+    model: "gpt-4o",
+    has_key: true,
+    created_at: T0,
+    updated_at: T0,
+    ...patch,
+  };
+}
+
+export function toolServer(patch: Partial<ToolServer> = {}): ToolServer {
+  return {
+    id: "5c4b3a29-1807-4f6e-8d5c-4b3a29180716",
+    name: "k8s",
+    url: "https://mcp-k8s.internal.example/mcp",
+    transport: "streamable_http",
+    access: "read",
+    has_token: true,
+    call_timeout_seconds: 15,
+    max_result_bytes: 16384,
+    discovered_at: T0,
+    discovery_failed_at: null,
+    discovery_error: null,
+    created_at: T0,
+    updated_at: T0,
+    ...patch,
+  };
+}
+
+export function toolServerTool(patch: Partial<ToolServerTool> = {}): ToolServerTool {
+  return {
+    name: "pods_list",
+    qualified_name: "k8s__pods_list",
+    description: "List pods in a namespace.",
+    input_schema: null,
+    read_only_hint: true,
+    usable: true,
+    unusable_reason: null,
+    ...patch,
+  };
+}
+
+export function investigatorDetail(patch: Partial<InvestigatorDetail> = {}): InvestigatorDetail {
+  const base = investigator();
+  return { ...base, versions: [base.current_version], ...patch };
 }

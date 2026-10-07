@@ -20,9 +20,11 @@ import (
 	"github.com/thulasiram/oto/internal/platform/errs"
 )
 
-// ⭐⭐ THE ONLY WAY AN ORG'S REMEDY RISK RULES ARE WRITTEN (ADR 0054 §3; owner ruling
-// 2026-10-05 on git-bug eb4f21b). `oto remedy-rules apply` calls ApplyRemedyRules, and nothing
-// else in the product writes `remedy_risk_rules` or `remedy_risk_settings`.
+// ⭐⭐ THE HOST-SHELL WAY AN ORG'S REMEDY RISK RULES ARE WRITTEN (ADR 0054 §3; owner ruling
+// 2026-10-05 on git-bug eb4f21b). `oto remedy-rules apply` calls ApplyRemedyRules. The only other
+// writer of `remedy_risk_rules` and `remedy_risk_settings` is RemedyRiskApplier
+// (remedyrulechanges.go), which writes a change that a DIFFERENT member confirmed (owner ruling O3,
+// 2026-10-06). Both go through writeRemedyRules below; nothing else in the product writes them.
 //
 // ⛔ A SUBCOMMAND AND NOT A ROUTE, for the approval grant's reason (remedyapprover.go). A rule
 // saying ONE lets one grant holder approve a Remedy alone. 5ace8f3 made the rules writable by
@@ -190,21 +192,12 @@ func ApplyRemedyRules(ctx context.Context, pool *pgxpool.Pool, orgSlug string, d
 			}
 			model = &id
 		}
-		var replaced int
-		if err := q.QueryRow(ctx, countRemedyRiskRulesSQL, scope.OrgID()).Scan(&replaced); err != nil {
-			return fmt.Errorf("count the old rules: %w", err)
+		replaced, err := writeRemedyRules(ctx, q, scope.OrgID(), parsed.Rules, model, nil, RemedyRulesWriter, at)
+		if err != nil {
+			return err
 		}
-		if _, err := q.Exec(ctx, upsertRemedyRiskSettingsSQL, scope.OrgID(), model, RemedyRulesWriter, at); err != nil {
-			return fmt.Errorf("store the risk model: %w", err)
-		}
-		if _, err := q.Exec(ctx, deleteRemedyRiskRulesSQL, scope.OrgID()); err != nil {
-			return fmt.Errorf("remove the old rules: %w", err)
-		}
-		for i, r := range parsed.Rules.Rules() {
-			if _, err := q.Exec(ctx, insertRemedyRiskRuleSQL, scope.OrgID(), r.Name, i, optText(r.Tool),
-				r.Verbs, r.Kinds, r.Namespaces, optText(string(r.Reversibility)), r.Approvals, at); err != nil {
-				return fmt.Errorf("store rule %q: %w", r.Name, err)
-			}
+		if _, err := q.Exec(ctx, supersedePendingRemedyRiskChangeSQL, scope.OrgID(), RemedyRulesWriter, at); err != nil {
+			return fmt.Errorf("supersede the pending rule change: %w", err)
 		}
 		read, err := readRemedyRules(ctx, pool, scope)
 		if err != nil {
@@ -215,6 +208,33 @@ func ApplyRemedyRules(ctx context.Context, pool *pgxpool.Pool, orgSlug string, d
 		return nil
 	})
 	return out, err
+}
+
+// writeRemedyRules replaces the org's whole rule set and its risk model inside the caller's
+// transaction, and returns how many rules it replaced. ⛔ The caller holds the org's risk-rules
+// advisory lock, has validated `rules` with investigatordomain.NewRiskRules, and decides who is
+// recorded as the writer: nil for the host's shell, a member for a confirmed change.
+func writeRemedyRules(
+	ctx context.Context, q db.Querier, orgID uuid.UUID, rules investigatordomain.RiskRules,
+	model *uuid.UUID, writtenBy *uuid.UUID, label string, at time.Time,
+) (int, error) {
+	var replaced int
+	if err := q.QueryRow(ctx, countRemedyRiskRulesSQL, orgID).Scan(&replaced); err != nil {
+		return 0, fmt.Errorf("count the old rules: %w", err)
+	}
+	if _, err := q.Exec(ctx, upsertRemedyRiskSettingsSQL, orgID, model, writtenBy, label, at); err != nil {
+		return 0, fmt.Errorf("store the risk model: %w", err)
+	}
+	if _, err := q.Exec(ctx, deleteRemedyRiskRulesSQL, orgID); err != nil {
+		return 0, fmt.Errorf("remove the old rules: %w", err)
+	}
+	for i, r := range rules.Rules() {
+		if _, err := q.Exec(ctx, insertRemedyRiskRuleSQL, orgID, r.Name, i, optText(r.Tool),
+			r.Verbs, r.Kinds, r.Namespaces, optText(string(r.Reversibility)), r.Approvals, at); err != nil {
+			return 0, fmt.Errorf("store rule %q: %w", r.Name, err)
+		}
+	}
+	return replaced, nil
 }
 
 // ShowRemedyRules reads the org's rules and risk model as they stand.
@@ -300,14 +320,22 @@ SELECT id FROM model_providers WHERE org_id = $1 AND name = $2`
 const countRemedyRiskRulesSQL = `
 SELECT count(*)::int FROM remedy_risk_rules WHERE org_id = $1`
 
-// ⭐ written_by is NULL: the writer is the host's shell, not a member, and the label says so.
+// ⭐ written_by is NULL for the host's shell, which is not a member and says so in the label; for a
+// confirmed change it is the member who confirmed it.
 const upsertRemedyRiskSettingsSQL = `
 INSERT INTO remedy_risk_settings (org_id, risk_model_provider_id, written_by, written_by_label, written_at)
-VALUES ($1, $2, NULL, $3, $4)
+VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (org_id) DO UPDATE
    SET risk_model_provider_id = EXCLUDED.risk_model_provider_id,
-       written_by = NULL, written_by_label = EXCLUDED.written_by_label,
+       written_by = EXCLUDED.written_by, written_by_label = EXCLUDED.written_by_label,
        written_at = EXCLUDED.written_at`
+
+// ⭐ A host-shell apply is the later word, so a proposal still waiting is overtaken by it and can no
+// longer be confirmed over it (migration 00111).
+const supersedePendingRemedyRiskChangeSQL = `
+UPDATE remedy_risk_changes
+   SET status = 'superseded', decided_by = NULL, decided_by_label = $2, decided_at = $3
+ WHERE org_id = $1 AND status = 'pending'`
 
 const deleteRemedyRiskRulesSQL = `
 DELETE FROM remedy_risk_rules WHERE org_id = $1`

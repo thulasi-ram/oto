@@ -735,6 +735,37 @@ func plan() []probe {
 			want: http.StatusOK,
 			why:  "a changed prompt writes version 2, so the response's versions[] carries two entries to validate",
 		},
+		// ⭐ THE KEY ROUTE IS DRIVEN ONLY TO ITS 404, because this world has no keyring to seal
+		// one with (see above). A key reaching the sealer is the service tests' and
+		// `providers_db_test.go`'s to prove; what this proves is that the route is mounted
+		// under its contract and answers a stranger's endpoint as one that does not exist.
+		{
+			method: http.MethodPut, tmpl: "/api/v1/model-providers/{id}/key",
+			url:  "/api/v1/model-providers/{{stranger}}/key",
+			body: map[string]any{"api_key": "sk-gate-g2"},
+			want: http.StatusNotFound,
+		},
+		{
+			method: http.MethodDelete, tmpl: "/api/v1/model-providers/{id}",
+			url:  "/api/v1/model-providers/{{modelprovider}}",
+			want: http.StatusConflict,
+			why:  "the Investigator created above holds a version that dials this endpoint, so it is kept (`model_provider_in_use`)",
+		},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/model-providers",
+			body: map[string]any{
+				"name":     "gate-g2-spare",
+				"base_url": "https://spare.invalid/v1",
+				"model":    "gate-g2-model",
+			},
+			want:    http.StatusCreated,
+			capture: map[string][]string{"sparemodelprovider": {"data", "id"}},
+		},
+		{
+			method: http.MethodDelete, tmpl: "/api/v1/model-providers/{id}",
+			url:  "/api/v1/model-providers/{{sparemodelprovider}}",
+			want: http.StatusNoContent,
+		},
 		{
 			method: http.MethodPost, tmpl: "/api/v1/cases/{id}/investigations", url: "/api/v1/cases/{{case}}/investigations",
 			body:    map[string]any{"investigator_id": "{{investigator}}"},
@@ -842,9 +873,51 @@ func plan() []probe {
 			why:  "unclassified is always admissible and is reserved; the set it was refused against stands",
 		},
 		// ADR 0054 §3 (git-bug eb4f21b): the org's Remedy risk rules. A fresh org reads them
-		// EMPTY — oto ships no rule, and every Remedy needs two. ⛔ There is no write to probe:
-		// `oto remedy-rules apply` writes them from the host shell (owner ruling 2026-10-05).
+		// EMPTY — oto ships no rule, and every Remedy needs two. ⛔ NO PROBE WRITES THEM: they are
+		// written from the host shell (`oto remedy-rules apply`) or by a change a DIFFERENT member
+		// confirmed (owner ruling O3, 2026-10-06), and this world has ONE member. So the change is
+		// driven to its typed refusals and its discard, which is what a lone member can do:
+		// proposing is a session's, a token is refused, the proposer cannot confirm their own
+		// change, and discarding is open to a token.
 		{method: http.MethodGet, tmpl: "/api/v1/remedy-risk-rules", want: http.StatusOK},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/remedy-risk-rules/changes", auth: authSession,
+			body: map[string]any{
+				"rules": []any{map[string]any{
+					"name": "gate-g2-restart", "tool": "k8s-write__kubectl", "verbs": []any{"rollout restart"},
+					"kinds": []any{"deployment"}, "namespaces": []any{"payments"}, "approvals": 1,
+				}},
+				"risk_model_provider_id": nil,
+			},
+			want:    http.StatusCreated,
+			capture: map[string][]string{"riskchange": {"data", "id"}},
+		},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/remedy-risk-rules/changes",
+			body: map[string]any{"rules": []any{}},
+			want: http.StatusForbidden,
+			why:  "a token neither proposes nor confirms a rule change: it takes a browser session (`remedy_risk_change_needs_a_session`)",
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/remedy-risk-rules", want: http.StatusOK,
+			why: "read again with a change pending, so `pending_change` is a populated object to validate",
+		},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/remedy-risk-rules/changes/{id}/confirm",
+			url: "/api/v1/remedy-risk-rules/changes/{{riskchange}}/confirm", auth: authSession,
+			want: http.StatusForbidden,
+			why:  "the proposer cannot confirm their own change: it takes a different member (`remedy_risk_change_needs_a_second_person`)",
+		},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/remedy-risk-rules/changes/{id}/discard",
+			url:  "/api/v1/remedy-risk-rules/changes/{{riskchange}}/discard",
+			want: http.StatusNoContent,
+		},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/remedy-risk-rules/changes/{id}/discard",
+			url:  "/api/v1/remedy-risk-rules/changes/{{stranger}}/discard",
+			want: http.StatusNotFound,
+		},
 
 		/* -------------------------------------------------------- tool servers */
 		// ADR 0053 §3, 0054 §5 (git-bug 2e9a086): an operator's MCP server, configured,

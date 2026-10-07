@@ -11,6 +11,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -59,6 +60,8 @@ type Service struct {
 	remedies       RemedyStore
 	remedyDeclarer RemedyDeclarer
 	remedyRisk     RemedyRiskStore
+	riskChanges    RiskChangeStore
+	riskApplier    RiskChangeApplier
 }
 
 // Deps are the Service's collaborators. Every one but Clock and Limits is required:
@@ -120,6 +123,10 @@ type Deps struct {
 	// RemedyRisk is the org's risk rules and risk model (ADR 0054 §3, git-bug eb4f21b): what
 	// sets how many approvals a Remedy needs at its proposal.
 	RemedyRisk RemedyRiskStore
+	// RiskChanges holds proposed changes to those rules, and RiskApplier writes a confirmed one
+	// (ADR 0054 §3, owner ruling O3): a rule change from the app takes a different member to confirm.
+	RiskChanges RiskChangeStore
+	RiskApplier RiskChangeApplier
 }
 
 // New builds the Service.
@@ -170,6 +177,9 @@ func New(d Deps) (*Service, error) {
 	case d.Remedies == nil || d.RemedyDeclarer == nil:
 		return nil, errors.New("investigator: the Remedy store and declarer are required; a Remedy's every transition " +
 			"is recorded and goes outbound as a fact")
+	case d.RiskChanges == nil || d.RiskApplier == nil:
+		return nil, errors.New("investigator: the risk-rule change store and applier are required; a rule change " +
+			"from the app is proposed, and written only when a different member confirms it")
 	case d.RemedyRisk == nil:
 		return nil, errors.New("investigator: the Remedy risk rules are required; how many approvals a Remedy " +
 			"needs is set from them when it is proposed")
@@ -188,6 +198,7 @@ func New(d Deps) (*Service, error) {
 		suggestions: d.Suggestions, policies: d.Policies, memberships: d.Memberships,
 		approvers: d.Approvers,
 		remedies:  d.Remedies, remedyDeclarer: d.RemedyDeclarer, remedyRisk: d.RemedyRisk,
+		riskChanges: d.RiskChanges, riskApplier: d.RiskApplier,
 	}
 	// The proposing Tools are built in too, and held only when an allowlist names them
 	// (git-bug 8327c00).
@@ -247,6 +258,88 @@ func (s *Service) GetProvider(ctx context.Context, scope db.TenantScope, provide
 // ListProviders reads an org's endpoints by name, without their keys.
 func (s *Service) ListProviders(ctx context.Context, scope db.TenantScope) ([]domain.ProviderConfig, error) {
 	return s.providers.List(ctx, scope)
+}
+
+// RotateProviderKey replaces an endpoint's API key and returns the endpoint without it.
+//
+// ⛔ ONLY THE KEY MOVES. `base_url` and `model` are the identity an Investigator version
+// pins, so a rotation cannot trip `model_changed` and cannot rewrite what a past Finding
+// says produced it. A stored key is re-sealed in place, so nothing pointing at it moves; an
+// endpoint that took none gets a new row. The key is checked against the endpoint's scheme
+// as at create: a key is only ever sent over https.
+//
+// A key travels only here and into the sealer: no error below renders it.
+func (s *Service) RotateProviderKey(ctx context.Context, scope db.TenantScope, providerID uuid.UUID, apiKey string) (domain.ProviderConfig, error) {
+	if err := db.RequireScope(scope); err != nil {
+		return domain.ProviderConfig{}, err
+	}
+	if apiKey == "" || strings.TrimSpace(apiKey) == "" {
+		return domain.ProviderConfig{}, errs.Validation("model_api_key_required",
+			"an API key is required",
+			errs.Violation{Field: "api_key", Code: "required", Message: "an API key is required"})
+	}
+	at := s.now()
+	var out domain.ProviderConfig
+	err := s.tx.InTx(ctx, func(ctx context.Context) error {
+		cfg, err := s.providers.Get(ctx, scope, providerID)
+		if err != nil {
+			return err
+		}
+		if err := domain.KeyNeedsHTTPS(cfg.BaseURL, true); err != nil {
+			return err
+		}
+		values := map[string]string{domain.CredentialValueKey: apiKey}
+		if cfg.HasKey() {
+			if err := s.creds.RotateCredential(ctx, scope, cfg.CredentialID, domain.CredentialKind, values); err != nil {
+				return err
+			}
+			out, err = s.providers.Touch(ctx, scope, providerID, at)
+			return err
+		}
+		id, err := s.creds.CreateCredential(ctx, scope, domain.CredentialKind, values)
+		if err != nil {
+			return err
+		}
+		out, err = s.providers.SetCredential(ctx, scope, providerID, id, at)
+		return err
+	})
+	if err != nil {
+		return domain.ProviderConfig{}, err
+	}
+	return out, nil
+}
+
+// DeleteProvider removes an endpoint and its sealed key.
+//
+// ⛔ TWO THINGS HOLD IT, BOTH REFUSED AS A 409 THAT SAYS WHICH. An Investigator version that
+// dials it (the row refuses, `model_provider_in_use`), and the Remedy risk model naming it —
+// whose column would silently go NULL on delete, leaving every Remedy needing the second
+// approval for a reason nobody can see.
+func (s *Service) DeleteProvider(ctx context.Context, scope db.TenantScope, providerID uuid.UUID) error {
+	if err := db.RequireScope(scope); err != nil {
+		return err
+	}
+	return s.tx.InTx(ctx, func(ctx context.Context) error {
+		cfg, err := s.providers.Get(ctx, scope, providerID)
+		if err != nil {
+			return err
+		}
+		risk, err := s.remedyRisk.RemedyRisk(ctx, scope)
+		if err != nil {
+			return err
+		}
+		if risk.RiskModelProviderID == providerID {
+			return errs.Conflict("model_provider_is_risk_model",
+				"the Remedy risk model is this endpoint; choose another model for it before deleting this one")
+		}
+		if err := s.providers.Delete(ctx, scope, providerID); err != nil {
+			return err
+		}
+		if cfg.HasKey() {
+			return s.creds.DeleteCredential(ctx, scope, cfg.CredentialID)
+		}
+		return nil
+	})
 }
 
 // OpenProvider builds the ModelProvider an Investigation talks to for one stored

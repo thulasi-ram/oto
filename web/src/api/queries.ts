@@ -44,7 +44,10 @@ import {
   listChannelTypes,
   listChannels,
   listClusters,
+  getInvestigator,
   listInvestigators,
+  listToolServerTools,
+  listToolServers,
   listModelProviders,
   getRemedyRiskRules,
   listLabelNames,
@@ -246,17 +249,39 @@ export function templatePreviewQuery(
 /**
  * Every Investigator in the org — what the Case screen's "Investigate" offers.
  *
- * Bounded at the reference staleness, and for the same reason clusters are: an
- * Investigator changes when an operator configures one, no frame announces it,
- * and no screen writes one yet. Five minutes behind costs an operator a reload
- * to see one that was configured in that window — never a run against the wrong
- * one, because the server pins the version that is current when it is asked.
+ * Written from Settings → Investigators, which invalidates it; one configured through the
+ * API in the meantime is not announced and shows on the next load. Never a run against the
+ * wrong one, because the server pins the version that is current when it is asked.
  */
 export function investigatorsQuery() {
   return {
     queryKey: qk.settings.investigators(),
     queryFn: ({ signal }: { signal: AbortSignal }) => listInvestigators({ signal }),
     staleTime: REFERENCE_STALE_MS,
+  };
+}
+
+/** One Investigator with every version it has had, newest first. */
+export function investigatorQuery(id: string) {
+  return {
+    queryKey: qk.settings.investigator(id),
+    queryFn: ({ signal }: { signal: AbortSignal }) => getInvestigator(id, { signal }),
+  };
+}
+
+/** The org's ToolServers, by name. */
+export function toolServersQuery() {
+  return {
+    queryKey: qk.settings.toolServers(),
+    queryFn: ({ signal }: { signal: AbortSignal }) => listToolServers({ signal }),
+  };
+}
+
+/** The Tools a ToolServer listed at its last successful discovery. */
+export function toolServerToolsQuery(id: string) {
+  return {
+    queryKey: qk.settings.toolServerTools(id),
+    queryFn: ({ signal }: { signal: AbortSignal }) => listToolServerTools(id, { signal }),
   };
 }
 
@@ -274,15 +299,15 @@ export function modelProvidersQuery() {
 }
 
 /**
- * The org's Remedy risk rules and risk model (ADR 0054 §3), shown read-only. Bounded at the
- * reference staleness: they are applied from the host shell by `oto remedy-rules apply`, no
- * frame announces a change, and nothing in the app writes them.
+ * The org's Remedy risk rules and risk model (ADR 0054 §3), and the change waiting for a second
+ * person. Re-read on every open (no staleTime): the member who must confirm a change is a different
+ * person from the one who proposed it, no frame announces a proposal, and a confirmer deciding on a
+ * five-minute-old list could be reading a change that has since been superseded.
  */
 export function remedyRiskRulesQuery() {
   return {
     queryKey: qk.settings.remedyRiskRules(),
     queryFn: ({ signal }: { signal: AbortSignal }) => getRemedyRiskRules({ signal }),
-    staleTime: REFERENCE_STALE_MS,
   };
 }
 
@@ -521,21 +546,21 @@ export const FRESHNESS: Readonly<Record<string, Freshness>> = {
     ms: CAPABILITY_STALE_MS,
     why: "the payload-mapping catalog embedded in this build, which changes on deploy and not on any action an operator can take here — importing an entry writes the connection, never the catalog",
   },
-  "settings.modelProviders": {
-    by: "bounded",
-    ms: REFERENCE_STALE_MS,
-    why: "the org's model endpoints are configured through the API and no screen writes one yet; a list five minutes behind costs a reload before the risk model's name is shown, and the rules name it by id",
-  },
-  "settings.remedyRiskRules": {
-    by: "bounded",
-    ms: REFERENCE_STALE_MS,
-    why: "the Remedy risk rules are applied from the host shell by `oto remedy-rules apply` and nothing in the app writes them; a screen five minutes behind costs a reload, never a wrong tier, because a Remedy's tier is set by the server at its proposal",
-  },
-  "settings.investigators": {
-    by: "bounded",
-    ms: REFERENCE_STALE_MS,
-    why: "the org's Investigators are configured through the API and no screen writes one yet; a list five minutes behind costs a reload, never a run against the wrong version, because the server pins the version current when asked",
-  },
+  // Only the Model providers screen writes one, and it invalidates this on a create. A provider
+  // changed elsewhere (the API) is not announced, and shows on the next load.
+  "settings.modelProviders": { by: "mutation" },
+  // A proposal, a confirmation and a discard all happen on the Remedy risk screen and invalidate
+  // this. One a DIFFERENT member made is not announced, so the query keeps no staleTime and the
+  // screen re-reads on every open; and the server refuses a confirmation of a change that was
+  // superseded meanwhile (`remedy_risk_change_not_pending`), so a stale read costs a refusal, never a
+  // wrong write.
+  "settings.remedyRiskRules": { by: "mutation" },
+  // Only Settings → Investigators writes one, and it invalidates the list and the detail.
+  "settings.investigators": { by: "mutation" },
+  "settings.investigator": { by: "mutation" },
+  // Only Settings → Tool servers writes one, and a discovery invalidates that server's Tools.
+  "settings.toolServers": { by: "mutation" },
+  "settings.toolServerTools": { by: "mutation" },
   "labels.names": {
     by: "bounded",
     ms: REFERENCE_STALE_MS,

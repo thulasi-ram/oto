@@ -225,19 +225,25 @@ export const qk = {
      * API — so no mutation reaches this, and its staleness is bounded instead.
      */
     investigators: () => ["settings", "investigators"] as const,
+    /** One Investigator with its versions. Under `investigators()` so a write invalidates both. */
+    investigator: (id: string) => ["settings", "investigators", id] as const,
+    /** The org's ToolServers; each one's Tools hang under it. */
+    toolServers: () => ["settings", "tool-servers"] as const,
+    toolServerTools: (id: string) => ["settings", "tool-servers", id, "tools"] as const,
     /**
      * The org's Classification set (ADR 0053 §5). Only the Classification section
      * writes it, and its save writes the answer back with `setQueryData`.
      */
     investigationClasses: () => ["settings", "investigation-classes"] as const,
     /**
-     * The org's Remedy risk rules and risk model (ADR 0054 §3), READ only: they are applied
-     * from the host shell by `oto remedy-rules apply`, and no screen writes them.
+     * The org's Remedy risk rules, risk model and pending change (ADR 0054 §3). No screen writes
+     * the rules directly: one member proposes a change here and a DIFFERENT member confirms it,
+     * and each step invalidates this.
      */
     remedyRiskRules: () => ["settings", "remedy-risk-rules"] as const,
     /**
      * The org's model endpoints, read by the Remedy risk section to name the risk model.
-     * No screen writes one yet — they are configured through the API.
+     * Written from Settings → Model providers, which invalidates it.
      */
     modelProviders: () => ["settings", "model-providers"] as const,
     /** The org's tuning, its origins and its bounds — one query, one screen. */
