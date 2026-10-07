@@ -9,6 +9,8 @@ terms SS-4 set for any write path: an audit trail and a confirmation UX.
 **response effort**, for the one noun `Remedy`. Every other FR-1 refusal stands.
 **Amends:** [0016](/oto/adr/0016-mcp-enrichment-no-firehose/) — a ToolServer may now expose write Tools;
 oto still holds no cluster credential.
+**Amended 2026-10-06 (owner ruling O3):** §3 ruling 1 — rule changes from the app, on a two-person
+condition. See the amendment under §3.
 **Relates to:** [0052](/oto/adr/0052-an-incident-is-drawn-over-cases-and-its-response-is-handed-off/),
 [0053](/oto/adr/0053-an-investigator-reads-proposes-and-never-decides-delivery/).
 
@@ -80,6 +82,22 @@ above the Investigator's description of it.
 **Two rulings on the built rules (owner, 2026-10-05; git-bug eb4f21b).** As first built (5ace8f3),
 any org member could replace the rules over `PUT /api/v1/remedy-risk-rules`, and the risk model's
 tokens were recorded on the Remedy but not budgeted.
+
+> ⚠️ **Amended 2026-10-06 (owner ruling O3): ruling 1 below is refined, not reversed.** The Settings
+> screen may now change the rules, but only by a **two-person change**: one member **proposes** it
+> (`POST /api/v1/remedy-risk-rules/changes`, which writes no rule and changes no tier), and a
+> **different** member **confirms** it (`…/changes/{id}/confirm`) or anyone **discards** it. Both
+> proposing and confirming are browser-session only. The reasoning of ruling 1 stands: a rule that
+> says one lets one grant holder approve alone, and rules only ever loosen, so no change is exempt.
+> What changed is that "a second person" is now an alternative to "a shell on the host" — the same
+> bar, met differently. The second person is enforced by a CHECK on the change's row
+> (`remedy_risk_changes_two_people_ck`, migration 00111), not by the application alone; the proposed
+> rules are frozen by a trigger so what a confirmer read is what applies; one pending change per org,
+> superseded by a newer proposal or by `oto remedy-rules apply`; and the writer of
+> `remedy_risk_rules` stays in `internal/app`, now in two places (`remedyrules.go` for the shell,
+> `remedyrulechanges.go` for a confirmed change). `test/scope/remedy_risk_rules_routes_test.go` still
+> walks the mounted router and holds the route set exactly: the read, propose, confirm, discard.
+> `oto remedy-rules` stays, for scripts and for the operator with the shell.
 
 1. **The rules are written from the host shell only, like an approval grant (§4).** A rule that
    says one lets one grant holder approve alone, so a member who could write one could write a

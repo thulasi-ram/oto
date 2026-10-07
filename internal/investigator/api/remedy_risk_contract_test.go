@@ -5,8 +5,10 @@ package api
 //
 //   - the read answers the shape the contract declares, and a fresh org has no rules — oto
 //     ships none, and every Remedy then needs two;
-//   - ⛔ no verb on the path writes them: `oto remedy-rules apply` does, from the host shell
-//     (owner ruling 2026-10-05);
+//   - ⛔ no verb on the path writes them: `oto remedy-rules apply` does, from the host shell, and a
+//     CONFIRMED change does (owner ruling O3, 2026-10-06). What is mounted is a proposal, which
+//     changes no rule, a confirmation only a different member's browser SESSION may make, and a
+//     discard;
 //   - a Remedy carries `risk`: what set its tier, or null for one that names no Tool.
 
 import (
@@ -18,6 +20,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/thulasiram/oto/internal/investigator/domain"
+	"github.com/thulasiram/oto/internal/platform/authn"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/test/contract/apitest"
 	"github.com/thulasiram/oto/test/contract/schema"
@@ -38,6 +41,65 @@ func (f *fakeInvestigators) RemedyRisk(_ context.Context, s db.TenantScope) (dom
 	defer fxRisk.mu.Unlock()
 	return fxRisk.sets[f], nil
 }
+
+// fxChanges is the fake's per-client pending change, behind its own lock.
+var fxChanges = struct {
+	mu      sync.Mutex
+	pending map[*fakeInvestigators]domain.RiskChange
+}{pending: map[*fakeInvestigators]domain.RiskChange{}}
+
+func (f *fakeInvestigators) ProposeRemedyRiskChange(_ context.Context, _ db.TenantScope, by domain.Requester, d domain.RiskChangeDraft) (domain.RiskChange, error) {
+	f.record("proposeRemedyRiskChange")
+	rules, err := domain.ValidateRiskChange(d)
+	if err != nil {
+		return domain.RiskChange{}, err
+	}
+	c := domain.RiskChange{ID: fxRiskChange, OrgID: apitest.OrgID, Rules: rules, RiskModelProviderID: d.RiskModelProviderID,
+		Status: domain.RiskChangePending, ProposedBy: by, ProposedAt: fxEpoch}
+	fxChanges.mu.Lock()
+	fxChanges.pending[f] = c
+	fxChanges.mu.Unlock()
+	return c, nil
+}
+
+func (f *fakeInvestigators) PendingRemedyRiskChange(_ context.Context, s db.TenantScope) (domain.RiskChange, bool, error) {
+	fxChanges.mu.Lock()
+	defer fxChanges.mu.Unlock()
+	c, ok := fxChanges.pending[f]
+	return c, ok && mine(s), nil
+}
+
+func (f *fakeInvestigators) ConfirmRemedyRiskChange(_ context.Context, s db.TenantScope, id uuid.UUID, by domain.Requester) (domain.RemedyRiskSettings, error) {
+	f.record("confirmRemedyRiskChange")
+	fxChanges.mu.Lock()
+	c, ok := fxChanges.pending[f]
+	fxChanges.mu.Unlock()
+	if !mine(s) || !ok || id != c.ID {
+		return domain.RemedyRiskSettings{}, domain.RiskChangeNotFound()
+	}
+	if err := c.ConfirmableBy(by); err != nil {
+		return domain.RemedyRiskSettings{}, err
+	}
+	return domain.RemedyRiskSettings{Rules: c.Rules, RiskModelProviderID: c.RiskModelProviderID,
+		WrittenByLabel: by.Label, WrittenAt: fxEpoch}, nil
+}
+
+func (f *fakeInvestigators) DiscardRemedyRiskChange(_ context.Context, s db.TenantScope, id uuid.UUID, _ domain.Requester) error {
+	f.record("discardRemedyRiskChange")
+	fxChanges.mu.Lock()
+	defer fxChanges.mu.Unlock()
+	c, ok := fxChanges.pending[f]
+	if !mine(s) || !ok || id != c.ID {
+		return domain.RiskChangeNotFound()
+	}
+	delete(fxChanges.pending, f)
+	return nil
+}
+
+var fxRiskChange = uuid.MustParse("22222222-2222-4222-8222-222222222222")
+
+const oneRuleBody = `{"rules":[{"name":"restart-payments","tool":"k8s-write__kubectl","verbs":["rollout restart"],` +
+	`"kinds":["deployment"],"namespaces":["payments"],"approvals":1}],"risk_model_provider_id":null}`
 
 func TestTheRiskRulesAreReadAndShipEmpty(t *testing.T) {
 	t.Parallel()
@@ -83,10 +145,9 @@ func TestTheRiskRulesAreReadAndShipEmpty(t *testing.T) {
 	}
 }
 
-// TestNothingOnTheTransportWritesTheRiskRules — owner ruling 2026-10-05 on git-bug eb4f21b:
-// every write verb on the path is refused before any service is reached, and the rules read
-// back unchanged.
-func TestNothingOnTheTransportWritesTheRiskRules(t *testing.T) {
+// TestNoVerbOnTheRulesPathWritesThem — the rules themselves are still never written by a verb on
+// their own path; a change is proposed at `/changes`, and applied only by a confirmation.
+func TestNoVerbOnTheRulesPathWritesThem(t *testing.T) {
 	t.Parallel()
 	f, c := newClient(t)
 	body := map[string]any{"rules": []map[string]any{{"name": "everything-one", "verbs": []string{"delete"}, "approvals": 1}}}
@@ -107,6 +168,87 @@ func TestNothingOnTheTransportWritesTheRiskRules(t *testing.T) {
 	if got := data["rules"].([]any); len(got) != 0 {
 		t.Fatalf("a refused write left rules %v", got)
 	}
+}
+
+// TestAProposalIsPendingAndOnlyADifferentMemberConfirmsIt — ADR 0054 §3, owner ruling O3.
+func TestAProposalIsPendingAndOnlyADifferentMemberConfirmsIt(t *testing.T) {
+	t.Parallel()
+	_, c := newClient(t)
+
+	resp := c.Raw(http.MethodPost, "/remedy-risk-rules/changes", apitest.ContentTypeJSON, oneRuleBody).
+		MustStatus(t, http.StatusCreated)
+	schema.Assert(t, "proposeRemedyRiskChange", http.StatusCreated, resp.Body())
+	if got := resp.JSON(t)["data"].(map[string]any); got["status"] != "pending" || got["proposed_by_you"] != true {
+		t.Fatalf("a proposal answered %v, want pending and proposed by the caller", got)
+	}
+
+	// The rules are still the rules: a proposal changes nothing, and the read says what waits.
+	read := c.GET("/remedy-risk-rules").MustStatus(t, http.StatusOK)
+	schema.Assert(t, "getRemedyRiskRules", http.StatusOK, read.Body())
+	data := read.JSON(t)["data"].(map[string]any)
+	if got := data["rules"].([]any); len(got) != 0 {
+		t.Fatalf("a proposal changed the rules: %v", got)
+	}
+	pending, ok := data["pending_change"].(map[string]any)
+	if !ok || pending["proposed_by_you"] != true || len(pending["rules"].([]any)) != 1 {
+		t.Fatalf("pending_change = %v", data["pending_change"])
+	}
+
+	// ⛔ The proposer cannot confirm their own change.
+	self := c.Raw(http.MethodPost, "/remedy-risk-rules/changes/"+fxRiskChange.String()+"/confirm", "", "").
+		MustStatus(t, http.StatusForbidden)
+	if p := self.Problem(t); p.Code != "remedy_risk_change_needs_a_second_person" {
+		t.Fatalf("the proposer's own confirmation answered %q", p.Code)
+	}
+
+	// A different member's session confirms it, and the rules come back as they now stand.
+	other := apitest.Member()
+	other.UserID = uuid.MustParse("99999999-9999-4999-8999-999999999999")
+	other.DisplayName = "Grace Hopper"
+	done := c.As(other).Raw(http.MethodPost, "/remedy-risk-rules/changes/"+fxRiskChange.String()+"/confirm", "", "").
+		MustStatus(t, http.StatusOK)
+	schema.Assert(t, "confirmRemedyRiskChange", http.StatusOK, done.Body())
+	got := done.JSON(t)["data"].(map[string]any)
+	if rules := got["rules"].([]any); len(rules) != 1 || got["written_by_label"] != "Grace Hopper" {
+		t.Fatalf("a confirmed change answered %v", got)
+	}
+}
+
+// TestATokenNeitherProposesNorConfirmsButMayDiscard — a script holding two members' tokens must not
+// be the two people, so both are session-only; saying no stays open to a token.
+func TestATokenNeitherProposesNorConfirmsButMayDiscard(t *testing.T) {
+	t.Parallel()
+	f, c := newClient(t)
+	pat := apitest.Member()
+	pat.Kind = authn.KindPAT
+	tok := c.As(pat)
+
+	for _, resp := range []*apitest.Response{
+		tok.Raw(http.MethodPost, "/remedy-risk-rules/changes", apitest.ContentTypeJSON, oneRuleBody),
+		tok.Raw(http.MethodPost, "/remedy-risk-rules/changes/"+fxRiskChange.String()+"/confirm", "", ""),
+	} {
+		resp.MustStatus(t, http.StatusForbidden)
+		if p := resp.Problem(t); p.Code != "remedy_risk_change_needs_a_session" {
+			t.Fatalf("a token answered %q, want remedy_risk_change_needs_a_session", p.Code)
+		}
+	}
+	if n := f.callCount(); n != 0 {
+		t.Fatalf("a refused token reached the service (%d call(s))", n)
+	}
+
+	c.Raw(http.MethodPost, "/remedy-risk-rules/changes", apitest.ContentTypeJSON, oneRuleBody).MustStatus(t, http.StatusCreated)
+	tok.Raw(http.MethodPost, "/remedy-risk-rules/changes/"+fxRiskChange.String()+"/discard", "", "").MustStatus(t, http.StatusNoContent)
+}
+
+// TestARuleThatSaysOneMustNameItsToolOnTheTransportToo — the CLI's validation, with the CLI's
+// violations: nothing is stored for a rule the domain refuses.
+func TestARuleThatSaysOneMustNameItsToolOnTheTransportToo(t *testing.T) {
+	t.Parallel()
+	_, c := newClient(t)
+	resp := c.Raw(http.MethodPost, "/remedy-risk-rules/changes", apitest.ContentTypeJSON,
+		`{"rules":[{"name":"loose","verbs":["delete"],"approvals":1}]}`).MustStatus(t, http.StatusUnprocessableEntity)
+	schema.AssertProblem(t, "proposeRemedyRiskChange", http.StatusUnprocessableEntity, resp.Body())
+	resp.MustViolate(t, "rules/0/tool")
 }
 
 func TestARemedyCarriesWhatSetItsTier(t *testing.T) {

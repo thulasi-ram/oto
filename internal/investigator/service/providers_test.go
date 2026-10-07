@@ -22,6 +22,8 @@ import (
 type memStore struct {
 	rows map[uuid.UUID]domain.ProviderConfig
 	fail error
+	// inUse are endpoints an Investigator version dials, which the row refuses to delete.
+	inUse map[uuid.UUID]bool
 }
 
 func (m *memStore) Insert(_ context.Context, s db.TenantScope, d domain.ProviderDraft, cred uuid.UUID, at time.Time) (domain.ProviderConfig, error) {
@@ -42,6 +44,37 @@ func (m *memStore) Get(_ context.Context, _ db.TenantScope, id uuid.UUID) (domai
 	return c, nil
 }
 
+func (m *memStore) SetCredential(_ context.Context, _ db.TenantScope, id, cred uuid.UUID, at time.Time) (domain.ProviderConfig, error) {
+	c, ok := m.rows[id]
+	if !ok {
+		return domain.ProviderConfig{}, errs.NotFound("model_provider_not_found", "no such model endpoint")
+	}
+	c.CredentialID, c.UpdatedAt = cred, at
+	m.rows[id] = c
+	return c, nil
+}
+
+func (m *memStore) Touch(_ context.Context, _ db.TenantScope, id uuid.UUID, at time.Time) (domain.ProviderConfig, error) {
+	c, ok := m.rows[id]
+	if !ok {
+		return domain.ProviderConfig{}, errs.NotFound("model_provider_not_found", "no such model endpoint")
+	}
+	c.UpdatedAt = at
+	m.rows[id] = c
+	return c, nil
+}
+
+func (m *memStore) Delete(_ context.Context, _ db.TenantScope, id uuid.UUID) error {
+	if m.inUse[id] {
+		return errs.Conflict("model_provider_in_use", "in use")
+	}
+	if _, ok := m.rows[id]; !ok {
+		return errs.NotFound("model_provider_not_found", "no such model endpoint")
+	}
+	delete(m.rows, id)
+	return nil
+}
+
 func (m *memStore) List(context.Context, db.TenantScope) ([]domain.ProviderConfig, error) {
 	out := []domain.ProviderConfig{}
 	for _, c := range m.rows {
@@ -59,6 +92,20 @@ func (m *memCreds) CreateCredential(_ context.Context, _ db.TenantScope, kind st
 	id := uuid.New()
 	m.sealed[id], m.kinds[id] = values, kind
 	return id, nil
+}
+
+func (m *memCreds) RotateCredential(_ context.Context, _ db.TenantScope, id uuid.UUID, kind string, values map[string]string) error {
+	if _, ok := m.sealed[id]; !ok {
+		return errs.NotFound("credential_not_found", "no such credential")
+	}
+	m.sealed[id], m.kinds[id] = values, kind
+	return nil
+}
+
+func (m *memCreds) DeleteCredential(_ context.Context, _ db.TenantScope, id uuid.UUID) error {
+	delete(m.sealed, id)
+	delete(m.kinds, id)
+	return nil
 }
 
 func (m *memCreds) ResolveKey(_ context.Context, _ db.TenantScope, id uuid.UUID) (string, error) {
@@ -149,6 +196,8 @@ type rig struct {
 	remedies       *memRemedies
 	remedyFacts    *memRemedyDeclarer
 	remedyRisk     *memRemedyRisk
+	riskChanges    *memRiskChanges
+	riskApplier    *memRiskApplier
 }
 
 func (r *rig) deps() Deps {
@@ -160,7 +209,8 @@ func (r *rig) deps() Deps {
 		Limits:      Limits{ToolTimeout: 50 * time.Millisecond, MaxToolResult: 4096},
 		ToolServers: r.toolServers, Tokens: r.creds, ToolDialer: r.toolDialer, Redaction: r.redaction,
 		Suggestions: r.suggestions, Policies: r.policies, Memberships: r.memberships, Approvers: r.approvers,
-		Remedies: r.remedies, RemedyDeclarer: r.remedyFacts, RemedyRisk: r.remedyRisk}
+		Remedies: r.remedies, RemedyDeclarer: r.remedyFacts, RemedyRisk: r.remedyRisk,
+		RiskChanges: r.riskChanges, RiskApplier: r.riskApplier}
 }
 
 func newRig(t *testing.T) *rig {
@@ -191,7 +241,9 @@ func newRig(t *testing.T) *rig {
 		remedies:       newMemRemedies(),
 		remedyFacts:    &memRemedyDeclarer{},
 		remedyRisk:     &memRemedyRisk{},
+		riskChanges:    &memRiskChanges{},
 	}
+	r.riskApplier = &memRiskApplier{changes: r.riskChanges, risk: r.remedyRisk}
 	r.investigations.remedies = r.remedies
 	scope, err := db.NewTenantScope(uuid.New())
 	if err != nil {
@@ -224,6 +276,101 @@ func TestCreateSealsTheKeyAsAModelKeyAndReturnsOnlyItsID(t *testing.T) {
 	// ⛔ The config is safe to print whole.
 	if s := strings.Join([]string{cfg.Name, cfg.BaseURL, cfg.Model, cfg.CredentialID.String()}, " "); strings.Contains(s, "sk-live") {
 		t.Fatal("the key reached the config")
+	}
+}
+
+func TestRotatingAKeyReSealsItInPlaceAndMovesNothingElse(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	cfg, err := r.svc.CreateProvider(ctx, r.scope, domain.ProviderDraft{
+		Name: "gateway", BaseURL: "https://gw.test/v1", Model: "m", APIKey: "sk-old",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.clock.Advance(time.Hour)
+	got, err := r.svc.RotateProviderKey(ctx, r.scope, cfg.ID, "sk-new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Same row, same identity: a rotation cannot trip `model_changed`.
+	if got.CredentialID != cfg.CredentialID || got.BaseURL != cfg.BaseURL || got.Model != cfg.Model {
+		t.Fatalf("rotation moved more than the key: %+v -> %+v", cfg, got)
+	}
+	if r.creds.sealed[cfg.CredentialID][domain.CredentialValueKey] != "sk-new" || len(r.creds.sealed) != 1 {
+		t.Fatalf("key not re-sealed in place: %+v", r.creds.sealed)
+	}
+	if !got.UpdatedAt.After(cfg.UpdatedAt) {
+		t.Fatal("updated_at did not move")
+	}
+}
+
+func TestAKeylessEndpointTakesItsFirstKeyOverHTTPSOnly(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	tls, _ := r.svc.CreateProvider(ctx, r.scope, domain.ProviderDraft{Name: "a", BaseURL: "https://gw.test/v1", Model: "m"})
+	plain, _ := r.svc.CreateProvider(ctx, r.scope, domain.ProviderDraft{Name: "b", BaseURL: "http://vllm.svc:8000/v1", Model: "m"})
+
+	got, err := r.svc.RotateProviderKey(ctx, r.scope, tls.ID, "sk-1")
+	if err != nil || !got.HasKey() || len(r.creds.sealed) != 1 {
+		t.Fatalf("first key: %+v %v %+v", got, err, r.creds.sealed)
+	}
+	// ⛔ A key for a plaintext endpoint is refused, and nothing is sealed for it.
+	if _, err := r.svc.RotateProviderKey(ctx, r.scope, plain.ID, "sk-2"); errs.CodeOf(err) != "model_api_key_needs_https" {
+		t.Fatalf("err = %v", err)
+	}
+	if len(r.creds.sealed) != 1 {
+		t.Fatalf("a refused key was sealed: %+v", r.creds.sealed)
+	}
+}
+
+func TestABlankKeyIsRefusedAndTheOldOneKept(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	cfg, _ := r.svc.CreateProvider(ctx, r.scope, domain.ProviderDraft{Name: "g", BaseURL: "https://gw.test/v1", Model: "m", APIKey: "sk-old"})
+	if _, err := r.svc.RotateProviderKey(ctx, r.scope, cfg.ID, "   "); !errs.IsKind(err, errs.KindValidation) {
+		t.Fatalf("err = %v", err)
+	}
+	if r.creds.sealed[cfg.CredentialID][domain.CredentialValueKey] != "sk-old" {
+		t.Fatal("a refused rotation changed the key")
+	}
+}
+
+func TestDeletingAnEndpointDeletesItsSealedKeyToo(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	cfg, _ := r.svc.CreateProvider(ctx, r.scope, domain.ProviderDraft{Name: "g", BaseURL: "https://gw.test/v1", Model: "m", APIKey: "sk"})
+	if err := r.svc.DeleteProvider(ctx, r.scope, cfg.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.store.rows) != 0 || len(r.creds.sealed) != 0 {
+		t.Fatalf("left behind: %+v %+v", r.store.rows, r.creds.sealed)
+	}
+}
+
+func TestAnEndpointAVersionDialsIsKeptWithItsKey(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	cfg, _ := r.svc.CreateProvider(ctx, r.scope, domain.ProviderDraft{Name: "g", BaseURL: "https://gw.test/v1", Model: "m", APIKey: "sk"})
+	r.store.inUse = map[uuid.UUID]bool{cfg.ID: true}
+	if err := r.svc.DeleteProvider(ctx, r.scope, cfg.ID); errs.CodeOf(err) != "model_provider_in_use" {
+		t.Fatalf("err = %v", err)
+	}
+	if len(r.creds.sealed) != 1 {
+		t.Fatal("the key was deleted although the endpoint stayed")
+	}
+}
+
+func TestTheRemedyRiskModelIsNotDeletedOutFromUnderTheRules(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	cfg, _ := r.svc.CreateProvider(ctx, r.scope, domain.ProviderDraft{Name: "g", BaseURL: "https://gw.test/v1", Model: "m"})
+	r.remedyRisk.set.RiskModelProviderID = cfg.ID
+	if err := r.svc.DeleteProvider(ctx, r.scope, cfg.ID); errs.CodeOf(err) != "model_provider_is_risk_model" {
+		t.Fatalf("err = %v", err)
+	}
+	if len(r.store.rows) != 1 {
+		t.Fatal("the risk model's endpoint was deleted")
 	}
 }
 
@@ -314,6 +461,8 @@ func TestNewRequiresEveryPort(t *testing.T) {
 		"tool dialer":    func(d *Deps) { d.ToolDialer = nil },
 		"redaction":      func(d *Deps) { d.Redaction = nil },
 		"remedy risk":    func(d *Deps) { d.RemedyRisk = nil },
+		"risk changes":   func(d *Deps) { d.RiskChanges = nil },
+		"risk applier":   func(d *Deps) { d.RiskApplier = nil },
 	} {
 		d := r.deps()
 		drop(&d)

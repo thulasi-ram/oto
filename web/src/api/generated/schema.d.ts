@@ -1096,6 +1096,52 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/model-providers/{id}/key": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Replace a model endpoint's key
+         * @description Replaces the endpoint's API key, or stores the first one for an endpoint that took none.
+         *     **Only the key changes.** `base_url` and `model` are the identity an Investigator version pins and
+         *     a Finding names, so they have no edit route: a different endpoint is a new one. The key is
+         *     **write-only** — the response says only `has_key`. A key is only ever sent over `https`, so a key
+         *     for an `http` endpoint is a `422`.
+         */
+        put: operations["rotateModelProviderKey"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/model-providers/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete a model endpoint
+         * @description Removes the endpoint and its sealed key. **A `409` says what still holds it:**
+         *     `model_provider_in_use` when an Investigator version dials it (its Findings name it, so it is kept),
+         *     and `model_provider_is_risk_model` when it is the Remedy risk model. Point those elsewhere first.
+         */
+        delete: operations["deleteModelProvider"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/tool-servers": {
         parameters: {
             query?: never;
@@ -1659,15 +1705,89 @@ export interface paths {
          *     whether its verb is known reversible — each saying one or two approvals, and the org's risk model
          *     (ADR 0054 §3). **oto ships no rule**: with none, every Remedy needs two approvals.
          *
-         *     **Read-only.** The rules and the risk model are applied whole from the host shell with
-         *     `oto remedy-rules apply --org SLUG -f rules.yaml`, and no route writes them: a rule saying one lets
-         *     one grant holder approve alone, so writing one is the same authority as granting a second approver
-         *     (ADR 0054 §4). The most severe matching rule wins; no match is two; a command the rules cannot parse
+         *     **No route writes them directly.** They are applied whole from the host shell with
+         *     `oto remedy-rules apply --org SLUG -f rules.yaml`, or by a change one member **proposes** and a
+         *     **different** member confirms (`POST …/changes`, `…/confirm`): a rule saying one lets one grant
+         *     holder approve alone, so a change from the app takes a second person (ADR 0054 §3–§4). `pending_change`
+         *     is the one waiting for that person, or null. The most severe matching rule wins; no match is two; a command the rules cannot parse
          *     is two whatever they say; a risk model may then raise one to two and never lower.
          */
         get: operations["getRemedyRiskRules"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/remedy-risk-rules/changes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Propose a change to the Remedy risk rules
+         * @description Proposes a replacement of the **whole** rule set and the risk model, as `oto remedy-rules apply`
+         *     takes them; `rules: []` is legal and says every Remedy needs two. **It writes no rule and changes no
+         *     Remedy's tier.** It is stored as the org's pending change, superseding any that was pending, and
+         *     takes effect only when a **different** member confirms it (`…/confirm`).
+         *
+         *     A browser session only: a token is refused (`remedy_risk_change_needs_a_session`), so a script
+         *     holding two members' tokens cannot be the two people. The rules are validated exactly as the CLI
+         *     validates them, and a refusal's `violations[]` names `rules/<i>/<field>`.
+         */
+        post: operations["proposeRemedyRiskChange"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/remedy-risk-rules/changes/{id}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Confirm a pending change to the Remedy risk rules
+         * @description Applies the pending change as the org's rules and risk model. **The member who proposed it cannot
+         *     confirm it** (`403 remedy_risk_change_needs_a_second_person`), and the database refuses a
+         *     self-confirmed row as well. A browser session only. The change named must still be pending: one
+         *     superseded or discarded meanwhile is a `409 remedy_risk_change_not_pending`, so what a confirmer read
+         *     is what applies. No Remedy already proposed is re-tiered; the new rules decide the next one's.
+         */
+        post: operations["confirmRemedyRiskChange"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/remedy-risk-rules/changes/{id}/discard": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Discard a pending change to the Remedy risk rules
+         * @description Withdraws or refuses the pending change; any member may, the proposer included. Nothing is written.
+         *     Open to a token: saying no is the safe direction. A change already decided is a
+         *     `409 remedy_risk_change_not_pending`.
+         */
+        post: operations["discardRemedyRiskChange"];
         delete?: never;
         options?: never;
         head?: never;
@@ -8477,6 +8597,11 @@ export interface components {
             /** @description Sealed before it is stored and never returned. Omit it for an endpoint that takes no key. */
             api_key?: string;
         };
+        /** @description Replace a model endpoint's key. */
+        RotateModelProviderKeyRequest: {
+            /** @description Sealed before it is stored and never returned. */
+            api_key: string;
+        };
         /** @description Which endpoint and which model — what an Investigator version pins and a Finding names. */
         ModelIdentityDTO: {
             /** @description The endpoint's base URL as it stood when the version was written. */
@@ -9154,16 +9279,62 @@ export interface components {
          *     two whatever they say; a risk model may raise one to two and never lower.
          */
         RemedyRiskRulesDTO: {
+            /** @description The change waiting for a different member to confirm it; null when there is none. */
+            pending_change: components["schemas"]["RemedyRiskChangeDTO"] | null;
             /** @description The rules in the operator's order. Empty — oto ships none — means every Remedy needs two approvals. */
             rules: components["schemas"]["RemedyRiskRuleDTO"][];
             /** @description The model endpoint asked whether a single-approval Remedy should need two; null for none. */
             risk_model_provider_id: components["schemas"]["Uuid"] | null;
-            /** @description Who last applied the rules (`oto remedy-rules apply`); null when nobody has. */
+            /** @description Who last wrote the rules — `oto remedy-rules apply`, or the member who confirmed a change; null when nobody has. */
             written_by_label: string | null;
             /** Format: date-time */
             written_at: string | null;
             /** @description The verbs oto knows to be reversible — what `reversibility` reads. Every other verb is irreversible. */
             reversible_verbs: string[];
+        };
+        /**
+         * @description A proposed replacement of the Remedy risk rules (ADR 0054 §3, owner ruling O3). It changes no
+         *     Remedy's tier until a member other than its proposer confirms it.
+         */
+        RemedyRiskChangeDTO: {
+            id: components["schemas"]["Uuid"];
+            /** @description The whole rule set as proposed, in order. Frozen, so what a confirmer reads is what applies. */
+            rules: components["schemas"]["RemedyRiskRuleDTO"][];
+            risk_model_provider_id: components["schemas"]["Uuid"] | null;
+            /** @enum {string} */
+            status: "pending" | "applied" | "discarded" | "superseded";
+            proposed_by_label: string;
+            /** Format: date-time */
+            proposed_at: string;
+            /** @description Whether the caller proposed it, and so cannot confirm it. The proposer's id is not served. */
+            proposed_by_you: boolean;
+        };
+        /** @description One proposed rule. Validated as `oto remedy-rules apply` validates it. */
+        RemedyRiskRuleRequest: {
+            name: string;
+            /** @description A qualified write Tool, `<toolserver>__<tool>`. **A rule that says one approval must name its Tool.** */
+            tool?: string | null;
+            verbs?: string[];
+            kinds?: string[];
+            namespaces?: string[];
+            /** @enum {string|null} */
+            reversibility?: "reversible" | "irreversible" | null;
+            /**
+             * Format: int32
+             * @enum {integer}
+             */
+            approvals: 1 | 2;
+        };
+        /** @description Propose replacing the Remedy risk rules and risk model whole. */
+        ProposeRemedyRiskChangeRequest: {
+            /** @description The whole rule set, in order. Empty says every Remedy needs two approvals. */
+            rules: components["schemas"]["RemedyRiskRuleRequest"][];
+            /** @description One of the org's model endpoints asked whether a single-approval Remedy should need two; null for none. */
+            risk_model_provider_id?: components["schemas"]["Uuid"] | null;
+        };
+        RemedyRiskChangeResponse: {
+            data: components["schemas"]["RemedyRiskChangeDTO"];
+            meta: components["schemas"]["Meta"];
         };
         RemedyRiskRulesResponse: {
             data: components["schemas"]["RemedyRiskRulesDTO"];
@@ -12328,6 +12499,72 @@ export interface operations {
             503: components["responses"]["ServiceUnavailable"];
         };
     };
+    rotateModelProviderKey: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RotateModelProviderKeyRequest"];
+            };
+        };
+        responses: {
+            /** @description The endpoint, without its key. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelProviderResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    deleteModelProvider: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
     listToolServers: {
         parameters: {
             query?: never;
@@ -13105,6 +13342,100 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    proposeRemedyRiskChange: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProposeRemedyRiskChangeRequest"];
+            };
+        };
+        responses: {
+            /** @description The pending change. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemedyRiskChangeResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    confirmRemedyRiskChange: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The rules as they now stand. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemedyRiskRulesResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    discardRemedyRiskChange: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Discarded. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
             429: components["responses"]["RateLimited"];
             500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];

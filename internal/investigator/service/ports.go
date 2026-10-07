@@ -19,6 +19,11 @@ type ProviderStore interface {
 	Insert(ctx context.Context, s db.TenantScope, draft domain.ProviderDraft, credentialID uuid.UUID, at time.Time) (domain.ProviderConfig, error)
 	Get(ctx context.Context, s db.TenantScope, providerID uuid.UUID) (domain.ProviderConfig, error)
 	List(ctx context.Context, s db.TenantScope) ([]domain.ProviderConfig, error)
+	// SetCredential points an endpoint at a newly sealed key; Touch moves `updated_at` for a
+	// key re-sealed in place. Neither can change base_url or model — the identity a version pins.
+	SetCredential(ctx context.Context, s db.TenantScope, providerID, credentialID uuid.UUID, at time.Time) (domain.ProviderConfig, error)
+	Touch(ctx context.Context, s db.TenantScope, providerID uuid.UUID, at time.Time) (domain.ProviderConfig, error)
+	Delete(ctx context.Context, s db.TenantScope, providerID uuid.UUID) error
 }
 
 // CredentialWriter seals a secret into the one sealed-secret store and returns its id.
@@ -29,6 +34,9 @@ type ProviderStore interface {
 // purpose — the only reader of a model key is KeyResolver, at the moment of dialling.
 type CredentialWriter interface {
 	CreateCredential(ctx context.Context, s db.TenantScope, kind string, values map[string]string) (uuid.UUID, error)
+	// RotateCredential re-seals a stored secret in place; DeleteCredential removes one.
+	RotateCredential(ctx context.Context, s db.TenantScope, credentialID uuid.UUID, kind string, values map[string]string) error
+	DeleteCredential(ctx context.Context, s db.TenantScope, credentialID uuid.UUID) error
 }
 
 // KeyResolver unseals a model endpoint's key, satisfied by
@@ -396,6 +404,31 @@ type RemedyStore interface {
 // transition row records that (`declared_incident_id` NULL), and nothing invents a target.
 type RemedyDeclarer interface {
 	DeclareRemedy(ctx context.Context, s db.TenantScope, incidentID uuid.UUID, fact domain.RemedyFact) error
+}
+
+// RiskChangeStore holds the PROPOSALS to change those rules (ADR 0054 §3, owner ruling O3;
+// migration 00111), satisfied by `investigator/repository.RiskChangeRepository`.
+//
+// ⛔ A PROPOSAL CHANGES NO TIER. Nothing on this port writes a rule or a setting, or marks a change
+// applied: that is RiskChangeApplier's, behind a different member's confirmation.
+type RiskChangeStore interface {
+	// Propose stores a validated change as the org's one pending change, superseding the one
+	// that was pending. ⛔ It writes no rule and no setting.
+	Propose(ctx context.Context, s db.TenantScope, by domain.Requester, rules domain.RiskRules, model uuid.UUID, at time.Time) (domain.RiskChange, error)
+	Pending(ctx context.Context, s db.TenantScope) (domain.RiskChange, bool, error)
+	Get(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.RiskChange, error)
+	Discard(ctx context.Context, s db.TenantScope, id uuid.UUID, by domain.Requester, at time.Time) (domain.RiskChange, error)
+}
+
+// RiskChangeApplier writes a confirmed change as the org's rules (ADR 0054 §3, owner ruling O3),
+// satisfied by `internal/app`'s RemedyRiskApplier.
+//
+// ⛔⛔ IT IS THE ONLY WAY A RULE IS WRITTEN FROM A ROUTE, AND IT LIVES IN `internal/app`, beside the
+// host-shell writer, so that a repository this module holds is still never one call away from
+// replacing the rules. It re-checks everything the service checked — pending, a different person,
+// valid rules — inside its own transaction, and the schema refuses a self-confirmed row after that.
+type RiskChangeApplier interface {
+	Confirm(ctx context.Context, s db.TenantScope, changeID uuid.UUID, by domain.Requester, at time.Time) (domain.RemedyRiskSettings, error)
 }
 
 // RemedyRiskStore is an org's Remedy risk rules and its risk model (ADR 0054 §3, git-bug

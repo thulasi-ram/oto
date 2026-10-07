@@ -27,6 +27,15 @@ import (
 type InvestigatorService interface {
 	CreateProvider(ctx context.Context, s db.TenantScope, d domain.ProviderDraft) (domain.ProviderConfig, error)
 	ListProviders(ctx context.Context, s db.TenantScope) ([]domain.ProviderConfig, error)
+	// A rule change from Settings takes a second person (ADR 0054 §3, owner ruling O3): proposed,
+	// then confirmed by a DIFFERENT member, or discarded. ⛔ Nothing here writes a rule directly.
+	ProposeRemedyRiskChange(ctx context.Context, s db.TenantScope, by domain.Requester, d domain.RiskChangeDraft) (domain.RiskChange, error)
+	PendingRemedyRiskChange(ctx context.Context, s db.TenantScope) (domain.RiskChange, bool, error)
+	ConfirmRemedyRiskChange(ctx context.Context, s db.TenantScope, id uuid.UUID, by domain.Requester) (domain.RemedyRiskSettings, error)
+	DiscardRemedyRiskChange(ctx context.Context, s db.TenantScope, id uuid.UUID, by domain.Requester) error
+
+	RotateProviderKey(ctx context.Context, s db.TenantScope, id uuid.UUID, apiKey string) (domain.ProviderConfig, error)
+	DeleteProvider(ctx context.Context, s db.TenantScope, id uuid.UUID) error
 
 	CreateToolServer(ctx context.Context, s db.TenantScope, d domain.ToolServerDraft) (domain.ToolServerConfig, error)
 	ListToolServers(ctx context.Context, s db.TenantScope) ([]domain.ToolServerConfig, error)
@@ -100,6 +109,11 @@ func (rt *Router) Mount(r chi.Router) {
 	r.Route("/model-providers", func(r chi.Router) {
 		r.Get("/", rt.listModelProviders)
 		r.Post("/", rt.createModelProvider)
+		// ⭐ THE KEY AND THE ROW'S EXISTENCE ARE THE ONLY THINGS THAT CHANGE AFTER CREATE.
+		// There is no PATCH: `base_url` and `model` are the identity an Investigator version
+		// pins and a Finding names, so a different endpoint is a new provider (00096).
+		r.Put("/{id}/key", rt.rotateModelProviderKey)
+		r.Delete("/{id}", rt.deleteModelProvider)
 	})
 	r.Route("/tool-servers", func(r chi.Router) {
 		r.Get("/", rt.listToolServers)
@@ -140,13 +154,20 @@ func (rt *Router) Mount(r chi.Router) {
 	r.Get("/investigation-classes", rt.getInvestigationClasses)
 	r.Put("/investigation-classes", rt.replaceInvestigationClasses)
 	// ⭐ HOW MANY APPROVALS A REMEDY NEEDS (ADR 0054 §3, git-bug eb4f21b): the operator's rules
-	// and risk model, READ here. A Remedy's tier is set from them at its proposal and frozen.
+	// and risk model, READ here, and CHANGED only through a pending change.
 	//
-	// ⛔⛔ NO ROUTE WRITES THEM (owner ruling 2026-10-05). A rule saying one lets one grant
-	// holder approve alone, so writing one is the authority of granting a second approver
-	// (ADR 0054 §4): `oto remedy-rules apply`, from the host shell, is the only writer, and
-	// test/scope/remedy_risk_rules_routes_test.go walks the mounted router to hold that.
-	r.Get("/remedy-risk-rules", rt.getRemedyRiskRules)
+	// ⛔⛔ NO ROUTE WRITES A RULE (owner ruling 2026-10-05, refined by O3 on 2026-10-06). A rule saying
+	// one lets one grant holder approve alone, so a member who could write one could approve alone.
+	// What is mounted is a PROPOSAL (which changes no tier), and a CONFIRMATION that only a DIFFERENT
+	// member's browser session may make; the writer itself is in `internal/app`, and
+	// `oto remedy-rules apply` from the host shell remains. test/scope/remedy_risk_rules_routes_test.go
+	// walks the mounted router and holds exactly these routes, no more.
+	r.Route("/remedy-risk-rules", func(r chi.Router) {
+		r.Get("/", rt.getRemedyRiskRules)
+		r.Post("/changes", rt.proposeRemedyRiskChange)
+		r.Post("/changes/{id}/confirm", rt.confirmRemedyRiskChange)
+		r.Post("/changes/{id}/discard", rt.discardRemedyRiskChange)
+	})
 }
 
 func (rt *Router) now() time.Time { return rt.clk.Now().UTC() }
@@ -202,6 +223,45 @@ func (rt *Router) createModelProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.Data(w, r, http.StatusCreated, modelProviderDTO(p), started)
+}
+
+// rotateModelProviderKey serves PUT /api/v1/model-providers/{id}/key.
+//
+// ⛔ THE KEY IS SEALED AND NEVER ECHOED, as at create: the response is the endpoint's public
+// half with `has_key`, and nothing on any error path renders the request body.
+func (rt *Router) rotateModelProviderKey(w http.ResponseWriter, r *http.Request) {
+	started := rt.now()
+	scope, id, err := scopeAndID(r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	dto, err := httpx.Bind[RotateModelProviderKeyRequest](w, r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	p, err := rt.svc.RotateProviderKey(r.Context(), scope, id, dto.APIKey)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	httpx.Data(w, r, http.StatusOK, modelProviderDTO(p), started)
+}
+
+// deleteModelProvider serves DELETE /api/v1/model-providers/{id}: `204`, or a `409` naming
+// what still holds the endpoint (an Investigator version, or the Remedy risk model).
+func (rt *Router) deleteModelProvider(w http.ResponseWriter, r *http.Request) {
+	scope, id, err := scopeAndID(r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	if err := rt.svc.DeleteProvider(r.Context(), scope, id); err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	httpx.JSON(w, r, http.StatusNoContent, nil)
 }
 
 // listToolServers serves GET /api/v1/tool-servers.

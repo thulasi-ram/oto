@@ -46,6 +46,9 @@ import type {
   CreateCorrelatorRequest,
   CreatePolicyRequest,
   CreateSourceRequest,
+  CreateInvestigatorRequest,
+  CreateModelProviderRequest,
+  CreateToolServerRequest,
   CreateTokenRequest,
   CreateNotificationTemplateRequest,
   DeliveryDrill,
@@ -72,6 +75,7 @@ import type {
   InvestigationClassSet,
   InvestigationDetail,
   Investigator,
+  InvestigatorDetail,
   OrgSettingsView,
   PayloadMappingCatalogEntry,
   Policy,
@@ -81,8 +85,13 @@ import type {
   Rejection,
   RejectionListQuery,
   ReplaceInvestigationClassesRequest,
+  ProposeRemedyRiskChangeRequest,
+  RemedyRiskChange,
   RemedyRiskRules,
   ModelProvider,
+  ToolServer,
+  ToolServerTool,
+  UpdateInvestigatorRequest,
   Remedy,
   Suggestion,
   ResolvedConversation,
@@ -521,6 +530,54 @@ export function listInvestigators(c: Ctx = {}): Promise<ListEnvelope<Investigato
   return getList<Investigator>(`${V1}/investigators`, ctx(c));
 }
 
+/** One Investigator with every version it has had, newest first. */
+export function getInvestigator(id: Uuid, c: Ctx = {}): Promise<InvestigatorDetail> {
+  return getItem<InvestigatorDetail>(`${V1}/investigators/${id}`, ctx(c));
+}
+
+/**
+ * Create an Investigator. A duplicate name is a `409`; an allowlist naming a Tool that is not
+ * held (unknown, on a `write` ToolServer, or marked not read-only) is a `422`
+ * `investigator_tools_invalid` whose violations name each Tool.
+ */
+export function createInvestigator(body: CreateInvestigatorRequest): Promise<InvestigatorDetail> {
+  return postItem<InvestigatorDetail>(`${V1}/investigators`, body);
+}
+
+/**
+ * Change an Investigator. A new model endpoint, prompt or allowlist writes version N+1; the
+ * switch, budgets, interval and `investigates_incidents` change in place.
+ */
+export function updateInvestigator(
+  id: Uuid,
+  body: UpdateInvestigatorRequest,
+): Promise<InvestigatorDetail> {
+  return patchItem<InvestigatorDetail>(`${V1}/investigators/${id}`, body);
+}
+
+/** The org's ToolServers, by name. Tokens are never returned. */
+export function listToolServers(c: Ctx = {}): Promise<ListEnvelope<ToolServer>> {
+  return getList<ToolServer>(`${V1}/tool-servers`, ctx(c));
+}
+
+/** Register a ToolServer. Creating one lists nothing: discovery is its own request. */
+export function createToolServer(body: CreateToolServerRequest): Promise<ToolServer> {
+  return postItem<ToolServer>(`${V1}/tool-servers`, body);
+}
+
+/**
+ * Ask the ToolServer for its Tools now. It reaches the operator's server, so it can answer a
+ * `502`/`504` that is the server's, not oto's; the failure is also kept on the ToolServer.
+ */
+export function discoverToolServer(id: Uuid): Promise<ListEnvelope<ToolServerTool>> {
+  return getList<ToolServerTool>(`${V1}/tool-servers/${id}/discover`, { method: "POST" });
+}
+
+/** The Tools the ToolServer listed at its last successful discovery. */
+export function listToolServerTools(id: Uuid, c: Ctx = {}): Promise<ListEnvelope<ToolServerTool>> {
+  return getList<ToolServerTool>(`${V1}/tool-servers/${id}/tools`, ctx(c));
+}
+
 /**
  * A Case's Investigations, latest requested first, WITHOUT transcripts. The
  * first row is the one a Case shows (ADR 0053 §4); the rest are its history.
@@ -681,17 +738,66 @@ export function replaceInvestigationClasses(
 }
 
 /**
- * The org's Remedy risk rules and risk model (ADR 0054 §3), in the operator's order. Empty
- * until an operator applies some from the host shell with `oto remedy-rules apply` — oto ships
- * no rule, and every Remedy then needs two. ⛔ Read-only: no route writes them.
+ * The org's Remedy risk rules and risk model (ADR 0054 §3), in the operator's order, and the
+ * change waiting for a second person (`pending_change`), or null. Empty until rules are applied —
+ * oto ships none, and every Remedy then needs two. ⛔ No route writes the rules directly: they are
+ * changed by `oto remedy-rules apply` from the host shell, or by a proposal a DIFFERENT member confirms.
  */
 export function getRemedyRiskRules(c: Ctx = {}): Promise<RemedyRiskRules> {
   return getItem<RemedyRiskRules>(`${V1}/remedy-risk-rules`, ctx(c));
 }
 
-/** The org's model endpoints — what the risk model is chosen from. Keys are never returned. */
+/**
+ * Propose replacing the whole rule set and the risk model. ⛔ It writes no rule and changes no
+ * tier: it becomes the org's pending change, and takes effect only when a different member confirms
+ * it. Browser session only; a `422` names `rules/<i>/<field>` for what the domain refused.
+ */
+export function proposeRemedyRiskChange(body: ProposeRemedyRiskChangeRequest): Promise<RemedyRiskChange> {
+  return postItem<RemedyRiskChange>(`${V1}/remedy-risk-rules/changes`, body);
+}
+
+/**
+ * Confirm the pending change as the org's rules. `403 remedy_risk_change_needs_a_second_person`
+ * for the member who proposed it; `409 remedy_risk_change_not_pending` when it was superseded or
+ * discarded meanwhile. Answers the rules as they now stand.
+ */
+export function confirmRemedyRiskChange(id: Uuid): Promise<RemedyRiskRules> {
+  return postItem<RemedyRiskRules>(`${V1}/remedy-risk-rules/changes/${id}/confirm`, undefined);
+}
+
+/** Discard the pending change; any member may, the proposer included. */
+export function discardRemedyRiskChange(id: Uuid): Promise<void> {
+  return postVoid(`${V1}/remedy-risk-rules/changes/${id}/discard`);
+}
+
+/** The org's model endpoints — what an Investigator and the risk model are chosen from. Keys are never returned. */
 export function listModelProviders(c: Ctx = {}): Promise<ListEnvelope<ModelProvider>> {
   return getList<ModelProvider>(`${V1}/model-providers`, ctx(c));
+}
+
+/**
+ * Configure a model endpoint. `api_key` is write-only: the `201` carries `has_key`, never the
+ * key. A duplicate name is a `409`; a key on an `http` base URL is a `422`.
+ */
+export function createModelProvider(body: CreateModelProviderRequest): Promise<ModelProvider> {
+  return postItem<ModelProvider>(`${V1}/model-providers`, body);
+}
+
+/**
+ * Replace an endpoint's key, or store the first one for an endpoint that took none. ⛔ Only the
+ * key moves: `base_url` and `model` are the identity an Investigator version pins, so they have
+ * no edit route. A key for an `http` endpoint is a `422`.
+ */
+export function rotateModelProviderKey(id: Uuid, apiKey: string): Promise<ModelProvider> {
+  return putItem<ModelProvider>(`${V1}/model-providers/${id}/key`, { api_key: apiKey });
+}
+
+/**
+ * Delete an endpoint and its sealed key. A `409` says what holds it: `model_provider_in_use`
+ * (an Investigator version dials it) or `model_provider_is_risk_model`.
+ */
+export function deleteModelProvider(id: Uuid): Promise<void> {
+  return del(`${V1}/model-providers/${id}`);
 }
 
 /* -------------------------------------------------------------------------- */

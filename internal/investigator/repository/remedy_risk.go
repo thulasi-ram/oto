@@ -16,10 +16,10 @@ import (
 // an org's Remedy risk rules, its risk model, and who last wrote them (ADR 0054 §3, git-bug
 // eb4f21b).
 //
-// ⛔⛔ IT ONLY READS (owner ruling 2026-10-05). The one writer is `oto remedy-rules apply`, as
-// raw statements in internal/app/remedyrules.go beside the approval grant's, for the grant's
-// reason: a rule saying one lets one grant holder approve alone, and a repository write would
-// be one handler away from a route.
+// ⛔⛔ IT ONLY READS (owner ruling 2026-10-05). The writers are raw statements in internal/app,
+// beside the approval grant's, for the grant's reason: `oto remedy-rules apply` (remedyrules.go) and
+// a change a DIFFERENT member confirmed (remedyrulechanges.go, owner ruling O3). A rule saying one
+// lets one grant holder approve alone, and a repository write would be one handler away from a route.
 //
 // ⛔ NOTHING HERE TOUCHES `remedies`. A Remedy copied the NAME of the rule that set its tier
 // onto its own frozen row; replacing the rules re-tiers no Remedy — by construction.
