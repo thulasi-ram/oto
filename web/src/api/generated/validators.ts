@@ -3497,6 +3497,14 @@ export const CreateModelProviderRequestSchema = v.strictObject({
   )),
 });
 
+export const RotateModelProviderKeyRequestSchema = v.strictObject({
+  "api_key": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(4096),
+  ),
+});
+
 export const ModelIdentityDTOSchema = v.looseObject({
   "endpoint": v.pipe(
     v.string(),
@@ -4232,7 +4240,27 @@ export const RemedyRiskRuleDTOSchema = v.looseObject({
   "approvals": v.picklist([1, 2]),
 });
 
+export const RemedyRiskChangeDTOSchema = v.looseObject({
+  "id": UuidSchema,
+  "rules": v.pipe(
+    v.array(RemedyRiskRuleDTOSchema),
+    v.maxLength(100),
+  ),
+  "risk_model_provider_id": v.nullable(UuidSchema),
+  "status": v.picklist(["pending", "applied", "discarded", "superseded"]),
+  "proposed_by_label": v.pipe(
+    v.string(),
+    v.maxLength(200),
+  ),
+  "proposed_at": v.pipe(
+    v.string(),
+    v.isoTimestamp(),
+  ),
+  "proposed_by_you": v.boolean(),
+});
+
 export const RemedyRiskRulesDTOSchema = v.looseObject({
+  "pending_change": v.nullable(RemedyRiskChangeDTOSchema),
   "rules": v.pipe(
     v.array(RemedyRiskRuleDTOSchema),
     v.maxLength(100),
@@ -4247,6 +4275,41 @@ export const RemedyRiskRulesDTOSchema = v.looseObject({
     v.isoTimestamp(),
   )),
   "reversible_verbs": v.array(v.string()),
+});
+
+export const RemedyRiskRuleRequestSchema = v.strictObject({
+  "name": v.pipe(
+    v.string(),
+    v.regex(/^[a-z][a-z0-9_-]{0,62}$/),
+  ),
+  "tool": v.exactOptional(v.nullable(v.string())),
+  "verbs": v.exactOptional(v.pipe(
+    v.array(v.string()),
+    v.maxLength(20),
+  )),
+  "kinds": v.exactOptional(v.pipe(
+    v.array(v.string()),
+    v.maxLength(20),
+  )),
+  "namespaces": v.exactOptional(v.pipe(
+    v.array(v.string()),
+    v.maxLength(20),
+  )),
+  "reversibility": v.exactOptional(v.nullable(v.picklist(["reversible", "irreversible"]))),
+  "approvals": v.picklist([1, 2]),
+});
+
+export const ProposeRemedyRiskChangeRequestSchema = v.strictObject({
+  "rules": v.pipe(
+    v.array(RemedyRiskRuleRequestSchema),
+    v.maxLength(100),
+  ),
+  "risk_model_provider_id": v.exactOptional(v.nullable(UuidSchema)),
+});
+
+export const RemedyRiskChangeResponseSchema = v.looseObject({
+  "data": RemedyRiskChangeDTOSchema,
+  "meta": MetaSchema,
 });
 
 export const RemedyRiskRulesResponseSchema = v.looseObject({

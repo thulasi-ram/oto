@@ -43,6 +43,14 @@ type CreateModelProviderRequest struct {
 	APIKey  *string `json:"api_key,omitempty" validate:"omitempty,max=4096"`
 }
 
+// RotateModelProviderKeyRequest is the body of `PUT /api/v1/model-providers/{id}/key`.
+//
+// ⛔ WRITE-ONLY, like the create's. A replacement for a key that is already stored, or the
+// first one for an endpoint that took none.
+type RotateModelProviderKeyRequest struct {
+	APIKey string `json:"api_key" validate:"required,notblank,min=1,max=4096"`
+}
+
 // ModelIdentityDTO renders `ModelIdentityDTO`: which endpoint and which model.
 type ModelIdentityDTO struct {
 	Endpoint string `json:"endpoint"`

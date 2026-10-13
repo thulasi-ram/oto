@@ -271,6 +271,16 @@ export type VersionInfo = S["VersionDTO"];
 
 /** A named, versioned configuration of a model-driven investigation. */
 export type Investigator = S["InvestigatorDTO"];
+/** An Investigator with every version it has had, newest first. */
+export type InvestigatorDetail = S["InvestigatorDetailDTO"];
+export type InvestigatorVersion = S["InvestigatorVersionDTO"];
+export type InvestigatorBudgets = S["InvestigatorBudgetsDTO"];
+export type CreateInvestigatorRequest = S["CreateInvestigatorRequest"];
+export type UpdateInvestigatorRequest = S["UpdateInvestigatorRequest"];
+/** An operator's MCP server (ADR 0053 §3); its token is never returned. */
+export type ToolServer = S["ToolServerDTO"];
+export type ToolServerTool = S["ToolServerToolDTO"];
+export type CreateToolServerRequest = S["CreateToolServerRequest"];
 /**
  * One run of one Investigator version against one Case, frozen once it ends.
  * Its `finding` is a snapshot of what was seen when it ran — never live state
@@ -313,8 +323,13 @@ export type RemedyRisk = S["RemedyRiskDTO"];
  */
 export type RemedyRiskRules = S["RemedyRiskRulesDTO"];
 export type RemedyRiskRule = S["RemedyRiskRuleDTO"];
+/** A proposed replacement of the rules, which a DIFFERENT member must confirm (ADR 0054 §3, O3). */
+export type RemedyRiskChange = S["RemedyRiskChangeDTO"];
+export type RemedyRiskRuleRequest = S["RemedyRiskRuleRequest"];
+export type ProposeRemedyRiskChangeRequest = S["ProposeRemedyRiskChangeRequest"];
 /** One configured model endpoint — a candidate risk model. The key is never returned. */
 export type ModelProvider = S["ModelProviderDTO"];
+export type CreateModelProviderRequest = S["CreateModelProviderRequest"];
 
 /* ---- requests ----------------------------------------------------------- */
 

@@ -2,11 +2,13 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/thulasiram/oto/internal/investigator/domain"
@@ -101,6 +103,80 @@ func (r *ProviderRepository) Get(ctx context.Context, s db.TenantScope, provider
 		return domain.ProviderConfig{}, mapErr(err, "read a model endpoint")
 	}
 	return out, nil
+}
+
+const setProviderCredentialSQL = `
+UPDATE model_providers SET credential_id = $3, updated_at = GREATEST($4, created_at)
+ WHERE org_id = $1 AND id = $2
+RETURNING ` + providerColumns
+
+// SetCredential points an endpoint at a sealed key — the first one an endpoint that took
+// none now has. Rotating a key that is already stored re-seals its row in place and does
+// not come here. ⛔ Only the credential moves: `base_url` and `model` are the identity an
+// Investigator version pins, and nothing here can change either.
+func (r *ProviderRepository) SetCredential(
+	ctx context.Context, s db.TenantScope, providerID, credentialID uuid.UUID, at time.Time,
+) (domain.ProviderConfig, error) {
+	if err := db.RequireScope(s); err != nil {
+		return domain.ProviderConfig{}, err
+	}
+	if err := db.RequireID("model_provider_id", providerID); err != nil {
+		return domain.ProviderConfig{}, err
+	}
+	out, err := scanProvider(r.db(ctx).QueryRow(ctx, setProviderCredentialSQL,
+		s.OrgID(), providerID, credentialID, at.UTC()))
+	if err != nil {
+		return domain.ProviderConfig{}, mapErr(err, "store a model endpoint's key")
+	}
+	return out, nil
+}
+
+// Touch moves `updated_at` for a key re-sealed in place, which changes no column of this row.
+func (r *ProviderRepository) Touch(
+	ctx context.Context, s db.TenantScope, providerID uuid.UUID, at time.Time,
+) (domain.ProviderConfig, error) {
+	if err := db.RequireScope(s); err != nil {
+		return domain.ProviderConfig{}, err
+	}
+	if err := db.RequireID("model_provider_id", providerID); err != nil {
+		return domain.ProviderConfig{}, err
+	}
+	out, err := scanProvider(r.db(ctx).QueryRow(ctx,
+		`UPDATE model_providers SET updated_at = GREATEST($3, created_at)
+		  WHERE org_id = $1 AND id = $2 RETURNING `+providerColumns,
+		s.OrgID(), providerID, at.UTC()))
+	if err != nil {
+		return domain.ProviderConfig{}, mapErr(err, "touch a model endpoint")
+	}
+	return out, nil
+}
+
+// Delete removes an endpoint's row.
+//
+// ⛔ AN ENDPOINT A VERSION DIALS IS NOT DELETED. `investigator_versions.model_provider_id`
+// is NO ACTION (00096), so Postgres refuses at the end of the statement and this says why
+// in the operator's words, as `model_provider_in_use`, rather than as an anonymous 23503.
+func (r *ProviderRepository) Delete(ctx context.Context, s db.TenantScope, providerID uuid.UUID) error {
+	if err := db.RequireScope(s); err != nil {
+		return err
+	}
+	if err := db.RequireID("model_provider_id", providerID); err != nil {
+		return err
+	}
+	tag, err := r.db(ctx).Exec(ctx,
+		`DELETE FROM model_providers WHERE org_id = $1 AND id = $2`, s.OrgID(), providerID)
+	if err != nil {
+		var pg *pgconn.PgError
+		if errors.As(err, &pg) && pg.Code == "23503" {
+			return errs.Conflict("model_provider_in_use",
+				"an Investigator version dials this endpoint, or a pending Remedy rule change names it, so it cannot be deleted; its Findings name it")
+		}
+		return mapErr(err, "delete a model endpoint")
+	}
+	if tag.RowsAffected() == 0 {
+		return errs.NotFound("model_provider_not_found", "no such model endpoint")
+	}
+	return nil
 }
 
 // MaxListedProviders bounds List. An org configures a handful of endpoints; a list

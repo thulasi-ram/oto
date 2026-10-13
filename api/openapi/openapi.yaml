@@ -2576,6 +2576,84 @@ paths:
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
 
+  /api/v1/model-providers/{id}/key:
+    put:
+      operationId: rotateModelProviderKey
+      summary: Replace a model endpoint's key
+      tags: [Investigators]
+      description: |
+        Replaces the endpoint's API key, or stores the first one for an endpoint that took none.
+        **Only the key changes.** `base_url` and `model` are the identity an Investigator version pins and
+        a Finding names, so they have no edit route: a different endpoint is a new one. The key is
+        **write-only** — the response says only `has_key`. A key is only ever sent over `https`, so a key
+        for an `http` endpoint is a `422`.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RotateModelProviderKeyRequest'
+      responses:
+        '200':
+          description: The endpoint, without its key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelProviderResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/model-providers/{id}:
+    delete:
+      operationId: deleteModelProvider
+      summary: Delete a model endpoint
+      tags: [Investigators]
+      description: |
+        Removes the endpoint and its sealed key. **A `409` says what still holds it:**
+        `model_provider_in_use` when an Investigator version dials it (its Findings name it, so it is kept),
+        and `model_provider_is_risk_model` when it is the Remedy risk model. Point those elsewhere first.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      responses:
+        '204':
+          description: Deleted.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   /api/v1/tool-servers:
     get:
       operationId: listToolServers
@@ -3567,10 +3645,11 @@ paths:
         whether its verb is known reversible — each saying one or two approvals, and the org's risk model
         (ADR 0054 §3). **oto ships no rule**: with none, every Remedy needs two approvals.
 
-        **Read-only.** The rules and the risk model are applied whole from the host shell with
-        `oto remedy-rules apply --org SLUG -f rules.yaml`, and no route writes them: a rule saying one lets
-        one grant holder approve alone, so writing one is the same authority as granting a second approver
-        (ADR 0054 §4). The most severe matching rule wins; no match is two; a command the rules cannot parse
+        **No route writes them directly.** They are applied whole from the host shell with
+        `oto remedy-rules apply --org SLUG -f rules.yaml`, or by a change one member **proposes** and a
+        **different** member confirms (`POST …/changes`, `…/confirm`): a rule saying one lets one grant
+        holder approve alone, so a change from the app takes a second person (ADR 0054 §3–§4). `pending_change`
+        is the one waiting for that person, or null. The most severe matching rule wins; no match is two; a command the rules cannot parse
         is two whatever they say; a risk model may then raise one to two and never lower.
       responses:
         '200':
@@ -3585,6 +3664,122 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/remedy-risk-rules/changes:
+    post:
+      operationId: proposeRemedyRiskChange
+      summary: Propose a change to the Remedy risk rules
+      tags: [Investigators]
+      description: |
+        Proposes a replacement of the **whole** rule set and the risk model, as `oto remedy-rules apply`
+        takes them; `rules: []` is legal and says every Remedy needs two. **It writes no rule and changes no
+        Remedy's tier.** It is stored as the org's pending change, superseding any that was pending, and
+        takes effect only when a **different** member confirms it (`…/confirm`).
+
+        A browser session only: a token is refused (`remedy_risk_change_needs_a_session`), so a script
+        holding two members' tokens cannot be the two people. The rules are validated exactly as the CLI
+        validates them, and a refusal's `violations[]` names `rules/<i>/<field>`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProposeRemedyRiskChangeRequest'
+      responses:
+        '201':
+          description: The pending change.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RemedyRiskChangeResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/remedy-risk-rules/changes/{id}/confirm:
+    post:
+      operationId: confirmRemedyRiskChange
+      summary: Confirm a pending change to the Remedy risk rules
+      tags: [Investigators]
+      description: |
+        Applies the pending change as the org's rules and risk model. **The member who proposed it cannot
+        confirm it** (`403 remedy_risk_change_needs_a_second_person`), and the database refuses a
+        self-confirmed row as well. A browser session only. The change named must still be pending: one
+        superseded or discarded meanwhile is a `409 remedy_risk_change_not_pending`, so what a confirmer read
+        is what applies. No Remedy already proposed is re-tiered; the new rules decide the next one's.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      responses:
+        '200':
+          description: The rules as they now stand.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RemedyRiskRulesResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/remedy-risk-rules/changes/{id}/discard:
+    post:
+      operationId: discardRemedyRiskChange
+      summary: Discard a pending change to the Remedy risk rules
+      tags: [Investigators]
+      description: |
+        Withdraws or refuses the pending change; any member may, the proposer included. Nothing is written.
+        Open to a token: saying no is the safe direction. A change already decided is a
+        `409 remedy_risk_change_not_pending`.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      responses:
+        '204':
+          description: Discarded.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
         '429':
           $ref: '#/components/responses/RateLimited'
         '500':
@@ -15171,6 +15366,19 @@ components:
           description: Sealed before it is stored and never returned. Omit it for an endpoint that takes no key.
       description: Configure a model endpoint.
 
+    RotateModelProviderKeyRequest:
+      type: object
+      required: [api_key]
+      additionalProperties: false
+      properties:
+        api_key:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          writeOnly: true
+          description: Sealed before it is stored and never returned.
+      description: Replace a model endpoint's key.
+
     ModelIdentityDTO:
       type: object
       required: [endpoint, name]
@@ -16317,8 +16525,13 @@ components:
 
     RemedyRiskRulesDTO:
       type: object
-      required: [rules, risk_model_provider_id, written_by_label, written_at, reversible_verbs]
+      required: [rules, risk_model_provider_id, written_by_label, written_at, reversible_verbs, pending_change]
       properties:
+        pending_change:
+          oneOf:
+            - $ref: '#/components/schemas/RemedyRiskChangeDTO'
+            - type: 'null'
+          description: The change waiting for a different member to confirm it; null when there is none.
         rules:
           type: array
           maxItems: 100
@@ -16333,7 +16546,7 @@ components:
         written_by_label:
           type: ['string', 'null']
           maxLength: 200
-          description: Who last applied the rules (`oto remedy-rules apply`); null when nobody has.
+          description: Who last wrote the rules — `oto remedy-rules apply`, or the member who confirmed a change; null when nobody has.
         written_at:
           type: ['string', 'null']
           format: date-time
@@ -16346,6 +16559,101 @@ components:
         The org's Remedy risk rules and risk model (ADR 0054 §3). The MOST SEVERE matching rule wins and is
         named after the first such in order; no match is two approvals; a command the rules cannot parse is
         two whatever they say; a risk model may raise one to two and never lower.
+
+    RemedyRiskChangeDTO:
+      type: object
+      required: [id, rules, risk_model_provider_id, status, proposed_by_label, proposed_at, proposed_by_you]
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        rules:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/RemedyRiskRuleDTO'
+          description: 'The whole rule set as proposed, in order. Frozen, so what a confirmer reads is what applies.'
+        risk_model_provider_id:
+          oneOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
+        status:
+          type: string
+          enum: [pending, applied, discarded, superseded]
+        proposed_by_label:
+          type: string
+          maxLength: 200
+        proposed_at:
+          type: string
+          format: date-time
+        proposed_by_you:
+          type: boolean
+          description: Whether the caller proposed it, and so cannot confirm it. The proposer's id is not served.
+      description: |
+        A proposed replacement of the Remedy risk rules (ADR 0054 §3, owner ruling O3). It changes no
+        Remedy's tier until a member other than its proposer confirms it.
+
+    RemedyRiskRuleRequest:
+      type: object
+      required: [name, approvals]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          pattern: '^[a-z][a-z0-9_-]{0,62}$'
+        tool:
+          type: ['string', 'null']
+          description: A qualified write Tool, `<toolserver>__<tool>`. **A rule that says one approval must name its Tool.**
+        verbs:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+        kinds:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+        namespaces:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+        reversibility:
+          type: ['string', 'null']
+          enum: [reversible, irreversible, null]
+        approvals:
+          type: integer
+          format: int32
+          enum: [1, 2]
+      description: One proposed rule. Validated as `oto remedy-rules apply` validates it.
+
+    ProposeRemedyRiskChangeRequest:
+      type: object
+      required: [rules]
+      additionalProperties: false
+      properties:
+        rules:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/RemedyRiskRuleRequest'
+          description: The whole rule set, in order. Empty says every Remedy needs two approvals.
+        risk_model_provider_id:
+          oneOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
+          description: One of the org's model endpoints asked whether a single-approval Remedy should need two; null for none.
+      description: Propose replacing the Remedy risk rules and risk model whole.
+
+    RemedyRiskChangeResponse:
+      type: object
+      required: [data, meta]
+      additionalProperties: false
+      properties:
+        data:
+          $ref: '#/components/schemas/RemedyRiskChangeDTO'
+        meta:
+          $ref: '#/components/schemas/Meta'
 
     RemedyRiskRulesResponse:
       type: object

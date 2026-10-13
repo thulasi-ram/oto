@@ -8,6 +8,7 @@ package repository_test
 import (
 	"bytes"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
@@ -118,4 +119,58 @@ func TestTheSchemaRefusesAKeyOverPlaintext(t *testing.T) {
 	_, err = repository.NewProviderRepository(h.Pool).Insert(h.Ctx, org.Scope, plain, credID, h.Now())
 	require.Error(t, err)
 	require.Equal(t, "model_providers_key_tls_ck", errs.CodeOf(err))
+}
+
+func TestAnEndpointTakesAKeyLaterAndOnlyItsKeyAndStampMove(t *testing.T) {
+	t.Parallel()
+	h := harness.New(t)
+	org := h.Org()
+	ring := keyring(t)
+	creds := channelrepo.NewCredentialRepository(h.Pool, ring, ring, h.Clock)
+	providers := repository.NewProviderRepository(h.Pool)
+
+	p, err := providers.Insert(h.Ctx, org.Scope, draft("gateway", "https://gw.example.test/v1"), uuid.Nil, h.Now())
+	require.NoError(t, err)
+	credID, err := creds.CreateCredential(h.Ctx, org.Scope, domain.CredentialKind,
+		map[string]string{domain.CredentialValueKey: "sk-first"})
+	require.NoError(t, err)
+
+	later := h.Now().Add(time.Hour)
+	got, err := providers.SetCredential(h.Ctx, org.Scope, p.ID, credID, later)
+	require.NoError(t, err)
+	require.Equal(t, credID, got.CredentialID)
+	require.Equal(t, later, got.UpdatedAt)
+	// ⛔ The identity a version pins is untouched.
+	require.Equal(t, p.Identity(), got.Identity())
+	require.Equal(t, p.CreatedAt, got.CreatedAt)
+
+	touched, err := providers.Touch(h.Ctx, org.Scope, p.ID, later.Add(time.Hour))
+	require.NoError(t, err)
+	require.Equal(t, later.Add(time.Hour), touched.UpdatedAt)
+
+	// Another org cannot reach it.
+	_, err = providers.SetCredential(h.Ctx, h.Org().Scope, p.ID, credID, later)
+	require.True(t, errs.IsKind(err, errs.KindNotFound), "got %v", err)
+}
+
+func TestAnUnreferencedEndpointIsDeletedAndOneAVersionDialsIsNot(t *testing.T) {
+	t.Parallel()
+	w := newWorld(t)
+	providers := repository.NewProviderRepository(w.h.Pool)
+
+	// The world's endpoint is dialled by its Investigator's version: NO ACTION refuses.
+	err := providers.Delete(w.h.Ctx, w.scope, w.inv.Current.ProviderID)
+	require.Equal(t, "model_provider_in_use", errs.CodeOf(err), "got %v", err)
+	_, err = providers.Get(w.h.Ctx, w.scope, w.inv.Current.ProviderID)
+	require.NoError(t, err, "a refused delete must leave the row")
+
+	free, err := providers.Insert(w.h.Ctx, w.scope, draft("spare", "https://spare.example.test/v1"), uuid.Nil, w.h.Now())
+	require.NoError(t, err)
+	require.NoError(t, providers.Delete(w.h.Ctx, w.scope, free.ID))
+	err = providers.Delete(w.h.Ctx, w.scope, free.ID)
+	require.True(t, errs.IsKind(err, errs.KindNotFound), "got %v", err)
+
+	// Another org's endpoint is the same answer as none.
+	err = providers.Delete(w.h.Ctx, w.h.Org().Scope, w.inv.Current.ProviderID)
+	require.True(t, errs.IsKind(err, errs.KindNotFound), "got %v", err)
 }

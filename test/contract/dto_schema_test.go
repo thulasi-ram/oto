@@ -153,6 +153,7 @@ var bindings = []binding{
 	// `CreateModelProviderRequest.api_key` is write-only and appears in no response.
 	{"investigator", "ModelProviderDTO", investigatorapi.ModelProviderDTO{}},
 	{"investigator", "CreateModelProviderRequest", investigatorapi.CreateModelProviderRequest{}},
+	{"investigator", "RotateModelProviderKeyRequest", investigatorapi.RotateModelProviderKeyRequest{}},
 	{"investigator", "ModelIdentityDTO", investigatorapi.ModelIdentityDTO{}},
 	{"investigator", "InvestigatorBudgetsDTO", investigatorapi.InvestigatorBudgetsDTO{}},
 	{"investigator", "InvestigatorVersionDTO", investigatorapi.InvestigatorVersionDTO{}},
@@ -187,6 +188,9 @@ var bindings = []binding{
 	{"investigator", "RemedyRiskDTO", investigatorapi.RemedyRiskDTO{}},
 	{"investigator", "RemedyRiskRuleDTO", investigatorapi.RemedyRiskRuleDTO{}},
 	{"investigator", "RemedyRiskRulesDTO", investigatorapi.RemedyRiskRulesDTO{}},
+	{"investigator", "RemedyRiskChangeDTO", investigatorapi.RemedyRiskChangeDTO{}},
+	{"investigator", "RemedyRiskRuleRequest", investigatorapi.RemedyRiskRuleRequest{}},
+	{"investigator", "ProposeRemedyRiskChangeRequest", investigatorapi.ProposeRemedyRiskChangeRequest{}},
 	{"investigator", "RemedyApprovalDTO", investigatorapi.RemedyApprovalDTO{}},
 	{"investigator", "RemedyTransitionDTO", investigatorapi.RemedyTransitionDTO{}},
 	{"investigator", "ApproveRemedyRequest", investigatorapi.ApproveRemedyRequest{}},

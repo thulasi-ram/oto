@@ -135,6 +135,25 @@ func (f *fakeInvestigators) ListProviders(_ context.Context, s db.TenantScope) (
 	return []domain.ProviderConfig{fxProviderConfig()}, nil
 }
 
+func (f *fakeInvestigators) RotateProviderKey(_ context.Context, s db.TenantScope, id uuid.UUID, key string) (domain.ProviderConfig, error) {
+	f.record("rotateProviderKey")
+	if !mine(s) || id != fxProvider {
+		return domain.ProviderConfig{}, errs.NotFound("model_provider_not_found", "no such model endpoint")
+	}
+	f.mu.Lock()
+	f.gotKey = key
+	f.mu.Unlock()
+	return fxProviderConfig(), nil
+}
+
+func (f *fakeInvestigators) DeleteProvider(_ context.Context, s db.TenantScope, id uuid.UUID) error {
+	f.record("deleteProvider")
+	if !mine(s) || id != fxProvider {
+		return errs.NotFound("model_provider_not_found", "no such model endpoint")
+	}
+	return nil
+}
+
 func (f *fakeInvestigators) CreateInvestigator(_ context.Context, _ db.TenantScope, _ domain.InvestigatorDraft) (domain.Investigator, error) {
 	f.record("createInvestigator")
 	return fxInvestigatorValue(), nil
@@ -287,6 +306,15 @@ func TestEveryInvestigatorOperationAnswersItsContractShape(t *testing.T) {
 		`{"name":"gateway","base_url":"https://llm-gateway.example.test/v1","model":"m-1","api_key":"`+fxKey+`"}`).
 		MustStatus(t, http.StatusCreated)
 	schema.Assert(t, "createModelProvider", http.StatusCreated, resp.Body())
+
+	resp = c.Raw(http.MethodPut, "/model-providers/"+fxProvider.String()+"/key", apitest.ContentTypeJSON,
+		`{"api_key":"`+fxKey+`"}`).MustStatus(t, http.StatusOK)
+	schema.Assert(t, "rotateModelProviderKey", http.StatusOK, resp.Body())
+	if strings.Contains(string(resp.Body()), fxKey) {
+		t.Fatalf("the rotate response echoed the key:\n%s", resp)
+	}
+
+	c.Raw(http.MethodDelete, "/model-providers/"+fxProvider.String(), "", "").MustStatus(t, http.StatusNoContent)
 
 	resp = c.GET("/investigators").MustStatus(t, http.StatusOK)
 	schema.Assert(t, "listInvestigators", http.StatusOK, resp.Body())
@@ -551,6 +579,12 @@ func routes() []apitest.Route {
 		{Op: "listModelProviders", Method: http.MethodGet, Path: "/model-providers"},
 		{Op: "createModelProvider", Method: http.MethodPost, Path: "/model-providers",
 			Body: `{"name":"g","base_url":"https://gw.example.test","model":"m"}`},
+		{Op: "rotateModelProviderKey", Method: http.MethodPut, Path: "/model-providers/" + fxProvider.String() + "/key",
+			Body: `{"api_key":"k"}`},
+		{Op: "deleteModelProvider", Method: http.MethodDelete, Path: "/model-providers/" + fxProvider.String()},
+		{Op: "proposeRemedyRiskChange", Method: http.MethodPost, Path: "/remedy-risk-rules/changes", Body: oneRuleBody},
+		{Op: "confirmRemedyRiskChange", Method: http.MethodPost, Path: "/remedy-risk-rules/changes/" + fxRiskChange.String() + "/confirm"},
+		{Op: "discardRemedyRiskChange", Method: http.MethodPost, Path: "/remedy-risk-rules/changes/" + fxRiskChange.String() + "/discard"},
 		{Op: "listInvestigators", Method: http.MethodGet, Path: "/investigators"},
 		{Op: "createInvestigator", Method: http.MethodPost, Path: "/investigators", Body: createInvestigatorBody},
 		{Op: "getInvestigator", Method: http.MethodGet, Path: "/investigators/" + inv},
@@ -588,6 +622,11 @@ func TestAnotherOrgsResourceIsA404(t *testing.T) {
 		_, c := newClient(t)
 		return c.As(apitest.MemberOf(apitest.OtherOrgID)), nil
 	}, []apitest.Route{
+		{Op: "confirmRemedyRiskChange", Method: http.MethodPost, Path: "/remedy-risk-rules/changes/" + fxRiskChange.String() + "/confirm"},
+		{Op: "discardRemedyRiskChange", Method: http.MethodPost, Path: "/remedy-risk-rules/changes/" + fxRiskChange.String() + "/discard"},
+		{Op: "rotateModelProviderKey", Method: http.MethodPut, Path: "/model-providers/" + fxProvider.String() + "/key",
+			Body: `{"api_key":"k"}`},
+		{Op: "deleteModelProvider", Method: http.MethodDelete, Path: "/model-providers/" + fxProvider.String()},
 		{Op: "getInvestigator", Method: http.MethodGet, Path: "/investigators/" + fxInvestigator.String()},
 		{Op: "updateInvestigator", Method: http.MethodPatch, Path: "/investigators/" + fxInvestigator.String(), Body: `{"enabled":false}`},
 		{Op: "requestCaseInvestigation", Method: http.MethodPost, Path: "/cases/" + fxCase.String() + "/investigations",
@@ -617,6 +656,12 @@ func TestAnUnknownQueryParameterIsRefused(t *testing.T) {
 		{Op: "listModelProviders", Method: http.MethodGet, Path: "/model-providers?reveal=key"},
 		{Op: "createModelProvider", Method: http.MethodPost, Path: "/model-providers?force=true",
 			Body: `{"name":"g","base_url":"https://gw.example.test","model":"m"}`},
+		{Op: "rotateModelProviderKey", Method: http.MethodPut, Path: "/model-providers/" + fxProvider.String() + "/key?force=true",
+			Body: `{"api_key":"k"}`},
+		{Op: "deleteModelProvider", Method: http.MethodDelete, Path: "/model-providers/" + fxProvider.String() + "?force=true"},
+		{Op: "proposeRemedyRiskChange", Method: http.MethodPost, Path: "/remedy-risk-rules/changes?force=true", Body: oneRuleBody},
+		{Op: "confirmRemedyRiskChange", Method: http.MethodPost, Path: "/remedy-risk-rules/changes/" + fxRiskChange.String() + "/confirm?force=true"},
+		{Op: "discardRemedyRiskChange", Method: http.MethodPost, Path: "/remedy-risk-rules/changes/" + fxRiskChange.String() + "/discard?force=true"},
 		{Op: "listInvestigators", Method: http.MethodGet, Path: "/investigators?enabled=true"},
 		{Op: "createInvestigator", Method: http.MethodPost, Path: "/investigators?force=true", Body: createInvestigatorBody},
 		{Op: "getInvestigator", Method: http.MethodGet, Path: "/investigators/" + inv + "?include=steps"},

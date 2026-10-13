@@ -870,6 +870,11 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		Remedies:       investigatorrepo.NewRemedyRepository(general),
 		RemedyDeclarer: remedyDeclarer{enq: c.enqueuer, seq: c.Incidents},
 		RemedyRisk:     investigatorrepo.NewRemedyRiskRepository(general),
+		// A rule change from Settings (ADR 0054 §3, owner ruling O3): proposed through this
+		// module's own table, written only by the applier in internal/app when a DIFFERENT member
+		// confirms it. ⛔ The repository only stores proposals; it cannot replace a rule.
+		RiskChanges: investigatorrepo.NewRiskChangeRepository(general),
+		RiskApplier: NewRemedyRiskApplier(general),
 	})
 	if err != nil {
 		return nil, err

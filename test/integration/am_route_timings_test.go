@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 110 {
-		t.Fatalf("latest migration is %d, want 110 — this test pins the number so that a "+
+	if latest != 111 {
+		t.Fatalf("latest migration is %d, want 111 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1633,6 +1633,26 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// accepts a kind the release below it cannot interpret. No column reading can
 	// see that, and it is the half most likely to be forgotten because nothing
 	// references it.
+	// ⭐ 00111 IS A TABLE FOR A PENDING RULE CHANGE (ADR 0054 §3, owner ruling O3): a proposal is a
+	// row, and only a different member's confirmation writes the rules. Its Down drops the table, the
+	// trigger that freezes a proposal and the function behind it, and keeps the rules an applied
+	// change already wrote. The function is counted beside the table because a Down that dropped
+	// the table with `CASCADE` and forgot the function leaves it behind, silently.
+	if n := countTables("remedy_risk_changes"); n != 1 {
+		t.Fatalf("00111's table does not exist at migration 111")
+	}
+	down(111)
+	if n := countTables("remedy_risk_changes"); n != 0 {
+		t.Fatalf("00111's table survived its Down")
+	}
+	var strayFns int
+	if err := env.pool.QueryRow(env.ctx,
+		`SELECT count(*) FROM pg_proc WHERE proname = 'remedy_risk_changes_refuse_rewrite'`).Scan(&strayFns); err != nil {
+		t.Fatalf("introspect 00111's function: %v", err)
+	}
+	if strayFns != 0 {
+		t.Fatalf("00111's trigger function survived its Down")
+	}
 	// ⭐ 00110 SAYS A SINGLE APPROVAL NAMES ITS TOOL, AND ITS RULE (judgment 2 on the Remedy review,
 	// C1+C3 and C11): two CHECKs, and a Tool-less one-approval rule already stored is RAISED to two
 	// and recorded. That raise is a row rewrite, so — for 00094's reason — it is exercised on a real

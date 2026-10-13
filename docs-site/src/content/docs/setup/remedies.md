@@ -57,7 +57,8 @@ declared to (none, for a Case no Incident holds — see [What goes outbound](#wh
 4. **How long a Remedy waits.** `remedy_approval_window_s` (Settings → Tuning → Remedies), 60 to
    86400 seconds, default 3600 — see [tuning](/oto/setup/tuning/).
 5. **Optionally, risk rules** that let a harmless command need only one approval, and a risk model
-   that may ask for two, applied from the host shell with `oto remedy-rules apply` — see
+   that may ask for two, changed in Settings → Remedy risk (one member proposes, a different member
+   confirms) or applied from the host shell with `oto remedy-rules apply` — see
    [Risk rules](#risk-rules) below. With none, every Remedy needs two.
 
 ## What a Remedy says
@@ -214,10 +215,11 @@ whether the change helped. A Remedy on a Case that no Incident holds is followed
 
 ## Risk rules
 
-How many approvals a Remedy needs is set **once, when it is proposed**, from rules you write in a
-YAML file and apply from the host shell with `oto remedy-rules apply` — see
-[Applying the rules](#applying-the-rules). oto ships no rule: with none, every Remedy needs two.
-Settings → Remedy risk and `GET /api/v1/remedy-risk-rules` show them; nothing inside oto writes them.
+How many approvals a Remedy needs is set **once, when it is proposed**, from rules you change in
+Settings → Remedy risk or write in a YAML file and apply from the host shell with
+`oto remedy-rules apply` — see [Changing the rules](#applying-the-rules). oto ships no rule: with
+none, every Remedy needs two. `GET /api/v1/remedy-risk-rules` reads them, and the change waiting for
+a second person.
 
 ### What a rule says
 
@@ -329,22 +331,38 @@ to two; it can never lower anything, and a Remedy the rules said needs two is no
   was spent* (`approvals_set_by: risk_model_budget`). The check fails closed: a question nobody
   paid for never lets one approval stand. The budget resets at 00:00 UTC.
 
-### Applying the rules
+### Changing the rules
 
-The rules and the risk model are one YAML file, applied from the host shell — the same place an
-approval grant is given (`oto grant remedy-approver`):
+There are two ways in, and neither lets one person loosen the rules alone.
+
+**From Settings → Remedy risk: one member proposes, a different member confirms.** *Propose a
+change* edits the whole rule set and the risk model, and saves it as a **pending change**. Saving
+changes no Remedy's approvals. It takes effect only when a member *other than the proposer* presses
+*Confirm*, and the screen shows that member what they are agreeing to, including every rule that
+says one approval. The proposer sees Confirm disabled, with the reason; they can discard the change
+or amend it, and a newer proposal supersedes the pending one. Both steps need a signed-in browser
+session — a personal access token cannot propose or confirm, so a script holding two members' tokens
+is not two people — while *discard* is open to a token, because saying no is the safe direction. The
+database refuses an applied change whose confirmer is its proposer, so this holds even if the
+application were wrong.
+
+**From the host shell**, the same place an approval grant is given (`oto grant remedy-approver`):
 
 ```sh
 oto remedy-rules apply --org acme -f rules.yaml     # replace the rules and the risk model
 oto remedy-rules show  --org acme > rules.yaml      # print what stands, as a file that applies
 ```
 
-**Why the shell and not the app.** A rule that says 1 lets one grant holder approve alone. If any
-member could write the rules, a grant holder could write a one-approval rule and then approve their
-own way through — the loophole the grant itself was moved out of the app to close. Writing a rule
-is the same authority as granting a second approver, so it takes the same thing: a shell on the
-host and the database credentials. No HTTP route writes a rule, and the Settings screen shows them
-read-only, *managed by `oto remedy-rules`*.
+An apply from the shell is the later word: it supersedes a pending change, so a stale proposal
+cannot be confirmed over it.
+
+**Why two people.** A rule that says 1 lets one grant holder approve alone. If any member could
+write the rules, a grant holder could write a one-approval rule and then approve their own way
+through — the loophole the grant itself was moved out of the app to close, and that a first version
+of the rules API reopened. Rules only ever *loosen* (oto ships none, and with none every Remedy needs
+two), so no change is exempt: writing one has the authority of granting a second approver, and
+therefore takes a second person. `GET /api/v1/remedy-risk-rules` reads what stands and the pending
+change; the routes under `/changes` propose, confirm and discard.
 
 The file:
 

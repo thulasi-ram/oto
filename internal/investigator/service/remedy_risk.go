@@ -27,8 +27,10 @@ package service
 // question is NOT asked and the Remedy needs two, recorded `budget` (domain.RiskVerdict.BudgetSpent)
 // — fail closed: an unpaid check never lets one approval stand.
 //
-// ⛔ AND THE RULES ARE NOT WRITTEN HERE. They are read; `oto remedy-rules apply` writes them from
-// the host shell (internal/app/remedyrules.go), like an approval grant.
+// ⛔ AND THE RULES ARE NOT WRITTEN HERE. They are read. They are written from the host shell by
+// `oto remedy-rules apply`, or by a CONFIRMED change (remedy_risk_changes.go): a rule saying one lets
+// one grant holder approve alone, so a change from the app takes a second person. Both writers are in
+// internal/app (remedyrules.go, remedyrulechanges.go).
 
 import (
 	"context"
@@ -43,10 +45,10 @@ import (
 // RemedyRisk reads the org's risk rules, its risk model and who last wrote them.
 //
 // ⛔⛔ THERE IS NO WRITE HERE, AND NONE ON THE PORT (owner ruling 2026-10-05 on git-bug
-// eb4f21b). The rules are written by `oto remedy-rules apply` from the host shell, in
-// internal/app, and by nothing reachable from a route: a rule saying one lets one grant holder
-// approve alone, so writing one is the same authority as granting a second approver (ADR 0054
-// §4), and it lives where the grant does.
+// eb4f21b). The rules are written in internal/app, by `oto remedy-rules apply` from the host shell
+// or by a change a DIFFERENT member confirmed (ADR 0054 §3, owner ruling O3): a rule saying one lets
+// one grant holder approve alone, so writing one is the same authority as granting a second approver
+// (ADR 0054 §4), and it lives where the grant does.
 func (s *Service) RemedyRisk(ctx context.Context, scope db.TenantScope) (domain.RemedyRiskSettings, error) {
 	if err := db.RequireScope(scope); err != nil {
 		return domain.RemedyRiskSettings{}, err
