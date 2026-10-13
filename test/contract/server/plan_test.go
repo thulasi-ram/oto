@@ -899,8 +899,9 @@ func plan() []probe {
 			why:  "a token neither proposes nor confirms a rule change: it takes a browser session (`remedy_risk_change_needs_a_session`)",
 		},
 		{
-			method: http.MethodGet, tmpl: "/api/v1/remedy-risk-rules", want: http.StatusOK,
-			why: "read again with a change pending, so `pending_change` is a populated object to validate",
+			method: http.MethodGet, tmpl: "/api/v1/remedy-risk-rules", auth: authSession, want: http.StatusOK,
+			why: "read again with a change pending, as the settings page does from a browser session, so " +
+				"`pending_change` is a populated object to validate",
 		},
 		{
 			method: http.MethodPost, tmpl: "/api/v1/remedy-risk-rules/changes/{id}/confirm",

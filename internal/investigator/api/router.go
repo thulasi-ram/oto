@@ -162,12 +162,10 @@ func (rt *Router) Mount(r chi.Router) {
 	// member's browser session may make; the writer itself is in `internal/app`, and
 	// `oto remedy-rules apply` from the host shell remains. test/scope/remedy_risk_rules_routes_test.go
 	// walks the mounted router and holds exactly these routes, no more.
-	r.Route("/remedy-risk-rules", func(r chi.Router) {
-		r.Get("/", rt.getRemedyRiskRules)
-		r.Post("/changes", rt.proposeRemedyRiskChange)
-		r.Post("/changes/{id}/confirm", rt.confirmRemedyRiskChange)
-		r.Post("/changes/{id}/discard", rt.discardRemedyRiskChange)
-	})
+	r.Get("/remedy-risk-rules", rt.getRemedyRiskRules)
+	r.Post("/remedy-risk-rules/changes", rt.proposeRemedyRiskChange)
+	r.Post("/remedy-risk-rules/changes/{id}/confirm", rt.confirmRemedyRiskChange)
+	r.Post("/remedy-risk-rules/changes/{id}/discard", rt.discardRemedyRiskChange)
 }
 
 func (rt *Router) now() time.Time { return rt.clk.Now().UTC() }
